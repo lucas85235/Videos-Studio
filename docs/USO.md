@@ -20,9 +20,9 @@ Onde ficam os arquivos: `%USERPROFILE%\VideosStudioData` (banco, cache, vídeos 
 
 ## 3. Primeiro vídeo (5 passos)
 
-1. **Novo projeto**: escreva um tema específico, escolha o estilo e os idiomas, e deixe marcado "Gerar o roteiro agora".
+1. **Novo projeto**: escreva um tema específico, escolha o estilo do seu nicho (o sugerido é *Curiosidades e Explicativo (Short)*; veja a lista na seção 7) e os idiomas, e deixe marcado "Gerar o roteiro agora".
 2. **Roteiro** (aba 1): leia, edite o que quiser, trave os segmentos que estão perfeitos e clique em **Aprovar roteiro e continuar**. O app gera o storyboard e a prévia.
-3. **Prévia e edição** (aba 3): assista no player. Para mudar algo, escreva no chat, por exemplo "deixa a cena 5 mais sombria" ou "legenda maior". Veja o que o agente propõe e quanto custa, e clique em **Aplicar**. Só o que mudou é refeito.
+3. **Prévia e edição** (aba 3): assista no player. Para mudar algo, escreva no chat, por exemplo "deixa a cena 5 mais clara" ou "legenda maior". Veja o que o agente propõe e quanto custa, e clique em **Aplicar**. Só o que mudou é refeito.
 4. **Renderizar vídeo** (botão no topo ou aba 4): gera o MP4 final em blocos, a thumbnail e as legendas SRT.
 5. **Publicar** (aba 4): envie ao YouTube pela API oficial, ou prepare o pacote manual para TikTok, Instagram e outras redes.
 
@@ -79,16 +79,31 @@ Envio: escolha privado, não listado, público ou **agendado**. O agendamento fi
 ## 6. Editar por instrução
 
 Exemplos que funcionam bem:
-- "deixa a cena 5 mais sombria" (só ajusta a cor, sem gerar imagem nova);
+- "deixa a cena 5 mais clara" ou "mais sombria" (só ajusta a cor, sem gerar imagem nova);
 - "outra imagem na cena atual" (marque "Só a cena que está na tela agora");
 - "na cena 3, mostra um farol na tempestade" (novo prompt de imagem);
-- "legenda maior", "legenda em amarelo", "música mais baixa", "sem música";
+- "legenda maior", "legenda em amarelo", "música mais baixa", "música mais animada", "sem música";
 - "zoom de impacto na cena 2", "transição glitch na cena 7";
-- "reescreve o segmento 2 com mais suspense".
+- "reescreve o segmento 2 com um exemplo do dia a dia" ou "com mais suspense".
 
 Toda mudança vira uma versão (aba Versões). Voltar a uma versão não paga de novo, porque os arquivos ficam no cache.
 
 ## 7. Estilos
+
+"Canal dark" aqui quer dizer canal sem rosto, de qualquer nicho. O app vem com estilos prontos para vários nichos; escolha o mais próximo do seu e ajuste:
+
+| Nicho | Curto (9:16) | Longo (16:9) |
+|---|---|---|
+| Curiosidades, ciência, explicações | Curiosidades e Explicativo (Short) | Curiosidades e Explicativo (longo), Explicador com Arte Vetorial |
+| Tecnologia e IA | Tecnologia e IA (Short) | (use Curiosidades longo ou Explicador) |
+| História e biografias | | História Documental, Biografias |
+| Finanças e negócios | | Finanças e Negócios |
+| Contos, relatos, histórias de vida | | Histórias Narradas |
+| Listas e rankings | | Top 10 / Listas |
+| Motivacional e estoicismo | Estoico / Motivacional (Short) | |
+| Mistério, terror e true crime | Mistérios Sombrios, Terror Analógico (VHS) | Documentário Sombrio, True Crime |
+
+O novo projeto já vem com *Curiosidades e Explicativo (Short)* marcado. Se o projeto for de um canal com estilo padrão (em Canais), vale o estilo do canal.
 
 - **Duplicar e ajustar**: abra um preset, dê um id para a cópia e edite no formulário (ou no JSON completo).
 - **Criar por descrição**: em Estilos, descreva (ex.: "documentário de jornal antigo, lento, sépia, máquina de escrever") e escolha um estilo base. O app mostra as mudanças aplicadas e as rejeitadas.
@@ -108,8 +123,8 @@ A voz do Gemini recebe **só o texto**: o tom vem da voz escolhida no estilo, e 
 
 ### Música
 
-- **Procedural** (padrão): o app gera a trilha (drone, tensão, terror, mistério, épico, pulso, calmo). Sem direitos autorais, mas simples.
-- **Suas faixas**: em Configurações → *Biblioteca de músicas*, clique em **Abrir pasta** e coloque os arquivos (mp3, wav, m4a, ogg, flac). Use subpastas com o clima no nome (`terror`, `misterio`, `tensao`, `epico`, `calmo`, `pulso`); o resto conta como ambiente. No estilo, escolha **Fonte da trilha = biblioteca**.
+- **Procedural** (padrão): o app gera a trilha. Climas leves: neutro (o padrão), animado, inspirador, lo-fi, corporativo leve, curioso / divertido, calmo, épico e pulso. Climas sombrios: mistério, tensão, terror e sombrio (drone). O andamento e os acordes variam de vídeo para vídeo. Sem direitos autorais, mas simples.
+- **Suas faixas**: em Configurações → *Biblioteca de músicas*, clique em **Abrir pasta** e coloque os arquivos (mp3, wav, m4a, ogg, flac). Use subpastas com o clima no nome (`animado`, `inspirador`, `lofi`, `corporativo`, `divertido`, `calmo`, `epico`, `pulso`, `misterio`, `tensao`, `terror`, `sombrio`); o resto conta como neutro. No estilo, escolha **Fonte da trilha = biblioteca**.
 - O app escolhe uma faixa do mesmo clima pela semente do projeto, repete ou corta para caber no vídeo, aplica fade e ajusta o volume (com ducking sob a narração).
 - Para trocar a faixa de um vídeo: aba **Prévia e edição** → cartão *Trilha* → escolha a faixa e gere a prévia de novo. Só o áudio é refeito.
 - Fonte grátis: a Biblioteca de áudio do YouTube Studio, filtrando por "Atribuição não necessária". Use só faixas cuja licença permita o seu uso: música de terceiros sem licença gera reivindicação de Content ID.

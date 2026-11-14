@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AudioLines, Check, ExternalLink, FileText, History, Languages, Palette, Plus, TriangleAlert, Tv, Wand2 } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api, type Channel, LANGUAGES, type StyleItem, type VoiceCatalog, type VoiceChoice } from '../api';
+import { api, type Channel, DEFAULT_STYLE_ID, LANGUAGES, type StyleItem, type VoiceCatalog, type VoiceChoice } from '../api';
 import { langLabel } from '../labels';
 import { isBoolean, isStringArray, readLocal, writeLocal } from '../shell/data';
 import {
@@ -29,7 +29,7 @@ import { StylePicker } from './projects/StylePicker';
 
 const TOPIC_ID = 'novo-projeto-tema';
 const BLOCKER_ID = 'novo-projeto-bloqueio';
-const DEFAULT_STYLE = 'misterios-short';
+const DEFAULT_STYLE = DEFAULT_STYLE_ID;
 const DEFAULT_PRIMARY = 'pt-BR';
 const TITLE_MAX = 200; // limite do backend (CreateProject.title)
 

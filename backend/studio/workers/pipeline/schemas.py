@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS
+from studio.media.audio import MOODS
 
 
 def _obj(props: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +164,7 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
   position: top | center | bottom ; max_words_per_line ; uppercase
 - edit.text_cards.font, color, accent, background, animation: fade_up | typewriter | pop | slide | flicker
 - edit.progress_bar (bool), edit.progress_color
-- audio.music.mood (ex.: "dark ambient drone", tension, horror, mystery, epic, pulse, calm), audio.music.volume_db (-60–0)
+- audio.music.mood (um destes climas: {", ".join(MOODS)}), audio.music.volume_db (-60–0)
 - audio.music.source: procedural | library | none ; audio.sfx.auto (bool) ; audio.loudness_lufs
-Fontes disponíveis: Montserrat, Bebas Neue, Cinzel, Special Elite, VT323, Oswald, Anton, Noto Sans.
+Fontes disponíveis: Montserrat, Bebas Neue, Cinzel, Special Elite, VT323, Oswald, Anton, Noto Sans, IBM Plex Sans.
 """

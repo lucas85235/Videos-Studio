@@ -18,6 +18,29 @@ class StyleNotFound(LookupError):
     pass
 
 
+# Estilo sugerido ao criar um projeto (o mesmo `DEFAULT_STYLE_ID` de apps/web/src/api.ts).
+DEFAULT_STYLE_ID = "curiosidades-short"
+
+# Ordem dos presets na interface: os nichos gerais primeiro, os sombrios por último. Presets fora da lista
+# vêm depois, na ordem dos arquivos.
+PRESET_ORDER = (
+    "curiosidades-short",
+    "tecnologia-ia",
+    "estoico-short",
+    "misterios-short",
+    "terror-analog",
+    "curiosidades-longo",
+    "explicador-vetorial",
+    "historia-documental",
+    "biografias",
+    "financas-negocios",
+    "historias-narradas",
+    "top10-listas",
+    "documentario-sombrio",
+    "true-crime",
+)
+
+
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Mescla recursiva: dicionários são mesclados, o resto é substituído."""
     result = copy.deepcopy(base)
@@ -60,7 +83,8 @@ def load_presets() -> dict[str, StyleSpec]:
         except ValidationError as exc:
             raise ValueError(f"preset inválido em {path.name}: {exc}") from exc
         styles[style.id] = style
-    return styles
+    rank = {style_id: i for i, style_id in enumerate(PRESET_ORDER)}
+    return dict(sorted(styles.items(), key=lambda item: rank.get(item[0], len(rank))))
 
 
 def list_styles() -> list[dict[str, Any]]:

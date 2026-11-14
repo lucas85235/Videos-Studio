@@ -1,0 +1,79 @@
+id: historias-narradas
+name: "Histórias Narradas (contos e relatos)"
+description: "Contos, relatos e histórias de vida em 16:9: ilustração de livro ilustrado, cores quentes, narração calorosa e ritmo calmo."
+family: still_cinema
+families_mix: [still_cinema, motion_graphics]
+structure: none
+tags: [historias, contos, relatos, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 600, min_s: 300, max_s: 1200 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  # Ficção apresentada como fato real é bloqueada para canal monetizado (README §5.6).
+  tone: "narrativa envolvente com começo, meio e fim: personagens com nome, diálogos curtos, detalhes sensoriais e uma virada; drama, humor ou superação conforme o tema; se for ficção, deixe isso claro e nunca apresente como fato real"
+  structure: [hook, apresentacao, conflito, desenvolvimento, virada, desfecho, reflexao, cta]
+  hook_max_s: 15
+  cta: "Gostou da história? Inscreva-se e conte nos comentários qual devo narrar na próxima."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Sulafat
+  style_prompt: "Narre como quem conta uma história de perto: voz calorosa, expressiva nos diálogos, ritmo calmo."
+  speed: 0.98
+  gap_s: 0.4
+
+art:
+  bible: "ilustração de livro ilustrado em pintura digital, pinceladas suaves, cores quentes e acolhedoras, luz natural, personagens expressivos sem rostos detalhados, cenários do cotidiano"
+  banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo", "violência explícita"]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.5, max: 6.0 }
+  camera: { ken_burns_in: 4, ken_burns_out: 2, pan_left: 2, pan_right: 2, drift: 2 }
+  transitions: { cut: 5, fade_black: 2, light_leak: 1 }
+  transition_seconds: 0.5
+  effects:
+    - { type: grade, preset: warm-soft, amount: 0.4 }
+    - { type: grain, amount: 0.1 }
+    - { type: vignette, amount: 0.2 }
+  captions:
+    style: line
+    font: Montserrat
+    weight: 600
+    size: 46
+    color: "#FFFFFF"
+    highlight: "#FFC857"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: "Bebas Neue"
+    color: "#FFF6E5"
+    accent: "#FFC857"
+    background: "#3A2B4A"
+    animation: fade_up
+  progress_bar: false
+  zoom_strength: 0.08
+
+audio:
+  music: { source: procedural, mood: calm, volume_db: -25, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -16 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: "Bebas Neue", accent: "#FFC857" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

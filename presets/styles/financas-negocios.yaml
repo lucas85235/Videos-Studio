@@ -1,0 +1,79 @@
+id: financas-negocios
+name: "Finanças e Negócios (longo)"
+description: "Educação financeira e histórias de empresas em 16:9: ilustração editorial clara, cartões de dados e tom didático."
+family: motion_graphics
+families_mix: [motion_graphics, still_cinema]
+structure: none
+tags: [financas, negocios, educacao-financeira, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 600, min_s: 420, max_s: 900 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  # Conteúdo educativo: conselho financeiro personalizado é bloqueado para canal monetizado (README §5.6).
+  tone: "didático, claro e responsável: explica conceitos e histórias de empresas com exemplos práticos e números arredondados; conteúdo educativo, sem promessa de ganho e sem recomendar investimento específico"
+  structure: [hook, problema, conceito, como_funciona, exemplo_pratico, erros_comuns, resumo, cta]
+  hook_max_s: 12
+  fact_check: true
+  cta: "Conteúdo educativo, não é recomendação de investimento. Inscreva-se para entender o dinheiro sem complicação."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Kore
+  style_prompt: "Narre com segurança e clareza, tom de professora que simplifica o assunto, ritmo médio e firme."
+  speed: 1.02
+  gap_s: 0.35
+
+art:
+  bible: "ilustração editorial moderna em 3D suave, escritórios, cidades, lojas, moedas, cofrinhos e gráficos abstratos sem números, paleta azul-marinho, verde e branco, luz de estúdio clara, fundo limpo"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "marcas reais", "cédulas de dinheiro reais"]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.0, max: 5.0 }
+  camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 1, pan_right: 1, drift: 2, static: 1 }
+  transitions: { cut: 6, zoom_blur: 1, fade_black: 1 }
+  transition_seconds: 0.35
+  effects:
+    - { type: grade, preset: clean-cool, amount: 0.35 }
+    - { type: vignette, amount: 0.1 }
+  captions:
+    style: line
+    font: "IBM Plex Sans"
+    weight: 600
+    size: 46
+    color: "#FFFFFF"
+    highlight: "#34D399"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: Oswald
+    color: "#FFFFFF"
+    accent: "#34D399"
+    background: "#0F2744"
+    animation: slide
+  progress_bar: false
+  zoom_strength: 0.08
+
+audio:
+  music: { source: procedural, mood: corporate, volume_db: -25, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -15 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: Oswald, accent: "#34D399" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

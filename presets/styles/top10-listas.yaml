@@ -33,7 +33,7 @@ voice:
   gap_s: 0.3
 
 art:
-  bible: "ilustração digital cinematográfica, cores saturadas sobre fundo escuro, iluminação de cena dramática, composição centralizada"
+  bible: "ilustração digital vibrante e detalhada, cores saturadas e luz clara, um sujeito em destaque com composição centralizada, cenário que muda a cada item"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
   image_chain: [codex_cli]
 
@@ -43,9 +43,9 @@ edit:
   transitions: { cut: 5, flash: 2, zoom_blur: 2 }
   transition_seconds: 0.35
   effects:
-    - { type: grade, preset: bleach-bypass, amount: 0.5 }
-    - { type: vignette, amount: 0.4 }
-    - { type: grain, amount: 0.2 }
+    - { type: grade, preset: vivid, amount: 0.35 }
+    - { type: vignette, amount: 0.2 }
+    - { type: grain, amount: 0.1 }
   captions:
     style: karaoke
     font: Montserrat
@@ -61,13 +61,13 @@ edit:
     font: "Bebas Neue"
     color: "#FFFFFF"
     accent: "#00E5FF"
-    background: "#05070D"
+    background: "#13203A"
     animation: pop
   progress_bar: false
   zoom_strength: 0.12
 
 audio:
-  music: { source: procedural, mood: pulse, volume_db: -23, ducking: true }
+  music: { source: procedural, mood: upbeat, volume_db: -25, ducking: true }
   sfx: { auto: true, pack: basic, volume_db: -11 }
   loudness_lufs: -14
 

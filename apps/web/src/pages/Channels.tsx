@@ -538,10 +538,10 @@ export const ChannelsPage: React.FC = () => {
           }
         >
           <Field label="Nome" error={tried && nameMissing ? 'Dê um nome ao canal.' : undefined}>
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ex.: Mistérios do Mundo" />
+            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ex.: Curiosidades do Mundo" />
           </Field>
           <Field label="Nicho">
-            <Input value={form.niche} onChange={(e) => setForm({ ...form, niche: e.target.value })} placeholder="ex.: mistérios históricos" />
+            <Input value={form.niche} onChange={(e) => setForm({ ...form, niche: e.target.value })} placeholder="ex.: ciência do dia a dia, finanças pessoais, história" />
           </Field>
           <Field label="Persona do narrador" hint="Vai para o Claude junto com cada pedido de roteiro deste canal.">
             <Textarea rows={3} value={form.persona} onChange={(e) => setForm({ ...form, persona: e.target.value })} placeholder="ex.: narrador sóbrio, curioso, que sempre cita fontes" />

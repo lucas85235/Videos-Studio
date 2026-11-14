@@ -2,7 +2,7 @@
 
 *Seu canal aparece. Seu rosto, não.* (antes chamado Videos Studio; marca e sistema visual em [docs/MARCA.md](docs/MARCA.md))
 
-> Plataforma de **uso próprio** para **criar, editar por IA, publicar e gerenciar** vídeos "dark" (canais sem rosto) para **YouTube, Instagram Reels e TikTok**, em **formato longo (16:9)** e **Shorts/Reels (9:16)**, **multi-idioma**.
+> Plataforma de **uso próprio** para **criar, editar por IA, publicar e gerenciar** vídeos de canais "dark" (sem rosto, de qualquer nicho) para **YouTube, Instagram Reels e TikTok**, em **formato longo (16:9)** e **Shorts/Reels (9:16)**, **multi-idioma**.
 
 **Status:** v0.1 funcionando (roteiro, storyboard, prévia, render, edição por instrução, publicação no YouTube, agenda por canal) · **Última revisão:** 14/11/2026 · [Guia de uso](docs/USO.md) · [Estado atual](#140-estado-atual-14112026) · [Backlog](docs/BACKLOG.md)
 
@@ -50,7 +50,7 @@ Ideia → Roteiro → Voz → Cenas/visuais → Montagem automática → (ajuste
 
 Princípios:
 
-- **Edição automática, ajuste por conversa**: o vídeo sai montado. Para mudar algo, você dá uma instrução ("deixa a cena 5 mais sombria", "refaz o parágrafo 2 com mais tensão") e **só as partes afetadas são regeneradas** (§6).
+- **Edição automática, ajuste por conversa**: o vídeo sai montado. Para mudar algo, você dá uma instrução ("deixa a cena 5 mais clara", "refaz o parágrafo 2 com um exemplo do dia a dia") e **só as partes afetadas são regeneradas** (§6).
 - **Tudo configurável por estilo**: formato, duração, roteiro, voz, visual, edição, música, legendas e thumbnail ficam num **preset reutilizável** (§5).
 - **Multi-idioma de verdade**: um projeto gera versões em vários idiomas, como vídeos separados ou como **várias faixas de áudio no mesmo vídeo** do YouTube (§7).
 - **Cadeia de provedores com fallback**: cada etapa tem uma ordem configurável (ex.: imagens: Codex do seu plano → API barata → local). Quando um provedor esgota a cota ou falha, o próximo assume sozinho (§8).
@@ -359,15 +359,32 @@ publish:
 
 ### 5.7 Presets de nicho (ponto de partida; você escolhe depois)
 
-| Preset | Formato | Famílias | Arte | Edição |
-|---|---|---|---|---|
-| Documentário sombrio / história | Longo 10–20 min | 1 + 2 | pintura a óleo, gravura, foto antiga | Ken Burns lento, grão, vinheta, cartões de capítulo |
-| Mistérios / curiosidades | Short 40–59 s | 1 + 7 | pintura sombria | cortes a cada 1,5–2,5 s, punch zoom, karaokê, glitch nas viradas |
-| Terror / analog horror | Longo e Short | 7 + 1 | foto noturna granulada, liminal | VHS, estática, sinal de TV, sussurros, várias vozes |
-| True crime | Longo 15–30 min | 2 + 1 | noir, documentos | zoom em documentos, quadro de evidências, linha do tempo |
-| Top 10 / listas | Longo 8–12 min | 2 + 1 | variada | contador animado, título por seção |
-| Motivacional / estoico | Short | 1 + 2 | pinturas clássicas, mármore | tipografia cinética, letreiro grande |
-| Explicador de dados | Longo | 3 + 2 | vetor flat | gráficos, mapas, comparação de tamanho (v1.5) |
+"Dark" aqui quer dizer **canal sem rosto**, de qualquer nicho, e não estética sombria. Por isso a maioria dos presets é clara e neutra; mistério, terror e true crime são só alguns nichos entre vários. Os presets ficam em `presets/styles/*.yaml` e aparecem nesta ordem no app. O primeiro, **Curiosidades e Explicativo (Short)**, é o estilo sugerido ao criar um projeto (`DEFAULT_STYLE_ID`); um canal com estilo padrão próprio usa o dele.
+
+| Preset (id) | Formato | Famílias | Arte | Edição | Trilha |
+|---|---|---|---|---|---|
+| Curiosidades e Explicativo, Short (`curiosidades-short`) | Short 35–59 s | 2 + 1 | ilustração digital colorida e limpa | cortes de 1,8–3 s, punch zoom, karaokê, cores vivas | curioso / divertido |
+| Tecnologia e IA, Short (`tecnologia-ia`) | Short 35–59 s | 2 + 1 | 3D limpo, azul e ciano, fundo claro | cortes rápidos, zoom com desfoque, glitch leve, cor fria e limpa | animado |
+| Estoico / Motivacional, Short (`estoico-short`) | Short 30–59 s | 2 + 1 | pinturas clássicas, mármore, luz dourada do amanhecer | tipografia cinética, letreiro grande, cor quente suave | épico |
+| Mistérios Sombrios, Short (`misterios-short`) | Short 40–59 s | 1 + 7 | pintura sombria | cortes a cada 1,6–2,6 s, punch zoom, karaokê, glitch nas viradas | tensão |
+| Terror Analógico, VHS (`terror-analog`) | Short 40–90 s | 7 + 1 | foto noturna granulada, liminal | VHS, estática, sinal de TV, narração sussurrada | terror |
+| Curiosidades e Explicativo, longo (`curiosidades-longo`) | Longo 7–15 min | 2 + 1 | ilustração editorial de revista de ciência | capítulos com cartões, ritmo médio, cores vivas | neutro |
+| Explicador com Arte Vetorial (`explicador-vetorial`) | Longo 6–15 min | 2 + 1 | vetor flat claro, paleta pastel | deriva suave, sem grão nem vinheta, cartões de dados (gráficos e mapas animados: v1.5) | neutro |
+| História Documental (`historia-documental`) | Longo 9–20 min | 1 + 2 | pintura histórica luminosa, luz do dia | Ken Burns lento, cartões de capítulo, cor quente suave | neutro |
+| Biografias (`biografias`) | Longo 8–20 min | 1 + 2 | pintura editorial, pessoa real de costas ou em silhueta | linha do tempo por fases, cartões de capítulo | inspirador |
+| Finanças e Negócios (`financas-negocios`) | Longo 7–15 min | 2 + 1 | editorial 3D suave, azul-marinho e verde | cartões de dados, cor fria e limpa; tom educativo, sem recomendar investimento | corporativo leve |
+| Histórias Narradas, contos e relatos (`historias-narradas`) | Longo 5–20 min | 1 + 2 | livro ilustrado, cores quentes | Ken Burns, fades, narração calorosa; ficção sempre identificada como ficção | calmo |
+| Top 10 / Listas (`top10-listas`) | Longo 7–15 min | 2 + 1 | ilustração vibrante e clara | contador animado, cartões de número, cores vivas | animado |
+| Documentário Sombrio (`documentario-sombrio`) | Longo 8–20 min | 1 + 2 | pintura a óleo, gravura, sépia | Ken Burns lento, grão, vinheta, película | sombrio (drone) |
+| True Crime, documentos (`true-crime`) | Longo 10–30 min | 2 + 1 | noir, documentos | zoom em documentos, linha do tempo, tom sóbrio | mistério |
+
+**Climas da trilha procedural** (`audio.music.mood`; o texto é reduzido a um destes por palavras-chave, e texto sem clima reconhecido vira *neutro*):
+
+| Leves | Sombrios |
+|---|---|
+| `neutral` neutro (padrão), `upbeat` animado, `inspiring` inspirador, `lofi` lo-fi, `corporate` corporativo leve, `playful` curioso / divertido, `calm` calmo, `epic` épico, `pulse` pulso | `mystery` mistério, `tension` tensão, `horror` terror, `drone` sombrio (drone) |
+
+Os climas leves têm acordes, baixo e bateria simples; o andamento, a progressão de acordes e a tônica variam pela semente de cada vídeo. As gradações de cor claras (`vivid` cores vivas, `warm-soft` quente suave, `clean-cool` fria e limpa) acompanham esses presets; as sombrias continuam disponíveis.
 
 ## 6. Edição incremental por instruções de IA
 
@@ -840,7 +857,7 @@ Videos-Studio/
 │  └─ tests/                      # pytest (VS_TEST_RENDER=1 renderiza de verdade)
 ├─ renderer/                      # Node + Remotion 4.0.543: composição Timeline + servidor de render
 ├─ apps/web/                      # Vite + React: interface
-├─ presets/styles/                # 6 presets das famílias da v1
+├─ presets/styles/                # 14 presets de nicho (§5.7)
 ├─ assets/fonts/                  # fontes OFL/Apache com licenças
 ├─ assets/textures/               # texturas de grão pré-geradas
 ├─ scripts/                       # setup.ps1, start.ps1, iniciar.cmd

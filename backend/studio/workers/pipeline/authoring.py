@@ -63,7 +63,8 @@ def _llm(task: str, system: str, prompt: str, schema: dict[str, Any], context: d
     return result, provider.info.id
 
 
-SCRIPT_SYSTEM = """Você é roteirista de canais "dark" (sem rosto) do YouTube, TikTok e Reels.
+SCRIPT_SYSTEM = """Você é roteirista de canais sem rosto ("dark") do YouTube, TikTok e Reels, de qualquer nicho: curiosidades,
+história, finanças, tecnologia, biografias, histórias narradas, listas, mistério e outros. Siga o tom pedido pelo estilo.
 Escreva narrações originais, envolventes e fáceis de ouvir: frases curtas, ritmo de fala, nada de markdown,
 emojis, listas ou indicações de cena. Cada segmento é um bloco de narração contínua.
 Regras de qualidade: conteúdo original, com ângulo próprio e informação real; nunca invente fatos apresentados como

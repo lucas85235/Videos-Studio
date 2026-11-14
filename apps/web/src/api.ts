@@ -87,14 +87,21 @@ export type BuildResult = {
 export type LibraryTrack = { path: string; name: string; mood: string; size: number };
 export type LibraryMusic = { dir: string; tracks: LibraryTrack[]; counts: Record<string, number>; moods: string[] };
 
+/** Rótulo de cada clima da trilha (as chaves de `MOODS` em backend/studio/media/audio.py). */
 export const MOOD_LABELS: Record<string, string> = {
-  drone: 'ambiente / drone',
-  tension: 'tensão',
-  horror: 'terror',
-  mystery: 'mistério',
+  neutral: 'neutro (ambiente leve)',
+  upbeat: 'animado',
+  inspiring: 'inspirador',
+  lofi: 'lo-fi',
+  corporate: 'corporativo leve',
+  playful: 'curioso / divertido',
+  calm: 'calmo',
   epic: 'épico',
   pulse: 'pulso',
-  calm: 'calmo',
+  mystery: 'mistério',
+  tension: 'tensão',
+  horror: 'terror',
+  drone: 'sombrio (drone)',
 };
 
 export type Job = {
@@ -186,6 +193,9 @@ export type VoiceOption = { id: string; label: string; gender: string | null; to
 export type VoiceProvider = { id: string; name: string; available: boolean; reason: string; preview_only: boolean; voices: VoiceOption[] };
 export type VoiceCatalog = { lang: string; sample_text: string; providers: VoiceProvider[] };
 export type VoiceChoice = { provider: string; voice: string };
+
+/** Estilo sugerido ao criar um projeto e base do "criar por descrição" (o mesmo `DEFAULT_STYLE_ID` de backend/studio/core/styles/library.py). */
+export const DEFAULT_STYLE_ID = 'curiosidades-short';
 
 export type StyleItem ={ source: 'preset' | 'user'; version: number; style: StyleSpec; warnings: string[]; parent_id?: string | null };
 
