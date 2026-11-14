@@ -90,11 +90,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="fonte não encontrada")
         return FileResponse(full)
 
+    textures_root = (REPO_ROOT / "assets" / "textures").resolve()
+
+    @app.get("/textures/{name}")
+    def textures(name: str) -> FileResponse:
+        full = (textures_root / name).resolve()
+        if not full.is_relative_to(textures_root) or not full.is_file():
+            raise HTTPException(status_code=404, detail="textura não encontrada")
+        return FileResponse(full, headers={"Cache-Control": "public, max-age=86400"})
+
     web_dist = settings.web_dist_dir
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str):
-        if full_path.startswith(("api/", "files/", "fonts/")):
+        if full_path.startswith(("api/", "files/", "fonts/", "textures/")):
             raise HTTPException(status_code=404)
         candidate = (web_dist / full_path).resolve() if full_path else None
         if candidate and candidate.is_file() and candidate.is_relative_to(web_dist.resolve()):

@@ -248,7 +248,7 @@ def upload_captions(video_id: str, srt: Path, language: str, http: httpx.Client)
     body = (
         f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n"
         f"--{boundary}\r\nContent-Type: application/x-subrip\r\n\r\n"
-    ).encode("utf-8") + srt.read_bytes() + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    ).encode() + srt.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
     resp = http.post(
         f"{UPLOAD_API}/captions",
         params={"uploadType": "multipart", "part": "snippet"},

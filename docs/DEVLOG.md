@@ -31,6 +31,8 @@ Registro do que foi feito em cada marco, para manter o histórico e poder retoma
 - **M9**: publicação nativa no YouTube (OAuth PKCE, upload resumível, agendamento, thumbnail, legendas, rótulo de IA), testada com API simulada.
 - **Bug encontrado e corrigido**: a voz do Windows relata tempos de palavra além do fim do áudio; algumas cenas começavam depois do segmento seguinte e o vídeo final saía deslocado (0,8 s de preto em 60 s no demo). Timeline agora normaliza tempos e garante cenas contínuas; legendas montadas por cena. Testes de regressão adicionados.
 - **M10**: README atualizado (estado atual, stack real, estrutura), docs/USO.md e backlog.
+- **Controle de qualidade da narração**: com o Whisper local instalado, cada trecho narrado é transcrito e comparado ao roteiro (taxa de erro de palavras); provedores não determinísticos tentam de novo e fica a melhor tomada. A transcrição é reaproveitada no alinhamento.
+- **Desempenho do render**: o grão agora usa 4 texturas de ruído pré-geradas (`assets/textures`) com deslocamento aleatório por quadro, no lugar de ruído SVG calculado a cada quadro. Teste de fumaça (150 quadros 1080×1920 com 7 efeitos): render quente de 15,8 s para 12,0 s (−24%). Intensidade calibrada em cinza médio: desvio ≈ 2 + 12 × amount (0,35 → ~6,8/255), média neutra; o grão antigo dava ~3/255 e clareava a imagem. As texturas entram na versão do renderer (mudou textura, os blocos são refeitos).
 
 ## Como retomar
 

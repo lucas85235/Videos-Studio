@@ -8,7 +8,7 @@ import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './Te
 import { TransitionIn } from './TransitionIn';
 import { VisualLayer } from './VisualLayer';
 
-type Props = { scene: TimelineScene; style: RenderStyle; assetBaseUrl: string | null | undefined };
+type Props = { scene: TimelineScene; style: RenderStyle; assetBaseUrl: string | null | undefined; staticBase?: string | null };
 
 export const assetUrl = (src: string | null, base: string | null | undefined) => {
   if (!src) return null;
@@ -18,7 +18,7 @@ export const assetUrl = (src: string | null, base: string | null | undefined) =>
 };
 
 /** Uma cena: imagem com câmera + texturas + cartões de texto + legendas + transição de entrada. */
-export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl }) => {
+export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticBase }) => {
   const url = assetUrl(scene.src, assetBaseUrl);
   const cards = style.textCards;
   const kind = scene.kind;
@@ -38,7 +38,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl }) => {
           dim={kind === 'title' || kind === 'count' || kind === 'quote' ? 0.55 : kind === 'text' ? 0.7 : 0}
         />
       )}
-      <EffectsLayer effects={style.effects} look={scene.look} seed={scene.seed} />
+      <EffectsLayer effects={style.effects} look={scene.look} seed={scene.seed} staticBase={staticBase} />
       {kind === 'title' ? <TitleCard scene={scene} style={cards} /> : null}
       {kind === 'count' ? <CountCard scene={scene} style={cards} /> : null}
       {kind === 'quote' ? <QuoteCard scene={scene} style={cards} /> : null}

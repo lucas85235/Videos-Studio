@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
 from typing import Any
 
 from studio.config import get_settings

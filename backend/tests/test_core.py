@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from studio.core.hashing import hash_obj, seed_from
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc, Scene, Segment, Visual
 from studio.core.project.ops import OpError, apply_ops, parse_ops
-from studio.core.styles.library import deep_merge, get_style, load_presets, pick_weighted, save_user_style, set_path
+from studio.core.styles.library import (
+    deep_merge,
+    get_style,
+    load_presets,
+    pick_weighted,
+    save_user_style,
+    set_path,
+)
 from studio.core.styles.schema import StyleSpec, policy_warnings
 from studio.core.text import split_word_indices, word_count
 
@@ -36,7 +44,7 @@ def test_style_overrides_and_validation():
     style = get_style("misterios-short", {"edit": {"captions": {"size": 100}}})
     assert style.edit.captions.size == 100
     assert style.edit.camera == base.edit.camera
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         StyleSpec.model_validate(deep_merge(base.model_dump(mode="json"), {"edit": {"camera": {"voar": 1}}}))
     assert set_path({}, "a.b.c", 1) == {"a": {"b": {"c": 1}}}
 

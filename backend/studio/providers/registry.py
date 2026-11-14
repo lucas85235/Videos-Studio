@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, TypeVar
+from typing import Any
 
 from studio.config import get_settings
 from studio.db import session_scope
@@ -42,7 +42,6 @@ from studio.providers.tts import (
 
 log = logging.getLogger(__name__)
 
-T = TypeVar("T")
 
 _PROVIDERS: dict[str, Provider] = {}
 _usage_lock = threading.Lock()
@@ -176,7 +175,7 @@ class ChainFailed(ProviderError):
         super().__init__(f"nenhum provedor de {kind} funcionou: {summary}")
 
 
-def run_chain(
+def run_chain[T](
     kind: str,
     chain: list[str],
     call: Callable[[Provider], T],

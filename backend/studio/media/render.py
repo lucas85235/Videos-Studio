@@ -27,14 +27,16 @@ class RenderError(RuntimeError):
 
 @lru_cache(maxsize=1)
 def renderer_version() -> str:
-    """Versão do renderer = hash do código das composições (mudou o código, os blocos são refeitos)."""
+    """Versão do renderer = hash do código das composições e das texturas (mudou, os blocos são refeitos)."""
     renderer = get_settings().renderer_dir
+    textures = REPO_ROOT / "assets" / "textures"
     parts = {
         "src": hash_tree(renderer / "src"),
         "package": (renderer / "package.json").read_text(encoding="utf-8") if (renderer / "package.json").exists() else "",
         "fonts": (REPO_ROOT / "assets" / "fonts" / "fonts.json").read_text(encoding="utf-8")
         if (REPO_ROOT / "assets" / "fonts" / "fonts.json").exists()
         else "",
+        "textures": hash_tree(textures) if textures.is_dir() else "",
     }
     return hash_obj(parts)[:16]
 

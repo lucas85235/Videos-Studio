@@ -1,12 +1,15 @@
 import React from 'react';
-import { AbsoluteFill, interpolate, random, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Img, interpolate, random, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 import { activeGrade } from '../look';
 import type { EffectSpec, SceneLook } from '../types';
 
-type Props = { effects: EffectSpec[]; look: SceneLook; seed: number };
+type Props = { effects: EffectSpec[]; look: SceneLook; seed: number; staticBase?: string | null };
+
+const grainTexture = (index: number, base: string | null | undefined) =>
+  base ? `${base.replace(/\/$/, '')}/textures/grain-${index}.png` : staticFile(`textures/grain-${index}.png`);
 
 /** Camadas de textura sobre a imagem: grão, vinheta, scanlines, VHS, poeira, arranhões, vazamento de luz etc. */
-export const EffectsLayer: React.FC<Props> = ({ effects, look, seed }) => {
+export const EffectsLayer: React.FC<Props> = ({ effects, look, seed, staticBase }) => {
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
   const layers: React.ReactNode[] = [];
@@ -21,16 +24,24 @@ export const EffectsLayer: React.FC<Props> = ({ effects, look, seed }) => {
     const key = `${effect.type}-${index}`;
     switch (effect.type) {
       case 'grain': {
-        const id = `grain-${seed}-${index}`;
+        // Texturas de ruído pré-geradas (assets/textures): bem mais leve que ruído SVG calculado a cada quadro.
+        const url = grainTexture(frame % 4, staticBase);
+        const tile = Math.max(128, Math.round(256 * (width / 1080)));
+        const ox = Math.floor(random(`${seed}-gx-${frame}`) * tile);
+        const oy = Math.floor(random(`${seed}-gy-${frame}`) * tile);
         layers.push(
-          <AbsoluteFill key={key} style={{ mixBlendMode: 'overlay', opacity: 0.18 + 0.4 * a }}>
-            <svg width={width} height={height} style={{ position: 'absolute', inset: 0 }}>
-              <filter id={id}>
-                <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves={2} seed={(frame % 97) + (seed % 13)} stitchTiles="stitch" />
-                <feColorMatrix type="saturate" values="0" />
-              </filter>
-              <rect width="100%" height="100%" filter={`url(#${id})`} />
-            </svg>
+          <AbsoluteFill
+            key={key}
+            style={{
+              backgroundImage: `url(${url})`,
+              backgroundSize: `${tile}px ${tile}px`,
+              backgroundPosition: `${ox}px ${oy}px`,
+              mixBlendMode: 'overlay',
+              // Calibrado em cinza médio: desvio ≈ 2 + 12·amount (0,35 → ~6/255), média neutra.
+              opacity: 0.05 + 0.28 * a,
+            }}
+          >
+            <Img src={url} style={{ display: 'none' }} />
           </AbsoluteFill>,
         );
         break;

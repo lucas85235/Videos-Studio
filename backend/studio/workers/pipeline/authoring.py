@@ -7,12 +7,17 @@ from typing import Any
 
 from studio.core.hashing import seed_from
 from studio.core.project.document import Metadata, ProjectDoc, Scene, Segment, Source, Visual
-from studio.core.styles.schema import StyleSpec, Structure
+from studio.core.styles.schema import Structure, StyleSpec
 from studio.core.text import estimate_seconds, split_balanced
 from studio.core.text import words as split_words
 from studio.providers import registry
 from studio.providers.base import LLMResult
-from studio.workers.pipeline.schemas import METADATA_SCHEMA, SCRIPT_SCHEMA, STORYBOARD_SCHEMA, TRANSLATE_SCHEMA
+from studio.workers.pipeline.schemas import (
+    METADATA_SCHEMA,
+    SCRIPT_SCHEMA,
+    STORYBOARD_SCHEMA,
+    TRANSLATE_SCHEMA,
+)
 
 log = logging.getLogger(__name__)
 

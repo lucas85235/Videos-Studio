@@ -24,7 +24,7 @@ export const VideoTimeline: React.FC<TimelineProps> = (props) => {
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
       {props.scenes.map((scene) => (
         <Sequence key={scene.id} from={scene.from} durationInFrames={scene.durationInFrames} layout="none">
-          <SceneView scene={scene} style={style} assetBaseUrl={props.assetBaseUrl} />
+          <SceneView scene={scene} style={style} assetBaseUrl={props.assetBaseUrl} staticBase={props.fontBaseUrl} />
         </Sequence>
       ))}
       {!props.isChunk && style.progressBar ? <ProgressBar color={style.progressColor} /> : null}

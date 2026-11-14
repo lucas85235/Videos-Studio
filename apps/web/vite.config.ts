@@ -14,6 +14,7 @@ export default defineConfig({
       '/api': { target: backend, changeOrigin: false },
       '/files': { target: backend, changeOrigin: false },
       '/fonts': { target: backend, changeOrigin: false },
+      '/textures': { target: backend, changeOrigin: false },
     },
   },
   build: {

@@ -18,7 +18,7 @@ from studio.core.styles.library import (
     load_presets,
     save_user_style,
 )
-from studio.core.styles.schema import FAMILY_LABELS, FAMILIES_V1, StyleSpec, policy_warnings
+from studio.core.styles.schema import FAMILIES_V1, FAMILY_LABELS, StyleSpec, policy_warnings
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.models import Channel, CostEntry, ProviderUsage
