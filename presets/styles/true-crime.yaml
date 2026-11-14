@@ -1,0 +1,79 @@
+id: true-crime
+name: "True Crime (documentos)"
+description: "Casos reais em 16:9: zoom em documentos, quadro de evidências, linha do tempo e tom noir."
+family: motion_graphics
+families_mix: [motion_graphics, still_cinema]
+structure: timeline
+tags: [true-crime, investigacao, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 900, min_s: 600, max_s: 1800 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "jornalístico e sóbrio, cronológico, fatos com fontes, respeito às vítimas, sem sensacionalismo"
+  structure: [hook, contexto, linha_do_tempo, investigacao, reviravolta, desfecho, reflexao, cta]
+  hook_max_s: 20
+  fact_check: true
+  cta: "Fontes na descrição. Inscreva-se para mais casos."
+
+voice:
+  chain: [gemini_tts, google_chirp3hd, qwen3_tts_local]
+  voice: Charon
+  style_prompt: "Narre como um repórter investigativo: sóbrio, firme, ritmo médio, sem dramatizar demais."
+  speed: 1.0
+  gap_s: 0.4
+
+art:
+  bible: "estética noir de arquivo policial, fotografias antigas em preto e branco, papel envelhecido, mesa de investigação, luz de luminária, sem rostos identificáveis"
+  banned: ["texto", "letras", "logotipos", "marca d'água", "rostos de pessoas reais", "violência explícita"]
+  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+
+edit:
+  shot_seconds: { min: 3.5, max: 6.0 }
+  camera: { ken_burns_in: 3, pan_left: 2, pan_right: 2, pan_down: 1, drift: 1 }
+  transitions: { cut: 6, fade_black: 1, flash: 1 }
+  transition_seconds: 0.4
+  effects:
+    - { type: grade, preset: noir, amount: 0.7 }
+    - { type: grain, amount: 0.3 }
+    - { type: vignette, amount: 0.5 }
+  captions:
+    style: line
+    font: "IBM Plex Sans"
+    weight: 600
+    size: 44
+    color: "#FFFFFF"
+    highlight: "#E53935"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: "Special Elite"
+    color: "#1A1A1A"
+    accent: "#B71C1C"
+    background: "#E9E2D0"
+    animation: typewriter
+  progress_bar: false
+  zoom_strength: 0.08
+
+audio:
+  music: { source: procedural, mood: mystery, volume_db: -25, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -14 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, accent: "#E53935" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

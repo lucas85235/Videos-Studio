@@ -1,0 +1,79 @@
+id: top10-listas
+name: "Top 10 / Listas"
+description: "Rankings em 16:9 com contador animado, cartões de número e ritmo médio."
+family: motion_graphics
+families_mix: [motion_graphics, still_cinema]
+structure: top10
+tags: [ranking, listas, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 600, min_s: 420, max_s: 900 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "dinâmico, curioso, cada item com um fato surpreendente, contagem regressiva até o número 1"
+  structure: [hook, item_10, item_9, item_8, item_7, item_6, item_5, item_4, item_3, item_2, item_1, cta]
+  hook_max_s: 12
+  fact_check: true
+  cta: "Qual desses te surpreendeu mais? Comente e inscreva-se."
+
+voice:
+  chain: [gemini_tts, google_chirp3hd, qwen3_tts_local]
+  voice: Puck
+  style_prompt: "Narre com energia e curiosidade, ritmo ágil, ênfase nos números."
+  speed: 1.03
+  gap_s: 0.3
+
+art:
+  bible: "ilustração digital cinematográfica, cores saturadas sobre fundo escuro, iluminação de cena dramática, composição centralizada"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
+  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+
+edit:
+  shot_seconds: { min: 3.0, max: 5.0 }
+  camera: { ken_burns_in: 3, ken_burns_out: 2, punch_zoom: 2, pan_left: 1, pan_right: 1 }
+  transitions: { cut: 5, flash: 2, zoom_blur: 2 }
+  transition_seconds: 0.35
+  effects:
+    - { type: grade, preset: bleach-bypass, amount: 0.5 }
+    - { type: vignette, amount: 0.4 }
+    - { type: grain, amount: 0.2 }
+  captions:
+    style: karaoke
+    font: Montserrat
+    weight: 800
+    size: 52
+    color: "#FFFFFF"
+    highlight: "#00E5FF"
+    stroke: 5
+    position: bottom
+    max_words_per_line: 6
+    uppercase: false
+  text_cards:
+    font: "Bebas Neue"
+    color: "#FFFFFF"
+    accent: "#00E5FF"
+    background: "#05070D"
+    animation: pop
+  progress_bar: false
+  zoom_strength: 0.12
+
+audio:
+  music: { source: procedural, mood: pulse, volume_db: -23, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -11 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-centro, variations: 3, per_language: true, accent: "#00E5FF" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

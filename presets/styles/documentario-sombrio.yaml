@@ -1,0 +1,80 @@
+id: documentario-sombrio
+name: "Documentário Sombrio (longo)"
+description: "História e mistérios em 16:9: Ken Burns lento, grão de filme, cartões de capítulo e trilha ambiente."
+family: still_cinema
+families_mix: [still_cinema, motion_graphics]
+structure: none
+tags: [historia, documentario, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 720, min_s: 480, max_s: 1200 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "narrativa documental, calma e envolvente, com fatos verificáveis e ganchos a cada capítulo"
+  structure: [hook, contexto, capitulo_1, capitulo_2, capitulo_3, revelacao, conclusao, cta]
+  hook_max_s: 15
+  fact_check: true
+  cta: "Se você gosta de histórias assim, inscreva-se para o próximo capítulo."
+
+voice:
+  chain: [gemini_tts, google_chirp3hd, qwen3_tts_local]
+  voice: Charon
+  style_prompt: "Narre como um documentário: voz grave, calma, pausas dramáticas, ritmo lento."
+  speed: 0.97
+  gap_s: 0.45
+
+art:
+  bible: "pintura a óleo histórica e sombria, estilo de gravura antiga colorizada, paleta sépia, ocre e preto, luz lateral dramática"
+  banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo moderno"]
+  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+
+edit:
+  shot_seconds: { min: 4.0, max: 7.0 }
+  camera: { ken_burns_in: 4, ken_burns_out: 3, pan_left: 2, pan_right: 2, pan_up: 1, drift: 2 }
+  transitions: { cut: 5, fade_black: 2, light_leak: 1, film_burn: 1 }
+  transition_seconds: 0.6
+  effects:
+    - { type: grade, preset: warm-sepia, amount: 0.6 }
+    - { type: grain, amount: 0.4 }
+    - { type: vignette, amount: 0.5 }
+    - { type: film_scratches, amount: 0.25 }
+  captions:
+    style: line
+    font: Montserrat
+    weight: 700
+    size: 46
+    color: "#F5F1E8"
+    highlight: "#E8B04A"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: Cinzel
+    color: "#F2E6C8"
+    accent: "#C9A227"
+    background: "#0B0906"
+    animation: fade_up
+  progress_bar: false
+  zoom_strength: 0.09
+
+audio:
+  music: { source: procedural, mood: "dark ambient drone", volume_db: -24, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -14 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: "Bebas Neue", accent: "#E8B04A" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

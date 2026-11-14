@@ -1,0 +1,77 @@
+id: misterios-short
+name: "Mistérios Sombrios: Short"
+description: "Curiosidades e mistérios em 9:16, cortes rápidos, legenda karaokê e glitch nas viradas."
+family: still_cinema
+families_mix: [still_cinema, analog]
+structure: none
+tags: [misterio, curiosidades, shorts]
+
+format:
+  type: short
+  aspect: "9:16"
+  resolution: 1080x1920
+  fps: 30
+  duration: { target_s: 55, min_s: 40, max_s: 59 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "suspense, frases curtas, perguntas que prendem, tom de segredo"
+  structure: [hook_pergunta, contexto, revelacao_1, revelacao_2, revelacao_3, twist, cta_loop]
+  hook_max_s: 3
+  cta: "Siga para descobrir o próximo mistério."
+  banned_phrases: ["neste vídeo", "não esqueça de se inscrever"]
+
+voice:
+  chain: [gemini_tts, google_chirp3hd, qwen3_tts_local]
+  voice: Charon
+  style_prompt: "Narre com voz grave e baixa, ritmo levemente acelerado, tom de suspense e mistério."
+  speed: 1.05
+  gap_s: 0.15
+
+art:
+  bible: "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, luz de vela, contraste dramático, grão de tela"
+  banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo"]
+  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+
+edit:
+  shot_seconds: { min: 1.6, max: 2.6 }
+  camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 1, pan_right: 1, punch_zoom: 2, drift: 1 }
+  transitions: { cut: 6, flash: 2, glitch: 2, zoom_blur: 1 }
+  transition_seconds: 0.3
+  effects:
+    - { type: grade, preset: cold-teal-dark, amount: 0.7 }
+    - { type: grain, amount: 0.35 }
+    - { type: vignette, amount: 0.55 }
+    - { type: dust, amount: 0.25 }
+  captions:
+    style: karaoke
+    font: Montserrat
+    weight: 900
+    size: 84
+    color: "#FFFFFF"
+    highlight: "#FFD400"
+    stroke: 8
+    position: center
+    max_words_per_line: 3
+    uppercase: true
+  progress_bar: true
+  progress_color: "#FFD400"
+  zoom_strength: 0.14
+
+audio:
+  music: { source: procedural, mood: tension, volume_db: -24, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -12 }
+  loudness_lufs: -14
+
+thumbnail: { template: sem-texto, variations: 1, per_language: false }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: public }
+    - { platform: tiktok, driver: buffer }
+    - { platform: instagram, driver: buffer }
+  ai_label: auto

@@ -1,0 +1,83 @@
+id: terror-analog
+name: "Terror Analógico (VHS)"
+description: "Relatos de terror e analog horror: estética VHS, estática, sinal de TV e narração sussurrada."
+family: analog
+families_mix: [analog, still_cinema]
+structure: none
+tags: [terror, analog-horror, vhs]
+
+format:
+  type: short
+  aspect: "9:16"
+  resolution: 1080x1920
+  fps: 30
+  duration: { target_s: 58, min_s: 40, max_s: 90 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "relato em primeira pessoa, inquietante, detalhes sensoriais, final aberto"
+  structure: [hook, relato, escalada, encontro, final_aberto, cta]
+  hook_max_s: 4
+  cta: "Você teria aberto aquela porta?"
+
+voice:
+  chain: [gemini_tts, google_chirp3hd, qwen3_tts_local]
+  voice: Algenib
+  style_prompt: "Sussurre, voz rouca e tensa, como quem conta algo proibido no escuro."
+  speed: 0.95
+  gap_s: 0.35
+
+art:
+  bible: "fotografia noturna granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, cores lavadas, sem pessoas nítidas"
+  banned: ["texto", "letras", "logotipos", "marca d'água", "sangue explícito"]
+  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+
+edit:
+  shot_seconds: { min: 2.2, max: 3.8 }
+  camera: { drift: 3, ken_burns_in: 2, static: 2, pan_right: 1 }
+  transitions: { cut: 4, static_burst: 3, glitch: 2, fade_black: 1 }
+  transition_seconds: 0.4
+  effects:
+    - { type: grade, preset: vhs-faded, amount: 0.8 }
+    - { type: vhs, amount: 0.6 }
+    - { type: scanlines, amount: 0.45 }
+    - { type: chromatic, amount: 0.35 }
+    - { type: grain, amount: 0.5 }
+    - { type: vignette, amount: 0.6 }
+    - { type: flicker, amount: 0.3 }
+  captions:
+    style: word
+    font: "Special Elite"
+    weight: 400
+    size: 70
+    color: "#E8E8E8"
+    highlight: "#FF3B3B"
+    stroke: 5
+    position: bottom
+    max_words_per_line: 4
+    uppercase: true
+  text_cards:
+    font: "VT323"
+    color: "#E8E8E8"
+    accent: "#FF3B3B"
+    background: "#000000"
+    animation: flicker
+  progress_bar: false
+  zoom_strength: 0.06
+
+audio:
+  music: { source: procedural, mood: horror, volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: horror, volume_db: -10 }
+  loudness_lufs: -14
+
+thumbnail: { template: sem-texto, variations: 1, per_language: false }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: public }
+    - { platform: tiktok, driver: buffer }
+  ai_label: auto
