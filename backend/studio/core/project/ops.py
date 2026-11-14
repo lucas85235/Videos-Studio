@@ -134,6 +134,7 @@ class SetMusic(_Op):
     mood: str | None = None
     volume_db: float | None = None
     enabled: bool | None = None
+    track: str | None = None  # "" solta a faixa fixada
 
 
 class SetLock(_Op):
@@ -340,6 +341,8 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
                 cue.volume_db = op.volume_db
             if op.enabled is not None:
                 cue.enabled = op.enabled
+            if op.track is not None:
+                cue.track = op.track or None
         case SetLock():
             for target in op.ids:
                 if target.startswith("seg"):

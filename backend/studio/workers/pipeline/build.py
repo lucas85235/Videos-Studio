@@ -23,13 +23,14 @@ from typing import Any, Literal
 
 from studio.config import get_settings
 from studio.core.graph.store import ArtifactStore
-from studio.core.hashing import hash_obj, seed_from
+from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc, Scene
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
 from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
 from studio.media import audio as audio_mod
+from studio.media import music_library
 from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
@@ -111,6 +112,7 @@ class Builder:
         self.settings = get_settings()
         self.stats = BuildStats()
         self.warnings: list[str] = []
+        self.music_used: dict[str, Any] | None = None
         self._done = 0
         self._total = 1
         self._progress_lock = threading.Lock()
@@ -334,10 +336,14 @@ class Builder:
             return None
         mood = cue.mood or music_spec.mood
         bucket = float(int(duration // 5 + 1) * 5)
+        volume = cue.volume_db if cue.volume_db is not None else music_spec.volume_db
+        if music_spec.source == "library" or cue.track:
+            found = self._library_music(mood, bucket, cue.track)
+            if found:
+                return found[0], {**found[1], "volume_db": volume}
         inputs = {"mood": audio_mod.mood_key(mood), "duration": bucket, "seed": seed_from(self.doc.seed, "music", mood), "v": 1}
         h = hash_obj(inputs)
         cached = self.store.lookup("music", h)
-        volume = cue.volume_db if cue.volume_db is not None else music_spec.volume_db
         if cached:
             self.stats.hit("music", True)
             return h, {**cached, "volume_db": volume}
@@ -346,6 +352,32 @@ class Builder:
         self.store.save("music", h, output, "procedural")
         self.stats.hit("music", False)
         return h, {**output, "volume_db": volume}
+
+    def _library_music(self, mood: str, bucket: float, pinned: str | None) -> tuple[str, dict[str, Any]] | None:
+        """Trilha da biblioteca do usuário (library/music), ajustada à duração. None = biblioteca vazia."""
+        tracks = music_library.list_tracks()
+        if pinned and not any(t.path == pinned for t in tracks):
+            self.warnings.append(f"A faixa fixada '{pinned}' não está mais na biblioteca; escolhi outra.")
+        track = music_library.pick_track(tracks, mood, seed_from(self.doc.seed, "music", mood), pinned)
+        src = music_library.resolve(track.path) if track else None
+        if track is None or src is None:
+            self.warnings.append(
+                "A biblioteca de músicas está vazia; usei a trilha procedural. "
+                f"Coloque arquivos de áudio em {music_library.music_root()}."
+            )
+            return None
+        inputs = {"source": "library", "track": hash_file(src), "duration": bucket, "v": 1}
+        h = hash_obj(inputs)
+        cached = self.store.lookup("music", h)
+        if cached:
+            self.stats.hit("music", True)
+            return h, {**cached, "track": track.path}
+        path = music_library.prepare_track(src, bucket, self.store.dir_for("music", h) / "music.wav")
+        output = {"path": self.store.rel(path), "files": [self.store.rel(path)], "mood": track.mood, "source": "library",
+                  "track": track.path}
+        self.store.save("music", h, output, "library")
+        self.stats.hit("music", False)
+        return h, output
 
     def sfx_file(self, kind: str) -> Path:
         h = hash_obj({"sfx": kind, "v": 1})
@@ -359,6 +391,11 @@ class Builder:
     def mix(self, lang: str, timeline: dict[str, Any], tts_hashes: dict[str, str]) -> str:
         total = timeline["duration"]
         music = self.music(total)
+        self.music_used = (
+            {"source": music[1].get("source", "procedural"), "track": music[1].get("track"), "mood": music[1].get("mood")}
+            if music
+            else None
+        )
         sfx_events = timeline.get("sfx", [])
         inputs = {
             "voice": [(tts_hashes[n["segment_id"]], n["start"]) for n in timeline["narration"]],
@@ -601,7 +638,8 @@ class Builder:
             "reused": self.stats.reused,
             "cost_usd": round(self.stats.cost_usd, 4),
             "preview_only_providers": sorted(self.stats.noncommercial),
-            "warnings": self.warnings,
+            "warnings": list(dict.fromkeys(self.warnings)),
+            "music": self.music_used,
         }
 
 

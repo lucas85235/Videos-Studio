@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
-import { api, type Provider } from '../api';
+import { api, type LibraryMusic, MOOD_LABELS, type Provider } from '../api';
 import { Badge, Button, Card, ErrorBox, Input } from '../ui';
 
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
@@ -70,6 +70,40 @@ const ProviderCard: React.FC<{ p: Provider }> = ({ p }) => {
   );
 };
 
+const MusicLibraryCard: React.FC = () => {
+  const library = useQuery({ queryKey: ['library-music'], queryFn: () => api.get<LibraryMusic>('/api/library/music') });
+  const open = useMutation({ mutationFn: () => api.post('/api/library/music/open') });
+  const data = library.data;
+  return (
+    <Card className="mb-6 flex flex-col gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">Biblioteca de músicas</span>
+        <Badge tone={data?.tracks.length ? 'good' : 'neutral'}>{data?.tracks.length ?? 0} faixas</Badge>
+        <div className="ml-auto flex gap-2">
+          <Button className="text-xs" onClick={() => library.refetch()} busy={library.isFetching}>Atualizar</Button>
+          <Button className="text-xs" onClick={() => open.mutate()} busy={open.isPending}>Abrir pasta</Button>
+        </div>
+      </div>
+      <p className="text-xs text-zinc-400">
+        Coloque arquivos de áudio (mp3, wav, m4a, ogg, flac) em <span className="break-all font-mono text-zinc-300">{data?.dir ?? '…'}</span>, de preferência em subpastas
+        pelo clima: <i>terror</i>, <i>misterio</i>, <i>tensao</i>, <i>epico</i>, <i>calmo</i>, <i>pulso</i> (o resto conta como ambiente). Depois escolha
+        <b> Fonte da trilha = biblioteca</b> no estilo. A faixa é repetida ou cortada para caber no vídeo, com fade e volume ajustados.
+      </p>
+      <p className="text-xs text-zinc-500">
+        Fonte grátis: a Biblioteca de áudio do YouTube Studio (filtre por “Atribuição não necessária”). Use só faixas com licença para o seu uso; música de terceiros sem licença gera reivindicação de Content ID.
+      </p>
+      {data?.tracks.length ? (
+        <div className="flex flex-wrap gap-1.5 text-xs">
+          {data.moods.filter((m) => data.counts[m]).map((m) => (
+            <Badge key={m}>{MOOD_LABELS[m] ?? m}: {data.counts[m]}</Badge>
+          ))}
+        </div>
+      ) : null}
+      <ErrorBox error={library.error ?? open.error} />
+    </Card>
+  );
+};
+
 export const SettingsPage: React.FC = () => {
   const providers = useQuery({ queryKey: ['providers'], queryFn: () => api.get<Provider[]>('/api/providers') });
   const status = useQuery({ queryKey: ['status'], queryFn: () => api.get<Status>('/api/status') });
@@ -90,6 +124,7 @@ export const SettingsPage: React.FC = () => {
           <div><div className="text-xs text-zinc-500">Gasto registrado</div>US$ {costs.data?.total_usd.toFixed(3) ?? '0.000'}</div>
         </Card>
       ) : null}
+      <MusicLibraryCard />
       {kinds.map((kind) => (
         <div key={kind} className="mb-6">
           <div className="mb-2 flex items-center gap-2">

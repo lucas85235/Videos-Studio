@@ -258,6 +258,13 @@ export const StyleEditorPage: React.FC = () => {
                 </Field>
                 <Field label="Cor de destaque"><Input type="color" value={style.edit.text_cards.accent} onChange={(e) => set((s) => { s.edit.text_cards.accent = e.target.value; })} /></Field>
                 <Field label="Fundo"><Input type="color" value={style.edit.text_cards.background} onChange={(e) => set((s) => { s.edit.text_cards.background = e.target.value; })} /></Field>
+                <Field label="Fonte da trilha" hint="biblioteca = suas faixas em Configurações">
+                  <Select value={style.audio.music.source} onChange={(e) => set((s) => { s.audio.music.source = e.target.value; })}>
+                    <option value="procedural">procedural (gerada)</option>
+                    <option value="library">biblioteca (suas faixas)</option>
+                    <option value="none">sem música</option>
+                  </Select>
+                </Field>
                 <Field label="Clima da trilha">
                   <Select value={style.audio.music.mood} onChange={(e) => set((s) => { s.audio.music.mood = e.target.value; })}>
                     {MOODS.map((m) => <option key={m}>{m}</option>)}

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type TimelineProps, VideoTimeline } from '@vstudio/renderer';
 import React, { useMemo, useRef, useState } from 'react';
 import { Audio } from 'remotion';
-import { api, type EditProposal, fileUrl, type ProjectDetail } from '../../api';
+import { api, type EditProposal, fileUrl, type LibraryMusic, MOOD_LABELS, type ProjectDetail } from '../../api';
 import { Badge, Button, Card, Empty, ErrorBox, Select, Spinner, Textarea, formatSeconds } from '../../ui';
 import { useStartJob } from '../ProjectPage';
 
@@ -143,6 +143,52 @@ const EditChat: React.FC<{ projectId: string; currentSceneId: () => string | nul
   );
 };
 
+const MusicCard: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ detail, busy }) => {
+  const { doc } = detail;
+  const client = useQueryClient();
+  const library = useQuery({ queryKey: ['library-music'], queryFn: () => api.get<LibraryMusic>('/api/library/music') });
+  const cue = doc.music.find((c) => c.enabled) ?? doc.music[0];
+  const used = detail.outputs.preview?.music;
+  const source = detail.style?.audio.music.source;
+  const pin = useMutation({
+    mutationFn: (track: string) =>
+      api.post(`/api/projects/${doc.id}/ops`, { ops: [{ op: 'set_music', track }], message: track ? `Trilha fixada: ${track}` : 'Trilha automática' }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['project', doc.id] }),
+  });
+  const warnings = detail.outputs.preview?.warnings ?? [];
+  return (
+    <Card className="flex flex-col gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold">Trilha</span>
+        {cue && !cue.enabled ? <Badge>sem música</Badge> : null}
+        {used ? (
+          <Badge tone="info">
+            {used.source === 'library' ? `biblioteca: ${used.track}` : `procedural (${MOOD_LABELS[used.mood ?? ''] ?? used.mood ?? '—'})`}
+          </Badge>
+        ) : null}
+        {source ? <span className="text-zinc-500">fonte do estilo: {source === 'library' ? 'biblioteca' : source === 'none' ? 'nenhuma' : 'procedural'}</span> : null}
+      </div>
+      {library.data?.tracks.length ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-zinc-500">Faixa</span>
+          <Select className="min-w-0 flex-1 text-xs" disabled={busy || pin.isPending} value={cue?.track ?? ''} onChange={(e) => pin.mutate(e.target.value)}>
+            <option value="">{source === 'library' ? 'automática (pelo clima)' : 'automática (procedural, conforme o estilo)'}</option>
+            {library.data.tracks.map((t) => (
+              <option key={t.path} value={t.path}>{t.path} · {MOOD_LABELS[t.mood] ?? t.mood}</option>
+            ))}
+          </Select>
+        </div>
+      ) : (
+        <div className="text-zinc-500">Para usar suas músicas, coloque faixas na biblioteca (Configurações → Biblioteca de músicas).</div>
+      )}
+      {warnings.map((w) => (
+        <div key={w} className="text-amber-300/90">⚠ {w}</div>
+      ))}
+      <ErrorBox error={pin.error} />
+    </Card>
+  );
+};
+
 export const PreviewTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ detail, busy }) => {
   const { doc } = detail;
   const startJob = useStartJob(doc.id);
@@ -221,6 +267,7 @@ export const PreviewTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({
             ))}
           </div>
         ) : null}
+        <MusicCard detail={detail} busy={busy} />
         <ErrorBox error={startJob.error} />
       </div>
       <EditChat projectId={doc.id} currentSceneId={currentSceneId} lang={lang} busy={busy} />

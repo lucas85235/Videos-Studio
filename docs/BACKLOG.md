@@ -36,7 +36,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] **Style Lab**: componentes novos escritos por IA, com portões de teste.
 - [ ] LUTs reais (.cube) e os efeitos nativos do `@remotion/effects`; hoje a gradação é feita com filtros CSS.
 - [ ] Desempenho: a aberração cromática desenha a imagem 3 vezes com a cadeia de filtros (só o preset terror-analog usa); avaliar uma passada única. O grão já usa texturas pré-geradas.
-- [ ] Trilhas da biblioteca do usuário (`audio.music.source: library`) e várias faixas de música por vídeo (hoje vale a primeira faixa ativa).
+- [ ] Várias faixas de música por vídeo, trocando por segmento (hoje vale a primeira faixa ativa; a biblioteca do usuário já funciona).
+- [ ] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal.
 - [ ] Imagens de referência/âncoras para consistência de personagens.
 - [ ] Verificador de novidade (impressões digitais visuais dos últimos vídeos).
 

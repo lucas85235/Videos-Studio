@@ -281,3 +281,33 @@ def status() -> dict[str, Any]:
         "providers_available": {kind: [p["id"] for p in provs if p["kind"] == kind and p["available"]]
                                 for kind in ("llm", "tts", "image", "align")},
     }
+
+
+# --------------------------------------------------------------------------------------------
+# Biblioteca de músicas do usuário
+# --------------------------------------------------------------------------------------------
+
+
+@router.get("/library/music")
+def library_music() -> dict[str, Any]:
+    from studio.media import audio, music_library
+
+    tracks = music_library.list_tracks()
+    counts = {mood: sum(1 for t in tracks if t.mood == mood) for mood in audio.MOODS}
+    return {"dir": str(music_library.music_root()), "tracks": [t.to_dict() for t in tracks], "counts": counts,
+            "moods": list(audio.MOODS)}
+
+
+@router.post("/library/music/open")
+def open_library_music() -> dict[str, Any]:
+    """Abre a pasta de músicas no Explorer (o app roda na sua máquina)."""
+    import os
+    import sys
+
+    from studio.media import music_library
+
+    root = music_library.music_root()
+    if sys.platform != "win32":
+        raise HTTPException(status_code=501, detail=f"abra manualmente: {root}")
+    os.startfile(root)  # noqa: S606 - pasta local do próprio app
+    return {"opened": str(root)}

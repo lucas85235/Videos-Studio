@@ -41,7 +41,7 @@ export type ProjectDoc = {
   languages: string[];
   segments: Segment[];
   scenes: Scene[];
-  music: { id: string; start_segment: string | null; mood: string | null; volume_db: number | null; enabled: boolean }[];
+  music: { id: string; start_segment: string | null; mood: string | null; volume_db: number | null; enabled: boolean; track?: string | null }[];
   thumbnail: { text: Record<string, string>; scene_id: string | null; prompt: string | null; variation: number };
   metadata: Record<string, Metadata>;
   sources: { title: string; url: string; note: string }[];
@@ -79,6 +79,21 @@ export type BuildResult = {
   reused: Record<string, number>;
   cost_usd: number;
   preview_only_providers: string[];
+  warnings?: string[];
+  music?: { source: string; track: string | null; mood: string | null } | null;
+};
+
+export type LibraryTrack = { path: string; name: string; mood: string; size: number };
+export type LibraryMusic = { dir: string; tracks: LibraryTrack[]; counts: Record<string, number>; moods: string[] };
+
+export const MOOD_LABELS: Record<string, string> = {
+  drone: 'ambiente / drone',
+  tension: 'tensão',
+  horror: 'terror',
+  mystery: 'mistério',
+  epic: 'épico',
+  pulse: 'pulso',
+  calm: 'calmo',
 };
 
 export type Job = {

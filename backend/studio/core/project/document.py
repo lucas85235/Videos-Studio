@@ -78,6 +78,7 @@ class MusicCue(BaseModel):
     mood: str | None = None
     volume_db: float | None = None
     enabled: bool = True
+    track: str | None = None  # faixa fixada da biblioteca do usuário (caminho relativo em library/music)
 
 
 class Metadata(BaseModel):
