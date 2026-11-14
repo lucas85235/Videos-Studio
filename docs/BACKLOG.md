@@ -22,7 +22,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Driver nativo do Instagram (Standard Access) e teste de visibilidade pública.
 
 ### Voz e idiomas
-- [ ] **Instalar o Whisper local** (`uv sync --project backend --extra asr`): ativa o controle de qualidade da narração (já implementado: transcreve, mede o erro e tenta de novo) e legendas mais precisas. Ficou opcional porque baixa ~500 MB de modelo na primeira vez.
+- [x] **Whisper local** instalado e no instalador (`--extra asr`): confere cada narração. Roda na CPU porque faltam as DLLs do CUDA 12 (cuBLAS/cuDNN); instalar o CUDA 12 deixaria mais rápido.
+- [ ] Voz do Gemini com estilo: hoje vai só o texto (a instrução vazava). Testar de novo quando o Google atualizar o modelo de TTS (`VS_GEMINI_TTS_STYLE=1`).
 - [ ] Clonagem da sua voz: assistente de gravação, Applio/RVC e Qwen3-TTS local (o adapter `qwen3_tts_local` é só um marcador).
 - [ ] **Modo B multi-idioma** (várias faixas de áudio no mesmo vídeo): tradução com orçamento de duração, time-stretch e pacote para o YouTube Studio.
 - [ ] Normalização de números e estrangeirismos para TTS local.

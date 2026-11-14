@@ -10,11 +10,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 O script instala o backend (venv em `%USERPROFILE%\VideosStudioData\.venv-backend`, fora do OneDrive), as dependências do renderer e da interface, e compila a interface.
 
-Opcional, para legendas mais precisas (alinhamento por Whisper local):
-
-```powershell
-$env:UV_PROJECT_ENVIRONMENT="$env:USERPROFILE\VideosStudioData\.venv-backend"; uv sync --project backend --extra asr
-```
+O instalador inclui o **Whisper local**, que ouve cada narração e refaz a que sair errada (ver §7, *Conferência da narração*). Na primeira narração ele baixa o modelo (~460 MB). Roda na CPU: uns 5 s por trecho curto.
 
 ## 2. Abrir o app
 
@@ -91,6 +87,18 @@ Toda mudança vira uma versão (aba Versões). Voltar a uma versão não paga de
 - **Criar por descrição**: em Estilos, descreva (ex.: "documentário de jornal antigo, lento, sépia, máquina de escrever") e escolha um estilo base. O app mostra as mudanças aplicadas e as rejeitadas.
 - Famílias prontas na v1: imagens paradas (Ken Burns), motion graphics (cartões, tipografia cinética, documentos, contagem) e analógico (VHS, glitch, scanlines). As demais estão no backlog.
 
+### Conferência da narração
+
+Cada trecho narrado é ouvido de volta pelo Whisper e comparado com o roteiro. O app refaz o trecho (até 3 tentativas, a última sem nenhuma instrução de estilo) quando a voz:
+
+- lê a instrução de estilo em voz alta ("Narre como um documentário, voz grave…");
+- repete o texto ou fala palavras que não estão no roteiro;
+- erra mais palavras do que o limite do estilo.
+
+Se ainda sobrar problema, a prévia mostra um aviso com o trecho. Sem o Whisper, só a duração é conferida (pega repetição e instrução lida em trechos curtos).
+
+A voz do Gemini recebe **só o texto**: o tom vem da voz escolhida no estilo, e a velocidade do estilo é aplicada no áudio. Quando a instrução de estilo ia junto, o Gemini a lia em voz alta ou repetia o texto em 5 de 6 testes. Para experimentar com instrução mesmo assim, defina `VS_GEMINI_TTS_STYLE=1` antes de iniciar (a conferência continua ativa).
+
 ### Música
 
 - **Procedural** (padrão): o app gera a trilha (drone, tensão, terror, mistério, épico, pulso, calmo). Sem direitos autorais, mas simples.
@@ -112,6 +120,8 @@ Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** col
 | Render lento | VHS, desfoque de bordas e aberração cromática custam caro (o grão é leve). Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
 | Disco enchendo | Configurações → *Armazenamento* → **Limpar agora** (ou `uv run videos-studio clean`). Apaga renders e mixagens sem uso; narrações, imagens e os vídeos em *outputs* ficam. |
 | "provedores de teste" na prévia | Configure o Gemini (voz e roteiro) e o Codex ou outra fonte de imagens, e gere a prévia de novo: o app troca sozinho os itens de prévia. |
+| A voz lê instruções ou repete frases | Atualize o app (versão de 14/11/2026 em diante) e gere a prévia de novo: as narrações antigas não são reaproveitadas. Se o aviso continuar em algum trecho, ajuste uma palavra dele na aba Roteiro: só aquela narração é refeita. |
+| Roteiro estranho, genérico ("existe um detalhe que muda tudo") | É o roteiro de exemplo do modo prévia. Ele só entra quando nenhum provedor de texto está configurado; se o Claude ou o Gemini falharem, o job para com o erro em vez de usar o exemplo. |
 | Cota do Gemini esgotada | O app segue para o próximo provedor da cadeia e tenta o Gemini de novo no dia seguinte. |
 | Porta 8765 ocupada | Defina outra porta: `$env:VS_PORT=8766` antes de iniciar. |
 | Erro ao conectar o YouTube | Confira se o cliente OAuth é do tipo "App para computador" e se a tela de consentimento está publicada. |

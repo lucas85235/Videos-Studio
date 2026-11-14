@@ -89,6 +89,8 @@ DEV_FALLBACKS: dict[str, list[str]] = {
     "image": ["placeholder"],
     "align": ["estimate"],
 }
+# Tipos em que o fallback de prévia só vale quando nenhum provedor real está configurado.
+NO_SILENT_FALLBACK = {"llm"}
 OFFLINE_ONLY: dict[str, list[str]] = {
     "llm": ["mock_llm"],
     "tts": ["mock_tts"],
@@ -189,6 +191,12 @@ def run_chain[T](
     attempts: list[ChainAttempt] = []
     for provider_id in chain:
         provider = get(provider_id)
+        if (kind in NO_SILENT_FALLBACK and provider_id in DEV_FALLBACKS[kind]
+                and any(a.outcome != "indisponível" for a in attempts)):
+            # Um provedor real está configurado e falhou: o texto de exemplo não entra no lugar dele sem aviso
+            # (viraria roteiro aprovado e narrado). O job falha e diz por quê; basta tentar de novo.
+            attempts.append(ChainAttempt(provider_id, "não usado", "os provedores configurados falharam"))
+            continue
         ok, reason = provider.availability()
         if not ok:
             attempts.append(ChainAttempt(provider_id, "indisponível", reason))

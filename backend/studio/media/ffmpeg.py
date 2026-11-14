@@ -101,10 +101,11 @@ def _nvenc_works() -> bool:
         return False
 
 
-def to_wav(src: Path, dst: Path, rate: int = SAMPLE_RATE) -> Path:
-    """Converte qualquer áudio para WAV PCM 16 bits mono."""
+def to_wav(src: Path, dst: Path, rate: int = SAMPLE_RATE, tempo: float = 1.0) -> Path:
+    """Converte qualquer áudio para WAV PCM 16 bits mono (`tempo` muda a velocidade sem mudar o tom)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    run_ffmpeg(["-i", str(src), "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le", str(dst)])
+    filters = ["-af", f"atempo={tempo:.4f}"] if abs(tempo - 1.0) >= 0.005 else []
+    run_ffmpeg(["-i", str(src), *filters, "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le", str(dst)])
     return dst
 
 
@@ -131,6 +132,16 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     if channels > 1:
         audio = audio.reshape(-1, channels).mean(axis=1)
     return audio, rate
+
+
+def decode_mono(path: Path, rate: int = 16000, timeout: float = 600) -> np.ndarray:
+    """Decodifica qualquer áudio para float32 mono na taxa pedida (ex.: 16 kHz para o Whisper)."""
+    cmd = [get_settings().ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path),
+           "-f", "s16le", "-ac", "1", "-ar", str(rate), "-"]
+    proc = subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=_NO_WINDOW)
+    if proc.returncode != 0:
+        raise FFmpegError(f"ffmpeg não decodificou {path.name}: {proc.stderr.decode(errors='replace').strip()[-500:]}")
+    return np.frombuffer(proc.stdout, dtype="<i2").astype(np.float32) / 32768.0
 
 
 def write_wav(path: Path, audio: np.ndarray, rate: int = SAMPLE_RATE) -> Path:

@@ -10,6 +10,7 @@ import base64
 import json
 import logging
 import math
+import os
 import platform
 import subprocess
 import tempfile
@@ -39,9 +40,9 @@ log = logging.getLogger(__name__)
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _final_wav(raw: Path, out_dir: Path) -> Path:
+def _final_wav(raw: Path, out_dir: Path, tempo: float = 1.0) -> Path:
     final = out_dir / "voice.wav"
-    to_wav(raw, final, SAMPLE_RATE)
+    to_wav(raw, final, SAMPLE_RATE, tempo=tempo)
     if raw != final and raw.exists():
         raw.unlink(missing_ok=True)
     return final
@@ -58,6 +59,28 @@ GEMINI_VOICES = (
     "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird",
     "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
 )
+
+
+def gemini_tts_prompt(text: str, style_prompt: str | None, speed: float | None = None) -> str:
+    """Pedido para o Gemini TTS com a direção separada do texto falado.
+
+    O formato antigo (`"estilo: texto"`) fazia o modelo ler a instrução em voz alta, sobretudo quando o próprio
+    estilo tinha dois-pontos ("Narre como um documentário: voz grave…"). O modelo não aceita instrução de sistema,
+    então a direção vai em uma seção própria, no formato de notas de direção + transcrição da documentação do
+    Google, sem dois-pontos nem quebras que imitem o texto. Mesmo assim ele ainda erra às vezes (lê a direção ou
+    repete o texto): o build confere cada narração e refaz (ver `narration_problems`).
+    """
+    notes = " ".join((style_prompt or "").replace(":", ",").replace("#", " ").split()).strip(" .,")
+    if speed and abs(speed - 1.0) >= 0.05:
+        notes = ", ".join(p for p in (notes, "um pouco mais rápido" if speed > 1 else "um pouco mais devagar") if p)
+    if not notes:
+        return text
+    return (
+        "Read aloud only the text under TRANSCRIPT, word for word and exactly once. The director's notes only "
+        "describe the voice and pacing: never read them aloud.\n\n"
+        f"### DIRECTOR'S NOTES\n{notes}.\n\n"
+        f"#### TRANSCRIPT\n{text}"
+    )
 
 
 class GeminiTTS(TTSProvider):
@@ -87,10 +110,13 @@ class GeminiTTS(TTSProvider):
             raise NotConfigured("sem chave do Gemini")
         voice_name = voice if voice in GEMINI_VOICES else "Charon"
         spoken = text.strip()
-        instruction = (style_prompt or "").strip().rstrip(".:")
-        if speed and abs(speed - 1.0) >= 0.05:
-            instruction = (instruction + (", " if instruction else "") + ("um pouco mais rápido" if speed > 1 else "um pouco mais devagar")).strip()
-        prompt = f"{instruction}: {spoken}" if instruction else spoken
+        # Instrução de estilo no pedido fazia o Gemini ler a instrução ou repetir o texto: 5 de 6 tentativas em
+        # 14/11/2026, inclusive no formato de notas de direção; só o texto saiu certo em todas. Por padrão vai só
+        # o texto (o tom vem da voz) e a velocidade do estilo é aplicada no áudio. VS_GEMINI_TTS_STYLE=1 reativa
+        # a instrução; o build confere cada narração e refaz as que saírem erradas.
+        use_style = os.environ.get("VS_GEMINI_TTS_STYLE") == "1"
+        prompt = gemini_tts_prompt(spoken, style_prompt, speed) if use_style else spoken
+        tempo = 1.0 if use_style or not speed else max(0.8, min(1.25, speed))
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -118,12 +144,13 @@ class GeminiTTS(TTSProvider):
                 except ValueError:
                     pass
             raw = pcm16_to_wav(pcm, rate, out_dir / "raw.wav")
-            final = _final_wav(raw, out_dir)
+            final = _final_wav(raw, out_dir, tempo=tempo)
             return TTSResult(
                 path=final,
                 duration_s=wav_duration(final),
                 words=None,
-                usage=Usage(units=len(spoken), unit_name="chars", cost_usd=0.0, details={"model": model, "voice": voice_name}),
+                usage=Usage(units=len(spoken), unit_name="chars", cost_usd=0.0,
+                            details={"model": model, "voice": voice_name, "style_in_request": use_style}),
                 model=model,
             )
         raise last_error or QuotaExceeded("cota do Gemini TTS esgotada")

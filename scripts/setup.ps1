@@ -19,7 +19,8 @@ New-Item -ItemType Directory -Force $data | Out-Null
 $env:UV_PROJECT_ENVIRONMENT = Join-Path $data ".venv-backend"
 
 Write-Host "1/3 Backend Python (venv fora do OneDrive em $env:UV_PROJECT_ENVIRONMENT)" -ForegroundColor Cyan
-uv sync --project backend --python 3.12
+# --extra asr: Whisper local, que confere cada narração (instrução lida em voz alta, texto repetido) e alinha as legendas
+uv sync --project backend --python 3.12 --extra asr
 
 Write-Host "2/3 Dependências Node (renderer e interface)" -ForegroundColor Cyan
 npm install --no-audit --no-fund
@@ -29,4 +30,3 @@ npm run web:build
 
 Write-Host ""
 Write-Host "Pronto! Para abrir o app: scripts\iniciar.cmd" -ForegroundColor Green
-Write-Host "Opcional (legendas mais precisas): uv sync --project backend --extra asr" -ForegroundColor DarkGray

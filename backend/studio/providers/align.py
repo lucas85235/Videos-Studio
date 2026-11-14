@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
+import threading
 from pathlib import Path
 
 from studio.config import get_settings
 from studio.core.text import normalize_token
 from studio.core.text import words as split_words
-from studio.media.ffmpeg import read_wav, speech_bounds
+from studio.media.ffmpeg import decode_mono, read_wav, speech_bounds
 from studio.providers.base import AlignProvider, NotConfigured, ProviderInfo, Word
 
 log = logging.getLogger(__name__)
@@ -74,7 +76,9 @@ class FasterWhisperAligner(AlignProvider):
         notes="MIT. Baixa o modelo na primeira execução. Instale com: uv sync --extra asr",
     )
 
-    _models: dict[str, object] = {}
+    _models: dict[str, tuple[object, str]] = {}
+    _gpu_broken = False
+    _lock = threading.Lock()
 
     def availability(self) -> tuple[bool, str]:
         try:
@@ -83,31 +87,50 @@ class FasterWhisperAligner(AlignProvider):
             return False, "faster-whisper não instalado (uv sync --extra asr)"
         return True, "ok"
 
-    def _model(self):
+    def _model(self) -> tuple[object, str]:
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise NotConfigured("faster-whisper não instalado") from exc
         name = get_settings().whisper_model
-        if name not in self._models:
-            try:
-                self._models[name] = WhisperModel(name, device="cuda", compute_type="int8_float16")
-            except Exception as exc:  # noqa: BLE001 - CUDA ausente/sem cuDNN: cai para CPU
-                log.info("faster-whisper sem CUDA (%s); usando CPU", exc)
-                self._models[name] = WhisperModel(name, device="cpu", compute_type="int8")
-        return self._models[name]
+        with self._lock:
+            cached = self._models.get(name)
+            if cached and not (cached[1] == "cuda" and FasterWhisperAligner._gpu_broken):
+                return cached
+            model, device = None, "cpu"
+            if not FasterWhisperAligner._gpu_broken:
+                try:
+                    model, device = WhisperModel(name, device="cuda", compute_type="int8_float16"), "cuda"
+                except Exception as exc:  # noqa: BLE001 - sem CUDA: cai para CPU
+                    log.info("faster-whisper sem CUDA (%s); usando CPU", exc)
+            if model is None:
+                model = WhisperModel(name, device="cpu", compute_type="int8")
+            self._models[name] = (model, device)
+            return model, device
+
+    @staticmethod
+    def _run(model, audio, lang: str) -> list[Word]:
+        segments, _info = model.transcribe(  # type: ignore[attr-defined]
+            audio, language=lang.split("-")[0], word_timestamps=True, beam_size=1, vad_filter=False
+        )
+        return [Word(w.word.strip(), float(w.start), float(w.end)) for seg in segments for w in seg.words or []]
 
     def transcribe(self, audio_path: Path, lang: str) -> list[Word]:
         """Palavras ouvidas no áudio, com timestamps."""
-        model = self._model()
-        segments, _info = model.transcribe(  # type: ignore[attr-defined]
-            str(audio_path), language=lang.split("-")[0], word_timestamps=True, beam_size=1, vad_filter=False
-        )
-        heard: list[Word] = []
-        for seg in segments:
-            for w in seg.words or []:
-                heard.append(Word(w.word.strip(), float(w.start), float(w.end)))
-        return heard
+        # Decodifica pelo ffmpeg do app: a leitura interna do faster-whisper (PyAV) quebra com algumas versões do
+        # pacote `av` ("unexpected keyword argument 'metadata_errors'").
+        audio = decode_mono(audio_path, 16000)
+        model, device = self._model()
+        try:
+            return self._run(model, audio, lang)
+        except RuntimeError as exc:
+            # A GPU é aceita ao criar o modelo, mas sem as DLLs do CUDA 12 (cuBLAS/cuDNN) falha só ao transcrever.
+            if device == "cpu" or not re.search(r"cuda|cublas|cudnn", str(exc), re.IGNORECASE):
+                raise
+            log.info("faster-whisper sem as bibliotecas do CUDA (%s); usando CPU", exc)
+            FasterWhisperAligner._gpu_broken = True
+            model, _ = self._model()
+            return self._run(model, audio, lang)
 
     def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
         return map_to_script(text, self.transcribe(audio_path, lang), audio_path)
@@ -126,6 +149,48 @@ def word_error_rate(reference: str, heard: list[str]) -> float:
             cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (0 if r == h else 1))
         prev = cur
     return prev[-1] / len(ref)
+
+
+LEAK_RUN = 4  # palavras seguidas a mais que contam como fala fora do roteiro
+
+
+def narration_problems(text: str, heard: list[str] | None, duration_s: float, *, style_prompt: str | None = None,
+                       words_per_minute: int = 150, speed: float = 1.0) -> list[str]:
+    """Problemas de uma narração: o que a voz falou além do roteiro.
+
+    Com a transcrição (Whisper): instrução de estilo lida em voz alta, texto repetido ou trechos a mais. O erro
+    médio por palavra (WER) não basta: 13 palavras de instrução num trecho de 220 dão só 6%. Sem transcrição, só
+    a duração: fala muito mais longa do que o roteiro permite (repetição ou instrução lida em trecho curto).
+    """
+    script = [t for t in (normalize_token(w) for w in split_words(text)) if t]
+    problems: list[str] = []
+    if heard is not None and script:
+        said = [t for t in (normalize_token(w) for w in heard) if t]
+        style = {t for t in (normalize_token(w) for w in split_words(style_prompt or "")) if len(t) > 2}
+        script_set = set(script)
+        extra_runs: list[list[str]] = []
+        matcher = difflib.SequenceMatcher(a=script, b=said, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag in ("insert", "replace") and (j2 - j1) - (i2 - i1) >= LEAK_RUN:
+                extra_runs.append(said[j1:j2])
+        leaked = [run for run in extra_runs
+                  if style and sum(1 for t in run if t in style and t not in script_set) >= 3]
+        if leaked:
+            problems.append("leu a instrução de estilo em voz alta")
+        if len(said) - sum(len(run) for run in leaked) > 1.4 * len(script) + 3:
+            problems.append("repetiu trechos do texto")
+        elif extra_runs and not leaked:
+            longest = max(len(r) for r in extra_runs)
+            problems.append(f"falou {longest} palavras que não estão no roteiro")
+    elif script:
+        # Medido no Gemini TTS: gancho de 26 palavras = 10 s limpo, 19,6 s com a instrução lida, 21,7 s repetido.
+        # Narração lenta de verdade (sussurro, pausas) fica abaixo de 1,4× o esperado.
+        expected = len(script) / (words_per_minute * (speed or 1.0)) * 60
+        limit = expected * 1.5 + 1.5
+        if duration_s > limit:
+            problems.append(f"durou {duration_s:.0f} s para {len(script)} palavras (o esperado é ~{expected:.0f} s): "
+                            "pode ter lido a instrução ou repetido o texto")
+    return problems
 
 
 def map_to_script(text: str, heard: list[Word], audio_path: Path | None = None) -> list[Word]:

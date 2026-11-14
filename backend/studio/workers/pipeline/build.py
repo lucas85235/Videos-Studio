@@ -35,7 +35,7 @@ from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
 from studio.providers import registry
-from studio.providers.align import map_to_script, word_error_rate
+from studio.providers.align import map_to_script, narration_problems, word_error_rate
 from studio.providers.base import Word
 
 log = logging.getLogger(__name__)
@@ -167,6 +167,9 @@ class Builder:
             "style_prompt": style_prompt,
             "speed": self.style.voice.speed,
             "chain": registry.resolve_chain("tts", self.style.voice.chain),
+            # v2: novo pedido ao Gemini TTS e conferência de cada narração. As gravações antigas podiam ter a
+            # instrução de estilo lida em voz alta, então não são reaproveitadas.
+            "v": 2,
         }
 
     def narration(self, seg_id: str, lang: str) -> tuple[str, dict[str, Any]]:
@@ -179,46 +182,66 @@ class Builder:
             self.stats.hit("tts", True)
             if not cached.get("commercial", True):
                 self.stats.noncommercial.add(cached.get("provider", "?"))
+            if cached.get("problems"):
+                self.warnings.append(
+                    f"Narração de {seg_id} ({lang}) com problema: {'; '.join(cached['problems'])}. Ouça esse trecho antes "
+                    "de publicar."
+                )
             return h, cached
         out_dir = self.store.dir_for("tts", h)
+        qa_spec = self.style.voice.qa
+        wpm = self.style.script.words_per_minute.get(lang, 150)
 
-        def synthesize(target: Path):
-            return registry.run_chain(
+        def take(target: Path, style_prompt: str | None) -> dict[str, Any]:
+            result, provider, _ = registry.run_chain(
                 "tts",
                 inputs["chain"],
-                lambda p: p.synthesize(text=inputs["text"], lang=lang, voice=inputs["voice"], style_prompt=inputs["style_prompt"],
+                lambda p: p.synthesize(text=inputs["text"], lang=lang, voice=inputs["voice"], style_prompt=style_prompt,
                                        speed=inputs["speed"], out_dir=target),
                 usage_of=self._usage,
                 project_id=self.project_id,
                 job_id=self.sink.job_id,
             )
+            qa = self._qa(inputs["text"], lang, result.path)
+            heard = [w["text"] for w in qa["heard"]] if qa else None
+            problems = narration_problems(inputs["text"], heard, result.duration_s, style_prompt=inputs["style_prompt"],
+                                          words_per_minute=wpm, speed=inputs["speed"] or 1.0)
+            if qa and qa["wer"] > qa_spec.max_wer and not problems:
+                problems.append(f"{qa['wer']:.0%} das palavras diferem do roteiro")
+            return {"result": result, "provider": provider, "qa": qa, "problems": problems}
 
-        result, provider, _ = synthesize(out_dir)
-        qa_spec = self.style.voice.qa
-        qa = self._qa(inputs["text"], lang, result.path)
+        def rank(t: dict[str, Any]) -> tuple[bool, float]:
+            return bool(t["problems"]), t["qa"]["wer"] if t["qa"] else 0.0
+
+        best = take(out_dir, inputs["style_prompt"])
         attempts = 1
-        if qa and qa["wer"] > qa_spec.max_wer and not provider.info.deterministic:
-            best = (qa["wer"], result, provider, qa)
-            for retry in range(qa_spec.retries):
-                self._check()
-                again, again_provider, _ = synthesize(out_dir / f"tentativa{retry + 2}")
-                again_qa = self._qa(inputs["text"], lang, again.path)
-                attempts += 1
-                if again_qa and again_qa["wer"] < best[0]:
-                    best = (again_qa["wer"], again, again_provider, again_qa)
-                if best[0] <= qa_spec.max_wer:
-                    break
-            _, result, provider, qa = best
-        if qa and qa["wer"] > qa_spec.max_wer:
+        # Voz que falou fora do roteiro é refeita. A última tentativa vai sem a instrução de estilo: é o único
+        # pedido em que não há instrução para ler em voz alta.
+        retries = max(qa_spec.retries, 2)
+        while best["problems"] and not best["provider"].info.deterministic and attempts <= retries:
+            self._check()
+            last = attempts == retries
+            style_prompt = None if last and inputs["style_prompt"] else inputs["style_prompt"]
+            log.warning("narração de %s (%s) com problema (%s); tentativa %d", seg_id, lang,
+                        "; ".join(best["problems"]), attempts + 1)
+            again = take(out_dir / f"tentativa{attempts + 1}", style_prompt)
+            attempts += 1
+            if rank(again) < rank(best):
+                best = again
+        result, provider, qa, problems = best["result"], best["provider"], best["qa"], best["problems"]
+        if problems:
             self.warnings.append(
-                f"Narração de {seg_id} ({lang}) pode ter erros: {qa['wer']:.0%} das palavras diferem do roteiro."
+                f"Narração de {seg_id} ({lang}) com problema depois de {attempts} tentativa(s): {'; '.join(problems)}. "
+                "Ouça esse trecho antes de publicar."
             )
         output = {
             "path": self.store.rel(result.path),
             "duration": round(result.duration_s, 4),
             "words": [w.to_dict() for w in result.words] if result.words else None,
             "heard": qa["heard"] if qa else None,
-            "qa": {"wer": round(qa["wer"], 4), "attempts": attempts, "ok": qa["wer"] <= qa_spec.max_wer} if qa else None,
+            "qa": {"wer": round(qa["wer"], 4), "attempts": attempts, "ok": not problems} if qa else None,
+            "problems": problems,
+            "attempts": attempts,
             "provider": provider.info.id,
             "model": result.model,
             "commercial": provider.info.commercial_use,
