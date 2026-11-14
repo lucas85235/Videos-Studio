@@ -13,10 +13,10 @@ Registro do que foi feito em cada marco, para manter o histórico e poder retoma
 | M4 | Renderer Remotion com render por blocos | feito |
 | M5 | Grafo de artefatos + pipeline do Short ponta a ponta | feito |
 | M6 | API completa | feito |
-| M7 | Interface web | em andamento |
-| M8 | Agente de edição por instrução (backend feito; falta a interface) | parcial |
-| M9 | Publicação (pacote manual feito; YouTube nativo pendente) | parcial |
-| M10 | Documentação de uso e backlog final | pendente |
+| M7 | Interface web | feito |
+| M8 | Agente de edição por instrução | feito |
+| M9 | Publicação: pacote manual + YouTube nativo (Buffer no backlog) | feito |
+| M10 | Documentação de uso e backlog final | feito |
 
 ## 14/11/2026
 
@@ -26,6 +26,11 @@ Registro do que foi feito em cada marco, para manter o histórico e poder retoma
 - **M3**: provedores com cadeia de fallback. Claude pelo SDK oficial `anthropic` 2.8 (`claude-opus-5-5`, saída estruturada via `output_config`, fallback de recusa `fallbacks="default"`), Gemini (texto e TTS), Chirp 3 HD, ElevenLabs, Codex CLI, BFL, fal, OpenAI Images, Pexels, voz do Windows (prévia), mocks. Cofre Fernet + keyring.
 - **M4**: renderer Remotion 4.0.543 com React 19.3. Servidor de render persistente. Teste de fumaça: primeiro bloco em 62 s (bundle + navegador), seguinte em 16 s para 5 s de vídeo com efeitos pesados.
 - **M5–M6**: build incremental por hash, áudio procedural (trilhas e SFX), mix com ducking e −14 LUFS, montagem final com NVENC, SRT, thumbnails, jobs, agente de edição, API. Render real de um Short de 64 s em 182 s (incluindo bundle e navegador).
+
+- **M7–M8**: interface Vite + React (projetos, roteiro, cenas, prévia com Remotion Player e chat de edição, vídeo e publicação, versões, estilos, canais, configurações). Teste pela interface: projeto de demonstração criado, roteiro aprovado, prévia gerada; uma edição por instrução ("cena 3 mais escura, com zoom, legenda maior") regenerou **nada** além da timeline (7 narrações, 34 imagens e o mix reaproveitados).
+- **M9**: publicação nativa no YouTube (OAuth PKCE, upload resumível, agendamento, thumbnail, legendas, rótulo de IA), testada com API simulada.
+- **Bug encontrado e corrigido**: a voz do Windows relata tempos de palavra além do fim do áudio; algumas cenas começavam depois do segmento seguinte e o vídeo final saía deslocado (0,8 s de preto em 60 s no demo). Timeline agora normaliza tempos e garante cenas contínuas; legendas montadas por cena. Testes de regressão adicionados.
+- **M10**: README atualizado (estado atual, stack real, estrutura), docs/USO.md e backlog.
 
 ## Como retomar
 

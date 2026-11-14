@@ -48,6 +48,8 @@ class ProviderInfo:
     """Variáveis de ambiente aceitas no lugar do cofre (a primeira encontrada vale)."""
     notes: str = ""
     cost_note: str = ""
+    deterministic: bool = False
+    """Mesma entrada gera a mesma saída (não adianta tentar de novo no controle de qualidade)."""
 
 
 @dataclass

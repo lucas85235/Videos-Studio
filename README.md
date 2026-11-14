@@ -2,7 +2,16 @@
 
 > Plataforma de **uso próprio** para **criar, editar por IA, publicar e gerenciar** vídeos "dark" (canais sem rosto) para **YouTube, Instagram Reels e TikTok**, em **formato longo (16:9)** e **Shorts/Reels (9:16)**, **multi-idioma**.
 
-**Status:** planejamento (nenhum código ainda) · **Última revisão:** 14/11/2026 (revisão 4: publicação e voz com custo zero)
+**Status:** v0.1 funcionando (roteiro, storyboard, prévia, render, edição por instrução, publicação no YouTube) · **Última revisão:** 14/11/2026 · [Guia de uso](docs/USO.md) · [Estado atual](#140-estado-atual-14112026) · [Backlog](docs/BACKLOG.md)
+
+## Começar agora
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # instala tudo (uma vez)
+scripts\iniciar.cmd                                          # abre o app em http://127.0.0.1:8765
+```
+
+Sem nenhuma chave o app já funciona em **modo prévia** (roteiro de exemplo, voz do Windows, imagens procedurais). Para conteúdo real a custo zero, configure a chave grátis do **Gemini** em Configurações. Passo a passo completo em [docs/USO.md](docs/USO.md).
 
 ---
 
@@ -745,14 +754,14 @@ flowchart TB
 
 | Camada | Escolha | Por quê |
 |---|---|---|
-| Frontend | **Next.js + TypeScript + Tailwind + shadcn/ui** | **Remotion Player** para a prévia; chat do agente |
+| Frontend | **Vite + React + TypeScript + Tailwind** (SPA servida pelo FastAPI; [ADR 0001](docs/adr/0001-stack-local-windows.md)) | **Remotion Player** para a prévia; chat do agente |
 | API | **Python + FastAPI + SQLAlchemy + Pydantic** | Ecossistema de IA e mídia |
-| Jobs | **Celery** (ou Dramatiq) + **Redis** | Filas `cpu`, `gpu` (concorrência 1), `codex` (concorrência 1), `render`, `publish` |
-| Banco | **PostgreSQL** | JSONB para estilos, projeto e patches |
+| Jobs | **Fila própria dentro do processo**, persistida no banco (o Celery não suporta Windows; ADR 0001) | Narração e imagens em paralelo; Codex e render um por vez |
+| Banco | **SQLite (WAL)**; PostgreSQL possível via `VS_DATABASE_URL` | JSON para estilos, projeto e patches |
 | Storage | Disco local fora do OneDrive + **Cloudflare R2** (camada grátis de ~10 GB sem custo de saída; pode exigir cartão cadastrado; verificar) para as URLs públicas que o Buffer e o Instagram exigem; arquivos apagados depois de publicar | Vídeos pesados; o notebook pode estar desligado na hora da publicação |
 | Render | **Remotion** + **FFmpeg** (NVENC) | Estilos = componentes React |
 | Imagem local (opcional) | `stable-diffusion.cpp` `sd-server` como serviço | Sem ComfyUI |
-| Infra | Docker Compose para Postgres/Redis; **workers de GPU e Codex rodando nativos no Windows** | CUDA e Codex funcionam melhor fora do container no Windows |
+| Infra | **Sem Docker**: `uv` (Python) + `npm` (Node), `scripts/setup.ps1` e `scripts/iniciar.cmd` | Tudo nativo no Windows; venv e dados fora do OneDrive |
 | Licença do Remotion | Gratuita para uso individual | Ok para uso próprio |
 
 ### 11.3 Render por blocos
@@ -806,32 +815,50 @@ Job (tipo, fila, nó, status, progresso, tentativas, erro)
 
 ## 13. Estrutura de pastas
 
+Estrutura real do código (o pacote Python único `studio` mantém a divisão lógica planejada; ADR 0001):
+
 ```
 Videos-Studio/
-├─ apps/
-│  ├─ web/                  # Next.js: dashboard, editor de cenas, chat de edição, calendário, prévia
-│  └─ api/                  # FastAPI: REST + WebSocket, modelos, migrações (Alembic)
-├─ core/
-│  ├─ project/              # documento de projeto, patches, versões
-│  ├─ graph/                # grafo de dependências, hashes, orquestrador
-│  └─ agent/                # agente de edição: ferramentas, prompts, estimativa de custo
-├─ workers/
-│  ├─ pipeline/             # script, translate, tts, asr_qa, align, storyboard, images, video, mix, thumbnail, seo
-│  ├─ publish/              # youtube_native, buffer, manual_helper, (uploadpost, meta_native, x_native depois)
-│  └─ analytics/
-├─ providers/               # adapters: llm, tts (gemini, chirp3hd, qwen3_local, elevenlabs), vc (rvc), image (codex_cli, bfl, fal, openai, sdcpp), video, music, asr, stock
-├─ renderer/                # Node + Remotion: composições + render por blocos
-├─ presets/                 # estilos (YAML), prompts por nicho, frases de gravação de voz
-├─ bakeoff/                 # scripts dos testes cegos de voz e imagem (Fase 0)
-├─ assets/                  # biblioteca pequena versionada + licenses.json
-├─ infra/                   # docker-compose (Postgres, Redis), scripts de setup do Windows/GPU
-├─ docs/                    # ADRs, setup de APIs (Google Cloud, Gemini, Buffer, Meta), tabela de licenças
+├─ backend/                       # Python 3.12 (uv)
+│  ├─ studio/
+│  │  ├─ api/                     # FastAPI: projetos, estilos, canais, provedores, jobs, YouTube, SSE, arquivos
+│  │  ├─ core/
+│  │  │  ├─ project/              # documento de projeto, operações de patch, versões
+│  │  │  ├─ graph/                # armazenamento de artefatos por hash (cache do grafo)
+│  │  │  ├─ agent/                # agente de edição por instrução e estilo a partir de texto
+│  │  │  ├─ styles/               # StyleSpec, biblioteca (presets + do usuário), avisos de política
+│  │  │  └─ timeline.py           # cenas, legendas, SFX e blocos de render
+│  │  ├─ providers/               # llm, tts, image, align + registro com cadeias de fallback e cofre
+│  │  ├─ media/                   # FFmpeg, áudio procedural, mix, montagem, thumbnail, cliente de render
+│  │  └─ workers/
+│  │     ├─ pipeline/             # roteiro, storyboard, tradução, metadados, build incremental
+│  │     ├─ publish/              # pacote manual por rede, YouTube nativo
+│  │     ├─ jobs.py               # fila de jobs persistida
+│  │     └─ tasks.py              # jobs do pipeline e piloto automático
+│  └─ tests/                      # pytest (VS_TEST_RENDER=1 renderiza de verdade)
+├─ renderer/                      # Node + Remotion 4.0.543: composição Timeline + servidor de render
+├─ apps/web/                      # Vite + React: interface
+├─ presets/styles/                # 6 presets das famílias da v1
+├─ assets/fonts/                  # fontes OFL/Apache com licenças
+├─ scripts/                       # setup.ps1, start.ps1, iniciar.cmd
+├─ docs/                          # USO.md, BACKLOG.md, DEVLOG.md, adr/
 └─ README.md
 ```
 
 ---
 
 ## 14. Roadmap de implementação
+
+### 14.0 Estado atual (14/11/2026)
+
+| Fase | Feito | Falta (ver [backlog](docs/BACKLOG.md)) |
+|---|---|---|
+| 0. Fundação | Backend, banco, cofre de credenciais, provedores com fallback, grafo de artefatos por hash, filas, custos, render por blocos (testado) | Testes cegos de voz/imagem e do Codex (precisam das suas chaves e do Codex instalado) |
+| 1. MVP Shorts | Roteiro → storyboard → narração (com controle de qualidade por Whisper e nova tentativa) → alinhamento → imagens → timeline → trilha/SFX → render → montagem → thumbnail; regenerar por cena | Instalar o Whisper local (`--extra asr`) para ativar o controle de qualidade e legendas mais precisas |
+| 2. Edição por IA + longos | Agente de edição (operações tipadas, escopo, estimativa, travas), versões com desfazer, estilos por texto, cartões de capítulo/contagem/documento/citação, tipografia cinética | Ramos A/B, image-to-video, checagem de fatos com busca web |
+| 3. Publicação | YouTube nativo (OAuth, upload, agendamento, thumbnail, legendas, rótulo de IA); pacote manual por rede | Driver do Buffer (TikTok/Instagram), calendário, slots e fusos |
+| 4. Voz e idiomas | Tradução por segmento e vídeo por idioma (modo A) | Clonagem (Applio/RVC, Qwen3-TTS), modo B (várias faixas no mesmo vídeo) |
+| 5–6 | — | Repurposing, comentários, analytics, outras redes, séries |
 
 Estimativas para **1 desenvolvedor em tempo parcial com ajuda de IA**.
 

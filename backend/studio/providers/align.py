@@ -97,7 +97,8 @@ class FasterWhisperAligner(AlignProvider):
                 self._models[name] = WhisperModel(name, device="cpu", compute_type="int8")
         return self._models[name]
 
-    def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
+    def transcribe(self, audio_path: Path, lang: str) -> list[Word]:
+        """Palavras ouvidas no áudio, com timestamps."""
         model = self._model()
         segments, _info = model.transcribe(  # type: ignore[attr-defined]
             str(audio_path), language=lang.split("-")[0], word_timestamps=True, beam_size=1, vad_filter=False
@@ -106,7 +107,25 @@ class FasterWhisperAligner(AlignProvider):
         for seg in segments:
             for w in seg.words or []:
                 heard.append(Word(w.word.strip(), float(w.start), float(w.end)))
-        return map_to_script(text, heard, audio_path)
+        return heard
+
+    def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
+        return map_to_script(text, self.transcribe(audio_path, lang), audio_path)
+
+
+def word_error_rate(reference: str, heard: list[str]) -> float:
+    """WER entre o roteiro e o que foi ouvido (distância de edição por palavra normalizada)."""
+    ref = [t for t in (normalize_token(w) for w in split_words(reference)) if t]
+    hyp = [t for t in (normalize_token(w) for w in heard) if t]
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    prev = list(range(len(hyp) + 1))
+    for i, r in enumerate(ref, 1):
+        cur = [i] + [0] * len(hyp)
+        for j, h in enumerate(hyp, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (0 if r == h else 1))
+        prev = cur
+    return prev[-1] / len(ref)
 
 
 def map_to_script(text: str, heard: list[Word], audio_path: Path | None = None) -> list[Word]:

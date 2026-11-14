@@ -34,7 +34,7 @@ from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
 from studio.providers import registry
-from studio.providers.align import map_to_script
+from studio.providers.align import map_to_script, word_error_rate
 from studio.providers.base import Word
 
 log = logging.getLogger(__name__)
@@ -110,6 +110,7 @@ class Builder:
         self.store = ArtifactStore()
         self.settings = get_settings()
         self.stats = BuildStats()
+        self.warnings: list[str] = []
         self._done = 0
         self._total = 1
         self._progress_lock = threading.Lock()
@@ -178,19 +179,44 @@ class Builder:
                 self.stats.noncommercial.add(cached.get("provider", "?"))
             return h, cached
         out_dir = self.store.dir_for("tts", h)
-        result, provider, _ = registry.run_chain(
-            "tts",
-            inputs["chain"],
-            lambda p: p.synthesize(text=inputs["text"], lang=lang, voice=inputs["voice"], style_prompt=inputs["style_prompt"],
-                                   speed=inputs["speed"], out_dir=out_dir),
-            usage_of=self._usage,
-            project_id=self.project_id,
-            job_id=self.sink.job_id,
-        )
+
+        def synthesize(target: Path):
+            return registry.run_chain(
+                "tts",
+                inputs["chain"],
+                lambda p: p.synthesize(text=inputs["text"], lang=lang, voice=inputs["voice"], style_prompt=inputs["style_prompt"],
+                                       speed=inputs["speed"], out_dir=target),
+                usage_of=self._usage,
+                project_id=self.project_id,
+                job_id=self.sink.job_id,
+            )
+
+        result, provider, _ = synthesize(out_dir)
+        qa_spec = self.style.voice.qa
+        qa = self._qa(inputs["text"], lang, result.path)
+        attempts = 1
+        if qa and qa["wer"] > qa_spec.max_wer and not provider.info.deterministic:
+            best = (qa["wer"], result, provider, qa)
+            for retry in range(qa_spec.retries):
+                self._check()
+                again, again_provider, _ = synthesize(out_dir / f"tentativa{retry + 2}")
+                again_qa = self._qa(inputs["text"], lang, again.path)
+                attempts += 1
+                if again_qa and again_qa["wer"] < best[0]:
+                    best = (again_qa["wer"], again, again_provider, again_qa)
+                if best[0] <= qa_spec.max_wer:
+                    break
+            _, result, provider, qa = best
+        if qa and qa["wer"] > qa_spec.max_wer:
+            self.warnings.append(
+                f"Narração de {seg_id} ({lang}) pode ter erros: {qa['wer']:.0%} das palavras diferem do roteiro."
+            )
         output = {
             "path": self.store.rel(result.path),
             "duration": round(result.duration_s, 4),
             "words": [w.to_dict() for w in result.words] if result.words else None,
+            "heard": qa["heard"] if qa else None,
+            "qa": {"wer": round(qa["wer"], 4), "attempts": attempts, "ok": qa["wer"] <= qa_spec.max_wer} if qa else None,
             "provider": provider.info.id,
             "model": result.model,
             "commercial": provider.info.commercial_use,
@@ -202,19 +228,41 @@ class Builder:
             self.stats.noncommercial.add(provider.info.id)
         return h, output
 
+    def _qa(self, text: str, lang: str, audio_path: Path) -> dict[str, Any] | None:
+        """Transcreve a narração e mede o erro contra o roteiro (só com o Whisper local instalado)."""
+        if not self.style.voice.qa.enabled or self.settings.offline:
+            return None
+        try:
+            whisper = registry.get("faster_whisper")
+        except Exception:  # noqa: BLE001
+            return None
+        ok, _ = whisper.availability()
+        if not ok:
+            return None
+        try:
+            heard = whisper.transcribe(audio_path, lang)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - QA nunca derruba o build
+            log.warning("controle de qualidade da narração falhou: %s", exc)
+            return None
+        return {"wer": word_error_rate(text, [w.text for w in heard]), "heard": [w.to_dict() for w in heard]}
+
     def alignment(self, seg_id: str, lang: str, tts_hash: str, tts_out: dict[str, Any]) -> list[Word]:
         text = self.doc.segment(seg_id).text_for(lang)
         chain = registry.resolve_chain("align", None)
-        inputs = {"tts": tts_hash, "text": text, "chain": chain, "from_tts": bool(tts_out.get("words")), "v": 1}
+        inputs = {"tts": tts_hash, "text": text, "chain": chain, "from_tts": bool(tts_out.get("words")),
+                  "heard": bool(tts_out.get("heard")), "v": 2}
         h = hash_obj(inputs)
         cached = self.store.lookup("align", h)
-        if cached and not (not tts_out.get("words") and self._better_available(chain, cached.get("provider"))):
+        if cached and not (not tts_out.get("words") and not tts_out.get("heard") and self._better_available(chain, cached.get("provider"))):
             self.stats.hit("align", True)
             return [Word.from_dict(w) for w in cached["words"]]
         audio_path = self.store.abs(tts_out["path"])
         if tts_out.get("words"):
             words = map_to_script(text, [Word.from_dict(w) for w in tts_out["words"]], audio_path)
             provider_id = "tts"
+        elif tts_out.get("heard"):
+            words = map_to_script(text, [Word.from_dict(w) for w in tts_out["heard"]], audio_path)
+            provider_id = "faster_whisper"
         else:
             words, provider, _ = registry.run_chain(
                 "align", chain, lambda p: p.align(audio_path=audio_path, text=text, lang=lang),
@@ -553,6 +601,7 @@ class Builder:
             "reused": self.stats.reused,
             "cost_usd": round(self.stats.cost_usd, 4),
             "preview_only_providers": sorted(self.stats.noncommercial),
+            "warnings": self.warnings,
         }
 
 
@@ -592,6 +641,7 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     builder.store = ArtifactStore()
     builder.settings = get_settings()
     builder.stats = BuildStats()
+    builder.warnings = []
     missing_tts: list[dict[str, Any]] = []
     for lang in builder.langs:
         for seg in builder.doc.segments:

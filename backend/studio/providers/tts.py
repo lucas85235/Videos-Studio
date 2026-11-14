@@ -326,6 +326,7 @@ class WindowsSapiTTS(TTSProvider):
         local=True,
         free=True,
         notes="Só para prévias e testes: o direito de uso comercial não está claro, então o app bloqueia na publicação.",
+        deterministic=True,
     )
 
     def availability(self) -> tuple[bool, str]:
@@ -395,6 +396,7 @@ class MockTTS(TTSProvider):
         local=True,
         free=True,
         notes="Gera um tom suave com a duração estimada da fala. Só para testes.",
+        deterministic=True,
     )
 
     def synthesize(self, *, text, lang, voice, style_prompt, speed, out_dir) -> TTSResult:

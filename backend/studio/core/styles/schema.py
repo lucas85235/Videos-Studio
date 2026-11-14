@@ -174,6 +174,14 @@ class TimbreSpec(StrictModel):
     enabled: bool = False
 
 
+class QaSpec(StrictModel):
+    """Controle de qualidade da narração: transcreve cada trecho e regenera se errar demais."""
+
+    enabled: bool = True
+    max_wer: float = Field(default=0.2, ge=0, le=1)
+    retries: int = Field(default=1, ge=0, le=3)
+
+
 class VoiceSpec(StrictModel):
     chain: list[str] = ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"]
     voice_profile: str | None = None
@@ -183,6 +191,7 @@ class VoiceSpec(StrictModel):
     """Instrução de interpretação (ex.: 'voz grave e baixa, ritmo lento, suspense')."""
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     timbre: TimbreSpec = TimbreSpec()
+    qa: QaSpec = QaSpec()
     gap_s: float = Field(default=0.25, ge=0, le=3)
     """Pausa entre segmentos de narração."""
 
