@@ -1,0 +1,11 @@
+{
+  "Bebas Neue": { "file": "BebasNeue-Regular.ttf", "weights": [400, 400], "license": "OFL-1.1" },
+  "Montserrat": { "file": "Montserrat-Variable.ttf", "weights": [100, 900], "license": "OFL-1.1" },
+  "Cinzel": { "file": "Cinzel-Variable.ttf", "weights": [400, 900], "license": "OFL-1.1" },
+  "Special Elite": { "file": "SpecialElite-Regular.ttf", "weights": [400, 400], "license": "Apache-2.0" },
+  "VT323": { "file": "VT323-Regular.ttf", "weights": [400, 400], "license": "OFL-1.1" },
+  "Oswald": { "file": "Oswald-Variable.ttf", "weights": [200, 700], "license": "OFL-1.1" },
+  "Anton": { "file": "Anton-Regular.ttf", "weights": [400, 400], "license": "OFL-1.1" },
+  "Noto Sans": { "file": "NotoSans-Variable.ttf", "weights": [100, 900], "license": "OFL-1.1" },
+  "IBM Plex Sans": { "file": "IBMPlexSans-Variable.ttf", "weights": [100, 700], "license": "OFL-1.1" }
+}

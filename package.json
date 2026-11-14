@@ -1,0 +1,20 @@
+{
+  "name": "videos-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Videos Studio: estúdio de vídeos dark (renderer Remotion + interface web)",
+  "workspaces": [
+    "renderer",
+    "apps/web"
+  ],
+  "scripts": {
+    "web:dev": "npm --workspace apps/web run dev",
+    "web:build": "npm --workspace apps/web run build",
+    "renderer:typecheck": "npm --workspace renderer run typecheck",
+    "renderer:studio": "npm --workspace renderer run studio",
+    "typecheck": "npm --workspace renderer run typecheck && npm --workspace apps/web run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@vstudio/renderer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Composições Remotion do Videos Studio e servidor de render por blocos",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/lib.ts",
+    "./compositions": "./src/lib.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "studio": "remotion studio src/index.ts --public-dir ../assets",
+    "render-server": "node scripts/render-server.mjs"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.543",
+    "@remotion/cli": "4.0.543",
+    "@remotion/renderer": "4.0.543",
+    "remotion": "4.0.543",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}
