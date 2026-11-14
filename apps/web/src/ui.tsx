@@ -101,6 +101,25 @@ export const Tabs: React.FC<{ tabs: { id: string; label: string }[]; active: str
   </div>
 );
 
+export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2];
+
+/** Velocidade de reprodução (o navegador mantém o tom da voz). */
+export const SpeedButtons: React.FC<{ value: number; onChange: (rate: number) => void; className?: string }> = ({ value, onChange, className = '' }) => (
+  <div className={`flex items-center gap-0.5 rounded-md border border-zinc-800 p-0.5 text-xs ${className}`} role="group" aria-label="Velocidade">
+    {PLAYBACK_RATES.map((rate) => (
+      <button
+        key={rate}
+        type="button"
+        aria-pressed={rate === value}
+        onClick={() => onChange(rate)}
+        className={`rounded px-1.5 py-0.5 tabular-nums ${rate === value ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-100'}`}
+      >
+        {rate}x
+      </button>
+    ))}
+  </div>
+);
+
 export const formatBytes = (n: number) => {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;

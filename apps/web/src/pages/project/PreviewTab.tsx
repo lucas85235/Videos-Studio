@@ -4,7 +4,7 @@ import { type TimelineProps, VideoTimeline } from '@vstudio/renderer';
 import React, { useMemo, useRef, useState } from 'react';
 import { Audio } from 'remotion';
 import { api, type EditProposal, fileUrl, type LibraryMusic, MOOD_LABELS, type ProjectDetail } from '../../api';
-import { Badge, Button, Card, Empty, ErrorBox, Select, Spinner, Textarea, formatSeconds } from '../../ui';
+import { Badge, Button, Card, Empty, ErrorBox, PLAYBACK_RATES, Select, Spinner, Textarea, formatSeconds } from '../../ui';
 import { useStartJob } from '../ProjectPage';
 
 type Timeline = TimelineProps & { mix: string; duration: number; version: number; narration: unknown[]; chapters: { title: string; start: number }[] };
@@ -249,6 +249,7 @@ export const PreviewTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({
               compositionWidth={inputProps.width}
               compositionHeight={inputProps.height}
               controls
+              showPlaybackRateControl={PLAYBACK_RATES}
               acknowledgeRemotionLicense
               style={vertical ? { height: '72vh', aspectRatio: `${inputProps.width} / ${inputProps.height}` } : { width: '100%', aspectRatio: `${inputProps.width} / ${inputProps.height}` }}
             />

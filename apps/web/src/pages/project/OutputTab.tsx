@@ -1,8 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { api, type ChannelSlots, fileUrl, formatWhen, type ProjectDetail, toLocalInput } from '../../api';
-import { Badge, Button, Card, Empty, ErrorBox, Select, formatSeconds } from '../../ui';
+import { Badge, Button, Card, Empty, ErrorBox, Select, SpeedButtons, formatSeconds } from '../../ui';
 import { useStartJob } from '../ProjectPage';
+
+// Um vídeo novo volta para 1x ao carregar; `defaultPlaybackRate` mantém a escolha.
+const applyRate = (video: HTMLVideoElement, rate: number) => {
+  video.defaultPlaybackRate = rate;
+  video.playbackRate = rate;
+};
 
 const PLATFORMS = [
   { id: 'youtube', label: 'YouTube' },
@@ -146,6 +152,8 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
     },
   });
   const entry = final?.langs?.[lang];
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [rate, setRate] = useState(1);
   const meta = doc.metadata[lang];
   const chapters = entry?.chapters?.map((c) => `${formatSeconds(c.start)} ${c.title}`) ?? [];
 
@@ -175,8 +183,16 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
         ) : null}
         {entry?.video ? (
           <Card className="flex flex-col gap-3">
-            <video key={entry.video} src={fileUrl(entry.video)} controls className="max-h-[70vh] w-full rounded-lg bg-black" />
-            <div className="flex flex-wrap gap-2 text-xs">
+            <video
+              ref={videoRef}
+              key={entry.video}
+              src={fileUrl(entry.video)}
+              controls
+              onLoadedMetadata={(e) => applyRate(e.currentTarget, rate)}
+              className="max-h-[70vh] w-full rounded-lg bg-black"
+            />
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <SpeedButtons value={rate} onChange={(r) => { setRate(r); if (videoRef.current) applyRate(videoRef.current, r); }} />
               <a className="text-sky-400 hover:underline" href={fileUrl(entry.video)} download>Baixar MP4</a>
               <a className="text-sky-400 hover:underline" href={fileUrl(entry.srt)} download>Legendas (.srt)</a>
               {entry.thumbnail ? <a className="text-sky-400 hover:underline" href={fileUrl(entry.thumbnail)} download>Thumbnail</a> : null}
