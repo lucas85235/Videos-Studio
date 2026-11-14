@@ -25,8 +25,15 @@ def create_project(
     channel_id: str | None = None,
     languages: list[str] | None = None,
     settings: dict[str, Any] | None = None,
+    voice: dict[str, str] | None = None,
 ) -> ProjectDoc:
     style = get_style(style_id)
+    overrides: dict[str, Any] = {}
+    if voice:
+        # A voz escolhida vale para o projeto: o provedor dela vem primeiro na cadeia (o resto fica de reserva).
+        chain = [voice["provider"], *(p for p in style.voice.chain if p != voice["provider"])]
+        overrides = {"voice": {"voice": voice["voice"], "chain": chain}}
+        get_style(style_id, overrides)  # valida
     langs = languages or style.languages.outputs
     primary = langs[0] if langs else style.languages.primary
     project_id = new_id("prj")
@@ -40,6 +47,7 @@ def create_project(
         primary_language=primary,
         languages=langs,
         seed=secrets.randbelow(2**31),
+        style_overrides=overrides,
     )
     default_settings = {"gates": {"script": True, "preview": True, "publish": True}}
     with session_scope() as s:

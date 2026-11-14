@@ -181,7 +181,12 @@ export type StyleSpec = {
   [key: string]: unknown;
 };
 
-export type StyleItem = { source: 'preset' | 'user'; version: number; style: StyleSpec; warnings: string[]; parent_id?: string | null };
+export type VoiceOption = { id: string; label: string; gender: string | null; tone: string; sample: string | null };
+export type VoiceProvider = { id: string; name: string; available: boolean; reason: string; preview_only: boolean; voices: VoiceOption[] };
+export type VoiceCatalog = { lang: string; sample_text: string; providers: VoiceProvider[] };
+export type VoiceChoice = { provider: string; voice: string };
+
+export type StyleItem ={ source: 'preset' | 'user'; version: number; style: StyleSpec; warnings: string[]; parent_id?: string | null };
 
 export type Provider = {
   id: string;

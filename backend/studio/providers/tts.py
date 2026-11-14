@@ -31,6 +31,7 @@ from studio.providers.base import (
     TTSProvider,
     TTSResult,
     Usage,
+    VoiceOption,
     Word,
 )
 from studio.providers.llm import gemini_post
@@ -53,12 +54,25 @@ def _final_wav(raw: Path, out_dir: Path, tempo: float = 1.0) -> Path:
 # --------------------------------------------------------------------------------------------
 
 GEMINI_TTS_MODELS = ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts")
-GEMINI_VOICES = (
-    "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe", "Autonoe",
-    "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome", "Algenib", "Rasalgethi",
-    "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird",
-    "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
-)
+# Vozes pré-prontas do Gemini TTS (as mesmas do Chirp 3 HD). Timbre conforme a documentação do Google.
+GEMINI_VOICE_INFO: dict[str, tuple[str, str]] = {
+    "Zephyr": ("feminina", "brilhante"), "Puck": ("masculina", "animada"), "Charon": ("masculina", "informativa"),
+    "Kore": ("feminina", "firme"), "Fenrir": ("masculina", "empolgada"), "Leda": ("feminina", "jovem"),
+    "Orus": ("masculina", "firme"), "Aoede": ("feminina", "leve"), "Callirrhoe": ("feminina", "descontraída"),
+    "Autonoe": ("feminina", "brilhante"), "Enceladus": ("masculina", "soprosa"), "Iapetus": ("masculina", "clara"),
+    "Umbriel": ("masculina", "descontraída"), "Algieba": ("masculina", "macia"), "Despina": ("feminina", "macia"),
+    "Erinome": ("feminina", "clara"), "Algenib": ("masculina", "rouca"), "Rasalgethi": ("masculina", "informativa"),
+    "Laomedeia": ("feminina", "animada"), "Achernar": ("feminina", "suave"), "Alnilam": ("masculina", "firme"),
+    "Schedar": ("masculina", "equilibrada"), "Gacrux": ("feminina", "madura"), "Pulcherrima": ("feminina", "direta"),
+    "Achird": ("masculina", "amigável"), "Zubenelgenubi": ("masculina", "casual"),
+    "Vindemiatrix": ("feminina", "gentil"), "Sadachbia": ("masculina", "viva"),
+    "Sadaltager": ("masculina", "experiente"), "Sulafat": ("feminina", "calorosa"),
+}
+GEMINI_VOICES = tuple(GEMINI_VOICE_INFO)
+
+
+def gemini_voice_options() -> list[VoiceOption]:
+    return [VoiceOption(id=name, label=name, gender=gender, tone=tone) for name, (gender, tone) in GEMINI_VOICE_INFO.items()]
 
 
 def gemini_tts_prompt(text: str, style_prompt: str | None, speed: float | None = None) -> str:
@@ -103,6 +117,9 @@ class GeminiTTS(TTSProvider):
 
     def availability(self) -> tuple[bool, str]:
         return (True, "ok") if self._key() else (False, "sem chave do Gemini (GEMINI_API_KEY ou cofre)")
+
+    def voices(self, lang: str) -> list[VoiceOption]:
+        return gemini_voice_options()  # multilíngues: as mesmas vozes em todos os idiomas
 
     def synthesize(self, *, text, lang, voice, style_prompt, speed, out_dir) -> TTSResult:
         key = self._key()
@@ -178,6 +195,9 @@ class GoogleChirp3HD(TTSProvider):
 
     def availability(self) -> tuple[bool, str]:
         return (True, "ok") if self._key() else (False, "sem chave do Google Cloud TTS")
+
+    def voices(self, lang: str) -> list[VoiceOption]:
+        return gemini_voice_options()  # o Chirp 3 HD usa os mesmos nomes ({idioma}-Chirp3-HD-{voz})
 
     def synthesize(self, *, text, lang, voice, style_prompt, speed, out_dir) -> TTSResult:
         key = self._key()
@@ -360,6 +380,13 @@ class WindowsSapiTTS(TTSProvider):
         if platform.system() != "Windows":
             return False, "disponível só no Windows"
         return True, "ok"
+
+    def voices(self, lang: str) -> list[VoiceOption]:
+        name = SAPI_VOICES.get(lang.split("-")[0].lower())
+        if not name:
+            return []
+        short = name.removeprefix("Microsoft ").removesuffix(" Desktop")
+        return [VoiceOption(id=name, label=short, gender="feminina", tone="voz do Windows")]
 
     def synthesize(self, *, text, lang, voice, style_prompt, speed, out_dir) -> TTSResult:
         if platform.system() != "Windows":

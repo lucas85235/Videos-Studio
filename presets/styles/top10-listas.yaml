@@ -35,7 +35,7 @@ voice:
 art:
   bible: "ilustração digital cinematográfica, cores saturadas sobre fundo escuro, iluminação de cena dramática, composição centralizada"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
-  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+  image_chain: [codex_cli]
 
 edit:
   shot_seconds: { min: 3.0, max: 5.0 }

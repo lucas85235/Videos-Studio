@@ -3,8 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type TimelineProps, VideoTimeline } from '@vstudio/renderer';
 import React, { useMemo, useRef, useState } from 'react';
 import { Audio } from 'remotion';
-import { api, type EditProposal, fileUrl, type LibraryMusic, MOOD_LABELS, type ProjectDetail } from '../../api';
+import { api, type EditProposal, fileUrl, type LibraryMusic, MOOD_LABELS, type ProjectDetail, type VoiceChoice } from '../../api';
 import { Badge, Button, Card, Empty, ErrorBox, PLAYBACK_RATES, Select, Spinner, Textarea, formatSeconds } from '../../ui';
+import { VoicePicker } from '../../voices';
 import { useStartJob } from '../ProjectPage';
 
 type Timeline = TimelineProps & { mix: string; duration: number; version: number; narration: unknown[]; chapters: { title: string; start: number }[] };
@@ -143,6 +144,51 @@ const EditChat: React.FC<{ projectId: string; currentSceneId: () => string | nul
   );
 };
 
+const VoiceCard: React.FC<{ detail: ProjectDetail; busy: boolean; lang: string }> = ({ detail, busy, lang }) => {
+  const { doc } = detail;
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const voice = detail.style?.voice;
+  const current = voice?.voice ? { provider: voice.chain[0], voice: voice.voice } : null;
+  const change = useMutation({
+    mutationFn: (choice: VoiceChoice) =>
+      api.post(`/api/projects/${doc.id}/ops`, {
+        ops: [
+          { op: 'set_style', path: 'voice.voice', value: choice.voice },
+          { op: 'set_style', path: 'voice.chain', value: [choice.provider, ...(voice?.chain ?? []).filter((p) => p !== choice.provider)] },
+        ],
+        message: `Voz: ${choice.voice}`,
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['project', doc.id] }),
+  });
+  return (
+    <Card className="flex flex-col gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold">Voz</span>
+        <Badge tone="info">{voice?.voice ?? 'padrão do provedor'}</Badge>
+        <button type="button" className="text-sky-400 hover:underline" onClick={() => setOpen((o) => !o)}>
+          {open ? 'Fechar' : 'Ouvir e trocar'}
+        </button>
+        {change.isSuccess ? <span className="text-emerald-400">Voz trocada. Clique em “Atualizar prévia”: as narrações serão refeitas.</span> : null}
+      </div>
+      {open ? (
+        <div className="max-h-80 overflow-y-auto pr-1">
+          <VoicePicker
+            lang={lang}
+            providers={voice?.chain}
+            value={current}
+            disabled={busy || change.isPending}
+            onChange={(choice) => {
+              if (choice.provider !== current?.provider || choice.voice !== current?.voice) change.mutate(choice);
+            }}
+          />
+        </div>
+      ) : null}
+      <ErrorBox error={change.error} />
+    </Card>
+  );
+};
+
 const MusicCard: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ detail, busy }) => {
   const { doc } = detail;
   const client = useQueryClient();
@@ -268,6 +314,7 @@ export const PreviewTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({
             ))}
           </div>
         ) : null}
+        <VoiceCard detail={detail} busy={busy} lang={lang} />
         <MusicCard detail={detail} busy={busy} />
         <ErrorBox error={startJob.error} />
       </div>

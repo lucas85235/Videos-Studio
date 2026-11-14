@@ -28,8 +28,9 @@ Onde ficam os arquivos: `%USERPROFILE%\VideosStudioData` (banco, cache, vídeos 
 
 ## 4. Modo prévia × conteúdo real
 
-Sem chaves, o app usa provedores de **prévia**:
-- roteiro de exemplo (regras fixas);
+O roteiro, a tradução e o agente de edição usam **só o Claude da sua conta**. Sem o Claude Code logado, gerar o roteiro falha com o motivo (não há roteiro de exemplo no lugar).
+
+Sem as chaves de voz e de imagem, o app usa provedores de **prévia**:
 - voz do Windows (Maria);
 - imagens procedurais abstratas.
 
@@ -39,13 +40,19 @@ Para conteúdo real **a custo zero**:
 
 | O quê | Onde conseguir | Onde colocar |
 |---|---|---|
-| **Claude pela sua conta** (roteiro, tradução, agente) | Plano Pro/Max do Claude. Instale o Claude Code e rode `claude auth login` com a sua conta (não use chave de API: seria cobrado à parte). | Detectado sozinho quando o comando `claude` existir e estiver logado. Conta nos limites de uso do seu plano; ao bater o limite, o Gemini assume até ele voltar. |
-| **Gemini** (roteiro, agente, voz) | Google AI Studio → "Get API key". Use um projeto **sem** cobrança ativada para ficar na camada grátis. | Configurações › Roteiro e agente › Gemini (a mesma chave serve para a voz) |
+| **Claude pela sua conta** (roteiro, tradução, agente) | Plano Pro/Max do Claude. Instale o Claude Code e rode `claude auth login` com a sua conta (não use chave de API: seria cobrado à parte). | Detectado sozinho quando o comando `claude` existir e estiver logado. Conta nos limites de uso do seu plano; ao bater o limite, espere ele voltar e gere de novo. |
+| **Gemini** (voz) | Google AI Studio → "Get API key". Use um projeto **sem** cobrança ativada para ficar na camada grátis. | Configurações › Voz › Gemini |
 | **Codex** (imagens pela cota do ChatGPT Plus) | Instale o Codex CLI (`npm install -g @openai/codex`) e rode `codex login` com a sua conta do ChatGPT. | Detectado sozinho quando o comando `codex` existir |
 | **Pexels** (fotos de banco, opcional) | pexels.com/api | Configurações › Imagens › Pexels |
-| **Claude pela API** (opcional, pago por uso) | console.anthropic.com | Configurações › Roteiro e agente › Claude (API paga). Só é usado se a conta e o Gemini falharem. |
 
-A ordem de uso é sempre a da cadeia de fallback de cada estilo. Se um provedor falhar ou esgotar a cota, o próximo assume. Para roteiro e agente: Claude da conta → Gemini → Claude pela API.
+Voz e imagens seguem a cadeia de fallback de cada estilo: se um provedor falhar ou esgotar a cota, o próximo assume. As APIs pagas (Claude API, Gemini para texto, FLUX, fal.ai e OpenAI Images) foram retiradas do app.
+
+### Escolher a voz
+
+- **Ouvir antes**: Configurações › Voz › *Ouvir vozes* (com o idioma). Clique em ▶: a amostra é gerada na primeira vez (um pedido da cota grátis do Gemini) e fica guardada.
+- **No novo projeto**: o campo *Voz do narrador* lista as vozes do estilo com ▶ para ouvir; clique no nome para escolher. Sem escolha, vale a voz do estilo.
+- **Num projeto existente**: aba *Prévia e edição* › cartão *Voz* › *Ouvir e trocar*. Depois, **Atualizar prévia**: as narrações são refeitas com a voz nova.
+- As 30 vozes do Gemini falam todos os idiomas; a descrição (firme, macia, rouca…) segue a documentação do Google.
 
 O Claude da conta usa o Opus mais recente com esforço médio. Para trocar, defina `VS_CLAUDE_MODEL` (ex.: `sonnet`) ou `VS_CLAUDE_EFFORT` (`low`, `high`…) antes de iniciar o app. É uso pessoal do seu plano: não distribua o app configurado com a sua conta para outras pessoas.
 
@@ -119,9 +126,9 @@ Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** col
 |---|---|
 | Render lento | VHS, desfoque de bordas e aberração cromática custam caro (o grão é leve). Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
 | Disco enchendo | Configurações → *Armazenamento* → **Limpar agora** (ou `uv run videos-studio clean`). Apaga renders e mixagens sem uso; narrações, imagens e os vídeos em *outputs* ficam. |
-| "provedores de teste" na prévia | Configure o Gemini (voz e roteiro) e o Codex ou outra fonte de imagens, e gere a prévia de novo: o app troca sozinho os itens de prévia. |
+| "provedores de teste" na prévia | Configure o Gemini (voz) e o Codex (imagens) e gere a prévia de novo: o app troca sozinho os itens de prévia. |
 | A voz lê instruções ou repete frases | Atualize o app (versão de 14/11/2026 em diante) e gere a prévia de novo: as narrações antigas não são reaproveitadas. Se o aviso continuar em algum trecho, ajuste uma palavra dele na aba Roteiro: só aquela narração é refeita. |
-| Roteiro estranho, genérico ("existe um detalhe que muda tudo") | É o roteiro de exemplo do modo prévia. Ele só entra quando nenhum provedor de texto está configurado; se o Claude ou o Gemini falharem, o job para com o erro em vez de usar o exemplo. |
+| "nenhum provedor de llm funcionou: claude_code…" | O Claude Code não está logado ou o limite do plano acabou. Rode `claude auth login` (ou espere o limite voltar) e gere de novo. |
 | Cota do Gemini esgotada | O app segue para o próximo provedor da cadeia e tenta o Gemini de novo no dia seguinte. |
 | Porta 8765 ocupada | Defina outra porta: `$env:VS_PORT=8766` antes de iniciar. |
 | Erro ao conectar o YouTube | Confira se o cliente OAuth é do tipo "App para computador" e se a tela de consentimento está publicada. |

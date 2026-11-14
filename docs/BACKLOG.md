@@ -10,7 +10,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] **Projeto no Google Cloud + cliente OAuth do YouTube** (passo a passo em docs/USO.md §5). O envio ao YouTube foi testado só com respostas simuladas da API; o primeiro envio real deve ser **privado**.
 - [ ] **Verificar o canal do YouTube por telefone** (uploads acima de 15 min e thumbnails personalizadas).
 - [ ] **Teste cego de voz em PT-BR** (README §8.4): Gemini × Chirp 3 HD × local × ElevenLabs (referência).
-- [ ] **Teste cego de imagem** no estilo do canal: Codex × FLUX 3 Klein × Z-Image.
+- [ ] **Teste cego de imagem** no estilo do canal: Codex × Z-Image local (FLUX, fal.ai e OpenAI Images foram retirados).
 - [ ] Decidir os **nichos** e os estilos prioritários depois do MVP.
 
 ## Funcionalidades planejadas (README), ainda não feitas
@@ -23,6 +23,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 
 ### Voz e idiomas
 - [x] **Whisper local** instalado e no instalador (`--extra asr`): confere cada narração. Roda na CPU porque faltam as DLLs do CUDA 12 (cuBLAS/cuDNN); instalar o CUDA 12 deixaria mais rápido.
+- [ ] Vozes da ElevenLabs e da voz local (Qwen3) na escolha com amostra (hoje só Gemini, Chirp 3 HD e Windows listam vozes).
 - [ ] Voz do Gemini com estilo: hoje vai só o texto (a instrução vazava). Testar de novo quando o Google atualizar o modelo de TTS (`VS_GEMINI_TTS_STYLE=1`).
 - [ ] Clonagem da sua voz: assistente de gravação, Applio/RVC e Qwen3-TTS local (o adapter `qwen3_tts_local` é só um marcador).
 - [ ] **Modo B multi-idioma** (várias faixas de áudio no mesmo vídeo): tradução com orçamento de duração, time-stretch e pacote para o YouTube Studio.

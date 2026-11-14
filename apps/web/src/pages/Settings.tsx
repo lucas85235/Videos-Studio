@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
-import { api, type LibraryMusic, MOOD_LABELS, type Provider } from '../api';
-import { Badge, Button, Card, ErrorBox, Input, formatBytes } from '../ui';
+import { api, LANGUAGES, type LibraryMusic, MOOD_LABELS, type Provider } from '../api';
+import { Badge, Button, Card, ErrorBox, Input, Select, formatBytes } from '../ui';
+import { VoicePicker } from '../voices';
 
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
 type Costs = { by_provider: { provider: string; kind: string; units: number; cost_usd: number; calls: number }[]; total_usd: number };
@@ -173,6 +174,26 @@ const StorageCard: React.FC = () => {
   );
 };
 
+const VoiceSamplesCard: React.FC = () => {
+  const [lang, setLang] = useState('pt-BR');
+  return (
+    <Card className="mb-3 flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold">Ouvir vozes</span>
+        <Select className="text-xs" value={lang} onChange={(e) => setLang(e.target.value)}>
+          {LANGUAGES.map((l) => (
+            <option key={l.code} value={l.code}>{l.label}</option>
+          ))}
+        </Select>
+        <span className="text-xs text-zinc-500">
+          A amostra é gerada na primeira vez que você ouve (um pedido da cota do provedor) e fica guardada. A voz de cada vídeo é escolhida no novo projeto ou na aba Prévia.
+        </span>
+      </div>
+      <VoicePicker lang={lang} />
+    </Card>
+  );
+};
+
 export const SettingsPage: React.FC = () => {
   const providers = useQuery({ queryKey: ['providers'], queryFn: () => api.get<Provider[]>('/api/providers') });
   const status = useQuery({ queryKey: ['status'], queryFn: () => api.get<Status>('/api/status') });
@@ -182,8 +203,8 @@ export const SettingsPage: React.FC = () => {
     <div className="mx-auto max-w-6xl p-6">
       <h1 className="mb-1 text-xl font-bold">Configurações</h1>
       <p className="mb-6 text-sm text-zinc-500">
-        As chaves ficam criptografadas no seu computador. Sem nenhuma chave, o app funciona em modo de prévia (voz do Windows, imagens procedurais, roteiro de exemplo). Para conteúdo real a custo zero,
-        configure a chave grátis do <b>Gemini</b> (Google AI Studio): ela libera roteiro, agente de edição e voz.
+        As chaves ficam criptografadas no seu computador. O roteiro, a tradução e o agente de edição usam o <b>Claude da sua conta</b> (Claude Code logado). A voz grátis vem da chave do{' '}
+        <b>Gemini</b> (Google AI Studio) e as imagens, do <b>Codex</b> (ChatGPT Plus). Sem eles, a voz e as imagens ficam em modo de prévia (voz do Windows, imagens procedurais).
       </p>
       {status.data ? (
         <Card className="mb-6 grid gap-2 text-sm md:grid-cols-4">
@@ -201,6 +222,7 @@ export const SettingsPage: React.FC = () => {
             <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">{KIND_LABEL[kind]}</h2>
             <span className="text-xs text-zinc-600">a ordem abaixo é a ordem de fallback padrão</span>
           </div>
+          {kind === 'tts' ? <VoiceSamplesCard /> : null}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {(providers.data ?? []).filter((p) => p.kind === kind).map((p) => <ProviderCard key={p.id} p={p} />)}
           </div>

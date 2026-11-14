@@ -200,8 +200,8 @@ class ArtSpec(StrictModel):
     bible: str = "ilustração cinematográfica sombria, alto contraste, luz dramática"
     banned: list[str] = ["texto", "letras", "logotipos", "marca d'água"]
     anchors: list[str] = []
-    image_chain: list[str] = ["codex_cli", "bfl_flux", "fal_image", "openai_image"]
-    thumbnail_chain: list[str] = ["codex_cli", "openai_image"]
+    image_chain: list[str] = ["codex_cli"]
+    thumbnail_chain: list[str] = ["codex_cli"]
     sources_mix: dict[str, float] = {"ai_image": 1.0}
     photoreal: bool = False
     """Arte fotorrealista exige rótulo de conteúdo sintético nas plataformas."""

@@ -26,6 +26,11 @@ router = APIRouter(prefix="/api/projects", tags=["projetos"])
 JOB_KINDS = {"script", "storyboard", "translate", "metadata", "preview", "render", "autopilot"}
 
 
+class VoiceChoice(BaseModel):
+    provider: str = Field(min_length=1, max_length=64)
+    voice: str = Field(min_length=1, max_length=120)
+
+
 class CreateProject(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     style_id: str
@@ -34,6 +39,7 @@ class CreateProject(BaseModel):
     channel_id: str | None = None
     languages: list[str] | None = None
     autopilot: bool = False
+    voice: VoiceChoice | None = None
 
 
 class DocUpdate(BaseModel):
@@ -107,6 +113,7 @@ def create(body: CreateProject) -> dict[str, Any]:
             brief=body.brief,
             channel_id=body.channel_id,
             languages=body.languages,
+            voice=body.voice.model_dump() if body.voice else None,
         )
     except StyleNotFound as exc:
         raise HTTPException(status_code=400, detail=f"estilo não encontrado: {exc}") from exc

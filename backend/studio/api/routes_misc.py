@@ -433,3 +433,43 @@ def youtube_batch(body: YouTubeBatchBody) -> dict[str, Any]:
     if not yt.account()["connected"]:
         raise HTTPException(status_code=400, detail="conecte o canal do YouTube primeiro (aba Vídeo e publicação de um projeto)")
     return {"results": schedule.plan_youtube_batch(body.items, get_runner().submit)}
+
+
+# --------------------------------------------------------------------------------------------
+# Vozes: catálogo e amostras
+# --------------------------------------------------------------------------------------------
+
+
+class VoiceSampleRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=64)
+    voice: str = Field(min_length=1, max_length=120)
+    lang: str = Field(default="pt-BR", min_length=2, max_length=16)
+
+
+@router.get("/voices")
+def voice_catalog(lang: str = "pt-BR", providers: str | None = None) -> dict[str, Any]:
+    from studio.providers import voices
+
+    ids = [p for p in (providers or "").split(",") if p] or None
+    return {"lang": lang, "sample_text": voices.sample_text(lang), "providers": voices.catalog(lang, ids)}
+
+
+@router.post("/voices/sample")
+def voice_sample(body: VoiceSampleRequest) -> dict[str, Any]:
+    """Gera a amostra na primeira vez (um pedido da cota do provedor) e devolve o arquivo."""
+    from studio.providers.base import NotConfigured, ProviderError, QuotaExceeded, TransientError
+    from studio.providers.voices import VoiceError, make_sample
+
+    try:
+        rel = make_sample(body.provider, body.voice, body.lang)
+    except VoiceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NotConfigured as exc:
+        raise HTTPException(status_code=409, detail=f"provedor indisponível: {exc}") from exc
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=f"cota esgotada: {exc}") from exc
+    except TransientError as exc:
+        raise HTTPException(status_code=503, detail=f"falha temporária, tente de novo: {exc}") from exc
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"path": rel, "url": f"/files/{rel}"}

@@ -34,7 +34,7 @@ voice:
 art:
   bible: "pintura clássica a óleo, estátuas de mármore greco-romanas, luz dourada lateral, fundo escuro, atmosfera épica e contemplativa"
   banned: ["texto", "letras", "logotipos", "marca d'água"]
-  image_chain: [codex_cli, bfl_flux, fal_image, openai_image]
+  image_chain: [codex_cli]
 
 edit:
   shot_seconds: { min: 2.2, max: 3.6 }

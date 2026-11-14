@@ -55,9 +55,14 @@ def fake_claude(monkeypatch, online):
     return calls, replies
 
 
-def test_claude_code_is_first_in_the_default_llm_chain():
-    assert DEFAULT_CHAINS["llm"][0] == "claude_code"
-    assert DEFAULT_CHAINS["llm"][-1] == "anthropic"  # a API paga só como último recurso
+def test_claude_account_is_the_only_llm(online):
+    from studio.providers import registry
+
+    assert DEFAULT_CHAINS["llm"] == ["claude_code"]
+    assert registry.resolve_chain("llm", None) == ["claude_code"]  # sem roteiro de exemplo como reserva
+    listed = {p["id"] for p in registry.describe_all()}
+    assert "claude_code" in listed and not listed & {"anthropic", "gemini", "mock_llm"}
+    assert not listed & {"bfl_flux", "fal_image", "openai_image"} and "codex_cli" in listed
 
 
 def test_complete_json_uses_the_account_without_tools_or_api_key(fake_claude):
@@ -147,33 +152,3 @@ def test_real_claude_code_call(online):
         prompt="Dê um título curto, em português, para um vídeo sobre um farol abandonado.", schema=SCHEMA,
     )
     assert result.data["titulo"].strip() and result.usage.cost_usd == 0.0
-
-
-def test_example_script_never_replaces_a_configured_llm_that_failed(monkeypatch, online):
-    from studio.providers import registry
-    from studio.providers.base import LLMProvider, ProviderInfo
-
-    class Down(LLMProvider):
-        info = ProviderInfo(id="down_llm", kind="llm", name="fora do ar", commercial_use=True)
-
-        def complete_json(self, **kwargs):
-            raise TransientError("erro 503 no Gemini")
-
-    class Missing(LLMProvider):
-        info = ProviderInfo(id="missing_llm", kind="llm", name="sem chave", commercial_use=True)
-
-        def availability(self):
-            return False, "sem chave"
-
-    monkeypatch.setitem(registry._PROVIDERS, "down_llm", Down())
-    monkeypatch.setitem(registry._PROVIDERS, "missing_llm", Missing())
-    call = lambda p: p.complete_json(task="script", system="", prompt="", schema={}, context={"topic": "farol"})  # noqa: E731
-
-    with pytest.raises(registry.ChainFailed) as failed:
-        registry.run_chain("llm", ["missing_llm", "down_llm", "mock_llm"], call)
-    assert [a.outcome for a in failed.value.attempts] == ["indisponível", "TransientError", "não usado"]
-    assert "503" in str(failed.value)
-
-    # sem nenhum provedor real configurado, o modo prévia continua funcionando
-    _, provider, _ = registry.run_chain("llm", ["missing_llm", "mock_llm"], call)
-    assert provider.info.id == "mock_llm"

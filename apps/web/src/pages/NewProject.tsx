@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, type Channel, LANGUAGES, type StyleItem } from '../api';
+import { api, type Channel, LANGUAGES, type StyleItem, type VoiceChoice } from '../api';
 import { Badge, Button, Card, ErrorBox, Field, Input, Select, Textarea } from '../ui';
+import { VoicePicker } from '../voices';
 
 export const NewProjectPage: React.FC = () => {
   const navigate = useNavigate();
@@ -15,6 +16,7 @@ export const NewProjectPage: React.FC = () => {
   const [channelId, setChannelId] = useState('');
   const [langs, setLangs] = useState<string[]>(['pt-BR']);
   const [autopilot, setAutopilot] = useState(true);
+  const [voice, setVoice] = useState<VoiceChoice | null>(null);
 
   const style = useMemo(() => styles.data?.find((s) => s.style.id === styleId), [styles.data, styleId]);
 
@@ -28,6 +30,7 @@ export const NewProjectPage: React.FC = () => {
         channel_id: channelId || null,
         languages: langs,
         autopilot,
+        voice,
       }),
     onSuccess: (data) => navigate(`/projetos/${data.project.id}`),
   });
@@ -65,10 +68,26 @@ export const NewProjectPage: React.FC = () => {
               ))}
             </div>
           </Field>
+          {style ? (
+            <Field
+              label="Voz do narrador"
+              hint={`Clique em ▶ para ouvir e no nome para escolher. ${voice ? `Escolhida: ${voice.voice}.` : `Sem escolha, vale a do estilo${style.style.voice.voice ? ` (${style.style.voice.voice})` : ''}.`} A amostra é gerada na primeira vez que você ouve (um pedido da cota).`}
+            >
+              <div className="max-h-72 overflow-y-auto pr-1">
+                <VoicePicker
+                  lang={langs[0] ?? 'pt-BR'}
+                  providers={style.style.voice.chain}
+                  value={voice ?? (style.style.voice.voice ? { provider: style.style.voice.chain[0], voice: style.style.voice.voice } : null)}
+                  defaultVoice={style.style.voice.voice}
+                  onChange={setVoice}
+                />
+              </div>
+            </Field>
+          ) : null}
         </Card>
         <Card className="flex flex-col gap-4">
           <Field label="Estilo">
-            <Select value={styleId} onChange={(e) => setStyleId(e.target.value)}>
+            <Select value={styleId} onChange={(e) => { setStyleId(e.target.value); setVoice(null); }}>
               {(styles.data ?? []).map((s) => (
                 <option key={s.style.id} value={s.style.id}>
                   {s.style.name}

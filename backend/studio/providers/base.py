@@ -50,6 +50,8 @@ class ProviderInfo:
     cost_note: str = ""
     deterministic: bool = False
     """Mesma entrada gera a mesma saída (não adianta tentar de novo no controle de qualidade)."""
+    hidden: bool = False
+    """Não aparece em Configurações (ex.: o roteiro de regras, que só existe no modo offline dos testes)."""
 
 
 @dataclass
@@ -122,7 +124,22 @@ class LLMProvider(Provider):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class VoiceOption:
+    """Uma voz que o provedor oferece (para a escolha com amostra)."""
+
+    id: str
+    label: str
+    gender: str | None = None
+    """"feminina" ou "masculina" (quando o provedor informa)."""
+    tone: str = ""
+
+
 class TTSProvider(Provider):
+    def voices(self, lang: str) -> list[VoiceOption]:
+        """Vozes que dá para escolher neste idioma (vazio: o provedor não deixa escolher)."""
+        return []
+
     def synthesize(
         self,
         *,

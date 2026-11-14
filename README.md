@@ -476,9 +476,9 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
 
 | Etapa | Cadeia padrão (ordem de fallback) | Observações |
 |---|---|---|
-| Roteiro, tradução, agente | Claude pela conta (Claude Code `claude -p`, plano Pro/Max) → Gemini → Claude pela API | Sem custo extra: usa os limites do plano; a API paga só como último recurso |
+| Roteiro, tradução, agente | Só o Claude pela conta (Claude Code `claude -p`, plano Pro/Max) | Sem custo extra: usa os limites do plano. API paga e Gemini (texto) retirados em 14/11/2026 |
 | Pesquisa de fatos | LLM + busca web (Tavily/Brave/Exa) | Fontes salvas no roteiro |
-| **Imagens de cena** | **Codex (seu Plus)** → **FLUX 3 Image Klein API** (US$ 0,009/img) → local (sd.cpp) | §8.1–8.3 |
+| **Imagens de cena** | **Codex (seu Plus)** → procedural (só prévia); Pexels opcional. FLUX, fal.ai e OpenAI Images retirados em 14/11/2026 | §8.1–8.3 |
 | **Thumbnails** | **Codex (seu Plus)** → API OpenAI (`gpt-image-2.6-flare`) ou Nano Banana 2.1 | Texto sempre sobreposto por código |
 | **Narração** | **Gemini 3.8 Flash TTS (grátis)** → Chirp 3 HD (1 M caracteres grátis/mês) → Qwen3-TTS local; ElevenLabs só se o teste cego justificar | §8.4 |
 | QA da narração / timestamps | faster-whisper large-v3-turbo int8 + WhisperX (local, ~1,5–3 GB) | Roda bem na sua GPU |

@@ -1,12 +1,11 @@
 """Provedores de imagem.
 
-Cadeia padrão (README §8.1): Codex CLI (cota do ChatGPT Plus) → FLUX (BFL) → fal.ai → OpenAI Images
-→ procedural (só prévia). Nenhum nome de modelo fica fixo: todos podem ser trocados na configuração.
+Cadeia padrão: Codex CLI (cota do ChatGPT Plus) → procedural (só prévia). Fotos de banco pelo Pexels (opcional).
+FLUX (BFL), fal.ai e OpenAI Images (pagos por imagem) foram retirados a pedido do usuário em 14/11/2026.
 """
 
 from __future__ import annotations
 
-import base64
 import logging
 import math
 import os
@@ -137,173 +136,6 @@ class CodexCLIImage(ImageProvider):
         final = fit_image(newest, out_dir / "image.jpg", width, height)
         return ImageResult(path=final, usage=Usage(units=1, unit_name="images"), model="codex-imagegen",
                            meta={"source_file": newest.name})
-
-
-# --------------------------------------------------------------------------------------------
-# BFL (FLUX) / fal.ai / OpenAI
-# --------------------------------------------------------------------------------------------
-
-
-class BFLFluxImage(ImageProvider):
-    info = ProviderInfo(
-        id="bfl_flux",
-        kind="image",
-        name="FLUX (Black Forest Labs)",
-        commercial_use=True,
-        credential_fields=("api_key",),
-        env_vars=("BFL_API_KEY",),
-        cost_note="FLUX 3 Image Klein ≈ US$ 0,009/imagem 1K (sem cobrança em falha/moderação)",
-        notes="Modelo configurável em VS_BFL_MODEL (padrão flux-3-image-klein; confira o nome na documentação da BFL).",
-    )
-    price = 0.009
-
-    def availability(self) -> tuple[bool, str]:
-        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
-        return (True, "ok") if key else (False, "sem chave da BFL")
-
-    def generate(self, *, prompt, width, height, seed, out_dir, references=None) -> ImageResult:
-        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
-        if not key:
-            raise NotConfigured("sem chave da BFL")
-        model = os.environ.get("VS_BFL_MODEL", "flux-3-image-klein")
-        gen_w, gen_h = generation_size(width, height, 1440)
-        try:
-            resp = httpx.post(
-                f"https://api.bfl.ai/v1/{model}",
-                headers={"x-key": key, "accept": "application/json"},
-                json={"prompt": prompt, "width": gen_w, "height": gen_h, "seed": seed, "output_format": "jpeg"},
-                timeout=60,
-            )
-        except httpx.HTTPError as exc:
-            raise TransientError(f"falha de conexão com a BFL: {exc}") from exc
-        if resp.status_code == 402:
-            raise QuotaExceeded("créditos da BFL esgotados")
-        if resp.status_code == 429:
-            raise TransientError("limite de taxa da BFL")
-        if resp.status_code in (401, 403):
-            raise NotConfigured("chave da BFL recusada")
-        if resp.status_code != 200:
-            raise ProviderError(f"erro da BFL ({resp.status_code}): {resp.text[:400]}")
-        polling_url = resp.json().get("polling_url")
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            time.sleep(1.5)
-            poll = httpx.get(polling_url, headers={"x-key": key}, timeout=30).json()
-            status = poll.get("status")
-            if status == "Ready":
-                url = poll["result"]["sample"]
-                raw = _download(url, out_dir / "raw.jpg")
-                final = fit_image(raw, out_dir / "image.jpg", width, height)
-                raw.unlink(missing_ok=True)
-                return ImageResult(path=final, usage=Usage(units=1, unit_name="images", cost_usd=self.price), model=model)
-            if status in ("Content Moderated", "Request Moderated"):
-                raise Refused("a BFL moderou o pedido")
-            if status in ("Error", "Failed"):
-                raise ProviderError(f"a BFL falhou: {poll}")
-        raise TransientError("tempo esgotado esperando a BFL")
-
-
-class FalImage(ImageProvider):
-    info = ProviderInfo(
-        id="fal_image",
-        kind="image",
-        name="fal.ai (Z-Image Turbo e outros)",
-        commercial_use=True,
-        credential_fields=("api_key",),
-        env_vars=("FAL_KEY",),
-        cost_note="Z-Image Turbo ≈ US$ 0,005 por megapixel",
-        notes="Modelo configurável em VS_FAL_IMAGE_MODEL (padrão fal-ai/z-image/turbo).",
-    )
-    price = 0.006
-
-    def availability(self) -> tuple[bool, str]:
-        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
-        return (True, "ok") if key else (False, "sem chave da fal.ai")
-
-    def generate(self, *, prompt, width, height, seed, out_dir, references=None) -> ImageResult:
-        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
-        if not key:
-            raise NotConfigured("sem chave da fal.ai")
-        model = os.environ.get("VS_FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
-        gen_w, gen_h = generation_size(width, height, 1440)
-        headers = {"Authorization": f"Key {key}"}
-        body = {"prompt": prompt, "image_size": {"width": gen_w, "height": gen_h}, "seed": seed, "num_images": 1}
-        try:
-            submit = httpx.post(f"https://queue.fal.run/{model}", headers=headers, json=body, timeout=60)
-        except httpx.HTTPError as exc:
-            raise TransientError(f"falha de conexão com a fal.ai: {exc}") from exc
-        if submit.status_code in (401, 403):
-            raise NotConfigured("chave da fal.ai recusada")
-        if submit.status_code == 402:
-            raise QuotaExceeded("saldo da fal.ai esgotado")
-        if submit.status_code >= 400:
-            raise ProviderError(f"erro da fal.ai ({submit.status_code}): {submit.text[:400]}")
-        info = submit.json()
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            time.sleep(1.5)
-            status = httpx.get(info["status_url"], headers=headers, timeout=30).json()
-            if status.get("status") == "COMPLETED":
-                result = httpx.get(info["response_url"], headers=headers, timeout=30).json()
-                images = result.get("images") or []
-                if not images:
-                    raise Refused("a fal.ai não devolveu imagem (moderação?)")
-                raw = _download(images[0]["url"], out_dir / "raw.img")
-                final = fit_image(raw, out_dir / "image.jpg", width, height)
-                raw.unlink(missing_ok=True)
-                return ImageResult(path=final, usage=Usage(units=1, unit_name="images", cost_usd=self.price), model=model)
-            if status.get("status") in ("FAILED", "ERROR"):
-                raise ProviderError(f"a fal.ai falhou: {status}")
-        raise TransientError("tempo esgotado esperando a fal.ai")
-
-
-class OpenAIImage(ImageProvider):
-    info = ProviderInfo(
-        id="openai_image",
-        kind="image",
-        name="OpenAI Images (API)",
-        commercial_use=True,
-        credential_fields=("api_key",),
-        env_vars=("OPENAI_API_KEY",),
-        cost_note="≈ US$ 0,04–0,05 por imagem 1024² (qualidade média); bom para thumbnails",
-        notes="Modelo configurável em VS_OPENAI_IMAGE_MODEL (padrão gpt-image-2.6-flare).",
-    )
-    price = 0.045
-
-    def availability(self) -> tuple[bool, str]:
-        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
-        return (True, "ok") if key else (False, "sem chave da OpenAI")
-
-    def generate(self, *, prompt, width, height, seed, out_dir, references=None) -> ImageResult:
-        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
-        if not key:
-            raise NotConfigured("sem chave da OpenAI")
-        model = os.environ.get("VS_OPENAI_IMAGE_MODEL", "gpt-image-2.6-flare")
-        size = "1024x1536" if height > width else ("1536x1024" if width > height else "1024x1024")
-        try:
-            resp = httpx.post(
-                "https://api.openai.com/v1/images/generations",
-                headers={"Authorization": f"Bearer {key}"},
-                json={"model": model, "prompt": prompt, "size": size, "quality": "medium", "n": 1},
-                timeout=300,
-            )
-        except httpx.HTTPError as exc:
-            raise TransientError(f"falha de conexão com a OpenAI: {exc}") from exc
-        if resp.status_code == 429:
-            raise QuotaExceeded("limite/saldo da OpenAI atingido")
-        if resp.status_code in (401, 403):
-            raise NotConfigured("chave da OpenAI recusada")
-        if resp.status_code == 400 and "safety" in resp.text.lower():
-            raise Refused("a OpenAI recusou o prompt")
-        if resp.status_code != 200:
-            raise ProviderError(f"erro da OpenAI ({resp.status_code}): {resp.text[:400]}")
-        b64 = resp.json()["data"][0]["b64_json"]
-        raw = out_dir / "raw.png"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        raw.write_bytes(base64.b64decode(b64))
-        final = fit_image(raw, out_dir / "image.jpg", width, height)
-        raw.unlink(missing_ok=True)
-        return ImageResult(path=final, usage=Usage(units=1, unit_name="images", cost_usd=self.price), model=model)
 
 
 # --------------------------------------------------------------------------------------------

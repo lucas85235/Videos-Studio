@@ -22,15 +22,8 @@ from studio.providers.base import (
     Refused,
     TransientError,
 )
-from studio.providers.image import (
-    BFLFluxImage,
-    CodexCLIImage,
-    FalImage,
-    OpenAIImage,
-    PexelsStock,
-    PlaceholderImage,
-)
-from studio.providers.llm import AnthropicLLM, ClaudeCodeLLM, GeminiLLM, MockLLM
+from studio.providers.image import CodexCLIImage, PexelsStock, PlaceholderImage
+from studio.providers.llm import ClaudeCodeLLM, MockLLM
 from studio.providers.tts import (
     ElevenLabsTTS,
     GeminiTTS,
@@ -54,8 +47,6 @@ def _register(*providers: Provider) -> None:
 
 _register(
     ClaudeCodeLLM(),
-    AnthropicLLM(),
-    GeminiLLM(),
     MockLLM(),
     GeminiTTS(),
     GoogleChirp3HD(),
@@ -64,9 +55,6 @@ _register(
     WindowsSapiTTS(),
     MockTTS(),
     CodexCLIImage(),
-    BFLFluxImage(),
-    FalImage(),
-    OpenAIImage(),
     PexelsStock(),
     PlaceholderImage(),
     FasterWhisperAligner(),
@@ -84,13 +72,11 @@ _register_publishers()
 
 # Provedores de último recurso (sempre funcionam, sem rede). Os de prévia são bloqueados na publicação.
 DEV_FALLBACKS: dict[str, list[str]] = {
-    "llm": ["mock_llm"],
+    "llm": [],  # sem roteiro de exemplo: sem o Claude, o job falha e diz por quê
     "tts": ["windows_sapi", "mock_tts"],
     "image": ["placeholder"],
     "align": ["estimate"],
 }
-# Tipos em que o fallback de prévia só vale quando nenhum provedor real está configurado.
-NO_SILENT_FALLBACK = {"llm"}
 OFFLINE_ONLY: dict[str, list[str]] = {
     "llm": ["mock_llm"],
     "tts": ["mock_tts"],
@@ -98,9 +84,9 @@ OFFLINE_ONLY: dict[str, list[str]] = {
     "align": ["estimate"],
 }
 DEFAULT_CHAINS: dict[str, list[str]] = {
-    "llm": ["claude_code", "gemini", "anthropic"],
+    "llm": ["claude_code"],
     "tts": ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"],
-    "image": ["codex_cli", "bfl_flux", "fal_image", "openai_image"],
+    "image": ["codex_cli"],
     "align": ["faster_whisper"],
 }
 
@@ -191,12 +177,6 @@ def run_chain[T](
     attempts: list[ChainAttempt] = []
     for provider_id in chain:
         provider = get(provider_id)
-        if (kind in NO_SILENT_FALLBACK and provider_id in DEV_FALLBACKS[kind]
-                and any(a.outcome != "indisponível" for a in attempts)):
-            # Um provedor real está configurado e falhou: o texto de exemplo não entra no lugar dele sem aviso
-            # (viraria roteiro aprovado e narrado). O job falha e diz por quê; basta tentar de novo.
-            attempts.append(ChainAttempt(provider_id, "não usado", "os provedores configurados falharam"))
-            continue
         ok, reason = provider.availability()
         if not ok:
             attempts.append(ChainAttempt(provider_id, "indisponível", reason))
@@ -228,6 +208,8 @@ def describe_all() -> list[dict[str, Any]]:
     items = []
     for provider in all_providers():
         info = provider.info
+        if info.hidden:
+            continue
         try:
             ok, reason = provider.availability()
         except Exception as exc:  # noqa: BLE001
