@@ -50,6 +50,48 @@ def test_datetimes_round_trip_in_utc(isolated_settings):
     assert service.get_project_row(doc.id)["created_at"].endswith("+00:00")
 
 
+def test_youtube_batch_uses_next_free_slots_per_channel(isolated_settings):
+    from studio.models import Channel
+    from studio.workers.publish.schedule import plan_youtube_batch, ready_for_youtube
+
+    with session_scope() as s:
+        s.add(Channel(id="chn_q", name="Fila", settings={"posting": {"timezone": "America/Sao_Paulo",
+                                                                     "slots": [{"weekdays": [0, 1, 2, 3, 4, 5, 6], "time": "18:00"}]}}))
+        s.add(Channel(id="chn_vazio", name="Sem horários", settings={}))
+    final = {"langs": {"pt-BR": {"video": "outputs/x/pt-BR/video.mp4", "duration": 60}}, "preview_only_providers": []}
+    ids = {}
+    for name, channel, extra in (("a", "chn_q", {}), ("b", "chn_q", {}), ("sem_canal", None, {}),
+                                 ("previa", "chn_q", {"preview_only_providers": ["mock_tts"]}), ("vazio", "chn_vazio", {}),
+                                 ("enviado", "chn_q", {})):
+        doc = service.create_project(title=f"Vídeo {name}", style_id="misterios-short", topic="t", channel_id=channel)
+        service.update_settings(doc.id, {"last_final": {**final, **extra}})
+        ids[name] = doc.id
+    with session_scope() as s:
+        s.add(Publication(id="pub_env", project_id=ids["enviado"], platform="youtube", language="pt-BR",
+                          driver="youtube_native", status="uploaded"))
+
+    ready = {r["project_id"] for r in ready_for_youtube()}
+    assert ids["enviado"] not in ready and ids["a"] in ready
+
+    calls: list[tuple[str, dict, str]] = []
+
+    def fake_submit(kind: str, payload: dict, project_id: str) -> dict:
+        calls.append((kind, payload, project_id))
+        return {"id": f"job_{len(calls)}"}
+
+    items = [{"project_id": ids[n], "lang": "pt-BR"} for n in ("a", "b", "sem_canal", "previa", "vazio", "enviado")]
+    results = plan_youtube_batch(items, fake_submit)
+    by_project = {r["project_id"]: r for r in results}
+    assert [c[2] for c in calls] == [ids["a"], ids["b"]]
+    first, second = (datetime.fromisoformat(c[1]["publish_at"].replace("Z", "+00:00")) for c in calls)
+    assert second - first == timedelta(days=1)  # um por dia, no horário do canal
+    assert all(c[1]["privacy"] == "scheduled" for c in calls)
+    assert "canal" in by_project[ids["sem_canal"]]["error"]
+    assert "prévia" in by_project[ids["previa"]]["error"]
+    assert "horários de postagem" in by_project[ids["vazio"]]["error"]
+    assert "já enviado" in by_project[ids["enviado"]]["error"]
+
+
 def test_plan_validation():
     with pytest.raises(ValueError):
         PostingPlan(timezone="Marte/Base")

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { type Agenda, type AgendaItem, api, formatWhen, PLATFORM_LABELS } from '../api';
+import { type Agenda, type AgendaItem, api, formatWhen, PLATFORM_LABELS, type YouTubeBatchResult, type YouTubeReady } from '../api';
 import { Badge, Button, Card, Empty, ErrorBox, Input, Spinner } from '../ui';
 
 const dayKey = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' });
@@ -58,6 +58,65 @@ const ManualItem: React.FC<{ item: AgendaItem }> = ({ item }) => {
   );
 };
 
+const YouTubeQueue: React.FC = () => {
+  const client = useQueryClient();
+  const ready = useQuery({ queryKey: ['youtube-ready'], queryFn: () => api.get<YouTubeReady[]>('/api/agenda/youtube-ready') });
+  const status = useQuery({ queryKey: ['youtube-status'], queryFn: () => api.get<{ connected: boolean }>('/api/youtube/status') });
+  const [skip, setSkip] = useState<string[]>([]);
+  const key = (r: YouTubeReady) => `${r.project_id}:${r.lang}`;
+  const usable = (ready.data ?? []).filter((r) => r.channel_id && !r.preview_only);
+  const chosen = usable.filter((r) => !skip.includes(key(r)));
+  const batch = useMutation({
+    mutationFn: () =>
+      api.post<{ results: YouTubeBatchResult[] }>('/api/agenda/youtube-batch', { items: chosen.map((r) => ({ project_id: r.project_id, lang: r.lang })) }),
+    onSuccess: () => {
+      setSkip([]);
+      client.invalidateQueries({ queryKey: ['youtube-ready'] });
+      client.invalidateQueries({ queryKey: ['agenda'] });
+      client.invalidateQueries({ queryKey: ['channel-slots'] });
+    },
+  });
+  if (!ready.data?.length && !batch.data) return null;
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-400">Fila do YouTube</h2>
+      <Card className="flex flex-col gap-2 text-sm">
+        <div className="text-xs text-zinc-400">
+          Vídeos renderizados que ainda não foram enviados. Os marcados são agendados, na ordem, no próximo horário livre do canal de cada um.
+        </div>
+        {(ready.data ?? []).map((r) => {
+          const blocked = !r.channel_id ? 'sem canal' : r.preview_only ? 'usa provedores de prévia' : null;
+          return (
+            <label key={key(r)} className={`flex flex-wrap items-center gap-2 text-xs ${blocked ? 'text-zinc-600' : 'text-zinc-300'}`}>
+              <input
+                type="checkbox"
+                disabled={Boolean(blocked)}
+                checked={!blocked && !skip.includes(key(r))}
+                onChange={(e) => setSkip((prev) => (e.target.checked ? prev.filter((k) => k !== key(r)) : [...prev, key(r)]))}
+              />
+              <Link to={`/projetos/${r.project_id}`} className="font-medium hover:underline">{r.title}</Link>
+              <span className="text-zinc-500">{r.lang}{r.channel_name ? ` · ${r.channel_name}` : ''}</span>
+              {blocked ? <Badge tone="warn">{blocked}</Badge> : null}
+            </label>
+          );
+        })}
+        {status.data && !status.data.connected ? (
+          <div className="text-xs text-amber-300/90">Conecte o canal do YouTube (aba “Vídeo e publicação” de um projeto) para agendar.</div>
+        ) : null}
+        <Button variant="primary" className="self-start text-xs" disabled={!chosen.length || !status.data?.connected} busy={batch.isPending} onClick={() => batch.mutate()}>
+          Agendar {chosen.length || ''} nos próximos horários livres
+        </Button>
+        {batch.data?.results.map((r) => (
+          <div key={`${r.project_id}:${r.lang}`} className={`text-xs ${r.error ? 'text-amber-300/90' : 'text-emerald-400'}`}>
+            {r.title ?? r.project_id} ({r.lang}): {r.error ?? `agendado para ${formatWhen(r.publish_at!)} (enviando em segundo plano)`}
+          </div>
+        ))}
+        <ErrorBox error={ready.error ?? batch.error} />
+      </Card>
+    </section>
+  );
+};
+
 export const AgendaPage: React.FC = () => {
   const agenda = useQuery({ queryKey: ['agenda'], queryFn: () => api.get<Agenda>('/api/agenda'), refetchInterval: 60_000 });
   const data = agenda.data;
@@ -79,6 +138,7 @@ export const AgendaPage: React.FC = () => {
       <ErrorBox error={agenda.error} />
       {data ? (
         <div className="flex flex-col gap-8">
+          <YouTubeQueue />
           <section>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-400">Próximas publicações</h2>
             {groups.size === 0 ? (

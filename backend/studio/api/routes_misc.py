@@ -411,3 +411,25 @@ def open_publication_folder(publication_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=501, detail=f"abra manualmente: {folder}")
     os.startfile(folder)  # noqa: S606 - pasta local do próprio app
     return {"opened": str(folder)}
+
+
+class YouTubeBatchBody(BaseModel):
+    items: list[dict[str, str]] = Field(min_length=1, max_length=50)
+
+
+@router.get("/agenda/youtube-ready")
+def youtube_ready() -> list[dict[str, Any]]:
+    from studio.workers.publish import schedule
+
+    return schedule.ready_for_youtube()
+
+
+@router.post("/agenda/youtube-batch")
+def youtube_batch(body: YouTubeBatchBody) -> dict[str, Any]:
+    """Agenda vários vídeos de uma vez, cada um no próximo horário livre do seu canal."""
+    from studio.workers.publish import schedule
+    from studio.workers.publish import youtube as yt
+
+    if not yt.account()["connected"]:
+        raise HTTPException(status_code=400, detail="conecte o canal do YouTube primeiro (aba Vídeo e publicação de um projeto)")
+    return {"results": schedule.plan_youtube_batch(body.items, get_runner().submit)}

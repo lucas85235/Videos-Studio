@@ -11,6 +11,7 @@ agendada do mesmo canal.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from studio.db import session_scope
-from studio.models import Channel, Project, Publication
+from studio.models import Channel, Job, Project, Publication
 
 DEFAULT_TZ = "America/Sao_Paulo"
 MIN_LEAD = timedelta(minutes=20)
@@ -201,3 +202,88 @@ def mark_published(publication_id: str, url: str | None = None) -> dict[str, Any
             row.url = url.strip()
         row.details = {**(row.details or {}), "published_at": datetime.now(UTC).isoformat()}
         return {"id": row.id, "status": row.status, "url": row.url}
+
+
+# --------------------------------------------------------------------------------------------
+# Fila do YouTube: agendar vários vídeos de uma vez nos próximos horários livres
+# --------------------------------------------------------------------------------------------
+
+
+def _pending_publish_jobs() -> list[tuple[str | None, str | None, str | None]]:
+    """(projeto, idioma, publish_at) dos envios ao YouTube ainda na fila ou rodando."""
+    with session_scope() as s:
+        rows = s.query(Job).filter(Job.kind == "publish_youtube", Job.status.in_(("queued", "running"))).all()
+        return [(r.project_id, (r.payload or {}).get("lang"), (r.payload or {}).get("publish_at")) for r in rows]
+
+
+def ready_for_youtube() -> list[dict[str, Any]]:
+    """Vídeos finais renderizados que ainda não foram enviados ao YouTube (nem estão na fila)."""
+    pending = {(pid, lang) for pid, lang, _ in _pending_publish_jobs()}
+    with session_scope() as s:
+        channels = {c.id: c.name for c in s.query(Channel).all()}
+        sent = {
+            (pub.project_id, pub.language)
+            for pub in s.query(Publication).filter(Publication.platform == "youtube", Publication.driver == "youtube_native").all()
+        }
+        out: list[dict[str, Any]] = []
+        for project in s.query(Project).all():
+            last = (project.settings or {}).get("last_final") or {}
+            for lang, entry in (last.get("langs") or {}).items():
+                key = (project.id, lang)
+                if not isinstance(entry, dict) or not entry.get("video") or key in sent or key in pending:
+                    continue
+                out.append(
+                    {
+                        "project_id": project.id,
+                        "title": project.title,
+                        "lang": lang,
+                        "channel_id": project.channel_id,
+                        "channel_name": channels.get(project.channel_id or "", ""),
+                        "duration": entry.get("duration"),
+                        "preview_only": bool(last.get("preview_only_providers")),
+                    }
+                )
+    return sorted(out, key=lambda i: (i["channel_name"], i["title"], i["lang"]))
+
+
+def plan_youtube_batch(
+    items: list[dict[str, str]],
+    submit: Callable[[str, dict[str, Any], str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Agenda cada vídeo (na ordem dada) no próximo horário livre do canal dele e enfileira o envio."""
+    ready = {(r["project_id"], r["lang"]): r for r in ready_for_youtube()}
+    pending_times = [_aware(datetime.fromisoformat(at.replace("Z", "+00:00"))) for _, _, at in _pending_publish_jobs() if at]
+    assigned: dict[str, list[datetime]] = {}
+    results: list[dict[str, Any]] = []
+    for item in items:
+        project_id, lang = item.get("project_id", ""), item.get("lang", "")
+        base = {"project_id": project_id, "lang": lang}
+        info = ready.get((project_id, lang))
+        if info is None:
+            results.append({**base, "error": "sem vídeo final novo neste idioma (ou já enviado/na fila)"})
+            continue
+        base.update(title=info["title"], channel_name=info["channel_name"])
+        if info["preview_only"]:
+            results.append({**base, "error": "usou provedores só de prévia: renderize com voz e imagens comerciais antes de agendar"})
+            continue
+        channel_id = info["channel_id"]
+        if not channel_id:
+            results.append({**base, "error": "o projeto não tem canal; escolha um canal com horários de postagem"})
+            continue
+        with session_scope() as s:
+            channel = s.get(Channel, channel_id)
+            plan = plan_of(channel.settings if channel else None)
+        if not plan.slots:
+            results.append({**base, "error": "o canal não tem horários de postagem (configure em Canais)"})
+            continue
+        taken = taken_for_channel(channel_id) + pending_times + assigned.get(channel_id, [])
+        slots = next_free_slots(plan, taken, count=1)
+        if not slots:
+            results.append({**base, "error": "nenhum horário livre nos próximos 60 dias"})
+            continue
+        when = slots[0]
+        payload = {"lang": lang, "privacy": "scheduled", "publish_at": when.astimezone(UTC).isoformat().replace("+00:00", "Z")}
+        job = submit("publish_youtube", payload, project_id)
+        assigned.setdefault(channel_id, []).append(when)
+        results.append({**base, "publish_at": when.isoformat(), "job_id": job["id"]})
+    return results

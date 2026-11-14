@@ -68,6 +68,7 @@ Envio: escolha privado, não listado, público ou **agendado**. O agendamento fi
 - No cartão do YouTube aparecem os **próximos horários livres** do canal do projeto: um clique preenche o agendamento. Horários a menos de 45 min de outro vídeo agendado do mesmo canal não são oferecidos.
 - O pacote manual (TikTok, Instagram etc.) aceita um horário **planejado**. Ele fica na **Agenda** até você marcar como postado (com o link do post, se quiser).
 - A página **Agenda** mostra o que está agendado, os pacotes por postar (com atalho para a pasta, a página de upload e a legenda) e o que saiu nas últimas duas semanas.
+- **Fila do YouTube** (na Agenda): marque vários vídeos já renderizados e clique em *Agendar nos próximos horários livres*: cada um vai, na ordem, para o próximo horário livre do seu canal, e o envio roda em segundo plano.
 
 ## 6. Editar por instrução
 

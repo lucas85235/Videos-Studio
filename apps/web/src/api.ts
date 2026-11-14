@@ -233,6 +233,24 @@ export type AgendaItem = {
   privacy: string | null;
 };
 export type Agenda = { now: string; upcoming: AgendaItem[]; manual: AgendaItem[]; recent: AgendaItem[] };
+export type YouTubeReady = {
+  project_id: string;
+  title: string;
+  lang: string;
+  channel_id: string | null;
+  channel_name: string;
+  duration: number | null;
+  preview_only: boolean;
+};
+export type YouTubeBatchResult = {
+  project_id: string;
+  lang: string;
+  title?: string;
+  channel_name?: string;
+  publish_at?: string;
+  job_id?: string;
+  error?: string;
+};
 
 export const WEEKDAYS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
 export const TIMEZONES = [

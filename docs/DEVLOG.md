@@ -40,6 +40,7 @@ Registro do que foi feito em cada marco, para manter o histórico e poder retoma
 - **Agenda e horários por canal**: horários semanais com fuso (IANA, pacote `tzdata` no Windows) em `Channel.settings.posting`; próximos horários livres (20 min de antecedência, 45 min entre vídeos do mesmo canal); sugestões no cartão do YouTube e no pacote manual (horário planejado); página Agenda (agendados, pacotes por postar com "marcar como postado", publicados recentes).
 - **Bug corrigido (fuso no banco)**: o SQLite descartava o fuso das datas (18:00-03:00 voltava como 18:00 UTC) e a API devolvia horários sem fuso, que a interface lia como hora local (3 h de erro, ex.: aviso de job com falha). Novo tipo `UTCDateTime` grava em UTC e devolve com fuso.
 - **Migração leve do banco**: ao iniciar, colunas e índices novos dos modelos são criados em tabelas existentes (linhas antigas recebem o padrão simples do modelo). Evita quebrar o banco do usuário em atualizações.
+- **Fila do YouTube**: vídeos renderizados e ainda não enviados aparecem na Agenda; o agendamento em lote coloca cada um no próximo horário livre do seu canal (considera envios já na fila) e enfileira os uploads.
 
 ## Como retomar
 
