@@ -6,7 +6,13 @@ import { Badge, Button, Card, ErrorBox, Input } from '../ui';
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
 type Costs = { by_provider: { provider: string; kind: string; units: number; cost_usd: number; calls: number }[]; total_usd: number };
 
-const KIND_LABEL: Record<string, string> = { llm: 'Roteiro e agente (LLM)', tts: 'Voz', image: 'Imagens', align: 'Alinhamento de palavras' };
+const KIND_LABEL: Record<string, string> = {
+  llm: 'Roteiro e agente (LLM)',
+  tts: 'Voz',
+  image: 'Imagens',
+  align: 'Alinhamento de palavras',
+  publish: 'Publicação',
+};
 
 const ProviderCard: React.FC<{ p: Provider }> = ({ p }) => {
   const client = useQueryClient();
@@ -68,7 +74,7 @@ export const SettingsPage: React.FC = () => {
   const providers = useQuery({ queryKey: ['providers'], queryFn: () => api.get<Provider[]>('/api/providers') });
   const status = useQuery({ queryKey: ['status'], queryFn: () => api.get<Status>('/api/status') });
   const costs = useQuery({ queryKey: ['costs'], queryFn: () => api.get<Costs>('/api/costs') });
-  const kinds = ['llm', 'tts', 'image', 'align'];
+  const kinds = ['llm', 'tts', 'image', 'align', 'publish'];
   return (
     <div className="mx-auto max-w-6xl p-6">
       <h1 className="mb-1 text-xl font-bold">Configurações</h1>

@@ -11,6 +11,7 @@ Regras importantes (README §5.4 e §6.5):
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,18 +55,48 @@ def tail_out(style: StyleSpec) -> float:
     return 0.7 if style.format.type == "short" else 1.5
 
 
+def normalize_words(words: list[Word], duration: float) -> list[Word]:
+    """Mantém os tempos das palavras dentro do clipe.
+
+    Alguns provedores (ex.: a voz do Windows) relatam posições além do fim real do áudio; sem isso, a
+    última cena de um segmento poderia começar depois do segmento seguinte.
+    """
+    if not words:
+        return []
+    last = max(w.end for w in words)
+    scale = duration / last if last > duration + 0.05 and last > 0 else 1.0
+    out: list[Word] = []
+    prev = 0.0
+    for w in words:
+        start = min(max(0.0, w.start * scale), duration)
+        start = max(start, prev)
+        end = min(max(start, w.end * scale), duration)
+        out.append(Word(w.text, start, end))
+        prev = start
+    return out
+
+
 def _caption_lines(words: list[Word], max_words: int, mode: str) -> list[list[Word]]:
+    """Linhas de legenda equilibradas dentro de uma cena (quebra também no fim das frases)."""
     if mode == "word":
         return [[w] for w in words]
-    lines: list[list[Word]] = []
+    sentences: list[list[Word]] = []
     current: list[Word] = []
     for w in words:
         current.append(w)
-        if len(current) >= max_words or w.text.endswith(SENTENCE_END):
-            lines.append(current)
+        if w.text.endswith(SENTENCE_END):
+            sentences.append(current)
             current = []
     if current:
-        lines.append(current)
+        sentences.append(current)
+    lines: list[list[Word]] = []
+    for sentence in sentences:
+        parts = max(1, math.ceil(len(sentence) / max(1, max_words)))
+        size = len(sentence) / parts
+        for i in range(parts):
+            chunk = sentence[int(math.floor(i * size + 0.5)) : int(math.floor((i + 1) * size + 0.5))]
+            if chunk:
+                lines.append(chunk)
     return lines
 
 
@@ -92,7 +123,7 @@ def build_timeline(
     total = t - gap + tail_out(style)
 
     def frame(seconds: float) -> int:
-        return int(round(seconds * fps))
+        return int(math.floor(seconds * fps + 0.5))
 
     scenes_out: list[dict[str, Any]] = []
     sfx: list[dict[str, Any]] = []
@@ -104,32 +135,31 @@ def build_timeline(
             raise TimelineError(f"o segmento {seg.id} não tem cenas (rode o storyboard)")
         if seg.role == "chapter" or (seg.chapter and seg.role in ("chapter", "item")):
             chapters.append({"title": seg.chapter or seg.text_for(lang, doc.primary_language)[:40], "start": round(start, 2)})
-        abs_words = [Word(w.text, start + w.start, start + w.end) for w in clip.words]
+        words_rel = normalize_words(clip.words, clip.duration)
+        abs_words = [Word(w.text, start + w.start, start + w.end) for w in words_rel]
         seg_begin = 0.0 if index == 0 else start
         seg_end = placements[index + 1][1] if index + 1 < len(placements) else total
-        ranges = split_word_indices(len(abs_words), len(scenes), [w.text for w in abs_words])
-        bounds: list[float] = []
-        for k in range(len(scenes)):
-            if k == 0:
-                bounds.append(seg_begin)
-                continue
-            a, _b = ranges[k] if k < len(ranges) else (len(abs_words), len(abs_words))
+        n_scenes = len(scenes)
+        min_step = 1.5 / fps
+        ranges = split_word_indices(len(abs_words), n_scenes, [w.text for w in abs_words])
+        bounds: list[float] = [seg_begin]
+        for k in range(1, n_scenes):
+            a = ranges[k][0] if k < len(ranges) else len(abs_words)
             if a < len(abs_words):
-                bounds.append(max(bounds[-1] + 1 / fps, abs_words[a].start - 0.05))
+                candidate = abs_words[a].start - 0.05
             else:
-                bounds.append(bounds[-1] + (seg_end - bounds[-1]) / 2)
+                candidate = bounds[-1] + (seg_end - bounds[-1]) / (n_scenes - k + 1)
+            low = bounds[-1] + min_step
+            high = seg_end - (n_scenes - k) * min_step
+            bounds.append(max(low, min(candidate, high)) if high >= low else low)
         bounds.append(seg_end)
-        lines = _caption_lines(abs_words, caption_style.max_words_per_line, caption_style.style)
         for k, scene in enumerate(scenes):
             s0, s1 = bounds[k], bounds[k + 1]
             f0, f1 = frame(s0), max(frame(s0) + 1, frame(s1))
             scene_words = [w for w in abs_words if s0 <= w.start < s1]
             scene_lines = []
             if caption_style.style != "none":
-                for line in lines:
-                    part = [w for w in line if s0 <= w.start < s1]
-                    if not part:
-                        continue
+                for part in _caption_lines(scene_words, caption_style.max_words_per_line, caption_style.style):
                     l_start = frame(part[0].start) - f0
                     l_end = min(f1 - f0, frame(part[-1].end + 0.25) - f0)
                     scene_lines.append(
@@ -165,9 +195,13 @@ def build_timeline(
             elif scene.sfx:
                 sfx.append({"type": scene.sfx, "start": round(max(0.0, s0 - 0.12), 3), "scene_id": scene.id})
 
-    # Corrige sobreposição/lacunas por arredondamento: cada cena termina onde a próxima começa
+    # Garante inícios estritamente crescentes (arredondamento) e cenas contínuas: cada uma termina onde a
+    # próxima começa. Sem isso, blocos de render poderiam ter quadros a mais e o vídeo sairia deslocado.
+    for i in range(1, len(scenes_out)):
+        if scenes_out[i]["from"] <= scenes_out[i - 1]["from"]:
+            scenes_out[i]["from"] = scenes_out[i - 1]["from"] + 1
     for i in range(len(scenes_out) - 1):
-        scenes_out[i]["durationInFrames"] = max(1, scenes_out[i + 1]["from"] - scenes_out[i]["from"])
+        scenes_out[i]["durationInFrames"] = scenes_out[i + 1]["from"] - scenes_out[i]["from"]
     total_frames = max(frame(total), scenes_out[-1]["from"] + scenes_out[-1]["durationInFrames"])
     scenes_out[-1]["durationInFrames"] = total_frames - scenes_out[-1]["from"]
 

@@ -195,5 +195,5 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return job_dict(row) if row else None
 
 
-# Registra os jobs do pipeline
-from studio.workers import tasks  # noqa: E402,F401
+# Registra os jobs do pipeline e de publicação
+from studio.workers import publish_tasks, tasks  # noqa: E402,F401

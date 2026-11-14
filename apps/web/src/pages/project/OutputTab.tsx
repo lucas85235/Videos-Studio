@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
 import { api, fileUrl, type ProjectDetail } from '../../api';
 import { Badge, Button, Card, Empty, ErrorBox, Select, formatSeconds } from '../../ui';
@@ -14,6 +14,58 @@ const PLATFORMS = [
 ];
 
 type PackageItem = { id: string; platform: string; folder: string; upload_url: string; caption: string; blocked: boolean };
+type YouTubeStatus = { client_configured: boolean; connected: boolean; channel_title: string };
+
+const YouTubeCard: React.FC<{ projectId: string; lang: string; hasVideo: boolean; busy: boolean }> = ({ projectId, lang, hasVideo, busy }) => {
+  const client = useQueryClient();
+  const status = useQuery({ queryKey: ['youtube-status'], queryFn: () => api.get<YouTubeStatus>('/api/youtube/status'), refetchInterval: 10_000 });
+  const [privacy, setPrivacy] = useState('private');
+  const [when, setWhen] = useState('');
+  const connect = useMutation({
+    mutationFn: () => api.post<{ auth_url: string }>('/api/youtube/connect'),
+    onSuccess: (data) => window.open(data.auth_url, '_blank', 'noopener'),
+  });
+  const publish = useMutation({
+    mutationFn: () =>
+      api.post(`/api/projects/${projectId}/publish/youtube`, {
+        lang,
+        privacy,
+        publish_at: privacy === 'scheduled' && when ? new Date(when).toISOString() : null,
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['project', projectId] }),
+  });
+  const s = status.data;
+  return (
+    <Card className="flex flex-col gap-2 text-sm">
+      <div className="font-semibold">YouTube (API oficial, grátis)</div>
+      {!s ? null : !s.client_configured ? (
+        <div className="text-xs text-zinc-500">
+          Configure o cliente OAuth (client_id e client_secret) em Configurações › Publicação. Passo a passo em docs/USO.md.
+        </div>
+      ) : !s.connected ? (
+        <Button busy={connect.isPending} onClick={() => connect.mutate()}>Conectar canal do YouTube</Button>
+      ) : (
+        <>
+          <div className="text-xs text-zinc-400">Canal: <span className="text-zinc-200">{s.channel_title || 'conectado'}</span></div>
+          <div className="flex flex-wrap gap-2">
+            <Select value={privacy} onChange={(e) => setPrivacy(e.target.value)} className="text-xs">
+              <option value="private">privado</option>
+              <option value="unlisted">não listado</option>
+              <option value="public">público agora</option>
+              <option value="scheduled">agendado</option>
+            </Select>
+            {privacy === 'scheduled' ? <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 text-xs" /> : null}
+          </div>
+          <Button variant="primary" disabled={!hasVideo || busy || (privacy === 'scheduled' && !when)} busy={publish.isPending} onClick={() => publish.mutate()}>
+            Enviar ao YouTube
+          </Button>
+          <div className="text-[11px] text-zinc-600">Envia vídeo, thumbnail e legendas; o agendamento fica no próprio YouTube (o notebook pode estar desligado).</div>
+        </>
+      )}
+      <ErrorBox error={connect.error ?? publish.error} />
+    </Card>
+  );
+};
 
 export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ detail, busy }) => {
   const { doc } = detail;
@@ -93,6 +145,20 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
             <div className="text-xs text-zinc-500">Gere os metadados depois de renderizar (os capítulos entram na descrição).</div>
           )}
         </Card>
+        <YouTubeCard projectId={doc.id} lang={lang} hasVideo={Boolean(entry?.video)} busy={busy} />
+        {detail.publications.filter((p) => p.driver === 'youtube_native').length ? (
+          <Card className="flex flex-col gap-1 text-xs">
+            <div className="mb-1 text-sm font-semibold">Enviados</div>
+            {detail.publications
+              .filter((p) => p.driver === 'youtube_native')
+              .map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-400">{p.language} · {p.status}</span>
+                  {p.url ? <a className="text-sky-400 hover:underline" href={p.url} target="_blank" rel="noreferrer">{p.url}</a> : null}
+                </div>
+              ))}
+          </Card>
+        ) : null}
         <Card className="flex flex-col gap-3 text-sm">
           <div className="font-semibold">Publicar (assistente manual, custo zero)</div>
           <div className="text-xs text-zinc-500">

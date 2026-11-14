@@ -73,6 +73,15 @@ _register(
     EstimateAligner(),
 )
 
+
+def _register_publishers() -> None:
+    from studio.workers.publish.youtube import YouTubePublisher
+
+    _register(YouTubePublisher())
+
+
+_register_publishers()
+
 # Provedores de último recurso (sempre funcionam, sem rede). Os de prévia são bloqueados na publicação.
 DEV_FALLBACKS: dict[str, list[str]] = {
     "llm": ["mock_llm"],

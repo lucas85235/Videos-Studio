@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
-from studio.api import routes_misc, routes_projects
+from studio.api import routes_misc, routes_projects, routes_publish
 from studio.config import REPO_ROOT, get_settings
 from studio.db import init_db
 from studio.events import bus
@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(routes_projects.router)
     app.include_router(routes_misc.router)
+    app.include_router(routes_publish.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
