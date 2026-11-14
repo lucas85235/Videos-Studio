@@ -17,6 +17,8 @@ dependencies = [
     "keyring>=25",
     "python-multipart>=0.0.9",
     "tzdata>=2024.1",
+    "kokoro-onnx>=0.6.1",
+    "num2words>=0.5.13",
 ]
 
 [project.optional-dependencies]

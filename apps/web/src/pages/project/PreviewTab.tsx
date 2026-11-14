@@ -290,9 +290,11 @@ export const PreviewTab: React.FC<
     ? "Atualize a prévia antes de aprovar."
     : busy
       ? "Aguarde a tarefa em andamento terminar."
-      : "Aprovar gera o MP4 final reaproveitando a prévia; só gasta cota de voz e imagens se faltar algo.";
+      : "Aprovar grava a narração com a voz do vídeo final (gasta a cota ou os créditos dela) e gera o MP4 com as imagens da prévia.";
   const regenerateNote =
-    "Refaz só o que mudou; voz e imagens novas gastam cota.";
+    (detail.style?.voice.preview?.local ?? true)
+      ? "Refaz só o que mudou; imagens novas gastam cota (a narração da prévia é local, grátis)."
+      : "Refaz só o que mudou; voz e imagens novas gastam cota.";
   const approveDisabled = stale || busy;
   const openSide = (id: SideTab) => {
     setSide(id);

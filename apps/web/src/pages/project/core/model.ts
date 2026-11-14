@@ -51,8 +51,9 @@ export const errorFirstLine = (job: Job) => (job.error || job.message || '').spl
 /** Custo de um job, dito perto do botão que o dispara. */
 export const jobCost = (kind: string): string | null => {
   if (['script', 'storyboard', 'translate', 'metadata'].includes(kind)) return 'Usa o Claude.';
-  if (['preview', 'render'].includes(kind)) return 'Usa a cota de voz e de imagens.';
-  if (kind === 'autopilot') return 'Usa o Claude e a cota de voz e de imagens.';
+  if (kind === 'preview') return 'Usa a cota de imagens (a narração da prévia sai da voz local, grátis).';
+  if (kind === 'render') return 'Grava a narração com a voz do vídeo final: usa a cota ou os créditos dela.';
+  if (kind === 'autopilot') return 'Usa o Claude, a cota de imagens e a da voz do vídeo final.';
   return null;
 };
 
@@ -200,9 +201,15 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
 
   const toFinal = !gates.preview;
   const pipelineNote = toFinal ? 'Cria as cenas, narra, monta a prévia e renderiza o vídeo final.' : 'Cria as cenas, narra e monta a prévia.';
-  const pipelineCost = 'Usa o Claude e a cota de voz e de imagens.';
-  const mediaCost = 'Usa a cota de voz e de imagens.';
-  const renderCost = 'Pode usar a cota de voz e de imagens.';
+  // A prévia narra com a voz local (grátis); a voz do vídeo final só é gravada ao renderizar.
+  const localPreview = detail.style?.voice.preview?.local ?? true;
+  const pipelineCost = toFinal
+    ? 'Usa o Claude, a cota de imagens e a da voz do vídeo final.'
+    : localPreview
+      ? 'Usa o Claude e a cota de imagens (a narração da prévia é local, grátis).'
+      : 'Usa o Claude e a cota de voz e de imagens.';
+  const mediaCost = localPreview ? 'Usa a cota de imagens (a narração da prévia é local, grátis).' : 'Usa a cota de voz e de imagens.';
+  const renderCost = 'Usa a cota ou os créditos da voz do vídeo final.';
 
   const base = { current, steps };
   if (detail.jobs.some(isActive)) {
@@ -241,7 +248,9 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
       ...base,
       action: { kind: 'preview' },
       title: 'Gere a prévia',
-      description: 'Narra o roteiro e gera as imagens que faltam.',
+      description: localPreview
+        ? 'Narra o roteiro com a voz local e gera as imagens que faltam, para você conferir o conteúdo.'
+        : 'Narra o roteiro e gera as imagens que faltam.',
       cost: mediaCost,
     };
   }
@@ -251,8 +260,8 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
       action: { kind: 'approve_preview' },
       title: outputs.final ? 'Prévia nova: assista e aprove' : 'Assista à prévia e aprove',
       description: outputs.final
-        ? 'O vídeo final que existe é de antes desta prévia. Ao aprovar, o app gera de novo o MP4 final, a thumbnail e as legendas.'
-        : 'Ao aprovar, o app gera o MP4 final, a thumbnail e as legendas.',
+        ? 'O vídeo final que existe é de antes desta prévia. Ao aprovar, o app grava a narração com a voz do vídeo final e gera de novo o MP4, a thumbnail e as legendas.'
+        : 'Ao aprovar, o app grava a narração com a voz do vídeo final e gera o MP4, a thumbnail e as legendas.',
       cost: renderCost,
     };
   }
@@ -261,7 +270,7 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
       ...base,
       action: { kind: 'render' },
       title: 'Prévia aprovada: falta renderizar o vídeo final',
-      description: 'Gera o MP4 final, a thumbnail e as legendas.',
+      description: 'Grava a narração com a voz do vídeo final e gera o MP4, a thumbnail e as legendas.',
       cost: renderCost,
     };
   }

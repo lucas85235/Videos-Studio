@@ -147,7 +147,8 @@ Instrução do usuário: {instruction}"""
     flat = result.data.get("ops", [])
     ops = flat_to_ops(flat) if flat else []
     new_doc = apply_ops(doc, ops, get_style(doc.style_id)) if ops else doc
-    estimate = plan(project_id, doc=new_doc) if ops else None
+    # A edição aplicada refaz a prévia (narração pela voz local, sem cota).
+    estimate = plan(project_id, doc=new_doc, mode="preview") if ops else None
     return {
         "summary": result.data.get("summary", ""),
         "ops": [op.model_dump(mode="json") for op in ops],

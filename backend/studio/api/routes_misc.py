@@ -447,10 +447,13 @@ class VoiceSampleRequest(BaseModel):
 
 
 @router.get("/voices")
-def voice_catalog(lang: str = "pt-BR", providers: str | None = None) -> dict[str, Any]:
+def voice_catalog(lang: str = "pt-BR", providers: str | None = None, purpose: str | None = None) -> dict[str, Any]:
+    """Vozes com amostra. `purpose=preview` lista a voz local da prévia; `purpose=final`, as vozes do vídeo final."""
     from studio.providers import voices
 
     ids = [p for p in (providers or "").split(",") if p] or None
+    if ids is None and purpose in ("preview", "final"):
+        ids = voices.providers_for(purpose)
     return {"lang": lang, "sample_text": voices.sample_text(lang), "providers": voices.catalog(lang, ids)}
 
 

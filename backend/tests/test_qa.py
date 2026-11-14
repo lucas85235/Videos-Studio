@@ -65,7 +65,7 @@ def test_narration_qa_retries_and_reuses_transcript(tmp_path, monkeypatch):
         "style_overrides": {"voice": {"chain": ["fake_tts"], "qa": {"max_wer": 0.1, "retries": 2}}},
     })
     service.commit(doc.id, doc, "teste")
-    builder = Builder(doc.id)
+    builder = Builder(doc.id, mode="final")  # voz de API: a prévia usaria a voz local
     tts_hash, out = builder.narration("seg_qa", "pt-BR")
     assert out["qa"]["attempts"] == 2
     assert out["qa"]["ok"] is True
@@ -173,7 +173,7 @@ def _leaky_builder(tmp_path, monkeypatch, *, whisper: bool):
         "style_overrides": {"voice": {"chain": ["leaky_tts"]}},
     })
     service.commit(doc.id, doc, "teste")
-    return Builder(doc.id), tts
+    return Builder(doc.id, mode="final"), tts  # voz de API: a prévia usaria a voz local
 
 
 def test_narration_that_reads_the_instruction_is_redone_without_it(tmp_path, monkeypatch):
@@ -224,3 +224,50 @@ def test_gemini_tts_sends_only_the_text_and_applies_speed_to_audio(tmp_path, mon
     monkeypatch.setenv("VS_GEMINI_TTS_STYLE", "1")
     tts.GeminiTTS().synthesize(text=HOOK, lang="pt-BR", voice="Charon", style_prompt=STYLE, speed=1.0, out_dir=tmp_path / "b")
     assert sent[-1].endswith("#### TRANSCRIPT\n" + HOOK)
+
+
+def test_whisper_runs_one_transcription_at_a_time(monkeypatch, tmp_path):
+    """Com o modelo na GPU sem cuBLAS, chamadas simultâneas travavam para sempre: agora vão uma por vez, e a que
+    recebe o erro do CUDA passa para a CPU."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from studio.providers import align
+
+    state = {"now": 0, "max": 0, "cuda_calls": 0}
+    lock = threading.Lock()
+
+    def fake_run(model, audio, lang):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        if model == "cuda-model":
+            state["cuda_calls"] += 1
+            raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+        return [Word("ok", 0.0, 0.1)]
+
+    def fake_model(self):
+        return ("cpu-model", "cpu") if align.FasterWhisperAligner._gpu_broken else ("cuda-model", "cuda")
+
+    monkeypatch.setattr(align.FasterWhisperAligner, "_gpu_broken", False)
+    monkeypatch.setattr(align.FasterWhisperAligner, "_run", staticmethod(fake_run))
+    monkeypatch.setattr(align.FasterWhisperAligner, "_model", fake_model)
+    monkeypatch.setattr(align, "decode_mono", lambda path, rate: np.zeros(160, dtype=np.float32))
+    aligner = align.FasterWhisperAligner()
+    with ThreadPoolExecutor(3) as pool:
+        results = list(pool.map(lambda _i: aligner.transcribe(tmp_path / "x.wav", "pt-BR"), range(3)))
+    assert all(r and r[0].text == "ok" for r in results)
+    assert state["max"] == 1 and state["cuda_calls"] == 1
+
+
+def test_numbers_in_digits_are_not_counted_as_errors():
+    script = "GTA 5 saiu em dois mil e treze e vendeu mais de duzentos milhões de cópias."
+    heard = "GTA 5 saiu em 2013 e vendeu mais de 200 milhões de copias.".split()
+    assert word_error_rate(script, heard, "pt-BR") == 0.0
+    assert word_error_rate(script, heard) > 0.2  # sem o idioma, os números não são convertidos
+    assert word_error_rate("In twenty thirteen it sold twenty four copies.", "In 2013 it sold 24 copies.".split(),
+                           "en-US") == 0.0

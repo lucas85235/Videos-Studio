@@ -84,10 +84,11 @@ export const tabOwnsAction = (action: NextAction, tab: ProjectTab): boolean => {
 const tabHasOtherPrimary = (tab: ProjectTab, scriptDrafts: number, restoreNotice: boolean) =>
   (tab === 'script' && scriptDrafts > 0) || (tab === 'versions' && restoreNotice);
 
-/** Aviso de cota de voz/imagens esgotada (tentar agora falharia de novo), ou null. */
-const useMediaQuotaNote = (): string | null => {
+/** Aviso de cota de voz/imagens esgotada (tentar agora falharia de novo), ou null. Com `voiceMatters` falso
+ *  (prévia narrada pela voz local), só a cota de imagens conta. */
+const useMediaQuotaNote = (voiceMatters = true): string | null => {
   const providers = useProviders();
-  const voice = readinessOf(providers.data, 'tts').quotaExhausted;
+  const voice = voiceMatters && readinessOf(providers.data, 'tts').quotaExhausted;
   const images = readinessOf(providers.data, 'image').quotaExhausted;
   if (voice && images) return 'A cota de voz e a de imagens acabaram hoje: tentar agora deve falhar de novo.';
   if (voice) return 'A cota de voz acabou hoje: tentar agora deve falhar de novo.';
@@ -207,8 +208,10 @@ export const NextStepBanner: React.FC<{
   const toFinal = detail.project.settings.gates?.preview === false;
   const owned = tabOwnsAction(action, tab);
   const main = tabHasOtherPrimary(tab, scriptDrafts, restoreNotice) ? 'secondary' : 'primary';
-  const quotaNote = useMediaQuotaNote();
   const showFailure = failure && !active.length ? failure : null;
+  // Prévia com a voz local: a cota da voz de API não impede tentar de novo.
+  const localPreview = detail.style?.voice.preview?.local ?? true;
+  const quotaNote = useMediaQuotaNote(!(localPreview && showFailure?.kind === 'preview'));
 
   let primary: React.ReactNode = null;
   let secondary: React.ReactNode = null;

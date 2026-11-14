@@ -542,6 +542,7 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
 | **Gemini 3.8 Flash TTS** (AI Studio / Gemini API) | **Grátis** (camada free) | Sim (o Google não reivindica a saída) | Sim | Só no plano pago (Tier 1+) | 6º no placar de TTS (Elo 1284; ElevenLabs v4: 1340). Limite diário não publicado (relatos: 10–100 pedidos/dia por modelo; cada pedido gera até ~10 min de áudio). Na camada grátis os textos podem ser usados para treino e lidos por revisores humanos |
 | Gemini 3.8 Flash-Lite TTS | Grátis | Sim | Sim | — | Segunda cota diária, separada |
 | **Google Cloud TTS Chirp 3 HD** | **1 M caracteres grátis/mês** | Sim (uso em mídia permitido) | Sim | Não (voz personalizada é paga) | Exige cobrança ativada (projeto separado, com alerta de orçamento); qualidade abaixo do Gemini |
+| **Kokoro-82M local** (`kokoro-onnx`) — **voz da prévia** | Grátis | Sim (Apache-2.0) | Sim (3 vozes) | Não | CPU, ~2,5× mais rápido que a fala; no teste com o Whisper leu o roteiro sem erro. Qualidade abaixo das APIs: usada só para conferir o conteúdo antes de gravar a voz final |
 | **Qwen3-TTS 1.7B local** (`faster-qwen3-tts`) | Grátis | Sim (Apache-2.0) | Sim | **Sim, zero-shot** (3 s + transcrição) | ~1,8× tempo real numa 4060 no Windows; avaliação PT-BR independente: entonação "plana" em narração longa |
 | VoxCPM2 / MOSS-TTS / dots.tts locais | Grátis | Sim (Apache-2.0) | Sim | Sim | Mais apertados em 8 GB (dots.tts: só a variante MF e trechos < 40 s) |
 | Gemini pago (Batch) | ~US$ 0,5–2,4/mês para 10–15 longos | Sim | Sim | Sim (com gravação de consentimento em PT-BR) | Reserva barata se a cota grátis apertar |
@@ -556,7 +557,7 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
    - ElevenLabs só como referência (o plano de US$ 6 por um mês basta para o teste).
 
    Critério: ficar a até ~0,5 ponto (escala de 1 a 5) da referência, menos de 5% de trechos falhos depois de retry e um vídeo de 15 min em menos de ~1 h.
-2. Cadeia padrão até o teste dizer outra coisa: **Gemini Flash TTS → Flash-Lite → Chirp 3 HD → Qwen3-TTS local**. Usar **um único** projeto do Google para a cota grátis: criar vários projetos para multiplicar a cota viola os termos do Google.
+2. **Prévia com a voz local (Kokoro) e voz final só na renderização** (14/11/2026): a prévia não gasta cota de voz, e o vídeo final nunca cai para uma voz de teste (sem a voz final disponível, a renderização para e avisa). Cadeia da voz final até o teste dizer outra coisa: **Gemini Flash TTS → Flash-Lite → Chirp 3 HD → Qwen3-TTS local**. Usar **um único** projeto do Google para a cota grátis: criar vários projetos para multiplicar a cota viola os termos do Google.
 3. Reservar ~25% da cota diária para as regenerações apontadas pelo QA do Whisper.
 4. Regras do pipeline: trechos curtos (até ~700 caracteres, porque os modelos degradam com textos longos), mesmo prompt de clonagem em todos os trechos, QA por ASR (taxa de erro e duração esperada) e normalização de números e estrangeirismos.
 5. Usar só os modelos Gemini 3.8 em diante: os TTS 2.5 e 3.1 preview podem ser desligados a partir de 18/12/2026.

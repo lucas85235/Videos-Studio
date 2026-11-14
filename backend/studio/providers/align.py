@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import difflib
 import logging
 import re
+import sys
 import threading
 from pathlib import Path
 
@@ -79,6 +81,9 @@ class FasterWhisperAligner(AlignProvider):
     _models: dict[str, tuple[object, str]] = {}
     _gpu_broken = False
     _lock = threading.Lock()
+    # Uma transcrição por vez. Com o modelo na GPU e o cuBLAS faltando, só a primeira chamada recebe o erro: as
+    # chamadas simultâneas ficavam presas para sempre dentro do CTranslate2 e a prévia nunca terminava (14/11/2026).
+    _run_lock = threading.Lock()
 
     def availability(self) -> tuple[bool, str]:
         try:
@@ -98,6 +103,9 @@ class FasterWhisperAligner(AlignProvider):
             if cached and not (cached[1] == "cuda" and FasterWhisperAligner._gpu_broken):
                 return cached
             model, device = None, "cpu"
+            if not FasterWhisperAligner._gpu_broken and not _cuda_libraries_present():
+                log.info("faster-whisper: bibliotecas do CUDA 12 (cuBLAS) ausentes; usando CPU")
+                FasterWhisperAligner._gpu_broken = True
             if not FasterWhisperAligner._gpu_broken:
                 try:
                     model, device = WhisperModel(name, device="cuda", compute_type="int8_float16"), "cuda"
@@ -120,26 +128,75 @@ class FasterWhisperAligner(AlignProvider):
         # Decodifica pelo ffmpeg do app: a leitura interna do faster-whisper (PyAV) quebra com algumas versões do
         # pacote `av` ("unexpected keyword argument 'metadata_errors'").
         audio = decode_mono(audio_path, 16000)
-        model, device = self._model()
-        try:
-            return self._run(model, audio, lang)
-        except RuntimeError as exc:
-            # A GPU é aceita ao criar o modelo, mas sem as DLLs do CUDA 12 (cuBLAS/cuDNN) falha só ao transcrever.
-            if device == "cpu" or not re.search(r"cuda|cublas|cudnn", str(exc), re.IGNORECASE):
-                raise
-            log.info("faster-whisper sem as bibliotecas do CUDA (%s); usando CPU", exc)
-            FasterWhisperAligner._gpu_broken = True
-            model, _ = self._model()
-            return self._run(model, audio, lang)
+        with FasterWhisperAligner._run_lock:
+            model, device = self._model()
+            try:
+                return self._run(model, audio, lang)
+            except RuntimeError as exc:
+                # A GPU é aceita ao criar o modelo, mas sem as DLLs do CUDA 12 (cuBLAS/cuDNN) falha só ao transcrever.
+                if device == "cpu" or not re.search(r"cuda|cublas|cudnn", str(exc), re.IGNORECASE):
+                    raise
+                log.info("faster-whisper sem as bibliotecas do CUDA (%s); usando CPU", exc)
+                FasterWhisperAligner._gpu_broken = True
+                model, _ = self._model()
+                return self._run(model, audio, lang)
 
     def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
         return map_to_script(text, self.transcribe(audio_path, lang), audio_path)
 
 
-def word_error_rate(reference: str, heard: list[str]) -> float:
-    """WER entre o roteiro e o que foi ouvido (distância de edição por palavra normalizada)."""
-    ref = [t for t in (normalize_token(w) for w in split_words(reference)) if t]
-    hyp = [t for t in (normalize_token(w) for w in heard) if t]
+def _cuda_libraries_present() -> bool:
+    """No Windows, o CTranslate2 aceita criar o modelo na GPU mesmo sem o cuBLAS do CUDA 12, e só falha ao
+    transcrever. Conferir a DLL antes evita o modelo quebrado (o teste de verdade continua sendo a transcrição)."""
+    if sys.platform != "win32":
+        return True
+    try:
+        ctypes.WinDLL("cublas64_12.dll")
+    except OSError:
+        return False
+    return True
+
+
+def _num2words_lang(lang: str) -> str:
+    code = lang.replace("-", "_")
+    return code if code in ("pt_BR",) else code.split("_")[0].lower()
+
+
+def spell_numbers(tokens: list[str], lang: str | None) -> list[str]:
+    """Troca números escritos com algarismos pelas palavras faladas ("2025" → "dois mil e vinte e cinco").
+
+    O Whisper escreve "2025" e o roteiro diz "dois mil e vinte e cinco": sem isso, cada número contava como várias
+    palavras erradas e a conferência acusava problema numa narração perfeita.
+    """
+    if not lang:
+        return tokens
+    try:
+        from num2words import num2words
+    except ImportError:
+        return tokens
+    code = _num2words_lang(lang)
+    out: list[str] = []
+    for token in tokens:
+        if token.isdigit() and len(token) <= 12:
+            value = int(token)
+            try:
+                if code == "en" and len(token) == 4 and 1100 <= value <= 2099 and value % 1000 >= 10:
+                    spoken = num2words(value, lang=code, to="year")  # "twenty thirteen"
+                else:
+                    spoken = num2words(value, lang=code)
+            except (NotImplementedError, OverflowError, ValueError, KeyError):
+                out.append(token)
+                continue
+            out.extend(t for t in (normalize_token(w) for w in spoken.replace("-", " ").split()) if t)
+        else:
+            out.append(token)
+    return out
+
+
+def word_error_rate(reference: str, heard: list[str], lang: str | None = None) -> float:
+    """WER entre o roteiro e o que foi ouvido (distância de edição por palavra normalizada; números por extenso)."""
+    ref = spell_numbers([t for t in (normalize_token(w) for w in split_words(reference)) if t], lang)
+    hyp = spell_numbers([t for t in (normalize_token(w) for w in heard) if t], lang)
     if not ref:
         return 0.0 if not hyp else 1.0
     prev = list(range(len(hyp) + 1))

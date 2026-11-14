@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -236,8 +236,10 @@ def timeline(project_id: str, lang: str | None = None) -> dict[str, Any]:
 
 
 @router.get("/{project_id}/plan")
-def build_plan(project_id: str) -> dict[str, Any]:
-    return plan(project_id)
+def build_plan(project_id: str, mode: Literal["preview", "final"] = "final") -> dict[str, Any]:
+    """O que a próxima prévia ou renderização vai gravar (narrações que faltam, voz, imagens)."""
+    service.get_project_row(project_id)
+    return plan(project_id, mode=mode)
 
 
 @router.post("/{project_id}/edit/propose")

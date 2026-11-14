@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("check", help="verifica FFmpeg, Node, renderer e provedores")
     clean = sub.add_parser("clean", help="limpa renders antigos e sobras do cache (narração e imagens ficam)")
     clean.add_argument("--dry-run", action="store_true", help="só mostra o que seria apagado")
+    sub.add_parser("voz-local", help="baixa o modelo da voz local da prévia (Kokoro, ~350 MB, uma vez só)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -44,6 +45,14 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  {gc.CATEGORY_LABELS.get(category, category)}: {report.removed[category]} itens, {size / mb:.1f} MB")
         verb = "seriam liberados" if args.dry_run else "liberados"
         print(f"{sum(report.freed.values()) / mb:.1f} MB {verb}; {report.kept_in_use} artefatos em uso preservados.")
+    elif args.command == "voz-local":
+        from studio.providers import kokoro
+
+        if kokoro.model_ready():
+            print(f"A voz local já está instalada em {kokoro.models_dir()}")
+        else:
+            print(f"Baixando a voz local ({kokoro.MODEL_MB} MB)…")
+            print(f"Pronto: {kokoro.ensure_model()}")
     elif args.command == "check":
         from studio.db import init_db
         from studio.media.ffmpeg import available_encoders

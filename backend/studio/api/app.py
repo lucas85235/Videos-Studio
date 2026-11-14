@@ -107,10 +107,15 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404)
         candidate = (web_dist / full_path).resolve() if full_path else None
         if candidate and candidate.is_file() and candidate.is_relative_to(web_dist.resolve()):
-            return FileResponse(candidate)
+            if candidate.name == "index.html":
+                return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
+            # Os arquivos de assets/ têm o hash do conteúdo no nome: nunca mudam.
+            immutable = full_path.startswith("assets/")
+            return FileResponse(candidate, headers={"Cache-Control": "public, max-age=31536000, immutable"} if immutable else None)
         index = web_dist / "index.html"
         if index.exists():
-            return FileResponse(index)
+            # Sempre confere com o servidor: depois de atualizar o app, a página não fica presa na versão antiga.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
         return HTMLResponse(
             "<h1>Vulto</h1><p>A interface web ainda não foi compilada. Rode <code>npm run web:build</code> "
             "na raiz do projeto, ou use <code>npm run web:dev</code> e abra http://127.0.0.1:5173.</p>"

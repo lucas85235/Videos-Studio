@@ -23,7 +23,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 
 ### Voz e idiomas
 - [x] **Whisper local** instalado e no instalador (`--extra asr`): confere cada narração. Roda na CPU porque faltam as DLLs do CUDA 12 (cuBLAS/cuDNN); instalar o CUDA 12 deixaria mais rápido.
-- [ ] Vozes da ElevenLabs e da voz local (Qwen3) na escolha com amostra (hoje só Gemini, Chirp 3 HD e Windows listam vozes).
+- [x] Voz local grátis na prévia (Kokoro) e voz do vídeo final escolhida à parte, com amostra; vozes da conta ElevenLabs na lista (14/11/2026).
+- [ ] Vozes locais em japonês e chinês: o Kokoro precisa de outro conversor de fonemas (misaki) para esses idiomas; hoje a prévia usa a voz final neles.
 - [ ] Voz do Gemini com estilo: hoje vai só o texto (a instrução vazava). Testar de novo quando o Google atualizar o modelo de TTS (`VS_GEMINI_TTS_STYLE=1`).
 - [ ] Clonagem da sua voz: assistente de gravação, Applio/RVC e Qwen3-TTS local (o adapter `qwen3_tts_local` é só um marcador).
 - [ ] **Modo B multi-idioma** (várias faixas de áudio no mesmo vídeo): tradução com orçamento de duração, time-stretch e pacote para o YouTube Studio.

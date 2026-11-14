@@ -23,6 +23,7 @@ from studio.providers.base import (
     TransientError,
 )
 from studio.providers.image import CodexCLIImage, PexelsStock, PlaceholderImage
+from studio.providers.kokoro import KokoroTTS
 from studio.providers.llm import ClaudeCodeLLM, MockLLM
 from studio.providers.tts import (
     ElevenLabsTTS,
@@ -52,6 +53,7 @@ _register(
     GoogleChirp3HD(),
     ElevenLabsTTS(),
     Qwen3LocalTTS(),
+    KokoroTTS(),
     WindowsSapiTTS(),
     MockTTS(),
     CodexCLIImage(),
@@ -83,6 +85,8 @@ OFFLINE_ONLY: dict[str, list[str]] = {
     "image": ["placeholder"],
     "align": ["estimate"],
 }
+# Voz da prévia: local e grátis, para conferir o conteúdo antes de gastar a cota da voz final (README §8.4).
+PREVIEW_TTS_CHAIN: list[str] = ["kokoro_local"]
 DEFAULT_CHAINS: dict[str, list[str]] = {
     "llm": ["claude_code"],
     "tts": ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"],

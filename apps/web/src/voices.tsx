@@ -13,25 +13,35 @@ const GENDER_OPTIONS: { id: Gender; label: string }[] = [
   { id: 'masculina', label: 'Masculinas' },
 ];
 
+/** Para que serve a lista: a voz local da prévia ou as vozes que podem ir para o vídeo final. */
+export type VoicePurpose = 'preview' | 'final';
+
+/** Catálogo de vozes (mesma chave em todos os lugares: o painel e o seletor dividem o cache). */
+export const useVoiceCatalog = (lang: string, opts: { providers?: string[]; purpose?: VoicePurpose } = {}) => {
+  const { providers, purpose } = opts;
+  const query = providers?.length ? `&providers=${providers.join(',')}` : purpose ? `&purpose=${purpose}` : '';
+  return useQuery({
+    queryKey: ['voices', lang, query],
+    queryFn: () => api.get<VoiceCatalog>(`/api/voices?lang=${encodeURIComponent(lang)}${query}`),
+  });
+};
+
 /**
  * Lista as vozes dos provedores com um botão para ouvir a amostra. A amostra é gerada pelo provedor na primeira
- * vez (um pedido da cota) e fica guardada. Com `onChange`, clicar no nome escolhe a voz.
+ * vez (um pedido da cota, exceto na voz local) e fica guardada. Com `onChange`, clicar no nome escolhe a voz.
  */
 export const VoicePicker: React.FC<{
   lang: string;
   providers?: string[];
+  purpose?: VoicePurpose;
   value?: VoiceChoice | null;
   onChange?: (choice: VoiceChoice) => void;
   /** Voz padrão do estilo, marcada na lista. */
   defaultVoice?: string | null;
   disabled?: boolean;
-}> = ({ lang, providers, value, onChange, defaultVoice, disabled }) => {
+}> = ({ lang, providers, purpose, value, onChange, defaultVoice, disabled }) => {
   const client = useQueryClient();
-  const key = ['voices', lang, providers?.join(',') ?? ''];
-  const catalog = useQuery({
-    queryKey: key,
-    queryFn: () => api.get<VoiceCatalog>(`/api/voices?lang=${encodeURIComponent(lang)}${providers?.length ? `&providers=${providers.join(',')}` : ''}`),
-  });
+  const catalog = useVoiceCatalog(lang, { providers, purpose });
   const audio = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState<string | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
@@ -80,7 +90,8 @@ export const VoicePicker: React.FC<{
   const groups = catalog.data?.providers ?? [];
   if (!groups.length) return <p className="text-[13px] text-muted">Nenhum provedor de voz deste estilo deixa escolher a voz.</p>;
   const hasGender = groups.some((g) => g.voices.some((v) => v.gender));
-  const anyMissingSample = groups.some((g) => g.available && g.voices.some((v) => !v.sample));
+  // A voz local gera a amostra no seu computador: não gasta cota.
+  const anyMissingSample = groups.some((g) => g.available && !g.local && g.voices.some((v) => !v.sample));
   const quotaOut = (id: string) => Boolean(providerList.data?.some((p) => p.id === id && p.quota_exhausted_today));
 
   return (
@@ -98,6 +109,11 @@ export const VoicePicker: React.FC<{
           <div key={g.id} className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-medium text-fg">{g.name}</span>
+              {g.local && !g.preview_only ? (
+                <Badge tone="good" title="Roda no seu computador: sem cota e sem custo.">
+                  Grátis
+                </Badge>
+              ) : null}
               {g.preview_only ? (
                 <Badge tone="warn" title="Esta voz serve para testar; o vídeo publicado precisa de uma voz real.">
                   Voz de teste
@@ -121,7 +137,7 @@ export const VoicePicker: React.FC<{
                     const details = [v.tone, v.gender].filter(Boolean).join(', ');
                     const listenLabel = isPlaying
                       ? `Parar ${v.label}`
-                      : v.sample
+                      : v.sample || g.local
                         ? `Ouvir ${v.label}`
                         : `Gerar amostra de ${v.label} (usa um pedido da cota)`;
                     const name = (
@@ -159,7 +175,7 @@ export const VoicePicker: React.FC<{
                           ) : isPlaying ? (
                             <Square size={12} fill="currentColor" aria-hidden="true" />
                           ) : (
-                            <Play size={13} fill={v.sample ? 'currentColor' : 'none'} strokeWidth={2.25} aria-hidden="true" className="translate-x-px" />
+                            <Play size={13} fill={v.sample || g.local ? 'currentColor' : 'none'} strokeWidth={2.25} aria-hidden="true" className="translate-x-px" />
                           )}
                         </button>
                         {onChange ? (

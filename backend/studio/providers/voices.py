@@ -100,9 +100,20 @@ def catalog(lang: str, provider_ids: list[str] | None = None) -> list[dict[str, 
             "available": ok,
             "reason": reason,
             "preview_only": not provider.info.commercial_use,
+            "local": provider.info.local,
             "voices": voices,
         })
     return out
+
+
+def providers_for(purpose: str) -> list[str]:
+    """Provedores que servem para a voz da prévia (local, grátis) ou do vídeo final (os que podem ir para o canal)."""
+    if purpose == "preview":
+        return list(registry.PREVIEW_TTS_CHAIN)
+    final = [p.info.id for p in registry.all_providers()
+             if isinstance(p, TTSProvider) and p.info.commercial_use and not p.info.hidden]
+    # A voz local fica por último: é a opção grátis, não a padrão do vídeo final.
+    return sorted(final, key=lambda pid: pid in registry.PREVIEW_TTS_CHAIN)
 
 
 def make_sample(provider_id: str, voice: str, lang: str) -> str:

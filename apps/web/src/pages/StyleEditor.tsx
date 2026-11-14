@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ApiError, api, type Channel, type StyleItem, type StyleSpec, type VoiceCatalog } from '../api';
+import { ApiError, api, type Channel, type StyleItem, type StyleSpec } from '../api';
 import {
   CAMERA_LABELS,
   CAPTION_POSITION_LABELS,
@@ -60,7 +60,7 @@ import {
   useConfirm,
   useToast,
 } from '../ui';
-import { VoicePicker } from '../voices';
+import { useVoiceCatalog, VoicePicker } from '../voices';
 import {
   CaptionPreview,
   ColorField,
@@ -570,15 +570,9 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
   const navH = useHeight(() => navWrapRef.current, [loaded, tab]);
   const topOffset = isLg ? headerH + 16 : (isSm ? headerH : 0) + (tab === 'form' ? navH : 0) + 12;
 
-  // Voz: usa o catálogo já carregado pelo seletor (mesma chave), sem pedir de novo.
-  const voiceLang = style?.languages.primary ?? '';
-  const voiceChain = style?.voice.chain ?? [];
-  const voiceCatalog = useQuery({
-    queryKey: ['voices', voiceLang, voiceChain.join(',')],
-    queryFn: () =>
-      api.get<VoiceCatalog>(`/api/voices?lang=${encodeURIComponent(voiceLang)}${voiceChain.length ? `&providers=${voiceChain.join(',')}` : ''}`),
-    enabled: false,
-  });
+  // Voz: o mesmo catálogo do seletor (mesma chave), para mostrar o nome da voz escolhida.
+  const voiceLang = style?.languages.primary || 'pt-BR';
+  const voiceCatalog = useVoiceCatalog(voiceLang, { purpose: 'final' });
 
   const clearDraft = () => removeLocal(draftKey);
   const clearDraftRef = useRef(clearDraft);
@@ -1448,7 +1442,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                 <Section icon={AudioLines} title="Voz" description={`Narração em ${langLabel(style.languages.primary)}.`}>
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-canvas px-3 py-2.5">
                     <div className="min-w-0 text-sm">
-                      <span className="text-muted">Voz do estilo: </span>
+                      <span className="text-muted">Voz do vídeo final: </span>
                       <span className="font-medium text-fg">{voiceName}</span>
                       {chain[0] ? <span className="text-subtle"> · {providerName(chain[0])}</span> : null}
                     </div>
@@ -1460,7 +1454,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                     <div id={voicePanelId} className="flex flex-col gap-2">
                       <VoicePicker
                         lang={style.languages.primary}
-                        providers={chain}
+                        purpose="final"
                         value={style.voice.voice && chain[0] ? { provider: chain[0], voice: style.voice.voice } : null}
                         onChange={preset ? undefined : pickVoice}
                         defaultVoice={baseline.voice.voice}
@@ -1472,6 +1466,17 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                     </div>
                   ) : null}
                   <Fields disabled={preset}>
+                    <Checkbox
+                      label="Prévia com a voz local grátis"
+                      description="A prévia narra com uma voz que roda no seu computador, sem cota, para você conferir o conteúdo. A voz acima só é gravada ao renderizar o vídeo final."
+                      checked={style.voice.preview?.local ?? true}
+                      disabled={preset}
+                      onChange={(on) =>
+                        set((s) => {
+                          s.voice.preview = { voice: s.voice.preview?.voice ?? null, local: on };
+                        })
+                      }
+                    />
                     <RangeField
                       label="Velocidade da fala"
                       min={0.7}

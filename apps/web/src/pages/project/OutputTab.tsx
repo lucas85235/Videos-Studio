@@ -22,6 +22,7 @@ import {
   useConfirm,
 } from "../../ui";
 import { formatDuration, nextStep } from "./core/model";
+import { FinalVoiceSummary } from "./delivery/AudioPanels";
 import { tabOwnsAction } from "./core/NextStep";
 import {
   discardMetaDraft,
@@ -225,7 +226,6 @@ export const OutputTab: React.FC<
       {entry?.video ? "Renderizar de novo" : "Renderizar vídeo final"}
     </Button>
   );
-  const quotaNote = "só gasta cota se faltar narração ou imagem.";
 
   const previewState = !previewEntry ? (
     <span>
@@ -288,11 +288,14 @@ export const OutputTab: React.FC<
             title="Vídeo final"
             description={
               entry?.video
-                ? `${formatDuration(entry.duration)}${doc.languages.length > 1 ? ` · ${langLabel(lang)}` : ""} · Refazer ${quotaNote}`
-                : `A renderização gera o MP4 reaproveitando a prévia e ${quotaNote}`
+                ? `${formatDuration(entry.duration)}${doc.languages.length > 1 ? ` · ${langLabel(lang)}` : ""} · Renderizar de novo só grava o que mudou.`
+                : "A renderização grava a narração com a voz do vídeo final e monta o MP4 com as imagens da prévia."
             }
             actions={entry?.video && !finalStale ? renderButton() : undefined}
           >
+            {renderJob ? null : (
+              <FinalVoiceSummary detail={detail} busy={busy} lang={lang} />
+            )}
             {finalStale && !renderJob ? (
               <Notice
                 tone="warn"

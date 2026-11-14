@@ -182,8 +182,17 @@ class QaSpec(StrictModel):
     retries: int = Field(default=1, ge=0, le=3)
 
 
+class PreviewVoiceSpec(StrictModel):
+    local: bool = True
+    """Prévia com a voz local grátis (Kokoro). Desligado, a prévia já usa a voz final e gasta a cota dela."""
+    voice: str | None = None
+    """Voz local (ex.: 'pf_dora'). Vazio: uma do mesmo gênero da voz final."""
+
+
 class VoiceSpec(StrictModel):
     chain: list[str] = ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"]
+    """Voz do vídeo final, em ordem de preferência (a prévia usa a voz local, ver `preview`)."""
+    preview: PreviewVoiceSpec = PreviewVoiceSpec()
     voice_profile: str | None = None
     voice: str | None = None
     """Nome da voz no provedor (ex.: 'Charon' no Gemini)."""

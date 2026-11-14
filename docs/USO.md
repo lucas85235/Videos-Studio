@@ -12,6 +12,8 @@ O script instala o backend (venv em `%USERPROFILE%\VideosStudioData\.venv-backen
 
 O instalador inclui o **Whisper local**, que ouve cada narração e refaz a que sair errada (ver §7, *Conferência da narração*). Na primeira narração ele baixa o modelo (~460 MB). Roda na CPU: uns 5 s por trecho curto.
 
+Ele também baixa a **voz local da prévia** (Kokoro, ~350 MB, licença Apache-2.0). Se faltar, o app baixa na primeira prévia, ou rode `uv run --project backend videos-studio voz-local`.
+
 ## 2. Abrir o app
 
 Dê um duplo clique em `scripts\iniciar.cmd`. O navegador abre em http://127.0.0.1:8765. Para encerrar, feche a janela do terminal.
@@ -22,19 +24,21 @@ Onde ficam os arquivos: `%USERPROFILE%\VideosStudioData` (banco, cache, vídeos 
 
 1. **Novo projeto**: escreva um tema específico, escolha o estilo e os idiomas, e deixe marcado "Gerar o roteiro agora".
 2. **Roteiro** (aba 1): leia, edite o que quiser, trave os segmentos que estão perfeitos e clique em **Aprovar roteiro e continuar**. O app gera o storyboard e a prévia.
-3. **Prévia e edição** (aba 3): assista no player. Para mudar algo, escreva no chat, por exemplo "deixa a cena 5 mais sombria" ou "legenda maior". Veja o que o agente propõe e quanto custa, e clique em **Aplicar**. Só o que mudou é refeito.
-4. **Renderizar vídeo** (botão no topo ou aba 4): gera o MP4 final em blocos, a thumbnail e as legendas SRT.
+3. **Prévia e edição** (aba 3): assista no player. A prévia é narrada pela **voz local grátis**, só para você conferir o conteúdo. Para mudar algo, escreva no chat, por exemplo "deixa a cena 5 mais sombria" ou "legenda maior". Veja o que o agente propõe e quanto custa, e clique em **Aplicar**. Só o que mudou é refeito.
+4. **Renderizar vídeo** (botão no topo ou aba 4): grava a narração com a **voz do vídeo final** (a de API que você escolheu), gera o MP4 em blocos, a thumbnail e as legendas SRT.
 5. **Publicar** (aba 4): envie ao YouTube pela API oficial, ou prepare o pacote manual para TikTok, Instagram e outras redes.
 
 ## 4. Modo prévia × conteúdo real
 
 O roteiro, a tradução e o agente de edição usam **só o Claude da sua conta**. Sem o Claude Code logado, gerar o roteiro falha com o motivo (não há roteiro de exemplo no lugar).
 
-Sem as chaves de voz e de imagem, o app usa provedores de **prévia**:
-- voz do Windows (Maria);
-- imagens procedurais abstratas.
+**A voz tem duas etapas:**
+- **Prévia: voz local grátis** (Kokoro). Roda no seu computador, sem cota e sem rede, cerca de 2,5× mais rápido que a fala. Fala português, inglês, espanhol, francês, italiano e hindi; nos outros idiomas a prévia já usa a voz final. A qualidade é menor que a das vozes de API: serve para conferir roteiro, ritmo e cenas antes de gastar créditos.
+- **Vídeo final: a voz de API que você escolher** (Gemini, Chirp 3 HD ou ElevenLabs). Ela só é gravada quando você renderiza. Se ela estiver sem cota ou sem chave, a renderização para logo no começo e diz o motivo: o vídeo final nunca sai com voz de teste.
 
-Esses provedores aparecem marcados como "só prévia". O app **bloqueia** a publicação pública de vídeos feitos com eles (você ainda pode enviar como privado para testar).
+Para a prévia já sair com a voz final (gastando a cota dela), desmarque *Usar a voz local grátis na prévia* no cartão *Voz* da prévia ou no estilo.
+
+Sem a chave de imagem, o app usa imagens procedurais abstratas, marcadas como "só prévia" (assim como a voz do Windows, último recurso da prévia se a voz local falhar). O app **bloqueia** a publicação pública de vídeos feitos com elas (você ainda pode enviar como privado para testar).
 
 Para conteúdo real **a custo zero**:
 
@@ -49,10 +53,12 @@ Voz e imagens seguem a cadeia de fallback de cada estilo: se um provedor falhar 
 
 ### Escolher a voz
 
-- **Ouvir antes**: Configurações › Voz › *Ouvir vozes* (com o idioma). Clique em ▶: a amostra é gerada na primeira vez (um pedido da cota grátis do Gemini) e fica guardada.
-- **No novo projeto**: o campo *Voz do narrador* lista as vozes do estilo com ▶ para ouvir; clique no nome para escolher. Sem escolha, vale a voz do estilo.
-- **Num projeto existente**: aba *Prévia e edição* › cartão *Voz* › *Ouvir e trocar*. Depois, **Atualizar prévia**: as narrações são refeitas com a voz nova.
-- As 30 vozes do Gemini falam todos os idiomas; a descrição (firme, macia, rouca…) segue a documentação do Google.
+- **Ouvir antes**: Configurações › Voz › *Ouvir vozes* (com o idioma). Clique em ▶: a amostra é gerada na primeira vez (um pedido da cota, exceto na voz local) e fica guardada.
+- **No novo projeto**: o campo *Voz do vídeo final* lista as vozes de API e a local, com ▶ para ouvir; clique no nome para escolher. Sem escolha, vale a voz do estilo.
+- **Num projeto existente**: aba *Prévia e edição* › cartão *Voz*, com duas abas:
+  - *Prévia*: a voz local (Dora, Alex ou Santa em português). Sem escolha, o app usa uma do mesmo gênero da voz final. Depois, **Atualizar prévia**.
+  - *Vídeo final*: a voz que grava o vídeo final. A aba *Vídeo final* do projeto também mostra essa voz, quantos trechos ainda vão ser gravados e o botão *Trocar voz*.
+- As 30 vozes do Gemini falam todos os idiomas; a descrição (firme, macia, rouca…) segue a documentação do Google. Com a chave da ElevenLabs configurada, as vozes da sua conta aparecem na lista (cada amostra gasta créditos).
 
 O Claude da conta usa o Opus mais recente com esforço médio. Para trocar, defina `VS_CLAUDE_MODEL` (ex.: `sonnet`) ou `VS_CLAUDE_EFFORT` (`low`, `high`…) antes de iniciar o app. É uso pessoal do seu plano: não distribua o app configurado com a sua conta para outras pessoas.
 

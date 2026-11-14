@@ -34,7 +34,7 @@ from studio.media import music_library
 from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
-from studio.providers import registry
+from studio.providers import kokoro, registry
 from studio.providers.align import map_to_script, narration_problems, word_error_rate
 from studio.providers.base import Word
 
@@ -143,6 +143,44 @@ class Builder:
                 return True
         return False
 
+    def final_voice_only(self) -> bool:
+        """No vídeo final, a narração só pode sair de voz que vai para o canal (nada de voz de teste)."""
+        return self.mode == "final" and not self.settings.offline
+
+    @staticmethod
+    def final_chain(chain: list[str]) -> list[str]:
+        return [p for p in chain if registry.get(p).info.commercial_use]
+
+    def narrations_to_record(self) -> list[tuple[str, str, int]]:
+        """Narrações que esta build ainda precisa gravar: (segmento, idioma, caracteres)."""
+        missing = []
+        final = self.final_voice_only()
+        for lang in self.langs:
+            for seg in self.doc.segments:
+                inputs = self.narration_inputs(seg.id, lang)
+                cached = self.store.lookup("tts", hash_obj(inputs))
+                if not cached or (final and not cached.get("commercial", True)):
+                    missing.append((seg.id, lang, len(inputs["text"])))
+        return missing
+
+    def check_final_voice(self) -> None:
+        """Falha logo no início se o vídeo final precisa gravar narração e nenhuma voz final está disponível."""
+        if not self.final_voice_only() or not self.narrations_to_record():
+            return
+        chain = self.final_chain(registry.resolve_chain("tts", self.style.voice.chain))
+        reasons = []
+        for provider_id in chain:
+            provider = registry.get(provider_id)
+            ok, reason = provider.availability()
+            if ok and not registry.quota_exhausted_today(provider_id):
+                return
+            reasons.append(f"{provider.info.name}: {'cota esgotada hoje' if ok else reason}")
+        detail = "; ".join(reasons) or "nenhuma voz final configurada"
+        raise BuildError(
+            f"A voz do vídeo final não está disponível ({detail}). Escolha outra voz final na aba Vídeo final ou "
+            "tente de novo quando a cota voltar."
+        )
+
     def _usage(self, result: Any) -> tuple[float, str, float]:
         return result.usage.units, result.usage.unit_name, result.usage.cost_usd
 
@@ -154,12 +192,50 @@ class Builder:
     # ---------------------------------------------------------------------------------------
     # nós
     # ---------------------------------------------------------------------------------------
+    def local_preview(self, lang: str) -> bool:
+        """A narração desta build sai da voz local grátis (prévia) em vez da voz final?"""
+        return (self.mode == "preview" and self.style.voice.preview.local and not self.settings.offline
+                and kokoro.supports(lang))
+
+    def _final_gender(self, voice: str | None, lang: str) -> str | None:
+        if not voice:
+            return None
+        for provider_id in self.style.voice.chain[:1]:
+            try:
+                provider = registry.get(provider_id)
+            except Exception:  # noqa: BLE001
+                return None
+            for option in getattr(provider, "voices", lambda _lang: [])(lang):
+                if option.id == voice:
+                    return option.gender
+        return None
+
+    def preview_voice(self, lang: str, speaker_voice: str | None = None) -> str | None:
+        """Voz local do narrador (a escolhida ou uma do mesmo gênero da voz final). Personagens com voz própria
+        ganham outra voz local, do gênero da voz final deles."""
+        narrator = kokoro.pick_voice(lang, self.style.voice.preview.voice,
+                                     self._final_gender(self.style.voice.voice, lang))
+        if not speaker_voice or speaker_voice == self.style.voice.voice:
+            return narrator
+        return kokoro.pick_voice(lang, None, self._final_gender(speaker_voice, lang), avoid=narrator)
+
     def narration_inputs(self, seg_id: str, lang: str) -> dict[str, Any]:
         seg = self.doc.segment(seg_id)
         text = seg.text_for(lang)
         speaker = self.style.script.speakers.get(seg.speaker)
         voice = (speaker.voice if speaker and speaker.voice else None) or self.style.voice.voice
         style_prompt = (speaker.style_prompt if speaker and speaker.style_prompt else None) or self.style.voice.style_prompt
+        if self.local_preview(lang):
+            # Voz local: sem instrução de estilo (não há o que interpretar nem o que vazar no áudio).
+            return {
+                "text": text,
+                "lang": lang,
+                "voice": self.preview_voice(lang, voice),
+                "style_prompt": None,
+                "speed": self.style.voice.speed,
+                "chain": registry.resolve_chain("tts", registry.PREVIEW_TTS_CHAIN),
+                "v": 2,
+            }
         return {
             "text": text,
             "lang": lang,
@@ -178,13 +254,17 @@ class Builder:
             raise BuildError(f"o segmento {seg_id} não tem texto em {lang} (traduza antes)")
         h = hash_obj(inputs)
         cached = self.store.lookup("tts", h)
+        final = self.final_voice_only()
+        if cached and final and not cached.get("commercial", True):
+            cached = None  # gravação com voz de teste (ex.: cota esgotada na prévia) não vai para o vídeo final
         if cached and not self._better_available(inputs["chain"], cached.get("provider")):
             self.stats.hit("tts", True)
             if not cached.get("commercial", True):
                 self.stats.noncommercial.add(cached.get("provider", "?"))
-            if cached.get("problems"):
+            problems = self._recheck_wer(cached, inputs["text"], lang)
+            if problems:
                 self.warnings.append(
-                    f"Narração de {seg_id} ({lang}) com problema: {'; '.join(cached['problems'])}. Ouça esse trecho antes "
+                    f"Narração de {seg_id} ({lang}) com problema: {'; '.join(problems)}. Ouça esse trecho antes "
                     "de publicar."
                 )
             return h, cached
@@ -192,10 +272,15 @@ class Builder:
         qa_spec = self.style.voice.qa
         wpm = self.style.script.words_per_minute.get(lang, 150)
 
+        # O hash usa a cadeia completa (as gravações já feitas continuam valendo); no vídeo final, só as vozes que
+        # podem ir para o canal entram: sem elas, a build falha antes (ver `check_final_voice`) em vez de cair na
+        # voz do Windows.
+        chain = self.final_chain(inputs["chain"]) if final else inputs["chain"]
+
         def take(target: Path, style_prompt: str | None) -> dict[str, Any]:
             result, provider, _ = registry.run_chain(
                 "tts",
-                inputs["chain"],
+                chain,
                 lambda p: p.synthesize(text=inputs["text"], lang=lang, voice=inputs["voice"], style_prompt=style_prompt,
                                        speed=inputs["speed"], out_dir=target),
                 usage_of=self._usage,
@@ -253,6 +338,22 @@ class Builder:
             self.stats.noncommercial.add(provider.info.id)
         return h, output
 
+    def _recheck_wer(self, cached: dict[str, Any], text: str, lang: str) -> list[str]:
+        """Problemas de uma narração já gravada, refazendo a conta do erro com os números por extenso (as gravações
+        de antes de 14/11/2026 contavam "2025" × "dois mil e vinte e cinco" como erro)."""
+        problems = list(cached.get("problems") or [])
+        heard = cached.get("heard")
+        if not problems or not heard:
+            return problems
+        suffix = "das palavras diferem do roteiro"
+        if not any(p.endswith(suffix) for p in problems):
+            return problems
+        problems = [p for p in problems if not p.endswith(suffix)]
+        wer = word_error_rate(text, [w["text"] for w in heard], lang)
+        if wer > self.style.voice.qa.max_wer:
+            problems.append(f"{wer:.0%} {suffix}")
+        return problems
+
     def _qa(self, text: str, lang: str, audio_path: Path) -> dict[str, Any] | None:
         """Transcreve a narração e mede o erro contra o roteiro (só com o Whisper local instalado)."""
         if not self.style.voice.qa.enabled or self.settings.offline:
@@ -269,7 +370,7 @@ class Builder:
         except Exception as exc:  # noqa: BLE001 - QA nunca derruba o build
             log.warning("controle de qualidade da narração falhou: %s", exc)
             return None
-        return {"wer": word_error_rate(text, [w.text for w in heard]), "heard": [w.to_dict() for w in heard]}
+        return {"wer": word_error_rate(text, [w.text for w in heard], lang), "heard": [w.to_dict() for w in heard]}
 
     def alignment(self, seg_id: str, lang: str, tts_hash: str, tts_out: dict[str, Any]) -> list[Word]:
         text = self.doc.segment(seg_id).text_for(lang)
@@ -569,6 +670,7 @@ class Builder:
 
     def run(self) -> dict[str, Any]:
         self.validate()
+        self.check_final_voice()
         doc = self.doc
         scenes = doc.ordered_scenes()
         n_seg = len(doc.segments) * len(self.langs)
@@ -579,7 +681,7 @@ class Builder:
 
         tts_out: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
         images: dict[str, str | None] = {}
-        errors: list[str] = []
+        errors: dict[str, list[str]] = {}  # mensagem → itens que falharam com ela
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="tts") as tts_pool, ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="img"
         ) as img_pool:
@@ -594,7 +696,8 @@ class Builder:
                 try:
                     value = future.result()
                 except Exception as exc:  # noqa: BLE001 - junta os erros e falha no fim
-                    errors.append(f"{kind} {ident}{f' ({lang})' if lang else ''}: {exc}")
+                    errors.setdefault(f"{'narração' if kind == 'tts' else 'imagem'}: {exc}", []).append(
+                        f"{ident}{f' ({lang})' if lang else ''}")
                     continue
                 if kind == "tts":
                     tts_out[(ident, lang)] = value
@@ -608,7 +711,10 @@ class Builder:
                         f.cancel()
                     raise BuildCancelled("cancelado pelo usuário")
         if errors:
-            raise BuildError("falhas na geração:\n- " + "\n- ".join(errors[:20]))
+            # A mesma falha em vários itens (ex.: cota acabou no meio) vira uma linha só.
+            lines = [f"{message} ({items[0]}{f' e mais {len(items) - 1}' if len(items) > 1 else ''})"
+                     for message, items in errors.items()]
+            raise BuildError("falhas na geração:\n- " + "\n- ".join(lines[:20]))
 
         results: dict[str, Any] = {}
         for lang in self.langs:
@@ -691,11 +797,13 @@ def timeline_to_srt(timeline: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None = None) -> dict[str, Any]:
-    """Estimativa do que um build vai gerar (para a prévia de custo das edições)."""
+def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None = None,
+         mode: Mode = "final") -> dict[str, Any]:
+    """Estimativa do que um build vai gerar: no modo "final", o que a renderização grava com a voz final; no
+    "preview", o que a prévia refaz depois de uma edição (a narração da prévia sai da voz local, sem cota)."""
     builder = Builder.__new__(Builder)
     builder.project_id = project_id
-    builder.mode = "final"
+    builder.mode = mode
     builder.doc = doc or service.get_doc(project_id)
     builder.style = get_style(builder.doc.style_id, builder.doc.style_overrides)
     builder.langs = langs or list(builder.doc.languages)
@@ -704,29 +812,36 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     builder.settings = get_settings()
     builder.stats = BuildStats()
     builder.warnings = []
-    missing_tts: list[dict[str, Any]] = []
-    for lang in builder.langs:
-        for seg in builder.doc.segments:
-            inputs = builder.narration_inputs(seg.id, lang)
-            if not builder.store.lookup("tts", hash_obj(inputs)):
-                missing_tts.append({"segment_id": seg.id, "lang": lang, "chars": len(inputs["text"])})
+    missing_tts = [{"segment_id": seg_id, "lang": lang, "chars": chars}
+                   for seg_id, lang, chars in builder.narrations_to_record()]
     missing_images = []
     for scene in builder.doc.ordered_scenes():
         inputs = builder.image_inputs(scene)
         if inputs and not builder.store.lookup("image", hash_obj(inputs)):
             missing_images.append(scene.id)
-    tts_provider = _first_available(registry.resolve_chain("tts", builder.style.voice.chain))
+    # Só a voz local quando todos os trechos que faltam saem dela (idioma sem voz local usa a voz final).
+    langs = {m["lang"] for m in missing_tts} or set(builder.langs)
+    local = all(builder.local_preview(lang) for lang in langs)
+    if local:
+        tts_provider = _first_available(registry.resolve_chain("tts", registry.PREVIEW_TTS_CHAIN))
+    else:
+        tts_chain = registry.resolve_chain("tts", builder.style.voice.chain)
+        tts_provider = _first_available(builder.final_chain(tts_chain) if builder.final_voice_only() else tts_chain)
     img_provider = _first_available(registry.resolve_chain("image", builder.style.art.image_chain))
     img_price = getattr(registry.get(img_provider), "price", 0.0) if img_provider else 0.0
     est = len(missing_images) * img_price
+    tts_seconds = sum(m["chars"] for m in missing_tts) / 15 * 0.5 if local else len(missing_tts) * 6
     return {
+        "mode": mode,
         "tts_missing": missing_tts,
         "tts_chars": sum(m["chars"] for m in missing_tts),
+        "tts_local": local,
         "images_missing": missing_images,
         "tts_provider": tts_provider,
+        "tts_voice": builder.style.voice.voice,
         "image_provider": img_provider,
         "estimated_cost_usd": round(est, 4),
-        "estimated_seconds": len(missing_tts) * 6 + len(missing_images) * (40 if img_provider == "codex_cli" else 12),
+        "estimated_seconds": round(tts_seconds + len(missing_images) * (40 if img_provider == "codex_cli" else 12)),
     }
 
 

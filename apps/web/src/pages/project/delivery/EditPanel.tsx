@@ -178,8 +178,10 @@ export const EditPanel: React.FC<{
 
   const ctx = { doc, sceneIndex, trackName };
   const est = proposal?.estimate;
+  // A narração da prévia sai da voz local: só a voz de API gasta cota.
   const spendsQuota = Boolean(
-    est && (est.images_missing.length > 0 || est.tts_chars > 0),
+    est &&
+      (est.images_missing.length > 0 || (est.tts_chars > 0 && !est.tts_local)),
   );
 
   return (
@@ -362,6 +364,7 @@ export const EditPanel: React.FC<{
               {est.tts_chars ? (
                 <Badge>
                   {est.tts_chars.toLocaleString("pt-BR")} caracteres de narração
+                  {est.tts_local ? " (voz local)" : ""}
                 </Badge>
               ) : null}
               {est.estimated_seconds ? (
@@ -416,7 +419,9 @@ export const EditPanel: React.FC<{
             <p className="text-xs text-subtle">
               {applyBlock ??
                 (spendsQuota
-                  ? "Aplicar gera a narração e as imagens que faltam: gasta cota dos provedores de voz e imagem."
+                  ? est?.tts_local || !est?.tts_chars
+                    ? "Aplicar gera as imagens que faltam (gasta cota do provedor de imagem) e atualiza a prévia."
+                    : "Aplicar gera a narração e as imagens que faltam: gasta cota dos provedores de voz e imagem."
                   : "Aplicar cria uma versão nova e atualiza a prévia.")}
             </p>
           </div>

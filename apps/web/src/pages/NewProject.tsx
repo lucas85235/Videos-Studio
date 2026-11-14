@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AudioLines, Check, ExternalLink, FileText, History, Languages, Palette, Plus, TriangleAlert, Tv, Wand2 } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api, type Channel, LANGUAGES, type StyleItem, type VoiceCatalog, type VoiceChoice } from '../api';
+import { api, type Channel, LANGUAGES, type StyleItem, type VoiceChoice } from '../api';
 import { langLabel } from '../labels';
 import { isBoolean, isStringArray, readLocal, writeLocal } from '../shell/data';
 import {
@@ -22,7 +22,7 @@ import {
   useConfirm,
   useToast,
 } from '../ui';
-import { VoicePicker } from '../voices';
+import { useVoiceCatalog, VoicePicker } from '../voices';
 import { durationLabel, formatLabel } from './projects/meta';
 import { FormatGlyph, StepNumber } from './projects/parts';
 import { StylePicker } from './projects/StylePicker';
@@ -169,15 +169,7 @@ export const NewProjectPage: React.FC = () => {
   const channel = channels.data?.find((c) => c.id === channelId);
 
   // Mesma consulta do VoicePicker (mesma chave): só lê o cache para mostrar o nome da voz no resumo.
-  const voiceProviders = style?.style.voice.chain ?? [];
-  const voiceCatalog = useQuery({
-    queryKey: ['voices', primary, voiceProviders.join(',')],
-    queryFn: () =>
-      api.get<VoiceCatalog>(
-        `/api/voices?lang=${encodeURIComponent(primary)}${voiceProviders.length ? `&providers=${voiceProviders.join(',')}` : ''}`,
-      ),
-    enabled: Boolean(style),
-  });
+  const voiceCatalog = useVoiceCatalog(primary, { purpose: 'final' });
   const defaultVoice = style?.style.voice.voice ?? null;
   const effectiveVoice: VoiceChoice | null =
     chosenVoice ?? (style && defaultVoice ? { provider: style.style.voice.chain[0], voice: defaultVoice } : null);
@@ -595,7 +587,7 @@ export const NewProjectPage: React.FC = () => {
           title={
             <>
               <StepNumber n={5} />
-              Voz do narrador
+              Voz do vídeo final
             </>
           }
           description={
@@ -619,10 +611,10 @@ export const NewProjectPage: React.FC = () => {
           {style ? (
             <FieldGroup
               legend={`Vozes em ${langLabel(primary)}`}
-              hint="Clique em Ouvir (▶) para escutar uma amostra e no nome da voz para escolher. A amostra é gerada na primeira vez que você ouve e gasta um pedido da cota de voz."
+              hint="A prévia sai com uma voz local grátis, para você conferir o conteúdo; esta voz só é gravada quando você renderiza o vídeo final (dá para trocar até lá). Clique em Ouvir (▶) para escutar uma amostra e no nome para escolher."
             >
               <div className="max-h-80 overflow-y-auto rounded-lg border border-line bg-canvas p-3">
-                <VoicePicker lang={primary} providers={style.style.voice.chain} value={effectiveVoice} defaultVoice={defaultVoice} onChange={setVoice} />
+                <VoicePicker lang={primary} purpose="final" value={effectiveVoice} defaultVoice={defaultVoice} onChange={setVoice} />
               </div>
             </FieldGroup>
           ) : styles.isLoading ? (

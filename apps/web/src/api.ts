@@ -149,7 +149,7 @@ export type StyleSpec = {
   format: { type: 'short' | 'long'; aspect: string; resolution: string; fps: number; duration: { target_s: number; min_s: number | null; max_s: number | null } };
   languages: { primary: string; outputs: string[]; delivery: string };
   script: { tone: string; structure: string[]; hook_max_s: number; fact_check: boolean; cta: string | null; banned_phrases: string[] };
-  voice: { chain: string[]; voice: string | null; style_prompt: string | null; speed: number; gap_s: number; voice_profile: string | null };
+  voice: { chain: string[]; voice: string | null; style_prompt: string | null; speed: number; gap_s: number; voice_profile: string | null; preview?: PreviewVoice };
   art: { bible: string; banned: string[]; image_chain: string[]; thumbnail_chain: string[]; photoreal: boolean };
   edit: {
     shot_seconds: { min: number; max: number };
@@ -183,9 +183,27 @@ export type StyleSpec = {
 };
 
 export type VoiceOption = { id: string; label: string; gender: string | null; tone: string; sample: string | null };
-export type VoiceProvider = { id: string; name: string; available: boolean; reason: string; preview_only: boolean; voices: VoiceOption[] };
+export type VoiceProvider = { id: string; name: string; available: boolean; reason: string; preview_only: boolean; local: boolean; voices: VoiceOption[] };
 export type VoiceCatalog = { lang: string; sample_text: string; providers: VoiceProvider[] };
 export type VoiceChoice = { provider: string; voice: string };
+/** Voz da prévia: local e grátis (Kokoro) ou a própria voz final. */
+export type PreviewVoice = { local: boolean; voice: string | null };
+// `preview` falta quando o servidor ainda roda a versão anterior (antes de reiniciar o app).
+/** O que a próxima prévia ou renderização vai gravar (GET /api/projects/:id/plan). */
+export type BuildPlan = {
+  mode: 'preview' | 'final';
+  tts_missing: { segment_id: string; lang: string; chars: number }[];
+  tts_chars: number;
+  /** A narração que falta sai da voz local (sem cota). */
+  tts_local: boolean;
+  tts_provider: string | null;
+  tts_voice: string | null;
+  images_missing: string[];
+  image_provider: string | null;
+  estimated_cost_usd: number;
+  estimated_seconds: number;
+};
+export const LOCAL_VOICE_PROVIDER = 'kokoro_local';
 
 export type StyleItem ={ source: 'preset' | 'user'; version: number; style: StyleSpec; warnings: string[]; parent_id?: string | null };
 
@@ -299,7 +317,7 @@ export const toLocalInput = (iso: string) => {
 export type EditProposal = {
   summary: string;
   ops: Record<string, unknown>[];
-  estimate: { tts_missing: unknown[]; tts_chars: number; images_missing: string[]; estimated_cost_usd: number; estimated_seconds: number; tts_provider: string | null; image_provider: string | null } | null;
+  estimate: BuildPlan | null;
   provider: string;
   base_version: number;
 };

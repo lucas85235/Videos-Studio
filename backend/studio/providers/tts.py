@@ -1,7 +1,8 @@
 """Provedores de voz (TTS).
 
-Ordem padrão (README §8.4): Gemini TTS (grátis) → Google Chirp 3 HD (1 M caracteres grátis/mês)
-→ Qwen3-TTS local → (prévia) voz do Windows → mock. Toda saída é normalizada para WAV 48 kHz mono.
+Voz do vídeo final, ordem padrão (README §8.4): Gemini TTS (grátis) → Google Chirp 3 HD (1 M caracteres grátis/mês)
+→ Qwen3-TTS local; ElevenLabs se você configurar a chave. A prévia usa a voz local grátis (Kokoro, em `kokoro.py`);
+a voz do Windows e o mock são o último recurso só da prévia. Toda saída é normalizada para WAV 48 kHz mono.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import platform
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -247,9 +249,37 @@ class ElevenLabsTTS(TTSProvider):
         cost_note="Plano pago (Starter/Creator) para uso comercial; usado como referência no teste cego",
     )
 
+    _voices_cache: tuple[float, list[VoiceOption]] | None = None
+
     def availability(self) -> tuple[bool, str]:
         key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
         return (True, "ok") if key else (False, "sem chave da ElevenLabs")
+
+    def voices(self, lang: str) -> list[VoiceOption]:
+        """Vozes da sua conta (as da biblioteca que você adicionou). Em cache por 10 min; sem chave, nenhuma."""
+        key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)
+        if not key:
+            return []
+        cached = ElevenLabsTTS._voices_cache
+        if cached and time.monotonic() - cached[0] < 600:
+            return cached[1]
+        try:
+            resp = httpx.get("https://api.elevenlabs.io/v1/voices", headers={"xi-api-key": key}, timeout=20)
+        except httpx.HTTPError as exc:
+            log.warning("não consegui listar as vozes da ElevenLabs: %s", exc)
+            return cached[1] if cached else []
+        if resp.status_code != 200:
+            log.warning("ElevenLabs recusou a lista de vozes (%s)", resp.status_code)
+            return cached[1] if cached else []
+        options = []
+        for item in resp.json().get("voices") or []:
+            labels = item.get("labels") or {}
+            gender = {"female": "feminina", "male": "masculina"}.get(str(labels.get("gender", "")).lower())
+            tone = ", ".join(str(x) for x in (labels.get("description"), labels.get("accent")) if x)
+            options.append(VoiceOption(id=item["voice_id"], label=item.get("name") or item["voice_id"], gender=gender,
+                                       tone=tone))
+        ElevenLabsTTS._voices_cache = (time.monotonic(), options)
+        return options
 
     def synthesize(self, *, text, lang, voice, style_prompt, speed, out_dir) -> TTSResult:
         key = credentials.resolve(self.info.id, "api_key", self.info.env_vars)

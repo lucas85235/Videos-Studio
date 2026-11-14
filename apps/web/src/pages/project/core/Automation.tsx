@@ -78,7 +78,7 @@ export const AutomationMenu: React.FC<{
           <div>
             <div className="font-display text-[15px] font-semibold text-fg">Piloto automático</div>
             <p className="mt-0.5 text-[13px] leading-snug text-muted">
-              Faz as etapas em sequência e pausa nas revisões marcadas abaixo. Usa o Claude e a cota de voz e de imagens.
+              Faz as etapas em sequência e pausa nas revisões marcadas abaixo. Usa o Claude, a cota de imagens e a da voz do vídeo final.
             </p>
           </div>
           <fieldset className="m-0 flex flex-col gap-2.5 border-0 p-0">
