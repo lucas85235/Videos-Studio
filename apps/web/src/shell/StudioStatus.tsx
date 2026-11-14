@@ -1,6 +1,7 @@
 import { Settings2, WifiOff } from 'lucide-react';
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { providerShort } from '../labels';
 import { Spinner } from '../ui';
 import { useBackendConnection, type ConnectionStatus } from '../useEvents';
 import { readinessOf, useProviders, type Readiness } from './data';
@@ -26,12 +27,13 @@ const serverLine = (status: ConnectionStatus): Line =>
 const providerLine = (label: string, r: Readiness, loading: boolean, failed: boolean): Line => {
   if (loading) return { label, value: 'Verificando…', tone: 'idle' };
   if (failed) return { label, value: 'Desconhecido', tone: 'idle' };
-  if (!r.real) return { label, value: 'Modo prévia', tone: 'warn', title: 'Nenhum provedor real configurado: o vídeo sai só como prévia.' };
-  if (r.quotaExhausted) return { label, value: 'Cota esgotada hoje', tone: 'warn', title: r.real.name };
-  return { label, value: r.real.name, tone: 'good', title: `${r.real.name}: conteúdo real` };
+  if (!r.real) return { label, value: 'Só teste', tone: 'warn', title: 'Nenhum provedor real configurado: o vídeo sai só com conteúdo de teste.' };
+  if (r.quotaExhausted) return { label, value: 'Cota esgotada hoje', tone: 'warn', title: `${r.real.name}: cota esgotada hoje` };
+  // Nome curto na linha (o completo, com parênteses, não cabe em 12 px); o completo fica na dica.
+  return { label, value: providerShort(r.real.id, r.real.name), tone: 'good', title: `${r.real.name}: conteúdo real` };
 };
 
-/** Conexão com o servidor local e prontidão de voz e imagens (real × prévia). Leva às Configurações. */
+/** Conexão com o servidor local e prontidão de voz e imagens (real × teste). Leva às Configurações. */
 export const StudioStatus: React.FC<{ collapsed?: boolean; onNavigate?: () => void }> = ({ collapsed, onNavigate }) => {
   const { status } = useBackendConnection();
   const providers = useProviders();
@@ -47,7 +49,11 @@ export const StudioStatus: React.FC<{ collapsed?: boolean; onNavigate?: () => vo
         : failed
           ? { value: 'Desconhecido', tone: 'idle' as Tone }
           : (providers.data ?? []).some((p) => p.kind === 'llm' && p.available)
-            ? { value: llm.real?.name ?? 'Disponível', tone: 'good' as Tone }
+            ? {
+                value: llm.real ? providerShort(llm.real.id, llm.real.name) : 'Disponível',
+                tone: 'good' as Tone,
+                title: llm.real ? `${llm.real.name}: conteúdo real` : undefined,
+              }
             : { value: 'Indisponível', tone: 'bad' as Tone }),
     },
     providerLine('Voz', readinessOf(providers.data, 'tts'), loading, failed),

@@ -107,7 +107,7 @@ class GeminiTTS(TTSProvider):
         credential_fields=("api_key",),
         env_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         cost_note="Camada gratuita; limite diário não publicado (relatos de 10–100 pedidos/dia por modelo)",
-        notes="Tenta o Flash e, se a cota acabar, o Flash-Lite. Sem timestamps: o alinhamento vem depois.",
+        notes="Tenta o Flash e, se a cota acabar, o Flash-Lite.",
     )
 
     def _key(self) -> str | None:
@@ -187,7 +187,7 @@ class GoogleChirp3HD(TTSProvider):
         free=True,
         credential_fields=("api_key",),
         env_vars=("GOOGLE_CLOUD_TTS_API_KEY",),
-        cost_note="1 M caracteres grátis/mês; exige projeto com cobrança ativada (use alerta de orçamento)",
+        cost_note="1 milhão de caracteres grátis por mês; exige projeto com cobrança ativada (use alerta de orçamento)",
     )
 
     def _key(self) -> str | None:

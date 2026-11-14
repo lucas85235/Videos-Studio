@@ -33,23 +33,29 @@ export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'subt
 export type ButtonSize = 'sm' | 'md';
 
 const BUTTON_BASE =
-  'inline-flex select-none items-center justify-center rounded-lg font-medium leading-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress aria-busy:opacity-70';
+  'inline-flex select-none items-center justify-center rounded-lg font-medium leading-tight transition-colors duration-150 disabled:cursor-not-allowed aria-busy:cursor-progress aria-busy:opacity-70';
 
+// A opacidade de desabilitado fica em cada variante: o primário desabilitado vira neutro (sem âmbar a 50%),
+// para não parecer a ação âmbar da tela enquanto ainda não está liberado.
 const BUTTON_VARIANTS: Record<Exclude<ButtonVariant, 'subtle'>, string> = {
-  primary: 'bg-accent font-semibold text-on-accent hover:bg-accent-strong disabled:hover:bg-accent',
-  secondary: 'border border-line-strong bg-raised text-fg hover:border-[#4a4a56] hover:bg-[#24242c] disabled:hover:border-line-strong disabled:hover:bg-raised',
-  ghost: 'text-muted hover:bg-raised hover:text-fg disabled:hover:bg-transparent disabled:hover:text-muted',
-  danger: 'border border-red-400/40 bg-red-400/10 text-red-300 hover:border-red-400/60 hover:bg-red-400/20 hover:text-red-200 disabled:hover:bg-red-400/10',
+  primary:
+    'bg-accent font-semibold text-on-accent hover:bg-accent-strong disabled:bg-raised disabled:text-subtle disabled:ring-1 disabled:ring-inset disabled:ring-line-strong disabled:hover:bg-raised',
+  secondary:
+    'border border-line-strong bg-raised text-fg hover:border-[#4a4a56] hover:bg-[#24242c] disabled:opacity-50 disabled:hover:border-line-strong disabled:hover:bg-raised',
+  ghost: 'text-muted hover:bg-raised hover:text-fg disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted',
+  danger:
+    'border border-red-400/40 bg-red-400/10 text-red-300 hover:border-red-400/60 hover:bg-red-400/20 hover:text-red-200 disabled:opacity-50 disabled:hover:bg-red-400/10',
 };
 
+// Em tela de toque (ponteiro grosso), os alvos crescem para 36-40 px.
 const BUTTON_SIZES: Record<ButtonSize, string> = {
-  sm: 'min-h-7 gap-1.5 px-2.5 py-1 text-xs',
-  md: 'min-h-8 gap-2 px-3 py-1.5 text-sm',
+  sm: 'min-h-7 gap-1.5 px-2.5 py-1 text-xs pointer-coarse:min-h-9',
+  md: 'min-h-8 gap-2 px-3 py-1.5 text-sm pointer-coarse:min-h-10',
 };
 
 const ICON_BUTTON_SIZES: Record<ButtonSize, string> = {
-  sm: 'h-7 w-7',
-  md: 'h-8 w-8',
+  sm: 'h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9',
+  md: 'h-8 w-8 pointer-coarse:h-10 pointer-coarse:w-10',
 };
 
 const resolveVariant = (variant: ButtonVariant = 'secondary') => (variant === 'subtle' ? 'secondary' : variant);
@@ -164,17 +170,20 @@ export const Section: React.FC<{
   const headingId = useId();
   return (
     <section aria-labelledby={headingId} className={`rounded-xl border border-line bg-card ${className}`}>
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4 py-3">
-        <div className="flex min-w-0 items-start gap-2.5">
-          {Icon ? <Icon size={16} strokeWidth={2} aria-hidden="true" className="mt-0.5 shrink-0 text-muted" /> : null}
-          <div className="min-w-0">
-            <h2 id={headingId} className="font-display text-[15px] font-semibold leading-6 text-fg">
-              {title}
-            </h2>
-            {description ? <div className="mt-0.5 text-[13px] leading-snug text-muted">{description}</div> : null}
+      {/* As ações ficam sempre no topo à direita, qualquer que seja o tamanho do texto; só empilham num cabeçalho estreito. */}
+      <header className="@container border-b border-line px-4 py-3">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 @max-sm:grid-cols-1">
+          <div className="flex min-w-0 items-start gap-2.5">
+            {Icon ? <Icon size={16} strokeWidth={2} aria-hidden="true" className="mt-0.5 shrink-0 text-muted" /> : null}
+            <div className="min-w-0">
+              <h2 id={headingId} className="font-display text-[15px] font-semibold leading-6 text-fg">
+                {title}
+              </h2>
+              {description ? <div className="mt-0.5 text-[13px] leading-snug text-muted">{description}</div> : null}
+            </div>
           </div>
+          {actions ? <div className="flex flex-wrap items-center justify-end gap-2 @max-sm:justify-start">{actions}</div> : null}
         </div>
-        {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
       </header>
       <div className="flex flex-col gap-3 p-4">{children}</div>
     </section>
@@ -210,7 +219,8 @@ export const PageHeader: React.FC<{
     <header
       className={`mb-6 flex flex-col gap-2 ${
         sticky
-          ? 'sticky top-0 z-20 -mx-4 -mt-6 border-b border-line bg-canvas/90 px-4 pb-3 pt-4 backdrop-blur-md sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8'
+          ? // -mt-6 pt-6 anula o respiro do <Page>: o título fica na mesma altura e tamanho das páginas sem cabeçalho fixo.
+            'sticky top-0 z-20 -mx-4 -mt-6 border-b border-line bg-canvas/90 px-4 pb-3 pt-6 backdrop-blur-md sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8'
           : ''
       }`}
     >
@@ -236,7 +246,7 @@ export const PageHeader: React.FC<{
       ) : null}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1">
-          <h1 className={`font-display font-bold tracking-tight text-fg ${sticky ? 'text-xl sm:text-[22px]' : 'text-2xl'}`}>{title}</h1>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-fg">{title}</h1>
           {description ? <div className="mt-1 max-w-prose text-sm text-muted">{description}</div> : null}
           {meta ? <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px] text-subtle">{meta}</div> : null}
         </div>
@@ -446,6 +456,76 @@ export const Checkbox: React.FC<{
 };
 
 /* ------------------------------------------------------------------ */
+/* Controle segmentado (filtros e opções exclusivas)                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Classe de uma opção do controle segmentado. A selecionada fica neutra (fundo elevado e contorno), não âmbar:
+ * o âmbar fica para a ação principal da tela e para o foco do teclado.
+ */
+export const segmentClass = (on: boolean, size: ButtonSize = 'md') =>
+  `inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-offset-0 ${
+    size === 'sm' ? 'min-h-6 px-2 py-0.5 text-xs pointer-coarse:min-h-8' : 'min-h-7 px-2.5 py-1 text-[13px] pointer-coarse:min-h-9'
+  } ${on ? 'bg-raised text-fg shadow-sm shadow-black/30 ring-1 ring-inset ring-line-strong' : 'text-muted enabled:hover:text-fg'}`;
+
+/** Trilho do controle segmentado (para quem monta os botões à mão com `segmentClass`). */
+export const SEGMENTED_TRACK = 'flex w-fit max-w-full flex-wrap gap-0.5 rounded-lg border border-line bg-canvas p-0.5';
+
+export type SegmentOption<T extends string> = {
+  id: T;
+  label: React.ReactNode;
+  icon?: LucideIcon;
+  /** Contagem ao lado do rótulo (ex.: quantos itens o filtro mostra). */
+  count?: React.ReactNode;
+  disabled?: boolean;
+  title?: string;
+};
+
+/** Grupo de botões exclusivos (aria-pressed): filtros de lista e escolhas curtas. */
+export function SegmentedControl<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  size = 'md',
+  disabled,
+  className = '',
+}: {
+  /** Nome do grupo para o leitor de tela (dentro de um FieldGroup a legenda já nomeia; pode omitir). */
+  label?: string;
+  options: SegmentOption<T>[];
+  value: T;
+  onChange: (id: T) => void;
+  size?: ButtonSize;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <div role="group" aria-label={label} className={`${SEGMENTED_TRACK} ${className}`}>
+      {options.map((o) => {
+        const on = o.id === value;
+        const Icon = o.icon;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            aria-pressed={on}
+            title={o.title}
+            disabled={disabled || o.disabled}
+            onClick={() => onChange(o.id)}
+            className={segmentClass(on, size)}
+          >
+            {Icon ? <Icon size={14} strokeWidth={2} aria-hidden="true" className="shrink-0" /> : null}
+            {o.label}
+            {o.count != null ? <span className={`tabular-nums ${on ? 'text-muted' : 'text-subtle'}`}>{o.count}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Abas                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -484,6 +564,46 @@ export const Tabs: React.FC<{
     setHasPanel((prev) => (prev === exists ? prev : exists));
   });
 
+  // Lista que rola na horizontal (celular): a aba ativa fica inteira à vista e as bordas com mais abas esmaecem.
+  const listRef = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState<{ start: boolean; end: boolean }>({ start: false, end: false });
+  const updateEdges = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const start = el.scrollLeft > 1;
+    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setEdges((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  }, []);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const tab = refs.current[active];
+    if (list && tab && list.scrollWidth > list.clientWidth) {
+      // scrollLeft (e não scrollIntoView): só a lista rola, a página fica onde está. A folga deixa a aba fora do esmaecimento.
+      const pad = 32;
+      const l = list.getBoundingClientRect();
+      const t = tab.getBoundingClientRect();
+      if (t.left < l.left + pad) list.scrollLeft -= l.left + pad - t.left;
+      else if (t.right > l.right - pad) list.scrollLeft += t.right - (l.right - pad);
+    }
+    updateEdges();
+  }, [active, updateEdges]);
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(updateEdges);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [updateEdges]);
+  const fade = 28;
+  const mask =
+    edges.start && edges.end
+      ? `linear-gradient(to right, transparent, #000 ${fade}px, #000 calc(100% - ${fade}px), transparent)`
+      : edges.end
+        ? `linear-gradient(to right, #000 calc(100% - ${fade}px), transparent)`
+        : edges.start
+          ? `linear-gradient(to right, transparent, #000 ${fade}px)`
+          : undefined;
+
   const focusTab = (id: string) => {
     onChange(id);
     refs.current[id]?.focus();
@@ -506,8 +626,11 @@ export const Tabs: React.FC<{
   return (
     // A linha de base é uma sombra interna (não uma borda): nada passa da caixa, então não surge rolagem vertical.
     <div
+      ref={listRef}
       role="tablist"
       aria-label={ariaLabel}
+      onScroll={updateEdges}
+      style={mask ? { maskImage: mask, WebkitMaskImage: mask } : undefined}
       className={`flex gap-1 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_var(--color-line)] ${className}`}
     >
       {tabs.map((tab) => {
@@ -681,46 +804,81 @@ export const ProgressBar: React.FC<{
 
 export type StepState = 'done' | 'current' | 'todo' | 'error';
 
-/** Trilha horizontal compacta de etapas. */
+/**
+ * Trilha horizontal compacta de etapas. Num contêiner estreito (abaixo de 32rem), só a etapa atual e a com erro
+ * mostram o rótulo; as outras ficam só com o círculo (rótulo no leitor de tela e na dica). Se ainda assim não couber,
+ * a trilha rola sozinha até a etapa atual.
+ */
 export const Stepper: React.FC<{
   steps: { id: string; label: string; state: StepState }[];
   onSelect?: (id: string) => void;
   className?: string;
-}> = ({ steps, onSelect, className = '' }) => (
-  <ol className={`flex min-w-0 items-center gap-1 overflow-x-auto ${className}`} aria-label="Etapas">
-    {steps.map((step, i) => {
-      const dot = {
-        done: 'border-emerald-400/50 bg-emerald-400/15 text-emerald-300',
-        current: 'border-accent bg-accent text-on-accent',
-        todo: 'border-line-strong bg-transparent text-subtle',
-        error: 'border-red-400/60 bg-red-400/15 text-red-300',
-      }[step.state];
-      const text = step.state === 'current' ? 'text-fg font-medium' : step.state === 'error' ? 'text-red-300' : step.state === 'done' ? 'text-muted' : 'text-subtle';
-      const stateLabel = { done: 'concluída', current: 'etapa atual', todo: 'a fazer', error: 'com erro' }[step.state];
-      const content = (
-        <>
-          <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs font-semibold tabular-nums ${dot}`} aria-hidden="true">
-            {step.state === 'done' ? <Check size={12} strokeWidth={3} /> : step.state === 'error' ? <X size={12} strokeWidth={3} /> : i + 1}
-          </span>
-          <span className={`whitespace-nowrap text-[13px] ${text}`}>{step.label}</span>
-          <span className="sr-only">({stateLabel})</span>
-        </>
-      );
-      return (
-        <li key={step.id} className="flex shrink-0 items-center gap-1" aria-current={step.state === 'current' ? 'step' : undefined}>
-          {i > 0 ? <span aria-hidden="true" className={`h-px w-4 sm:w-6 ${step.state === 'todo' || step.state === 'current' ? 'bg-line-strong' : 'bg-emerald-400/50'}`} /> : null}
-          {onSelect ? (
-            <button type="button" onClick={() => onSelect(step.id)} className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-raised focus-visible:outline-offset-[-2px]">
-              {content}
-            </button>
-          ) : (
-            <span className="flex items-center gap-1.5 px-1.5 py-1">{content}</span>
-          )}
-        </li>
-      );
-    })}
-  </ol>
-);
+}> = ({ steps, onSelect, className = '' }) => {
+  const listRef = useRef<HTMLOListElement>(null);
+  const currentId = steps.find((s) => s.state === 'current')?.id;
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const item = list?.querySelector<HTMLElement>('[aria-current="step"]');
+    if (!list || !item || list.scrollWidth <= list.clientWidth) return;
+    // scrollLeft (e não scrollIntoView, que rolaria a página): só a trilha se move.
+    const l = list.getBoundingClientRect();
+    const t = item.getBoundingClientRect();
+    if (t.right > l.right) list.scrollLeft += t.right - l.right;
+    else if (t.left < l.left) list.scrollLeft -= l.left - t.left;
+  }, [currentId, steps.length]);
+  return (
+    // w-full: com container-type a largura não vem do conteúdo; sem largura explícita, num pai flex ela vira 0.
+    <div className={`@container w-full min-w-0 ${className}`}>
+      <ol ref={listRef} className="flex min-w-0 items-center gap-1 overflow-x-auto" aria-label="Etapas">
+        {steps.map((step, i) => {
+          const dot = {
+            done: 'border-emerald-400/50 bg-emerald-400/15 text-emerald-300',
+            current: 'border-accent bg-accent text-on-accent',
+            todo: 'border-line-strong bg-transparent text-subtle',
+            error: 'border-red-400/60 bg-red-400/15 text-red-300',
+          }[step.state];
+          const text = step.state === 'current' ? 'text-fg font-medium' : step.state === 'error' ? 'text-red-300' : step.state === 'done' ? 'text-muted' : 'text-subtle';
+          const stateLabel = { done: 'concluída', current: 'etapa atual', todo: 'a fazer', error: 'com erro' }[step.state];
+          const alwaysLabeled = step.state === 'current' || step.state === 'error';
+          const content = (
+            <>
+              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs font-semibold tabular-nums ${dot}`} aria-hidden="true">
+                {step.state === 'done' ? <Check size={12} strokeWidth={3} /> : step.state === 'error' ? <X size={12} strokeWidth={3} /> : i + 1}
+              </span>
+              <span className={`whitespace-nowrap text-[13px] ${text} ${alwaysLabeled ? '' : 'sr-only @lg:not-sr-only'}`}>{step.label}</span>
+              <span className="sr-only">({stateLabel})</span>
+            </>
+          );
+          const tip = alwaysLabeled ? undefined : `${step.label} (${stateLabel})`;
+          return (
+            <li key={step.id} className="flex shrink-0 items-center gap-1" aria-current={step.state === 'current' ? 'step' : undefined}>
+              {i > 0 ? (
+                <span
+                  aria-hidden="true"
+                  className={`h-px w-3 @lg:w-6 ${step.state === 'todo' || step.state === 'current' ? 'bg-line-strong' : 'bg-emerald-400/50'}`}
+                />
+              ) : null}
+              {onSelect ? (
+                <button
+                  type="button"
+                  title={tip}
+                  onClick={() => onSelect(step.id)}
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-raised focus-visible:outline-offset-[-2px] pointer-coarse:py-2"
+                >
+                  {content}
+                </button>
+              ) : (
+                <span title={tip} className="flex items-center gap-1.5 px-1.5 py-1">
+                  {content}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+};
 
 /* ------------------------------------------------------------------ */
 /* Avisos (toasts)                                                     */
@@ -967,17 +1125,9 @@ export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2];
 
 /** Velocidade de reprodução (o navegador mantém o tom da voz). */
 export const SpeedButtons: React.FC<{ value: number; onChange: (rate: number) => void; className?: string }> = ({ value, onChange, className = '' }) => (
-  <div className={`flex items-center gap-0.5 rounded-lg border border-line bg-canvas p-0.5 text-xs ${className}`} role="group" aria-label="Velocidade de reprodução">
+  <div className={`${SEGMENTED_TRACK} items-center ${className}`} role="group" aria-label="Velocidade de reprodução">
     {PLAYBACK_RATES.map((rate) => (
-      <button
-        key={rate}
-        type="button"
-        aria-pressed={rate === value}
-        onClick={() => onChange(rate)}
-        className={`min-h-6 rounded-md px-2 py-1 tabular-nums transition-colors ${
-          rate === value ? 'bg-accent/15 font-medium text-accent ring-1 ring-inset ring-accent/50' : 'text-muted hover:text-fg'
-        }`}
-      >
+      <button key={rate} type="button" aria-pressed={rate === value} onClick={() => onChange(rate)} className={`${segmentClass(rate === value, 'sm')} tabular-nums`}>
         {String(rate).replace('.', ',')}x
       </button>
     ))}

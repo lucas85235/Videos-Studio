@@ -120,6 +120,32 @@ export const PROVIDER_KIND_LABELS: LabelMap = {
   publish: 'Publicação',
 };
 
+/**
+ * Nome curto de cada provedor, para espaços apertados (barra lateral, resumos, painel de voz). O nome completo,
+ * que vem do backend, continua nos cartões de Configurações e na dica (title) dos nomes curtos.
+ * "De teste" é o termo único para o que serve só para conferir (nunca "prévia", que é a etapa 3 do vídeo).
+ */
+export const PROVIDER_SHORT: LabelMap = {
+  claude_code: 'Claude',
+  mock_llm: 'Roteiro offline',
+  gemini_tts: 'Gemini',
+  google_chirp3hd: 'Chirp 3 HD',
+  elevenlabs: 'ElevenLabs',
+  qwen3_tts_local: 'Qwen3 local',
+  windows_sapi: 'Voz do Windows',
+  mock_tts: 'Voz de teste',
+  codex_cli: 'Codex',
+  pexels: 'Pexels',
+  placeholder: 'Imagens de teste',
+};
+
+/** Nome curto do provedor: do mapa; senão, o nome completo sem o trecho entre parênteses; senão, o id. */
+export const providerShort = (id: string | null | undefined, fullName?: string | null): string => {
+  if (id && PROVIDER_SHORT[id]) return PROVIDER_SHORT[id];
+  const stripped = fullName?.replace(/\s*\([^)]*\)/g, '').trim();
+  return stripped || fullName || id || '';
+};
+
 export const FAMILY_LABELS: LabelMap = {
   still_cinema: 'Cinema de imagens paradas',
   motion_graphics: 'Motion graphics editorial',

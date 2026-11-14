@@ -107,7 +107,8 @@ export const App: React.FC = () => {
   const drawerRef = useRef<HTMLDivElement>(null);
 
   const [collapsed, setCollapsed] = useState<boolean>(() =>
-    readLocal<boolean>(COLLAPSED_KEY, typeof window !== 'undefined' && window.innerWidth < 1024, isBoolean),
+    // Abaixo de 1280 px a barra começa recolhida (64 px): a 1024 px a barra aberta tomaria 25% da largura.
+    readLocal<boolean>(COLLAPSED_KEY, typeof window !== 'undefined' && window.innerWidth < 1280, isBoolean),
   );
   const toggleCollapsed = () =>
     setCollapsed((c) => {

@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Play, Square } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { api, fileUrl, type VoiceCatalog, type VoiceChoice } from './api';
-import { Badge, ErrorBox, Loading, Spinner } from './ui';
+import { useProviders } from './shell/data';
+import { Badge, ErrorBox, Loading, SegmentedControl, Spinner } from './ui';
 
 type Gender = 'todas' | 'feminina' | 'masculina';
 
@@ -35,6 +36,8 @@ export const VoicePicker: React.FC<{
   const [playing, setPlaying] = useState<string | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
   const [gender, setGender] = useState<Gender>('todas');
+  // Mesma consulta da barra lateral (cache compartilhado): avisa antes de "Ouvir" falhar por falta de cota.
+  const providerList = useProviders();
 
   useEffect(() => () => audio.current?.pause(), []);
 
@@ -78,25 +81,16 @@ export const VoicePicker: React.FC<{
   if (!groups.length) return <p className="text-[13px] text-muted">Nenhum provedor de voz deste estilo deixa escolher a voz.</p>;
   const hasGender = groups.some((g) => g.voices.some((v) => v.gender));
   const anyMissingSample = groups.some((g) => g.available && g.voices.some((v) => !v.sample));
+  const quotaOut = (id: string) => Boolean(providerList.data?.some((p) => p.id === id && p.quota_exhausted_today));
 
   return (
-    <div className="flex flex-col gap-3 text-[13px]">
-      {hasGender ? (
-        <div role="group" aria-label="Filtrar vozes por gênero" className="flex w-fit gap-0.5 rounded-lg border border-line bg-canvas p-0.5">
-          {GENDER_OPTIONS.map((g) => (
-            <button
-              key={g.id}
-              type="button"
-              aria-pressed={gender === g.id}
-              onClick={() => setGender(g.id)}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                gender === g.id ? 'bg-accent/15 text-accent ring-1 ring-inset ring-accent/50' : 'text-muted hover:text-fg'
-              }`}
-            >
-              {g.label}
-            </button>
-          ))}
-        </div>
+    // @container: as colunas da grade seguem a largura do seletor (painel da prévia, Novo projeto, Configurações), não a da janela.
+    <div className="@container flex flex-col gap-3 text-[13px]">
+      {hasGender ? <SegmentedControl label="Filtrar vozes por gênero" size="sm" options={GENDER_OPTIONS} value={gender} onChange={setGender} /> : null}
+      {anyMissingSample ? (
+        <p className="text-xs text-subtle">
+          Play vazado: a amostra ainda não existe. Ouvir pela primeira vez gera a amostra e gasta 1 pedido da cota.
+        </p>
       ) : null}
       {groups.map((g) => {
         const voices = g.voices.filter((v) => gender === 'todas' || v.gender === gender);
@@ -106,14 +100,19 @@ export const VoicePicker: React.FC<{
               <span className="font-medium text-fg">{g.name}</span>
               {g.preview_only ? (
                 <Badge tone="warn" title="Esta voz serve para testar; o vídeo publicado precisa de uma voz real.">
-                  Só prévia
+                  Voz de teste
+                </Badge>
+              ) : null}
+              {g.available && quotaOut(g.id) ? (
+                <Badge tone="warn" title="A cota grátis deste provedor acabou hoje: gerar amostras novas vai falhar até amanhã.">
+                  Cota esgotada hoje
                 </Badge>
               ) : null}
               {!g.available ? <span className="text-xs text-subtle">Indisponível: {g.reason}</span> : null}
             </div>
             {g.available ? (
               voices.length ? (
-                <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2 xl:grid-cols-3">
+                <ul className="grid grid-cols-1 gap-1 @md:grid-cols-2 @3xl:grid-cols-3">
                   {voices.map((v) => {
                     const id = `${g.id}:${v.id}`;
                     const selected = value ? value.provider === g.id && value.voice === v.id : false;
@@ -153,7 +152,7 @@ export const VoicePicker: React.FC<{
                             // Gerando: continua focável (o foco do teclado não cai no <body>), mas ignora o clique.
                             if (!loading) listen(g.id, v.id, v.sample);
                           }}
-                          className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line-strong bg-raised text-fg transition-colors hover:border-[#4a4a56] hover:bg-[#24242c] aria-busy:cursor-progress"
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line-strong bg-raised text-fg transition-colors hover:border-[#4a4a56] hover:bg-[#24242c] aria-busy:cursor-progress pointer-coarse:h-9 pointer-coarse:w-9"
                         >
                           {loading ? (
                             <Spinner className="h-3 w-3" />
@@ -162,9 +161,6 @@ export const VoicePicker: React.FC<{
                           ) : (
                             <Play size={13} fill={v.sample ? 'currentColor' : 'none'} strokeWidth={2.25} aria-hidden="true" className="translate-x-px" />
                           )}
-                          {!v.sample && !loading && !isPlaying ? (
-                            <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent ring-2 ring-card" />
-                          ) : null}
                         </button>
                         {onChange ? (
                           <button
@@ -191,12 +187,6 @@ export const VoicePicker: React.FC<{
           </div>
         );
       })}
-      {anyMissingSample ? (
-        <p className="flex items-center gap-1.5 text-xs text-subtle">
-          <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />
-          Com o ponto, a amostra ainda não existe: ouvir gera a amostra e gasta um pedido da cota.
-        </p>
-      ) : null}
       <ErrorBox error={sample.error} title="Não foi possível gerar a amostra" onClose={() => sample.reset()} />
       <ErrorBox error={playError} title="Falha ao tocar" onClose={() => setPlayError(null)} />
     </div>

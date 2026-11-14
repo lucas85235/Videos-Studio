@@ -65,8 +65,8 @@ class ClaudeCodeLLM(LLMProvider):
         local=True,
         free=True,
         cost_note="Incluído no seu plano do Claude (Pro/Max); conta nos limites de uso do plano, sem cobrança extra",
-        notes="Usa o comando `claude` logado com a sua conta (rode `claude auth login` uma vez). Modelo em "
-        "VS_CLAUDE_MODEL (padrão: opus) e esforço em VS_CLAUDE_EFFORT (padrão: medium). Para uso pessoal.",
+        notes="Usa o Claude Code com a sua conta (faça login uma vez no terminal com `claude auth login`). "
+        "Para uso pessoal. Modelo e esforço: VS_CLAUDE_MODEL (padrão opus) e VS_CLAUDE_EFFORT (padrão medium).",
     )
 
     timeout_s = 900

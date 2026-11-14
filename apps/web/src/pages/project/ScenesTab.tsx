@@ -1,140 +1,535 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import React, { useState } from 'react';
-import { api, fileUrl, type ProjectDetail, type Scene } from '../../api';
-import { Badge, Button, Card, Empty, ErrorBox, Select, Textarea } from '../../ui';
-import { useStartJob } from '../ProjectPage';
+import { FileText, ImageOff, LayoutGrid, Lock, LockOpen, MonitorPlay, RefreshCw, RotateCcw, Save, TriangleAlert, Type } from 'lucide-react';
+import React, { memo, useCallback, useId, useState } from 'react';
+import { api, ApiError, fileUrl, type ProjectDetail, type Scene, type Version } from '../../api';
+import { CAMERA_LABELS, label, SCENE_KIND_LABELS, TRANSITION_LABELS } from '../../labels';
+import { Badge, Button, Card, Empty, ErrorBox, IconButton, Select, Skeleton, Spinner, Textarea, useConfirm } from '../../ui';
+import { useJobStarting, useStartJob } from '../ProjectPage';
+import { promptDrafts, sceneChanges, useKeyedStore, useKeyedValue } from './core/drafts';
+import { ImageDialog } from './core/ImageDialog';
+import { tabOwnsAction } from './core/NextStep';
+import { DOC_BUSY_REASON, docJobRunning, isActive, isShort, nextStep, STYLE_MISSING_REASON } from './core/model';
+import type { TabNavigation } from './types';
 
 const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'drift', 'static'];
 const TRANSITIONS = ['', 'cut', 'flash', 'fade_black', 'glitch', 'light_leak', 'zoom_blur', 'film_burn', 'static_burst'];
 const KINDS = ['image', 'text', 'title', 'count', 'document', 'quote'];
-const KIND_LABEL: Record<string, string> = {
-  image: 'imagem',
-  text: 'tipografia cinética',
-  title: 'título',
-  count: 'contagem',
-  document: 'documento',
-  quote: 'citação',
-};
+const AUTO = 'Automática';
+const BUILD_KINDS = new Set(['preview', 'autopilot', 'render']);
+const BUSY_REASON = 'Aguarde o trabalho em andamento terminar.';
+
+/** Versões que não mudam o que a prévia mostra (aprovações, título, briefing, travas). */
+const NON_VISUAL_VERSION = /^(Prévia aprovada|Roteiro aprovado|Título editado|Briefing editado|Trecho (des)?travado|Segmento (des)?travado)|: (des)?travada$/;
 
 type TimelineLite = { scenes: { id: string; src: string | null; durationInFrames: number }[]; fps: number };
 
-const SceneCard: React.FC<{ scene: Scene; index: number; src: string | null; seconds: number | null; projectId: string }> = ({
-  scene,
-  index,
-  src,
-  seconds,
-  projectId,
-}) => {
-  const client = useQueryClient();
-  const [prompt, setPrompt] = useState(scene.visual.prompt);
-  const run = useMutation({
-    mutationFn: (ops: Record<string, unknown>[]) => api.post(`/api/projects/${projectId}/ops`, { ops, message: `Cena C${index}` }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['project', projectId] }),
-  });
-  const disabled = scene.locked || run.isPending;
+const formatSecs = (s: number) => `${s.toFixed(1).replace('.', ',')} s`;
+
+/** Select com rótulo visível pequeno (ligado ao campo). */
+const LabeledSelect: React.FC<{
+  label: string;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}> = ({ label: text, value, disabled, onChange, children }) => {
+  const id = useId();
   return (
-    <Card className="flex flex-col gap-2 p-3">
-      <div className="relative aspect-video overflow-hidden rounded-lg bg-zinc-950">
-        {src ? <img src={fileUrl(src)} className="h-full w-full object-cover" loading="lazy" /> : <div className="flex h-full items-center justify-center text-xs text-zinc-600">sem imagem ainda</div>}
-        <div className="absolute left-2 top-2 flex gap-1">
-          <Badge>C{index}</Badge>
-          {seconds !== null ? <Badge>{seconds.toFixed(1)} s</Badge> : null}
-          {scene.visual.variation ? <Badge tone="info">var {scene.visual.variation}</Badge> : null}
+    <div className="flex min-w-0 flex-col gap-1">
+      <label htmlFor={id} className="text-xs font-medium text-subtle">
+        {text}
+      </label>
+      <Select id={id} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="w-full min-w-0 text-[13px]">
+        {children}
+      </Select>
+    </div>
+  );
+};
+
+const SceneThumb: React.FC<{
+  scene: Scene;
+  index: number;
+  src: string | null;
+  primaryLang: string;
+  short: boolean;
+  loading: boolean;
+  onOpen: (src: string) => void;
+}> = ({ scene, index, src, primaryLang, short, loading, onOpen }) => {
+  const box = `relative overflow-hidden rounded-lg border border-line bg-canvas ${short ? 'aspect-[9/16] w-28 shrink-0' : 'aspect-video w-full'}`;
+  if (src) {
+    return (
+      <button type="button" className={`${box} group`} onClick={() => onOpen(src)} aria-label={`Ampliar a imagem da cena ${index}`}>
+        <img src={fileUrl(src)} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]" loading="lazy" />
+      </button>
+    );
+  }
+  const overlay = scene.overlay_text?.[primaryLang] ?? Object.values(scene.overlay_text ?? {})[0] ?? '';
+  if (scene.kind !== 'image') {
+    return (
+      <div className={`${box} flex flex-col items-center justify-center gap-1 p-2 text-center`}>
+        <Type size={16} aria-hidden="true" className="text-subtle" />
+        {overlay || scene.number != null ? (
+          <span className={`line-clamp-4 font-display font-bold text-fg ${short ? 'text-sm' : 'text-lg'}`}>{overlay || scene.number}</span>
+        ) : null}
+        <span className="text-xs text-subtle">{label(SCENE_KIND_LABELS, scene.kind)}</span>
+      </div>
+    );
+  }
+  if (loading) return <Skeleton className={`${box} rounded-lg`} />;
+  return (
+    // Só o ícone: a barra do topo da aba já diz que as imagens aparecem depois da prévia (não repete em cada cena).
+    <div role="img" aria-label="Sem imagem ainda" title="Sem imagem ainda" className={`${box} flex items-center justify-center p-2`}>
+      <ImageOff size={18} aria-hidden="true" className="text-subtle" />
+    </div>
+  );
+};
+
+type SceneCardProps = {
+  scene: Scene;
+  index: number;
+  src: string | null;
+  seconds: number | null;
+  projectId: string;
+  primaryLang: string;
+  short: boolean;
+  changed: boolean;
+  thumbLoading: boolean;
+  /** Motivo (visível) para não editar agora: job que regrava o documento, estilo removido. */
+  blockedReason: string | null;
+  onOpenImage: (src: string, index: number, prompt: string) => void;
+};
+
+const SceneCardImpl: React.FC<SceneCardProps> = ({ scene, index, src, seconds, projectId, primaryLang, short, changed, thumbLoading, blockedReason, onOpenImage }) => {
+  const client = useQueryClient();
+  const confirm = useConfirm();
+  // Só a entrada desta cena: digitar num prompt não re-renderiza os outros cartões.
+  const draft = useKeyedValue(promptDrafts, projectId, scene.id);
+  const server = scene.visual.prompt;
+  const prompt = draft?.value ?? server;
+  const conflict = draft && draft.base !== server;
+  const promptId = useId();
+
+  const run = useMutation({
+    mutationFn: ({ ops, message }: { ops: Record<string, unknown>[]; message: string; mark?: boolean; savedPrompt?: string }) =>
+      api.post(`/api/projects/${projectId}/ops`, { ops, message }),
+    onSuccess: async (_r, vars) => {
+      if (vars.mark) sceneChanges.set(projectId, scene.id, Date.now());
+      // Espera o documento novo antes de tirar o rascunho (senão a caixa mostra o prompt antigo por um instante).
+      await client.invalidateQueries({ queryKey: ['project', projectId] });
+      if (vars.savedPrompt !== undefined && promptDrafts.get(projectId)[scene.id]?.value === vars.savedPrompt) promptDrafts.set(projectId, scene.id, null);
+    },
+  });
+  const blocked = Boolean(blockedReason);
+  const disabled = scene.locked || run.isPending || blocked;
+  const name = `Cena ${index}`;
+
+  const setPrompt = (value: string) =>
+    promptDrafts.set(projectId, scene.id, value === server ? null : { value, base: draft?.base ?? server });
+  const savePrompt = () => {
+    if (!draft || disabled) return;
+    run.mutate({ ops: [{ op: 'update_scene_prompt', scene_id: scene.id, prompt: draft.value }], message: `${name}: prompt editado`, mark: true, savedPrompt: draft.value });
+  };
+  const discardPrompt = async (title: string) => {
+    const ok = await confirm({
+      title,
+      description: 'O prompt que você digitou nesta cena some e volta o que está salvo. Não dá para desfazer.',
+      confirmLabel: 'Descartar',
+      tone: 'danger',
+    });
+    if (ok) promptDrafts.set(projectId, scene.id, null);
+  };
+
+  const kinds = KINDS.includes(scene.kind) ? KINDS : [...KINDS, scene.kind];
+  const selects = (
+    <>
+      <LabeledSelect
+        label="Tipo"
+        value={scene.kind}
+        disabled={disabled}
+        onChange={(v) => run.mutate({ ops: [{ op: 'set_scene_kind', scene_id: scene.id, kind: v }], message: `${name}: tipo → ${label(SCENE_KIND_LABELS, v)}`, mark: true })}
+      >
+        {kinds.map((k) => (
+          <option key={k} value={k}>
+            {label(SCENE_KIND_LABELS, k)}
+          </option>
+        ))}
+      </LabeledSelect>
+      <LabeledSelect
+        label="Câmera"
+        value={scene.motion ?? ''}
+        disabled={disabled}
+        onChange={(v) =>
+          run.mutate({
+            ops: [{ op: 'set_scene_motion', scene_id: scene.id, motion: v || null }],
+            message: `${name}: câmera → ${v ? label(CAMERA_LABELS, v) : 'automática'}`,
+            mark: true,
+          })
+        }
+      >
+        {MOTIONS.map((m) => (
+          <option key={m} value={m}>
+            {m ? label(CAMERA_LABELS, m) : AUTO}
+          </option>
+        ))}
+      </LabeledSelect>
+      <LabeledSelect
+        label="Transição de entrada"
+        value={scene.transition_in ?? ''}
+        disabled={disabled}
+        onChange={(v) =>
+          run.mutate({
+            ops: [{ op: 'set_scene_transition', scene_id: scene.id, transition: v || null }],
+            message: `${name}: transição → ${v ? label(TRANSITION_LABELS, v) : 'automática'}`,
+            mark: true,
+          })
+        }
+      >
+        {TRANSITIONS.map((t) => (
+          <option key={t} value={t}>
+            {t ? label(TRANSITION_LABELS, t) : AUTO}
+          </option>
+        ))}
+      </LabeledSelect>
+    </>
+  );
+
+  const header = (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[13px] font-medium text-fg">{name}</span>
+      {seconds !== null ? <span className="text-xs tabular-nums text-subtle">{formatSecs(seconds)}</span> : null}
+      {scene.visual.variation ? <Badge title="Quantas vezes a imagem foi sorteada de novo">Variação {scene.visual.variation}</Badge> : null}
+      {changed ? <Badge tone="info">Mudou</Badge> : null}
+      {draft ? <Badge tone="warn">Não salvo</Badge> : null}
+      {scene.locked ? (
+        <Badge tone="warn" icon={Lock}>
+          Travada
+        </Badge>
+      ) : null}
+      {/* Nome fixo + aria-pressed: o estado vem do "pressionado"; o selo "Travada" mostra o estado na tela. */}
+      <IconButton
+        size="sm"
+        className={`ml-auto ${scene.locked ? 'text-amber-200' : ''}`}
+        label={`Travar a ${name.toLowerCase()}`}
+        icon={scene.locked ? Lock : LockOpen}
+        aria-pressed={scene.locked}
+        busy={run.isPending && run.variables?.ops[0]?.op === 'set_lock'}
+        disabled={(run.isPending && run.variables?.ops[0]?.op !== 'set_lock') || blocked}
+        onClick={() =>
+          run.mutate({ ops: [{ op: 'set_lock', ids: [scene.id], locked: !scene.locked }], message: `${name}: ${scene.locked ? 'destravada' : 'travada'}` })
+        }
+      />
+    </div>
+  );
+
+  const promptBlock = (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <label htmlFor={promptId} className="text-xs font-medium text-subtle">
+          Prompt da imagem
+        </label>
+        {draft && !disabled ? <span className="text-xs text-subtle">Ctrl+Enter salva</span> : null}
+      </div>
+      <Textarea
+        id={promptId}
+        rows={3}
+        value={prompt}
+        disabled={scene.locked}
+        onChange={(e) => setPrompt(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            savePrompt();
+          }
+        }}
+        className="field-sizing-content min-h-20 text-[13px]"
+      />
+      {conflict ? (
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-amber-100">
+          <TriangleAlert size={14} aria-hidden="true" className="shrink-0 text-amber-200" />
+          <span className="min-w-0 flex-1">O prompt mudou no servidor enquanto você editava.</span>
+          <Button size="sm" variant="ghost" onClick={() => void discardPrompt('Usar o prompt do servidor?')}>
+            Usar o do servidor
+          </Button>
         </div>
-        {scene.locked ? <div className="absolute right-2 top-2"><Badge tone="warn">travada</Badge></div> : null}
-      </div>
-      <Textarea rows={3} value={prompt} disabled={disabled} onChange={(e) => setPrompt(e.target.value)} className="text-xs" />
-      <div className="grid grid-cols-3 gap-1.5">
-        <Select value={scene.kind} disabled={disabled} onChange={(e) => run.mutate([{ op: 'set_scene_kind', scene_id: scene.id, kind: e.target.value }])} className="text-xs">
-          {KINDS.map((k) => (
-            <option key={k} value={k}>{KIND_LABEL[k]}</option>
-          ))}
-        </Select>
-        <Select value={scene.motion ?? ''} disabled={disabled} onChange={(e) => run.mutate([{ op: 'set_scene_motion', scene_id: scene.id, motion: e.target.value || null }])} className="text-xs">
-          {MOTIONS.map((m) => (
-            <option key={m} value={m}>{m || 'câmera auto'}</option>
-          ))}
-        </Select>
-        <Select
-          value={scene.transition_in ?? ''}
-          disabled={disabled}
-          onChange={(e) => run.mutate([{ op: 'set_scene_transition', scene_id: scene.id, transition: e.target.value || null }])}
-          className="text-xs"
-        >
-          {TRANSITIONS.map((t) => (
-            <option key={t} value={t}>{t || 'transição auto'}</option>
-          ))}
-        </Select>
-      </div>
+      ) : null}
+    </div>
+  );
+
+  const isImage = scene.kind === 'image';
+  const buttons = (
+    <div className="flex flex-col gap-1">
       <div className="flex flex-wrap gap-1.5">
-        <Button className="text-xs" disabled={disabled || prompt === scene.visual.prompt} onClick={() => run.mutate([{ op: 'update_scene_prompt', scene_id: scene.id, prompt }])}>
+        <Button size="sm" icon={Save} disabled={disabled || !draft} busy={run.isPending && run.variables?.savedPrompt !== undefined} onClick={savePrompt}>
           Salvar prompt
         </Button>
-        <Button className="text-xs" disabled={disabled} onClick={() => run.mutate([{ op: 'regenerate_scene', scene_id: scene.id }])}>
-          Outra imagem
-        </Button>
-        <Button className="text-xs" variant="ghost" disabled={run.isPending} onClick={() => run.mutate([{ op: 'set_lock', ids: [scene.id], locked: !scene.locked }])}>
-          {scene.locked ? 'Destravar' : 'Travar'}
-        </Button>
+        {draft ? (
+          <Button size="sm" variant="ghost" icon={RotateCcw} onClick={() => void discardPrompt('Desfazer a edição do prompt?')}>
+            Desfazer
+          </Button>
+        ) : null}
+        {isImage ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={RefreshCw}
+            disabled={disabled}
+            onClick={() => run.mutate({ ops: [{ op: 'regenerate_scene', scene_id: scene.id }], message: `${name}: outra imagem`, mark: true })}
+          >
+            Outra imagem
+          </Button>
+        ) : null}
       </div>
-      <ErrorBox error={run.error} />
+      {blockedReason ? (
+        <p className="text-[13px] text-amber-200">{blockedReason}</p>
+      ) : isImage ? (
+        <p className="text-xs text-subtle">Imagem nova (prompt salvo ou "Outra imagem") é gerada na próxima prévia e usa a cota de imagens.</p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <Card className={`@container flex min-w-0 flex-col gap-3 p-3 ${draft ? 'border-amber-300/45!' : ''}`}>
+      {short ? (
+        <div className="flex gap-3">
+          <SceneThumb scene={scene} index={index} src={src} primaryLang={primaryLang} short loading={thumbLoading} onOpen={(s) => onOpenImage(s, index, prompt)} />
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            {header}
+            {selects}
+          </div>
+        </div>
+      ) : (
+        <>
+          <SceneThumb scene={scene} index={index} src={src} primaryLang={primaryLang} short={false} loading={thumbLoading} onOpen={(s) => onOpenImage(s, index, prompt)} />
+          {header}
+        </>
+      )}
+      {promptBlock}
+      {short ? null : <div className="grid grid-cols-1 gap-2 @md:grid-cols-3">{selects}</div>}
+      {buttons}
+      <ErrorBox error={run.error} title="Não foi possível alterar a cena" onClose={() => run.reset()} />
     </Card>
   );
 };
 
-export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ detail, busy }) => {
-  const { doc } = detail;
-  const startJob = useStartJob(doc.id);
-  const timeline = useQuery({
-    queryKey: ['timeline', doc.id, doc.primary_language, detail.outputs.preview?.langs?.[doc.primary_language]?.timeline],
-    queryFn: () => api.get<TimelineLite>(`/api/projects/${doc.id}/timeline?lang=${doc.primary_language}`),
-    retry: false,
+const SceneCard = memo(SceneCardImpl);
+
+/** Quando terminou (ou começou) a última prévia/render concluída, em ms. */
+const lastBuildOf = (detail: ProjectDetail) =>
+  detail.jobs
+    .filter((j) => j.status === 'done' && BUILD_KINDS.has(j.kind))
+    .map((j) => Date.parse(j.started_at ?? j.created_at ?? ''))
+    .filter((t) => !Number.isNaN(t))
+    .reduce((a, b) => Math.max(a, b), 0);
+
+/** Houve mudança no servidor (outra aba, agente da prévia, versão restaurada) depois do início da última prévia? */
+const changedOnServerSince = (versions: Version[], since: number) =>
+  since > 0 &&
+  versions.some((v) => {
+    const t = v.created_at ? Date.parse(v.created_at) : NaN;
+    return !Number.isNaN(t) && t > since && v.author !== 'ai' && !NON_VISUAL_VERSION.test(v.message);
   });
+
+export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabNavigation> = ({ detail, busy, goTo }) => {
+  const { doc, style } = detail;
+  const startJob = useStartJob(doc.id);
+  const starting = useJobStarting(doc.id);
+  const changes = useKeyedStore(sceneChanges, doc.id);
+  const [zoom, setZoom] = useState<{ src: string; title: string; caption: string } | null>(null);
+  const lastBuild = lastBuildOf(detail);
+  const hasPreview = Boolean(detail.outputs.preview);
+  const timeline = useQuery({
+    // O caminho do timeline.json é sempre o mesmo: a hora da última prévia entra na chave para buscar as imagens novas.
+    queryKey: ['timeline', doc.id, doc.primary_language, detail.outputs.preview?.langs?.[doc.primary_language]?.timeline, lastBuild],
+    queryFn: () => api.get<TimelineLite>(`/api/projects/${doc.id}/timeline?lang=${doc.primary_language}`),
+    enabled: hasPreview,
+    retry: false,
+    // Mantém as miniaturas antigas na tela enquanto as novas chegam.
+    placeholderData: (prev) => prev,
+  });
+  const onOpenImage = useCallback(
+    (src: string, index: number, prompt: string) => setZoom({ src: fileUrl(src), title: `Cena ${index}`, caption: prompt }),
+    [],
+  );
+  const activeJobs = detail.jobs.filter(isActive);
+  const action = nextStep(detail).action;
+
   if (!doc.scenes.length) {
+    const creating = activeJobs.find((j) => j.kind === 'storyboard' || (j.kind === 'autopilot' && doc.segments.length));
+    if (creating) {
+      return (
+        <Card className="flex flex-col gap-4" role="status">
+          <div className="flex items-start gap-3">
+            <Spinner className="mt-1 text-accent" />
+            <div className="min-w-0">
+              <h2 className="font-display text-[15px] font-semibold text-fg">Criando as cenas…</h2>
+              <p className="text-[13px] text-muted">{creating.message || 'Dividindo o roteiro em cenas e escrevendo o prompt de cada imagem.'}</p>
+            </div>
+          </div>
+          <div className="grid gap-3 @3xl:grid-cols-2 @6xl:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-48 rounded-xl" />
+            ))}
+          </div>
+        </Card>
+      );
+    }
+    const gateScript = detail.project.settings.gates?.script ?? true;
+    const needsApproval = doc.segments.length > 0 && !doc.script_approved && gateScript;
+    const create = (
+      <Button
+        variant={needsApproval ? 'ghost' : 'secondary'}
+        icon={LayoutGrid}
+        busy={startJob.isPending}
+        disabled={(busy || starting) && !startJob.isPending}
+        title={busy ? BUSY_REASON : undefined}
+        onClick={() => {
+          if (!starting) startJob.mutate({ kind: 'storyboard' });
+        }}
+      >
+        {needsApproval ? 'Criar as cenas sem aprovar' : 'Criar só as cenas'}
+      </Button>
+    );
+    // A ação principal (âmbar) fica no banner "Próximo passo": aqui só caminhos alternativos.
     return (
-      <Empty>
-        <div className="mb-3">Sem cenas ainda. O storyboard divide o roteiro em cenas e escreve o prompt de cada imagem.</div>
-        <Button variant="primary" disabled={busy || !doc.segments.length} onClick={() => startJob.mutate({ kind: 'storyboard' })}>
-          Gerar storyboard
-        </Button>
+      <Empty
+        icon={LayoutGrid}
+        title={!doc.segments.length ? 'Gere o roteiro primeiro' : needsApproval ? 'Aprove o roteiro primeiro' : 'Ainda não há cenas'}
+        action={
+          !doc.segments.length ? (
+            goTo ? (
+              <Button icon={FileText} onClick={() => goTo('script')}>
+                Ir para o roteiro
+              </Button>
+            ) : null
+          ) : (
+            <div className="flex flex-col items-center gap-1.5">
+              <div className="flex flex-wrap justify-center gap-2">
+                {needsApproval && goTo ? (
+                  <Button icon={FileText} onClick={() => goTo('script')}>
+                    Revisar e aprovar o roteiro
+                  </Button>
+                ) : null}
+                {create}
+              </div>
+              <span className="text-[13px] text-subtle">
+                {busy
+                  ? BUSY_REASON
+                  : needsApproval
+                    ? 'Criar as cenas agora pula a sua revisão do roteiro. Usa o Claude.'
+                    : action.kind === 'continue'
+                      ? 'Só divide o roteiro em cenas, sem narrar nem gerar imagens. Usa o Claude.'
+                      : 'Usa o Claude.'}
+              </span>
+            </div>
+          )
+        }
+      >
+        {!doc.segments.length
+          ? 'As cenas saem do roteiro: gere e aprove o roteiro antes.'
+          : 'As cenas dividem o roteiro em partes e trazem o prompt de cada imagem. Depois você ajusta câmera, transição e imagem de cada uma.'}
+        <ErrorBox error={startJob.error} className="mt-3 text-left" />
       </Empty>
     );
   }
+
+  const short = isShort(style);
   const byId = new Map((timeline.data?.scenes ?? []).map((s) => [s.id, s]));
   const fps = timeline.data?.fps ?? 30;
+
+  // Cenas alteradas (nesta sessão) depois do início da última prévia/render concluída.
+  const changedIds = new Set(Object.entries(changes).filter(([, t]) => t > lastBuild).map(([id]) => id));
+  const changedCount = doc.scenes.filter((s) => changedIds.has(s.id)).length;
+  const serverChanged = changedOnServerSince(detail.versions, lastBuild);
+  const timelineMissing = timeline.error instanceof ApiError && timeline.error.status === 404;
+  const noPreview = !hasPreview || timelineMissing;
+  const timelineError = timeline.error && !timelineMissing ? timeline.error : null;
+  const timelineLoading = hasPreview && timeline.isLoading;
+  const previewRunning = activeJobs.some((j) => BUILD_KINDS.has(j.kind));
+  const showBuild = !previewRunning && !timelineLoading && (noPreview || changedCount > 0 || serverChanged);
+  const blockedReason = !style ? STYLE_MISSING_REASON : docJobRunning(detail) ? DOC_BUSY_REASON : null;
+
   let counter = 0;
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-400">
-        <span>Mudanças aqui só regeneram a cena alterada. Depois clique em “Gerar prévia”.</span>
-        {!timeline.data ? <Badge tone="warn">gere a prévia para ver as imagens</Badge> : null}
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-card/95 px-3 py-2.5 backdrop-blur-md">
+        <MonitorPlay size={16} aria-hidden="true" className="shrink-0 text-muted" />
+        <div className="min-w-0 flex-1 text-sm" role="status">
+          {previewRunning ? (
+            <span className="text-fg">Gerando a prévia… as imagens novas aparecem quando terminar.</span>
+          ) : timelineLoading ? (
+            <Skeleton className="h-5 w-64 max-w-full" />
+          ) : noPreview ? (
+            <span className="text-fg">As imagens aparecem depois da primeira prévia.</span>
+          ) : changedCount ? (
+            <span className="text-fg">
+              {changedCount === 1 ? '1 cena alterada' : `${changedCount} cenas alteradas`} desde a última prévia.
+            </span>
+          ) : serverChanged ? (
+            <span className="text-fg">Há mudanças desde a última prévia.</span>
+          ) : (
+            <span className="text-muted">Mudanças aqui só refazem a cena alterada na próxima prévia.</span>
+          )}
+          {showBuild ? <span className="block text-[13px] text-subtle">A prévia usa a cota de voz e de imagens só no que mudou.</span> : null}
+        </div>
+        {showBuild ? (
+          <Button
+            size="sm"
+            // Âmbar só quando a prévia é o próximo passo do projeto: a aba Cenas é dona da ação e a faixa
+            // "Próximo passo" omite o botão dela (tabOwnsAction), então este é o único primário da tela.
+            variant={tabOwnsAction(action, 'scenes') ? 'primary' : 'secondary'}
+            icon={MonitorPlay}
+            busy={startJob.isPending}
+            disabled={(busy || starting) && !startJob.isPending}
+            title={busy ? BUSY_REASON : undefined}
+            onClick={() => {
+              if (!starting) startJob.mutate({ kind: 'preview' });
+            }}
+          >
+            {noPreview ? 'Gerar prévia' : 'Atualizar a prévia'}
+          </Button>
+        ) : null}
+        <ErrorBox error={timelineError} title="Não foi possível carregar as imagens da prévia" onRetry={() => void timeline.refetch()} className="basis-full" />
+        <ErrorBox error={startJob.error} title="Não foi possível gerar a prévia" className="basis-full" />
       </div>
-      {doc.segments.map((seg, sIndex) => (
-        <div key={seg.id}>
-          <div className="mb-2 text-xs text-zinc-500">
-            <span className="font-mono">S{sIndex + 1}</span> · {(seg.text[doc.primary_language] ?? '').slice(0, 140)}
-          </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {doc.scenes
-              .filter((s) => s.segment_id === seg.id)
-              .sort((a, b) => a.part - b.part)
-              .map((scene) => {
+
+      {doc.segments.map((seg, sIndex) => {
+        const scenes = doc.scenes.filter((s) => s.segment_id === seg.id).sort((a, b) => a.part - b.part);
+        if (!scenes.length) return null;
+        const text = seg.text[doc.primary_language] ?? '';
+        return (
+          <section key={seg.id} aria-label={`Trecho ${sIndex + 1}`}>
+            <div className="mb-2 flex items-baseline gap-2 text-[13px]">
+              <span className="shrink-0 font-medium text-muted">Trecho {sIndex + 1}</span>
+              <span className="line-clamp-2 text-subtle" title={text}>
+                {text}
+              </span>
+            </div>
+            <div className={`grid grid-cols-1 gap-3 @3xl:grid-cols-2 ${short ? '@7xl:grid-cols-3' : '@6xl:grid-cols-3'}`}>
+              {scenes.map((scene) => {
                 counter += 1;
                 const t = byId.get(scene.id);
                 return (
                   <SceneCard
-                    key={`${scene.id}-${detail.project.current_version}`}
+                    key={scene.id}
                     scene={scene}
                     index={counter}
                     src={t?.src ?? null}
                     seconds={t ? t.durationInFrames / fps : null}
                     projectId={doc.id}
+                    primaryLang={doc.primary_language}
+                    short={short}
+                    changed={changedIds.has(scene.id)}
+                    thumbLoading={timelineLoading}
+                    blockedReason={blockedReason}
+                    onOpenImage={onOpenImage}
                   />
                 );
               })}
-          </div>
-        </div>
-      ))}
+            </div>
+          </section>
+        );
+      })}
+      {zoom ? <ImageDialog src={zoom.src} title={zoom.title} caption={zoom.caption} onClose={() => setZoom(null)} /> : null}
     </div>
   );
 };

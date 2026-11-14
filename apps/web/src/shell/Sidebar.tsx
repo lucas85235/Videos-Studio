@@ -175,14 +175,15 @@ export const Sidebar: React.FC<{
           onClick={onNavigate}
           aria-current={creating ? 'page' : undefined}
           aria-label={collapsed ? 'Novo projeto' : undefined}
-          className={`${buttonClass({ variant: 'primary' })} ${collapsed ? 'group relative h-10 w-10 p-0' : 'w-full'}`}
+          className={`${buttonClass({ variant: 'secondary' })} ${collapsed ? 'group relative h-10 w-10 p-0' : 'w-full'}`}
         >
-          <Plus size={16} strokeWidth={2.25} aria-hidden="true" />
+          {/* Secundário: o âmbar cheio fica para a ação principal de cada página; o ícone âmbar mantém o atalho achável. */}
+          <Plus size={16} strokeWidth={2.25} aria-hidden="true" className="text-accent" />
           {collapsed ? <CollapsedTip>Novo projeto</CollapsedTip> : 'Novo projeto'}
         </Link>
       </div>
 
-            {/* py-1: o contorno de foco (2 px + 2 px de afastamento) não é cortado no topo/fundo. Recolhida, sem rolagem: as dicas saem à direita. */}
+      {/* py-1: o contorno de foco (2 px + 2 px de afastamento) não é cortado no topo/fundo. Recolhida, sem rolagem: as dicas saem à direita. */}
       <nav aria-label="Principal" className={`mt-4 flex min-h-0 flex-1 flex-col py-1 ${collapsed ? 'px-2' : 'overflow-y-auto px-3'}`}>
         <section aria-labelledby={`grupo-producao-${mode}`} className="mb-4">
           <GroupTitle id={`grupo-producao-${mode}`} collapsed={collapsed}>
