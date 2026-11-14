@@ -12,7 +12,7 @@
 2. [Pesquisa: o que o mercado oferece](#2-pesquisa-o-que-o-mercado-oferece)
 3. [Funcionalidades (escopo completo)](#3-funcionalidades-escopo-completo)
 4. [Pipeline de produção](#4-pipeline-de-produção)
-5. [Configuração de estilos](#5-configuração-de-estilos)
+5. [Estilos: famílias, formatos e estilos próprios](#5-estilos-famílias-formatos-e-estilos-próprios)
 6. [Edição incremental por instruções de IA](#6-edição-incremental-por-instruções-de-ia)
 7. [Multi-idioma](#7-multi-idioma)
 8. [Provedores: imagem, voz e vídeo no seu notebook](#8-provedores-imagem-voz-e-vídeo-no-seu-notebook)
@@ -185,14 +185,53 @@ Cada caixa é um **job idempotente** que grava artefatos versionados. Um **orque
 
 ---
 
-## 5. Configuração de estilos
+## 5. Estilos: famílias, formatos e estilos próprios
 
-Um **Estilo de Vídeo** é um preset composto por sub-estilos reutilizáveis, editável por formulário **ou por instrução de IA**. Exemplo:
+**Resposta curta:** sim. O app produz vídeos em vários estilos (motion graphics, tipografia animada, parallax 2.5D, documentário de arquivo, VHS/analog horror, mapas animados, colagem e outros) e permite **criar estilos próprios sem programar**. Boa parte dos "looks" já vem pronta no Remotion: **21 transições** e **~90 efeitos** (grão, LUT, vinheta, scanlines, sinal de TV fora do ar, estática, queima de filme, halftone, duotone, papel, bordas rasgadas, pixelização, chuva/neve e mais).
+
+### 5.1 Três eixos independentes
+
+| Eixo | O que define | Exemplos |
+|---|---|---|
+| **Arte** | Como as imagens são: técnica, paleta, traço, luz | pintura a óleo sombria, gravura, foto antiga, noir, HQ, anime, aquarela, vetor flat, pixel art, argila 3D |
+| **Edição** | Como o vídeo se move e é montado: família visual, câmera, cortes, transições, efeitos, legendas, áudio | documentário Ken Burns, motion graphics, VHS |
+| **Formato** | A estrutura da narrativa | Top 10, iceberg, tier list, quiz, linha do tempo, "a história de X em 10 minutos", série |
+
+Qualquer combinação vale: por exemplo, um Top 10 (formato) em motion graphics (edição) com arte de gravura antiga.
+
+### 5.2 Famílias de estilo
+
+| # | Família | Estilos que ela cobre (nomes que você vai ver por aí) | Como o app produz | Quando |
+|---|---|---|---|---|
+| 1 | **Cinema de imagens paradas** | Ken Burns ("slideshow com zoom"), **parallax 2.5D** ("foto 3D", "efeito History Channel"), documentário de arquivo, pinturas clássicas | Movimento de câmera no Remotion; parallax com mapa de profundidade (Depth Anything, só modelos Apache) | v1 (parallax: v1.5) |
+| 2 | **Motion graphics editorial** | **motion graphics**, vídeo-ensaio "estilo Vox", **tipografia cinética**, texto em fundo preto, zoom em jornal e documentos, **quadro de investigação com barbante vermelho** | Componentes Remotion (formas, caminhos, texto animado, Lottie) | v1 |
+| 3 | **Dados e geografia** | infográficos, gráficos animados, corrida de barras, **mapas animados**, **globo 3D**, linha do tempo, comparação de tamanho | D3, MapLibre (tiles OpenFreeMap/Protomaps), three-globe com Natural Earth e texturas da NASA | v1.5 |
+| 4 | **Ilustrado 2D** | explainer **flat** "estilo Kurzgesagt", **whiteboard** ("mão desenhando"), **bonecos palito**, HQ animada (motion comic), anime, pixel art, isométrico | Imagens IA consistentes + revelação por traço, vetorização (vtracer), animação de recortes | depois |
+| 5 | **Textura artesanal** | **colagem / recorte de papel**, mixed media, look de massinha (claymation), rotoscopia | Recorte de objetos (BiRefNet), efeitos de papel/halftone/bordas, stop motion com tremor controlado | v1.5 |
+| 6 | **3D e simulação** | render 3D low-poly, dioramas isométricos, texto 3D, animação matemática "estilo 3Blue1Brown" | three.js no Remotion; Manim (MIT) para matemática; Blender só para cenas pesadas | depois |
+| 7 | **Analógico e atmosfera** | **VHS**, **glitch**, **analog horror**, espaços liminares/backrooms, lo-fi | Efeitos prontos: scanlines, sinal de TV, estática, aberração cromática, queima de filme, LUT | v1 |
+| 8 | **Interface de tela** | histórias de conversa (estilo WhatsApp), "screenlife" (gravação de tela), HUD | Componentes de interface próprios, sincronizados com a narração | depois |
+| 9 | **Vídeo IA** | cinematográfico com IA (image-to-video) | Poucos planos-chave via fal.ai (Kling, MiniMax), partindo de imagens do próprio estilo | v1 (opcional, pago) |
+
+Vídeos longos misturam **2–3 famílias** (ex.: documentário de arquivo + motion graphics nos dados + glitch nas viradas).
+
+### 5.3 Formatos estruturais
+
+Uma camada aplicada sobre qualquer família: **Top 10/ranking** (contador), **iceberg** (níveis do mais conhecido ao mais obscuro), **tier list**, **quiz/trivia**, **"você prefere"**, **linha do tempo**, **"a história de X em N minutos"**, **POV** e **séries** com personagem recorrente. O formato define a estrutura do roteiro e os cartões de seção.
+
+### 5.4 Especificação de estilo (StyleSpec)
+
+Um estilo é um **dado validado**, não código novo a cada vídeo. O mesmo esquema valida o estilo no backend (Pydantic) e no renderer (Zod). Exemplo:
 
 ```yaml
+id: misterios-short
 name: "Mistérios Sombrios: Short"
+family: still_cinema                  # família principal (§5.2)
+families_mix: [still_cinema, analog]  # longos misturam 2–3 famílias
+structure: none                       # top10 | iceberg | tierlist | quiz | timeline | ...
+
 format:
-  type: short            # short | long
+  type: short                         # short | long
   aspect: "9:16"
   resolution: 1080x1920
   fps: 30
@@ -201,44 +240,39 @@ format:
 languages:
   primary: pt-BR
   outputs: [pt-BR, en-US, es-ES]
-  delivery: separate_videos         # separate_videos | multi_audio_track (§7)
+  delivery: separate_videos           # separate_videos | multi_audio_track (§7)
 
 script:
-  llm: { provider: anthropic, model: claude-sonnet-5-5 }
   tone: "suspense, sussurrado, frases curtas"
   structure: [hook_pergunta, contexto, 3_revelacoes, twist, cta_loop]
   hook_max_s: 3
   fact_check: true
   speakers:
     narrator: { voice_profile: "minha-voz" }
-    personagem_1: { voice_profile: "voz-grave-biblioteca" }
 
 voice:
   chain: [gemini_tts_free, chirp3hd_free, qwen3_tts_local]   # ordem de fallback, custo zero
   voice_profile: "minha-voz"
-  timbre: { rvc_model: "minha-voz-rvc", enabled: false }      # opcional: converte para o seu timbre (§9)
-  chunk: { max_sentences: 3 }
-  qa: { asr: faster_whisper_turbo, max_wer: 0.08, retries: 2 }
+  timbre: { rvc_model: "minha-voz-rvc", enabled: false }      # opcional (§9)
 
-visuals:
-  sources_mix: { ai_image: 0.85, ai_video: 0.1, stock: 0.05 }
-  image:
-    chain: [codex_cli, flux3_klein_api, local_sdcpp]   # ordem de fallback (§8.1)
-    thumbnail_chain: [codex_cli, gpt_image_api]
-    style_bible: "dark-oil-painting"
-    text_in_images: false
-  video: { provider: fal, model: "kling-3", max_clips: 2, clip_s: 5 }
-  seconds_per_scene: 2.5
+art:                                  # eixo de arte
+  bible: "pintura a óleo sombria, paleta #0b0f14 #3a4a5a #c9a227, luz de vela, grão de tela"
+  banned: ["texto", "logotipos", "fotorrealismo"]
+  anchors: []                         # 3–8 imagens aprovadas que fixam o estilo
+  image_chain: [codex_cli, flux3_klein_api, local_sdcpp]
+  thumbnail_chain: [codex_cli, gpt_image_api]
 
-edit:
-  pacing: fast
-  camera_motion: [ken_burns_in, ken_burns_out, pan_left, punch_zoom]
-  transitions: [cut, flash_white, glitch]
-  overlays: [film_grain, vignette, dust]
-  color_lut: "cold-teal-dark"
+edit:                                 # eixo de edição
+  shot_seconds: { min: 1.8, max: 3.2 }
+  camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 1, punch_zoom: 1 }   # pesos sorteados por cena
+  transitions: { cut: 6, flash: 1, glitch: 1 }
+  effects:
+    - { type: grain, amount: 0.35 }
+    - { type: vignette, amount: 0.5 }
+    - { type: grade, preset: cold-teal-dark }
   captions:
     style: karaoke
-    font: "Montserrat ExtraBold"   # fallback Noto para outros alfabetos
+    font: "Montserrat ExtraBold"      # fallback Noto para outros alfabetos
     size: 78
     color: "#FFFFFF"
     highlight: "#FF2E2E"
@@ -246,42 +280,83 @@ edit:
     position: center
     max_words_per_line: 3
   progress_bar: true
-  outro: "outro-short-loop"
   watermark: "logo-canal.png"
 
 audio:
-  music: { source: library, mood: "dark ambient drone", volume_db: -22, ducking: true }
+  music: { source: procedural, mood: "dark ambient drone", volume_db: -22, ducking: true }
   sfx: { auto: true, pack: "horror-basic" }
   loudness_lufs: -14
 
 thumbnail: { template: "texto-grande-esquerda", variations: 3, per_language: true }
 
+variation:
+  seed_scope: video                   # sementes por vídeo e por cena
+  avoid_repeat_last: 5                # não repetir a mesma combinação nos últimos 5 vídeos
+
 publish:
   targets:
     - { platform: youtube,   driver: youtube_native, privacy: public, schedule: best_time }
-    - { platform: tiktok,    driver: buffer }      # plano grátis: 3 canais
+    - { platform: tiktok,    driver: buffer }
     - { platform: instagram, driver: buffer }
-    # outros canais/idiomas: driver manual_helper (agendador nativo) ou uploadpost (pago)
-  ai_label: auto     # mapeado por plataforma (§10.4)
+  ai_label: auto                      # mapeado por plataforma (§10.4)
 ```
 
-### 5.1 Presets de nicho (ponto de partida; você escolhe depois)
+**Regras técnicas que vieram da pesquisa:**
+- Todos os pacotes `remotion` e `@remotion/*` ficam **fixos na mesma versão exata** (hoje 4.0.543).
+- Os efeitos do Remotion só se aplicam a camadas de **imagem, vídeo e cor sólida**. Por isso ficam nas imagens; legendas e textos têm estilo próprio. Assim a prévia funciona em qualquer navegador.
+- Transições que **encurtam o vídeo** (sobreposição de cenas) são evitadas. Flashes, vazamentos de luz e glitches entram como *overlay*, sem mudar a duração da narração.
+- Toda variação usa **sementes fixas por cena** (`random(seed)`), para que um re-render parcial combine com os blocos vizinhos.
+- Mudanças como "mais escuro" ou "mais quente" são **parâmetros de cor no Remotion**, sem nova chamada de IA. Mudanças de conteúdo usam **edição da imagem existente** com as âncoras do estilo.
+- WebGL (3D, mapas) renderiza com `--gl=angle`; o NVENC é ativado com `--hardware-acceleration if-possible`.
 
-| Preset | Formato | Visual | Edição |
-|---|---|---|---|
-| Documentário sombrio / história | Longo 10–20 min | Imagem IA estilo pintura + Ken Burns | Cortes lentos, grão, vinheta, drone |
-| Mistérios / curiosidades | Short 40–59 s | Imagem IA + 1–2 clipes IA | Cortes a cada 1,5–2,5 s, punch zoom, karaokê |
-| Terror / creepypasta | Longo e Short | Imagem IA sombria, fumaça | Glitch, sussurros, várias vozes |
-| True crime | Longo 15–30 min | Stock + mapas/documentos gerados | Linhas do tempo, citações |
-| Top 10 / listas | Longo 8–12 min | Misto | Contador, título por seção |
-| Motivacional / estoico | Short | Stock cinematográfico | Letreiro grande, música épica |
-| Histórias de Reddit | Short | Gameplay de fundo + card do post | Legenda central grande |
+### 5.5 Criar estilos próprios (quatro níveis)
 
-### 5.2 Variação anti-repetição
+1. **Formulário**: duplicar um preset e ajustar os parâmetros, com prévia instantânea.
+2. **Descrição em texto**: você escreve, por exemplo, "documentário sombrio de jornal antigo, lento, sépia, texto de máquina de escrever". O LLM (Gemini grátis) devolve um *patch* do StyleSpec, que é validado, mostrado como diferença e pré-visualizado, com até 3 tentativas de correção automática.
+3. **A partir de um vídeo de referência** (seu ou licenciado; um link público do YouTube serve para a parte de descrição). O app **mede**:
+   - ritmo de cortes (TransNetV2 para Shorts, PySceneDetect para longos);
+   - paleta (k-means);
+   - ritmo da música (librosa) e velocidade da narração (faster-whisper);
+   - posição e estilo das legendas (OCR);
+   - linguagem visual, descrita pelo Gemini.
 
-Cada estilo aceita **faixas** em vez de valores fixos (LUTs, estruturas de roteiro, trilhas, transições), e o sistema evita repetir a mesma combinação em vídeos seguidos do canal. A política do YouTube mira exatamente vídeos "intercambiáveis" e "com cara de template".
+   Guarda só **parâmetros**, nunca os arquivos, e marca cada valor como "medido" ou "inferido". Recomendação: misturar referências em vez de copiar um criador.
+4. **Style Lab (componentes novos por IA)**: para um look que não existe (ex.: "quadro de evidências com fotos presas por alfinetes"), o Codex com as **Agent Skills oficiais do Remotion** escreve um componente novo. Ele só entra na biblioteca depois de passar pelos portões automáticos:
+   - compilação TypeScript;
+   - lint: sem acesso à rede, sem `eval`, só imports permitidos;
+   - render de teste em 16:9 e 9:16;
+   - checagem de quadro vazio e de área segura;
+   - a sua aprovação.
 
----
+   Isso é feito **uma vez no Style Lab**, nunca a cada vídeo.
+
+**Pacotes de estilo:** um `.zip` com `style.json`, componentes opcionais (revalidados ao importar) e assets com **licença registrada por item**: fontes OFL com o texto da licença, animações Lottie da LottieFiles, e LUTs e SFX só se a redistribuição for permitida. Nada não comercial entra em pacotes usados em canal monetizado.
+
+### 5.6 Variação anti-repetição e presets bloqueados
+
+- **Sementes por vídeo e por cena** dentro da identidade do canal, 2–3 famílias por vídeo longo e rotação de vinhetas, cartões de título, **thumbnails e padrões de título**. Os revisores do YouTube olham também metadados e thumbnails.
+- **Verificador de novidade**: compara impressões digitais visuais (imagehash/CLIP) do novo vídeo com as dos últimos e avisa quando está parecido demais.
+- Variação visual **não basta**: o YouTube julga **substância**. Roteiro, ângulo e pesquisa precisam variar de vídeo para vídeo.
+- Prefira **IA estilizada** (pintura, gravura, HQ) a fotorrealista: exige menos rótulo e tem menos cara de "conteúdo de IA em massa". O YouTube permite explicitamente "usar IA para visualizar um personagem único".
+- **Presets bloqueados em canais monetizados** (alto risco de desmonetização ou remoção):
+  - histórias do Reddit sobre gameplay;
+  - micro-dramas com animais ou objetos falantes;
+  - "brainrot";
+  - trailers falsos;
+  - personas de IA dando conselho de saúde, finanças ou direito;
+  - true crime ou história **inventados** apresentados como reais.
+
+### 5.7 Presets de nicho (ponto de partida; você escolhe depois)
+
+| Preset | Formato | Famílias | Arte | Edição |
+|---|---|---|---|---|
+| Documentário sombrio / história | Longo 10–20 min | 1 + 2 | pintura a óleo, gravura, foto antiga | Ken Burns lento, grão, vinheta, cartões de capítulo |
+| Mistérios / curiosidades | Short 40–59 s | 1 + 7 | pintura sombria | cortes a cada 1,5–2,5 s, punch zoom, karaokê, glitch nas viradas |
+| Terror / analog horror | Longo e Short | 7 + 1 | foto noturna granulada, liminal | VHS, estática, sinal de TV, sussurros, várias vozes |
+| True crime | Longo 15–30 min | 2 + 1 | noir, documentos | zoom em documentos, quadro de evidências, linha do tempo |
+| Top 10 / listas | Longo 8–12 min | 2 + 1 | variada | contador animado, título por seção |
+| Motivacional / estoico | Short | 1 + 2 | pinturas clássicas, mármore | tipografia cinética, letreiro grande |
+| Explicador de dados | Longo | 3 + 2 | vetor flat | gráficos, mapas, comparação de tamanho (v1.5) |
 
 ## 6. Edição incremental por instruções de IA
 
@@ -875,17 +950,18 @@ O custo variável que sobra é o LLM (roteiro, tradução, agente) e, principalm
 | Público | **Uso próprio** |
 | Hardware | **Galaxy Book3 Ultra**: i9-13900H, RTX 4070 Laptop 8 GB @ 60 W, 32 GB RAM |
 | Imagens | **Codex (ChatGPT Plus) como principal**, com fallback automático para API barata; **sem ComfyUI**; local só como opção, via `stable-diffusion.cpp`, se o teste cego aprovar |
-| Voz | **Custo zero**: Gemini 3.8 Flash TTS grátis → Chirp 3 HD → Qwen3-TTS local; sua voz via Qwen3-TTS ou Applio/RVC; ElevenLabs só se o teste cego mostrar diferença clara. O Whisper fica para legendas e QA |
+| Voz | **Custo zero**: Gemini 3.8 Flash TTS grátis pelo **Google AI Studio** (escolhido em 14/11/2026) → Chirp 3 HD → Qwen3-TTS local; sua voz via Qwen3-TTS ou Applio/RVC; ElevenLabs só se o teste cego mostrar diferença clara. O Whisper fica para legendas e QA |
 | Vídeo IA | **Só via API**, em cenas-chave |
 | Idiomas | **Todos os principais**; **várias faixas de idioma no mesmo vídeo** (era isso que você quis dizer) + um vídeo por idioma; várias vozes no mesmo vídeo também suportadas |
 | Edição | **Automática + ajustes por instrução de IA**, regenerando só o necessário |
 | Redes v1 | **YouTube (API nativa) + Instagram Reels + TikTok (Buffer grátis + assistente manual)**; nada de scraper ou agente de navegador |
 | Redes futuras | **Threads, Facebook, X** |
+| Estilos | **9 famílias + formatos estruturais**; v1 com as famílias 1 (imagens paradas), 2 (motion graphics) e 7 (analógico); estilos próprios por formulário, texto, vídeo de referência e Style Lab (§5) |
 
 ### Em aberto
 1. **Nichos**: ainda não decididos. O app nasce com presets genéricos e um assistente de comparação de nichos (Fase 5); você pode decidir depois do MVP.
 2. **Orçamento mensal** para o que continua pago (LLM e vídeo IA). **[premissa: até ~US$ 30/mês]**
-3. **"Voice Studio"**: é o app VoiceStudio do GitHub ou a geração de voz do Google AI Studio? (§8.4) **[premissa: AI Studio]**
+3. **Famílias de estilo** a priorizar depois do MVP. **[premissa: famílias 1, 2 e 7 primeiro (§5.2)]**
 4. **Narrar você mesmo** os vídeos longos é uma opção (melhor entonação, custo zero)? **[premissa: decidir após o teste cego]**
 5. **Instagram**: você já tem conta **Business ou Creator**? **[premissa: converter para Creator]**
 6. **Piloto automático** de séries até o portão de revisão. **[premissa: sim, Fase 6]**

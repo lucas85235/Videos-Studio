@@ -1,0 +1,51 @@
+[project]
+name = "videos-studio"
+version = "0.1.0"
+description = "Backend do Videos Studio: pipeline de vídeos dark, grafo de artefatos, provedores e API."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "pillow>=10.4",
+    "numpy>=1.26",
+    "cryptography>=43",
+    "keyring>=25",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+asr = ["faster-whisper>=1.0"]
+
+[dependency-groups]
+dev = ["pytest>=8.2", "ruff>=0.6"]
+
+[project.scripts]
+videos-studio = "studio.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["studio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "render: testes que precisam do renderer Node/Remotion instalado",
+    "ffmpeg: testes que precisam do FFmpeg",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
