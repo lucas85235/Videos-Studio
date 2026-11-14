@@ -1,0 +1,47 @@
+# Dependências
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Builds
+dist/
+build/
+.vite/
+renderer/bundle/
+renderer/out/
+apps/web/dist/
+
+# Testes e ferramentas
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+coverage/
+htmlcov/
+.coverage
+
+# Segredos e configuração local
+.env
+.env.*
+!.env.example
+*.pem
+client_secret*.json
+token*.json
+
+# Dados e mídia (ficam fora do OneDrive, em VS_DATA_DIR)
+data/
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.m4a
+!assets/**/*.wav
+!assets/**/*.mp3
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
