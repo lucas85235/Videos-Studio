@@ -61,13 +61,17 @@ def mock_script(ctx: dict[str, Any]) -> dict[str, Any]:
             lead = ""
         sentences = [lead + f"Sobre {topic}, existe um detalhe que muda tudo."]
         words = len(sentences[0].split())
-        while words < per_section:
+        while True:
             sentence = _FILLERS[filler_index % len(_FILLERS)]
+            if words + len(sentence.split()) > per_section * 1.1 and len(sentences) > 1:
+                break
             filler_index += 1
             sentences.append(sentence)
             words += len(sentence.split())
+            if words >= per_section:
+                break
         segments.append({"role": role, "speaker": "narrator", "chapter": chapter, "number": number, "text": " ".join(sentences)})
-    return {"title": f"O segredo de {topic}", "segments": segments, "sources": []}
+    return {"title": f"O segredo: {topic}", "segments": segments, "sources": []}
 
 
 def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
