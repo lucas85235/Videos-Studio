@@ -1,0 +1,78 @@
+id: curiosidades-longo
+name: "Curiosidades e Explicativo (longo)"
+description: "Explicações de 8 a 12 minutos em 16:9: perguntas que puxam a curiosidade, ilustração clara, cartões de seção e ritmo médio."
+family: motion_graphics
+families_mix: [motion_graphics, still_cinema]
+structure: none
+tags: [curiosidades, explicativo, ciencia, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 600, min_s: 420, max_s: 900 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "explicativo e envolvente, como um bom professor: perguntas que puxam a curiosidade, analogias simples, exemplos do dia a dia e um fato surpreendente por capítulo"
+  structure: [hook, pergunta_central, contexto, capitulo_1, capitulo_2, capitulo_3, curiosidade_bonus, conclusao, cta]
+  hook_max_s: 15
+  fact_check: true
+  cta: "Se você aprendeu algo novo, inscreva-se e deixe nos comentários o próximo tema."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Erinome
+  style_prompt: "Narre com clareza e entusiasmo contido, como quem explica algo fascinante a um amigo, ritmo médio."
+  speed: 1.0
+  gap_s: 0.35
+
+art:
+  bible: "ilustração digital detalhada e luminosa, estilo editorial de revista de ciência, cores vivas e naturais, luz clara, cenários do cotidiano, da natureza e do espaço, composição limpa"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.0, max: 5.0 }
+  camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 2, pan_right: 2, pan_up: 1, drift: 1 }
+  transitions: { cut: 6, fade_black: 1, zoom_blur: 1, light_leak: 1 }
+  transition_seconds: 0.4
+  effects:
+    - { type: grade, preset: vivid, amount: 0.3 }
+    - { type: vignette, amount: 0.15 }
+  captions:
+    style: line
+    font: Montserrat
+    weight: 700
+    size: 48
+    color: "#FFFFFF"
+    highlight: "#FFD400"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: "Bebas Neue"
+    color: "#FFFFFF"
+    accent: "#FFD400"
+    background: "#1E3A8A"
+    animation: pop
+  progress_bar: false
+  zoom_strength: 0.09
+
+audio:
+  music: { source: procedural, mood: neutral, volume_db: -25, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -15 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: "Bebas Neue", accent: "#FFD400" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

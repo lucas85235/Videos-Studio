@@ -66,6 +66,9 @@ export const EFFECT_LABELS: LabelMap = {
 
 export const GRADE_LABELS: LabelMap = {
   neutral: 'Neutra',
+  vivid: 'Cores vivas',
+  'warm-soft': 'Quente suave',
+  'clean-cool': 'Fria e limpa',
   'cold-teal-dark': 'Fria azul-petróleo',
   'warm-sepia': 'Sépia quente',
   noir: 'Noir (preto e branco)',

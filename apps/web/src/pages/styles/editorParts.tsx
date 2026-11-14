@@ -179,7 +179,7 @@ export const WeightsEditor: React.FC<{
 /* ------------------------------------------------------------------ */
 
 export const EFFECT_TYPES = ['grain', 'vignette', 'grade', 'scanlines', 'chromatic', 'vhs', 'light_leak', 'film_scratches', 'halftone', 'duotone', 'sepia', 'blur_edges', 'flicker', 'dust'];
-export const GRADES = ['neutral', 'cold-teal-dark', 'warm-sepia', 'noir', 'bleach-bypass', 'vhs-faded', 'blood-red', 'night-green'];
+export const GRADES = ['neutral', 'vivid', 'warm-soft', 'clean-cool', 'cold-teal-dark', 'warm-sepia', 'noir', 'bleach-bypass', 'vhs-faded', 'blood-red', 'night-green'];
 /** Efeitos que deixam a renderização bem mais lenta (USO.md). */
 const HEAVY_EFFECTS = new Set(['vhs', 'blur_edges', 'chromatic']);
 

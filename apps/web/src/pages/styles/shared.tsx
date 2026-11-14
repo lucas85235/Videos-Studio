@@ -121,10 +121,10 @@ export const formatLong = (format: StyleSpec['format']) => label(FORMAT_TYPE_LAB
 export const familyLabel = (id: string, metaLabel?: string) => FAMILY_LABELS[id] ?? metaLabel ?? id;
 
 /* ------------------------------------------------------------------ */
-/* Clima da trilha (o backend reduz o texto a um de 7 climas)          */
+/* Clima da trilha (o backend reduz o texto a um de 13 climas)         */
 /* ------------------------------------------------------------------ */
 
-/** Mesma regra de `mood_key` no backend (media/audio.py). */
+/** Mesma regra de `mood_key` no backend (media/audio.py): a primeira regra que casar vence; sem nenhuma, neutro. */
 export const moodKey = (mood: string | null | undefined) => {
   const text = (mood ?? '').toLowerCase();
   const rules: [string, string[]][] = [
@@ -132,19 +132,39 @@ export const moodKey = (mood: string | null | undefined) => {
     ['tension', ['tension', 'tensão', 'tensao', 'suspense', 'thriller']],
     ['mystery', ['myster', 'mistér', 'mister', 'noir', 'investiga']],
     ['epic', ['epic', 'épic', 'epico', 'heroic', 'grandios']],
+    ['lofi', ['lofi', 'lo-fi', 'lo fi', 'chill']],
+    ['upbeat', ['upbeat', 'animad', 'alegre', 'energ', 'feliz', 'happy', 'dançant', 'dancant']],
+    ['inspiring', ['inspir', 'motiva', 'emocion', 'uplifting', 'esperan']],
+    ['corporate', ['corporat', 'corporativ', 'empresa', 'negócio', 'negocio', 'business', 'tecnolog']],
+    ['playful', ['playful', 'divertid', 'curios', 'brincalh', 'quirky']],
     ['pulse', ['pulse', 'pulso', 'batida', 'heartbeat', 'ritm']],
-    ['calm', ['calm', 'calma', 'relax', 'sereno', 'lofi', 'lo-fi']],
+    ['calm', ['calm', 'calma', 'relax', 'sereno']],
+    ['drone', ['drone', 'dark', 'sombri', 'escur', 'sinistr', 'ominous']],
   ];
   for (const [key, words] of rules) if (words.some((w) => text.includes(w))) return key;
-  return 'drone';
+  return 'neutral';
 };
 
 const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 export const moodLabel = (mood: string | null | undefined) => capitalize(MOOD_LABELS[moodKey(mood)] ?? moodKey(mood));
 
-/** Valores que o editor oferece (os mesmos de antes); o texto salvo não muda. */
-export const MOOD_OPTIONS = ['dark ambient drone', 'tension', 'horror', 'mystery', 'epic', 'pulse', 'calm'];
+/** Valores que o editor oferece, dos leves aos sombrios ("dark ambient drone" é o texto antigo do drone). */
+export const MOOD_OPTIONS = [
+  'neutral',
+  'upbeat',
+  'inspiring',
+  'lofi',
+  'corporate',
+  'playful',
+  'calm',
+  'epic',
+  'pulse',
+  'mystery',
+  'tension',
+  'horror',
+  'dark ambient drone',
+];
 
 /* ------------------------------------------------------------------ */
 /* Rótulos dos campos do estilo (para o resultado de "criar por texto") */

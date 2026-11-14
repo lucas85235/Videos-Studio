@@ -1,0 +1,80 @@
+id: biografias
+name: "Biografias (longo)"
+description: "A vida de pessoas marcantes em 16:9: linha do tempo por fases, pintura editorial luminosa e tom humano e equilibrado."
+family: still_cinema
+families_mix: [still_cinema, motion_graphics]
+structure: timeline
+tags: [biografias, historia, inspiracao, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 720, min_s: 480, max_s: 1200 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "biográfico, humano e equilibrado: origem, escolhas, conquistas e falhas, com datas e fatos verificáveis, sem exagero nem idolatria"
+  structure: [hook, origem, formacao, virada, auge, desafios, legado, cta]
+  hook_max_s: 15
+  fact_check: true
+  cta: "De quem devo contar a história no próximo vídeo? Comente e inscreva-se."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Schedar
+  style_prompt: "Narre com voz equilibrada e respeitosa, tom de documentário biográfico, ritmo médio, com pausas nas viradas."
+  speed: 1.0
+  gap_s: 0.4
+
+art:
+  # Pessoas reais: nada de rosto identificável (deepfake e direito de imagem).
+  bible: "pintura editorial luminosa e realista, cenas de cada fase da vida e da época, lugares, objetos e paisagens marcantes, cores naturais, luz suave de janela; a pessoa retratada aparece de costas, em silhueta ou à distância"
+  banned: ["texto", "letras", "logotipos", "marca d'água", "retrato fotorrealista de pessoa real", "rosto identificável de pessoa real"]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.5, max: 6.0 }
+  camera: { ken_burns_in: 4, ken_burns_out: 2, pan_left: 2, pan_right: 2, pan_up: 1, drift: 1 }
+  transitions: { cut: 6, fade_black: 1, light_leak: 1 }
+  transition_seconds: 0.5
+  effects:
+    - { type: grade, preset: warm-soft, amount: 0.3 }
+    - { type: grain, amount: 0.1 }
+    - { type: vignette, amount: 0.2 }
+  captions:
+    style: line
+    font: Montserrat
+    weight: 700
+    size: 46
+    color: "#FFFFFF"
+    highlight: "#8ECAE6"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: Oswald
+    color: "#FFFFFF"
+    accent: "#8ECAE6"
+    background: "#1F3B4D"
+    animation: slide
+  progress_bar: false
+  zoom_strength: 0.08
+
+audio:
+  music: { source: procedural, mood: inspiring, volume_db: -26, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -15 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: Oswald, accent: "#8ECAE6" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

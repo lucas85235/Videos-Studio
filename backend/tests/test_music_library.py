@@ -21,7 +21,7 @@ def test_list_and_pick_tracks(isolated_settings):
     _touch(root / "notas.txt")
     tracks = music_library.list_tracks()
     moods = {t.path: t.mood for t in tracks}
-    assert moods == {"terror/corredor.mp3": "horror", "misterio/nevoa.wav": "mystery", "sem clima.ogg": "drone"}
+    assert moods == {"terror/corredor.mp3": "horror", "misterio/nevoa.wav": "mystery", "sem clima.ogg": "neutral"}
 
     assert music_library.pick_track(tracks, "terror analógico", 7).path == "terror/corredor.mp3"
     # sem faixa do clima pedido: qualquer uma, de forma determinística

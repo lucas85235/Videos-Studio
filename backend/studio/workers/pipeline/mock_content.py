@@ -18,17 +18,17 @@ def _norm(text: str) -> str:
 
 
 _FILLERS = [
-    "Poucos sabem, mas os registros mais antigos contam uma história bem diferente da versão oficial.",
-    "Testemunhas descreveram o mesmo detalhe estranho, mesmo sem nunca terem se conhecido.",
+    "Poucos sabem, mas a explicação por trás disso é bem mais interessante do que parece.",
+    "Para entender, vale dar um passo atrás e olhar o contexto.",
     "E foi exatamente aí que tudo começou a mudar.",
-    "Os documentos da época mostram que alguém tentou esconder o que realmente aconteceu.",
-    "Até hoje, ninguém conseguiu explicar esse detalhe por completo.",
-    "Mas o que veio depois deixou todos ainda mais intrigados.",
+    "Os números ajudam a ter ideia do tamanho dessa história.",
+    "É um detalhe que quase sempre passa despercebido, mas faz toda a diferença.",
+    "E o que veio depois surpreendeu até quem acompanhava de perto.",
 ]
 
 
 def mock_script(ctx: dict[str, Any]) -> dict[str, Any]:
-    topic = ctx.get("topic") or "um mistério esquecido"
+    topic = ctx.get("topic") or "uma curiosidade do dia a dia"
     structure: list[str] = ctx.get("structure") or ["hook", "contexto", "desenvolvimento", "cta"]
     target_words = int(ctx.get("target_words") or 130)
     cta = ctx.get("cta") or "Siga para mais histórias como esta."
@@ -39,7 +39,7 @@ def mock_script(ctx: dict[str, Any]) -> dict[str, Any]:
     for index, step in enumerate(structure):
         name = _norm(step)
         if index == 0 or name.startswith("hook"):
-            text = f"Você já ouviu falar sobre {topic}? O que vou te contar agora parece impossível, mas aconteceu."
+            text = f"Você já parou para pensar em {topic}? A resposta é mais surpreendente do que parece."
             segments.append({"role": "hook", "speaker": "narrator", "chapter": None, "number": None, "text": text})
             continue
         if name.startswith("cta") or name.startswith("frase_final") or "final" in name and index == len(structure) - 1:
@@ -71,7 +71,7 @@ def mock_script(ctx: dict[str, Any]) -> dict[str, Any]:
             if words >= per_section:
                 break
         segments.append({"role": role, "speaker": "narrator", "chapter": chapter, "number": number, "text": " ".join(sentences)})
-    return {"title": f"O segredo: {topic}", "segments": segments, "sources": []}
+    return {"title": f"O que pouca gente sabe: {topic}", "segments": segments, "sources": []}
 
 
 def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -108,8 +108,8 @@ def mock_metadata(ctx: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": title[:95],
         "description": description.strip(),
-        "tags": words or ["misterio"],
-        "hashtags": ["#" + w.replace(" ", "") for w in (words[:3] or ["misterio"])],
+        "tags": words or ["curiosidades"],
+        "hashtags": ["#" + w.replace(" ", "") for w in (words[:3] or ["curiosidades"])],
         "thumbnail_text": " ".join(title.split()[:4]).upper(),
     }
 
@@ -181,7 +181,9 @@ def mock_edit(ctx: dict[str, Any]) -> dict[str, Any]:
             ops.append(_op("set_scene_transition", scene_id=sid, transition="glitch", reason="transição glitch"))
         notes.append("transição glitch")
     if "musica" in instruction:
-        mood = "tension" if "tens" in instruction else ("epic" if "epic" in instruction else ("calm" if "calm" in instruction else "mystery"))
+        from studio.media.audio import mood_key
+
+        mood = "tension" if "tens" in instruction else mood_key(instruction)
         if "sem musica" in instruction or "tira a musica" in instruction:
             ops.append(_op("set_music", enabled=False, reason="sem música"))
             notes.append("remover a música")

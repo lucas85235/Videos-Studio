@@ -5,6 +5,16 @@ type Grade = { filter: (a: number) => string; tint?: { color: (a: number) => str
 
 export const GRADES: Record<string, Grade> = {
   neutral: { filter: () => '' },
+  // Claras: para os nichos que não pedem clima sombrio (curiosidades, finanças, tecnologia, explicativos).
+  vivid: { filter: (a) => `saturate(${1 + 0.35 * a}) contrast(${1 + 0.08 * a}) brightness(${1 + 0.03 * a})` },
+  'warm-soft': {
+    filter: (a) => `sepia(${0.15 * a}) saturate(${1 + 0.12 * a}) brightness(${1 + 0.04 * a}) contrast(${1 - 0.03 * a})`,
+    tint: { color: (a) => `rgba(255, 170, 90, ${0.14 * a})`, blend: 'soft-light' },
+  },
+  'clean-cool': {
+    filter: (a) => `contrast(${1 + 0.06 * a}) saturate(${1 + 0.05 * a}) brightness(${1 + 0.03 * a})`,
+    tint: { color: (a) => `rgba(60, 150, 255, ${0.14 * a})`, blend: 'soft-light' },
+  },
   'cold-teal-dark': {
     filter: (a) => `contrast(${1 + 0.14 * a}) saturate(${1 - 0.18 * a}) brightness(${1 - 0.1 * a})`,
     tint: { color: (a) => `rgba(0, 95, 115, ${0.38 * a})`, blend: 'soft-light' },

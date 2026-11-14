@@ -81,6 +81,9 @@ EFFECTS = (
 )
 GRADE_PRESETS = (
     "neutral",
+    "vivid",
+    "warm-soft",
+    "clean-cool",
     "cold-teal-dark",
     "warm-sepia",
     "noir",
@@ -206,7 +209,7 @@ class VoiceSpec(StrictModel):
 
 
 class ArtSpec(StrictModel):
-    bible: str = "ilustração cinematográfica sombria, alto contraste, luz dramática"
+    bible: str = "ilustração digital detalhada e limpa, cores naturais e equilibradas, luz suave, composição clara com um sujeito em destaque"
     banned: list[str] = ["texto", "letras", "logotipos", "marca d'água"]
     anchors: list[str] = []
     image_chain: list[str] = ["codex_cli"]
@@ -267,7 +270,7 @@ class EditSpec(StrictModel):
     camera: dict[str, float] = {"ken_burns_in": 3, "ken_burns_out": 2, "pan_left": 1, "pan_right": 1}
     transitions: dict[str, float] = {"cut": 6, "flash": 1}
     transition_seconds: float = Field(default=0.35, ge=0.05, le=2)
-    effects: list[EffectSpec] = [EffectSpec(type="grain", amount=0.3), EffectSpec(type="vignette", amount=0.45)]
+    effects: list[EffectSpec] = [EffectSpec(type="grain", amount=0.15), EffectSpec(type="vignette", amount=0.25)]
     captions: CaptionSpec = CaptionSpec()
     text_cards: TextCardSpec = TextCardSpec()
     progress_bar: bool = False
@@ -301,7 +304,8 @@ def _validate_pool(value: dict[str, float], allowed: tuple[str, ...], label: str
 
 class MusicSpec(StrictModel):
     source: Literal["procedural", "library", "none"] = "procedural"
-    mood: str = "dark ambient drone"
+    mood: str = "neutral"
+    """Clima da trilha (neutral, upbeat, inspiring, lofi, corporate, playful, calm, epic...; ver `media/audio.py`)."""
     volume_db: float = Field(default=-22, ge=-60, le=0)
     ducking: bool = True
 

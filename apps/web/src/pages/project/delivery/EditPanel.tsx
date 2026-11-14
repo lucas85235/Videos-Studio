@@ -28,7 +28,7 @@ import { guardUnload, isActive, trackName } from "./shared";
 
 /** Exemplos clicáveis; os que falam da "cena atual" viram "cena N" com a cena na tela. */
 const EXAMPLES = [
-  { text: "Deixa a cena atual mais sombria", scene: true },
+  { text: "Deixa a cena atual mais clara", scene: true },
   { text: "Legenda maior", scene: false },
   { text: "Outra imagem na cena atual", scene: true },
   { text: "Música mais baixa", scene: false },
@@ -199,7 +199,7 @@ export const EditPanel: React.FC<{
           id={EDIT_INSTRUCTION_ID}
           rows={3}
           value={instruction}
-          placeholder="Ex.: deixa a cena 5 mais sombria"
+          placeholder="Ex.: deixa a cena 5 mais clara e quente"
           onChange={(e) => setInstruction(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {

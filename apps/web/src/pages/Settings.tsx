@@ -549,7 +549,8 @@ const VoiceSamplesSection: React.FC = () => {
 /* Músicas                                                             */
 /* ------------------------------------------------------------------ */
 
-const MOOD_FOLDERS = ['terror', 'misterio', 'tensao', 'epico', 'calmo', 'pulso'];
+// Nomes de pasta que `mood_key` (backend/studio/media/audio.py) reconhece; o resto vale como neutro.
+const MOOD_FOLDERS = ['animado', 'inspirador', 'lofi', 'corporativo', 'divertido', 'calmo', 'epico', 'pulso', 'misterio', 'tensao', 'terror', 'sombrio'];
 
 const MusicLibrarySection: React.FC = () => {
   const library = useQuery({ queryKey: ['library-music'], queryFn: () => api.get<LibraryMusic>('/api/library/music') });
@@ -612,7 +613,7 @@ const MusicLibrarySection: React.FC = () => {
                 {i < MOOD_FOLDERS.length - 2 ? ', ' : i === MOOD_FOLDERS.length - 2 ? ' ou ' : ''}
               </React.Fragment>
             ))}
-            . O resto conta como ambiente.
+            . O resto conta como neutro.
           </li>
           <li>No estilo, escolha a trilha “Suas faixas”. A faixa é repetida ou cortada para caber no vídeo, com fade e volume ajustados.</li>
         </ol>

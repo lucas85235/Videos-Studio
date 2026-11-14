@@ -1,0 +1,82 @@
+id: curiosidades-short
+name: "Curiosidades e Explicativo (Short)"
+description: "Fatos curiosos e explicações rápidas em 9:16: ilustração colorida e clara, cortes ágeis, legenda karaokê e trilha leve."
+family: motion_graphics
+families_mix: [motion_graphics, still_cinema]
+structure: none
+tags: [curiosidades, explicativo, ciencia, shorts]
+
+format:
+  type: short
+  aspect: "9:16"
+  resolution: 1080x1920
+  fps: 30
+  duration: { target_s: 50, min_s: 35, max_s: 59 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "curioso e direto, linguagem simples, um fato surpreendente por vez com a explicação do porquê e um exemplo do dia a dia"
+  structure: [hook_pergunta, resposta_curta, explicacao, exemplo, fato_extra, cta_loop]
+  hook_max_s: 3
+  fact_check: true
+  cta: "Siga para aprender uma curiosidade nova todo dia."
+  banned_phrases: ["neste vídeo", "não esqueça de se inscrever"]
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Laomedeia
+  style_prompt: "Narre com energia e curiosidade, tom amigável de quem conta uma novidade, ritmo ágil."
+  speed: 1.05
+  gap_s: 0.15
+
+art:
+  bible: "ilustração digital colorida e limpa, estilo editorial moderno, cores vivas e equilibradas, luz natural clara, fundo simples, um sujeito em destaque por cena"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo"]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 1.8, max: 3.0 }
+  camera: { ken_burns_in: 3, punch_zoom: 2, pan_left: 1, pan_right: 1, pan_up: 1, drift: 1 }
+  transitions: { cut: 6, zoom_blur: 2, flash: 1 }
+  transition_seconds: 0.3
+  effects:
+    - { type: grade, preset: vivid, amount: 0.4 }
+    - { type: vignette, amount: 0.15 }
+  captions:
+    style: karaoke
+    font: Montserrat
+    weight: 900
+    size: 82
+    color: "#FFFFFF"
+    highlight: "#FFD400"
+    stroke: 8
+    position: center
+    max_words_per_line: 3
+    uppercase: true
+  text_cards:
+    font: Anton
+    color: "#FFFFFF"
+    accent: "#FFD400"
+    background: "#1E3A8A"
+    animation: pop
+  progress_bar: true
+  progress_color: "#FFD400"
+  zoom_strength: 0.12
+
+audio:
+  music: { source: procedural, mood: playful, volume_db: -24, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -13 }
+  loudness_lufs: -14
+
+thumbnail: { template: sem-texto, variations: 1, per_language: false }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: public }
+    - { platform: tiktok, driver: buffer }
+    - { platform: instagram, driver: buffer }
+  ai_label: auto

@@ -1,0 +1,77 @@
+id: explicador-vetorial
+name: "Explicador com Arte Vetorial (longo)"
+description: "Ciência, economia e sociedade em 16:9 com ilustração vetorial flat e clara, comparações de escala e cartões de dados."
+family: motion_graphics
+families_mix: [motion_graphics, still_cinema]
+structure: none
+tags: [explicativo, educacao, vetorial, dados, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 540, min_s: 360, max_s: 900 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "didático e visual: um conceito por vez, comparações de escala, números arredondados ditos de forma natural, analogias concretas e uma conclusão que amarra tudo"
+  structure: [hook, pergunta, conceito_basico, como_funciona, comparacoes_e_numeros, exemplo_pratico, conclusao, cta]
+  hook_max_s: 12
+  fact_check: true
+  cta: "Inscreva-se para mais explicações como esta."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Achird
+  style_prompt: "Narre de forma amigável e clara, como um professor animado, ritmo médio e sem pressa."
+  speed: 1.0
+  gap_s: 0.35
+
+art:
+  bible: "ilustração vetorial flat, formas geométricas simples e contornos limpos, paleta pastel viva sobre fundo claro (creme ou azul-claro), personagens simplificados sem rosto detalhado, ícones e objetos estilizados, visual de vídeo explicativo"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo", "texturas sujas"]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.0, max: 5.0 }
+  camera: { drift: 3, ken_burns_in: 2, static: 2, pan_left: 1, pan_right: 1 }
+  transitions: { cut: 6, zoom_blur: 1, flash: 1 }
+  transition_seconds: 0.3
+  # Arte vetorial limpa: sem grão nem vinheta.
+  effects: []
+  captions:
+    style: line
+    font: Montserrat
+    weight: 800
+    size: 48
+    color: "#FFFFFF"
+    highlight: "#FFB703"
+    stroke: 5
+    position: bottom
+    max_words_per_line: 7
+    uppercase: false
+  text_cards:
+    font: Anton
+    color: "#FFFFFF"
+    accent: "#FFB703"
+    background: "#1D3557"
+    animation: pop
+  progress_bar: false
+  zoom_strength: 0.06
+
+audio:
+  music: { source: procedural, mood: neutral, volume_db: -25, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -15 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-centro, variations: 3, per_language: true, font: Anton, accent: "#FFB703" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

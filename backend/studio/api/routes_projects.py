@@ -14,8 +14,10 @@ from studio.core.agent import editor
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc
 from studio.core.project.ops import OpError, apply_ops, parse_ops
-from studio.core.styles.library import StyleNotFound, get_style
+from studio.core.styles.library import DEFAULT_STYLE_ID, StyleNotFound, get_style
 from studio.core.styles.schema import policy_warnings
+from studio.db import session_scope
+from studio.models import Channel
 from studio.providers.registry import ChainFailed
 from studio.workers.jobs import get_runner, list_jobs
 from studio.workers.pipeline.build import plan
@@ -33,7 +35,8 @@ class VoiceChoice(BaseModel):
 
 class CreateProject(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    style_id: str
+    style_id: str | None = None
+    """Sem estilo: usa o estilo padrão do canal ou, sem canal, `DEFAULT_STYLE_ID`."""
     topic: str = ""
     brief: str = ""
     channel_id: str | None = None
@@ -103,12 +106,21 @@ def list_all() -> list[dict[str, Any]]:
     return service.list_projects()
 
 
+def _default_style_id(channel_id: str | None) -> str:
+    if channel_id:
+        with session_scope() as s:
+            row = s.get(Channel, channel_id)
+            if row is not None and row.default_style_id:
+                return row.default_style_id
+    return DEFAULT_STYLE_ID
+
+
 @router.post("")
 def create(body: CreateProject) -> dict[str, Any]:
     try:
         doc = service.create_project(
             title=body.title,
-            style_id=body.style_id,
+            style_id=body.style_id or _default_style_id(body.channel_id),
             topic=body.topic,
             brief=body.brief,
             channel_id=body.channel_id,

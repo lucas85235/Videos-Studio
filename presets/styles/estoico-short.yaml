@@ -32,7 +32,7 @@ voice:
   gap_s: 0.3
 
 art:
-  bible: "pintura clássica a óleo, estátuas de mármore greco-romanas, luz dourada lateral, fundo escuro, atmosfera épica e contemplativa"
+  bible: "pintura clássica a óleo, estátuas de mármore greco-romanas, templos e paisagens mediterrâneas, luz dourada do amanhecer, céu aberto e tons quentes, atmosfera serena e contemplativa"
   banned: ["texto", "letras", "logotipos", "marca d'água"]
   image_chain: [codex_cli]
 
@@ -42,9 +42,9 @@ edit:
   transitions: { cut: 5, fade_black: 2, light_leak: 1 }
   transition_seconds: 0.45
   effects:
-    - { type: grade, preset: warm-sepia, amount: 0.45 }
-    - { type: vignette, amount: 0.6 }
-    - { type: grain, amount: 0.25 }
+    - { type: grade, preset: warm-soft, amount: 0.45 }
+    - { type: vignette, amount: 0.35 }
+    - { type: grain, amount: 0.15 }
   captions:
     style: word
     font: Cinzel
@@ -60,7 +60,7 @@ edit:
     font: Cinzel
     color: "#F7F1E3"
     accent: "#E8B04A"
-    background: "#0A0806"
+    background: "#2B2118"
     animation: fade_up
   progress_bar: true
   progress_color: "#E8B04A"

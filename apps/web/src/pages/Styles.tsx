@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Palette, Plus, RotateCw, Save, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { api, type StyleItem, type StyleSpec } from '../api';
+import { api, DEFAULT_STYLE_ID, type StyleItem, type StyleSpec } from '../api';
 import { STRUCTURE_LABELS, label } from '../labels';
 import { useProviders } from '../shell/data';
 import { Badge, Button, Card, Empty, ErrorBox, Field, Input, Page, PageHeader, Section, Select, Skeleton, Textarea, useConfirm, useToast } from '../ui';
@@ -50,7 +50,7 @@ const ORIGIN_FILTERS: { id: OriginFilter; label: string }[] = [
   { id: 'presets', label: 'Presets' },
 ];
 
-const DEFAULT_BASE = 'documentario-sombrio';
+const DEFAULT_BASE = DEFAULT_STYLE_ID;
 const DESCRIPTION_ID = 'estilo-novo-descricao';
 
 const normalize = (text: string) =>

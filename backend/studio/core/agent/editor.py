@@ -16,7 +16,8 @@ from studio.core.project import service
 from studio.core.project.document import ProjectDoc
 from studio.core.project.ops import OpError, apply_ops, parse_ops
 from studio.core.styles.library import deep_merge, get_style, set_path
-from studio.core.styles.schema import StyleSpec
+from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
+from studio.media.audio import MOODS
 from studio.providers import registry
 from studio.workers.pipeline.schemas import EDIT_SCHEMA, STYLE_FIELDS_HELP, STYLE_PATCH_SCHEMA
 
@@ -29,7 +30,7 @@ for _name in dir(ops_mod):
             _OP_CLASSES[default] = _obj
 
 
-EDIT_SYSTEM = """Você é o editor de um estúdio de vídeos narrados (canais dark). Você NÃO edita arquivos: você propõe
+EDIT_SYSTEM = """Você é o editor de um estúdio de vídeos narrados para canais sem rosto ("dark"), de qualquer nicho. Você NÃO edita arquivos: você propõe
 operações pequenas sobre o documento do projeto, e o app regenera só o que mudou. Regras:
 - Use o menor conjunto de operações que atende o pedido. Não mexa no que não foi pedido.
 - Luz, cor, contraste, calor, desfoque de UMA cena: set_scene_look (sem gerar imagem nova; valores de -1 a 1).
@@ -46,8 +47,8 @@ operações pequenas sobre o documento do projeto, e o app regenera só o que mu
 
 Valores válidos: movimentos de câmera ken_burns_in, ken_burns_out, pan_left, pan_right, pan_up, pan_down, punch_zoom, drift,
 static; transições cut, flash, fade_black, glitch, light_leak, zoom_blur, film_burn, static_burst; tipos de cena image,
-text, title, count, document, quote; grade (set_scene_look.grade) neutral, cold-teal-dark, warm-sepia, noir, bleach-bypass,
-vhs-faded, blood-red, night-green.
+text, title, count, document, quote; grade (set_scene_look.grade) """ + ", ".join(GRADE_PRESETS) + """;
+climas da música (set_music.mood) """ + ", ".join(MOODS) + """.
 """ + STYLE_FIELDS_HELP
 
 
