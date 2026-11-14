@@ -4,7 +4,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 
 ## Depende de você (contas, chaves, testes)
 
-- [ ] **Chave do Gemini (Google AI Studio)** para roteiro, agente de edição e voz grátis. Sem ela o app usa o modo prévia.
+- [x] **Claude pela sua conta** para roteiro, tradução e agente de edição (Claude Code logado com o plano Max; testado com roteiro real).
+- [ ] **Chave do Gemini (Google AI Studio)** para a voz grátis e como reserva do roteiro quando o limite do plano do Claude acabar. Sem ela a narração usa a voz do Windows (prévia).
 - [ ] **Instalar o Codex CLI** e fazer login com o ChatGPT Plus (`npm install -g @openai/codex`, depois `codex login`). O adapter `codex_cli` está pronto, mas **não foi testado** porque o Codex não está instalado nesta máquina. Validar: geração sem interação, pasta `~/.codex/generated_images`, tempo por imagem e cota diária real.
 - [ ] **Projeto no Google Cloud + cliente OAuth do YouTube** (passo a passo em docs/USO.md §5). O envio ao YouTube foi testado só com respostas simuladas da API; o primeiro envio real deve ser **privado**.
 - [ ] **Verificar o canal do YouTube por telefone** (uploads acima de 15 min e thumbnails personalizadas).

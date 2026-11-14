@@ -43,12 +43,15 @@ Para conteúdo real **a custo zero**:
 
 | O quê | Onde conseguir | Onde colocar |
 |---|---|---|
+| **Claude pela sua conta** (roteiro, tradução, agente) | Plano Pro/Max do Claude. Instale o Claude Code e rode `claude auth login` com a sua conta (não use chave de API: seria cobrado à parte). | Detectado sozinho quando o comando `claude` existir e estiver logado. Conta nos limites de uso do seu plano; ao bater o limite, o Gemini assume até ele voltar. |
 | **Gemini** (roteiro, agente, voz) | Google AI Studio → "Get API key". Use um projeto **sem** cobrança ativada para ficar na camada grátis. | Configurações › Roteiro e agente › Gemini (a mesma chave serve para a voz) |
 | **Codex** (imagens pela cota do ChatGPT Plus) | Instale o Codex CLI (`npm install -g @openai/codex`) e rode `codex login` com a sua conta do ChatGPT. | Detectado sozinho quando o comando `codex` existir |
 | **Pexels** (fotos de banco, opcional) | pexels.com/api | Configurações › Imagens › Pexels |
-| **Claude** (opcional, pago) | console.anthropic.com | Configurações › Roteiro e agente › Claude |
+| **Claude pela API** (opcional, pago por uso) | console.anthropic.com | Configurações › Roteiro e agente › Claude (API paga). Só é usado se a conta e o Gemini falharem. |
 
-A ordem de uso é sempre a da cadeia de fallback de cada estilo. Se um provedor falhar ou esgotar a cota, o próximo assume.
+A ordem de uso é sempre a da cadeia de fallback de cada estilo. Se um provedor falhar ou esgotar a cota, o próximo assume. Para roteiro e agente: Claude da conta → Gemini → Claude pela API.
+
+O Claude da conta usa o Opus mais recente com esforço médio. Para trocar, defina `VS_CLAUDE_MODEL` (ex.: `sonnet`) ou `VS_CLAUDE_EFFORT` (`low`, `high`…) antes de iniciar o app. É uso pessoal do seu plano: não distribua o app configurado com a sua conta para outras pessoas.
 
 ## 5. Conectar o YouTube (uma vez)
 

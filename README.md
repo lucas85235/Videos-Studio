@@ -476,7 +476,7 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
 
 | Etapa | Cadeia padrão (ordem de fallback) | Observações |
 |---|---|---|
-| Roteiro, tradução, agente | Claude (Anthropic API) → OpenAI/Gemini | O agente precisa de bom *tool use* |
+| Roteiro, tradução, agente | Claude pela conta (Claude Code `claude -p`, plano Pro/Max) → Gemini → Claude pela API | Sem custo extra: usa os limites do plano; a API paga só como último recurso |
 | Pesquisa de fatos | LLM + busca web (Tavily/Brave/Exa) | Fontes salvas no roteiro |
 | **Imagens de cena** | **Codex (seu Plus)** → **FLUX 3 Image Klein API** (US$ 0,009/img) → local (sd.cpp) | §8.1–8.3 |
 | **Thumbnails** | **Codex (seu Plus)** → API OpenAI (`gpt-image-2.6-flare`) ou Nano Banana 2.1 | Texto sempre sobreposto por código |

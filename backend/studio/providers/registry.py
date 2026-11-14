@@ -30,7 +30,7 @@ from studio.providers.image import (
     PexelsStock,
     PlaceholderImage,
 )
-from studio.providers.llm import AnthropicLLM, GeminiLLM, MockLLM
+from studio.providers.llm import AnthropicLLM, ClaudeCodeLLM, GeminiLLM, MockLLM
 from studio.providers.tts import (
     ElevenLabsTTS,
     GeminiTTS,
@@ -53,6 +53,7 @@ def _register(*providers: Provider) -> None:
 
 
 _register(
+    ClaudeCodeLLM(),
     AnthropicLLM(),
     GeminiLLM(),
     MockLLM(),
@@ -95,7 +96,7 @@ OFFLINE_ONLY: dict[str, list[str]] = {
     "align": ["estimate"],
 }
 DEFAULT_CHAINS: dict[str, list[str]] = {
-    "llm": ["anthropic", "gemini"],
+    "llm": ["claude_code", "gemini", "anthropic"],
     "tts": ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"],
     "image": ["codex_cli", "bfl_flux", "fal_image", "openai_image"],
     "align": ["faster_whisper"],

@@ -41,6 +41,7 @@ Registro do que foi feito em cada marco, para manter o histórico e poder retoma
 - **Bug corrigido (fuso no banco)**: o SQLite descartava o fuso das datas (18:00-03:00 voltava como 18:00 UTC) e a API devolvia horários sem fuso, que a interface lia como hora local (3 h de erro, ex.: aviso de job com falha). Novo tipo `UTCDateTime` grava em UTC e devolve com fuso.
 - **Migração leve do banco**: ao iniciar, colunas e índices novos dos modelos são criados em tabelas existentes (linhas antigas recebem o padrão simples do modelo). Evita quebrar o banco do usuário em atualizações.
 - **Fila do YouTube**: vídeos renderizados e ainda não enviados aparecem na Agenda; o agendamento em lote coloca cada um no próximo horário livre do seu canal (considera envios já na fila) e enfileira os uploads.
+- **Claude pela conta**: novo provedor `claude_code`, primeiro da cadeia de LLM (conta → Gemini → API). Chama o Claude Code instalado (`claude -p --output-format json --json-schema … --tools "" --safe-mode --no-session-persistence`), com prompt pela entrada padrão (limite de ~32 mil caracteres da linha de comando no Windows) e sistema em arquivo; remove `ANTHROPIC_API_KEY` do ambiente para não cair na cobrança da API. Disponibilidade por `claude auth status` (em cache por 5 min; exige login `claude.ai`). Limite do plano vira falha temporária (a cadeia segue sem marcar o dia como esgotado). Custo registrado como zero, com o equivalente da API nos detalhes. Teste real: roteiro do Short em 17 s.
 
 ## Como retomar
 
