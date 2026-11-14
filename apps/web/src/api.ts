@@ -200,7 +200,77 @@ export type Provider = {
   quota_exhausted_today: boolean;
 };
 
-export type Channel = { id: string; name: string; niche: string; persona: string; languages: string[]; default_style_id: string | null };
+export type PostingSlot = { weekdays: number[]; time: string };
+export type PostingPlan = { timezone: string; slots: PostingSlot[] };
+export type Channel = {
+  id: string;
+  name: string;
+  niche: string;
+  persona: string;
+  languages: string[];
+  default_style_id: string | null;
+  posting: PostingPlan;
+};
+export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
+
+export type AgendaItem = {
+  id: string;
+  project_id: string;
+  project_title: string;
+  channel_id: string | null;
+  channel_name: string;
+  platform: string;
+  language: string;
+  driver: string;
+  status: string;
+  scheduled_at: string | null;
+  created_at: string | null;
+  published_at: string | null;
+  url: string | null;
+  package_path: string | null;
+  caption: string | null;
+  upload_url: string | null;
+  privacy: string | null;
+};
+export type Agenda = { now: string; upcoming: AgendaItem[]; manual: AgendaItem[]; recent: AgendaItem[] };
+
+export const WEEKDAYS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
+export const TIMEZONES = [
+  'America/Sao_Paulo',
+  'America/Manaus',
+  'America/Fortaleza',
+  'America/Mexico_City',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Europe/Lisbon',
+  'Europe/London',
+  'Europe/Madrid',
+  'Europe/Berlin',
+  'Asia/Kolkata',
+  'Asia/Tokyo',
+  'UTC',
+];
+export const PLATFORM_LABELS: Record<string, string> = {
+  youtube: 'YouTube',
+  tiktok: 'TikTok',
+  instagram: 'Instagram Reels',
+  facebook: 'Facebook Reels',
+  threads: 'Threads',
+  x: 'X',
+};
+
+/** Data e hora curtas em pt-BR (no fuso do navegador, ou no fuso indicado). */
+export const formatWhen = (iso: string, timeZone?: string) =>
+  new Date(iso).toLocaleString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone });
+
+/** Valor para <input type="datetime-local"> (hora local do navegador). */
+export const toLocalInput = (iso: string) => {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 
 export type EditProposal = {
   summary: string;

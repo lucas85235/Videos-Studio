@@ -122,6 +122,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 language=lang,
                 driver="youtube_native",
                 status="scheduled" if privacy == "scheduled" else "uploaded",
+                scheduled_at=datetime.fromisoformat(status["publishAt"].replace("Z", "+00:00")) if status.get("publishAt") else None,
                 external_id=video_id,
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,

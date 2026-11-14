@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import datetime
 from typing import Any
 
 from studio.config import get_settings
@@ -61,7 +62,8 @@ def caption_for(platform: str, meta: dict[str, Any], fallback_title: str) -> str
     return text[: limits["description"]]
 
 
-def build_package(project_id: str, lang: str, platforms: list[str]) -> dict[str, Any]:
+def build_package(project_id: str, lang: str, platforms: list[str], planned_at: datetime | None = None) -> dict[str, Any]:
+    """Pacote para postar à mão em cada rede; `planned_at` entra na agenda como horário planejado."""
     settings = get_settings()
     row = service.get_project_row(project_id)
     doc = service.get_doc(project_id)
@@ -119,7 +121,8 @@ def build_package(project_id: str, lang: str, platforms: list[str]) -> dict[str,
         pub_id = new_id("pub")
         with session_scope() as s:
             s.add(Publication(id=pub_id, project_id=project_id, platform=platform, language=lang, driver="manual_helper",
-                              status="package_ready", package_path=str(folder), details={"caption": caption, "url": UPLOAD_URLS.get(platform)}))
+                              status="package_ready", package_path=str(folder), scheduled_at=planned_at,
+                              details={"caption": caption, "url": UPLOAD_URLS.get(platform)}))
         results.append({"id": pub_id, "platform": platform, "folder": str(folder), "upload_url": UPLOAD_URLS.get(platform),
                         "caption": caption, "blocked": bool(preview_only)})
     (base / "pacote.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

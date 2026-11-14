@@ -136,9 +136,12 @@ class ChannelBody(BaseModel):
     languages: list[str] = ["pt-BR"]
     default_style_id: str | None = None
     style_bible: dict[str, Any] = {}
+    posting: dict[str, Any] | None = None  # {"timezone": ..., "slots": [{"weekdays": [...], "time": "HH:MM"}]}
 
 
 def _channel_dict(row: Channel) -> dict[str, Any]:
+    from studio.workers.publish.schedule import plan_of
+
     return {
         "id": row.id,
         "name": row.name,
@@ -147,7 +150,22 @@ def _channel_dict(row: Channel) -> dict[str, Any]:
         "languages": row.languages,
         "default_style_id": row.default_style_id,
         "style_bible": row.style_bible,
+        "posting": plan_of(row.settings).model_dump(),
     }
+
+
+def _apply_channel(row: Channel, body: ChannelBody, fields: set[str]) -> None:
+    from studio.workers.publish.schedule import PostingPlan
+
+    data = body.model_dump()
+    for key in fields - {"posting"}:
+        setattr(row, key, data[key])
+    if "posting" in fields and body.posting is not None:
+        try:
+            plan = PostingPlan.model_validate(body.posting)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"horários de postagem inválidos: {exc}") from exc
+        row.settings = {**(row.settings or {}), "posting": plan.model_dump()}
 
 
 @router.get("/channels")
@@ -159,7 +177,8 @@ def channels() -> list[dict[str, Any]]:
 @router.post("/channels")
 def create_channel(body: ChannelBody) -> dict[str, Any]:
     with session_scope() as s:
-        row = Channel(id=new_id("chn"), **body.model_dump())
+        row = Channel(id=new_id("chn"), name=body.name, settings={})
+        _apply_channel(row, body, set(ChannelBody.model_fields))
         s.add(row)
         s.flush()
         return _channel_dict(row)
@@ -171,9 +190,19 @@ def update_channel(channel_id: str, body: ChannelBody) -> dict[str, Any]:
         row = s.get(Channel, channel_id)
         if row is None:
             raise HTTPException(status_code=404, detail="canal não encontrado")
-        for key, value in body.model_dump().items():
-            setattr(row, key, value)
+        # só os campos enviados: a tela de canais antiga não manda `posting` e não pode apagar os horários
+        _apply_channel(row, body, set(body.model_fields_set) | {"name"})
         return _channel_dict(row)
+
+
+@router.get("/channels/{channel_id}/slots")
+def channel_slots(channel_id: str, count: int = 5) -> dict[str, Any]:
+    from studio.workers.publish import schedule
+
+    try:
+        return schedule.channel_slots(channel_id, count=max(1, min(count, 20)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="canal não encontrado") from exc
 
 
 @router.delete("/channels/{channel_id}")
@@ -333,3 +362,52 @@ def cache_clean() -> dict[str, Any]:
     if any(j["status"] in ("queued", "running") for j in list_jobs(limit=200)):
         raise HTTPException(status_code=409, detail="há tarefas em andamento; espere terminarem para limpar o cache")
     return gc.collect(dry_run=False).to_dict()
+
+
+# --------------------------------------------------------------------------------------------
+# Agenda de publicações
+# --------------------------------------------------------------------------------------------
+
+
+class MarkPublishedBody(BaseModel):
+    url: str | None = Field(default=None, max_length=2000)
+
+
+@router.get("/agenda")
+def publishing_agenda(days_back: int = 14) -> dict[str, Any]:
+    from studio.workers.publish import schedule
+
+    return schedule.agenda(days_back=max(1, min(days_back, 120)))
+
+
+@router.post("/publications/{publication_id}/published")
+def mark_publication_published(publication_id: str, body: MarkPublishedBody) -> dict[str, Any]:
+    from studio.workers.publish import schedule
+
+    if body.url and not body.url.strip().lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="o link do post precisa começar com http:// ou https://")
+    try:
+        return schedule.mark_published(publication_id, body.url)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="publicação não encontrada") from exc
+
+
+@router.post("/publications/{publication_id}/open")
+def open_publication_folder(publication_id: str) -> dict[str, Any]:
+    """Abre a pasta do pacote manual no Explorer."""
+    import os
+    import sys
+    from pathlib import Path
+
+    from studio.models import Publication
+
+    with session_scope() as s:
+        row = s.get(Publication, publication_id)
+        folder = Path(row.package_path) if row and row.package_path else None
+    data_root = get_settings().data_dir.resolve()
+    if folder is None or not folder.is_dir() or not folder.resolve().is_relative_to(data_root):
+        raise HTTPException(status_code=404, detail="pasta do pacote não encontrada")
+    if sys.platform != "win32":
+        raise HTTPException(status_code=501, detail=f"abra manualmente: {folder}")
+    os.startfile(folder)  # noqa: S606 - pasta local do próprio app
+    return {"opened": str(folder)}

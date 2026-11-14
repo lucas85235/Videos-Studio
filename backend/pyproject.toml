@@ -17,6 +17,7 @@ dependencies = [
     "keyring>=25",
     "python-multipart>=0.0.9",
     "anthropic>=2.8,<3",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

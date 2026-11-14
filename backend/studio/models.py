@@ -7,12 +7,34 @@ from typing import Any
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from studio.db import Base
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class UTCDateTime(TypeDecorator):
+    """Data/hora guardada sempre em UTC e devolvida com fuso UTC.
+
+    O SQLite não guarda fuso: sem isto, 18:00-03:00 voltaria como 18:00 "sem fuso" (3 h de erro) e a
+    interface leria horários sem fuso como hora local. Valores sem fuso são tratados como UTC.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(UTC).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class Channel(Base):
@@ -26,7 +48,7 @@ class Channel(Base):
     default_style_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     style_bible: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class Style(Base):
@@ -39,8 +61,8 @@ class Style(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSON)
     version: Mapped[int] = mapped_column(Integer, default=1)
     parent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class Project(Base):
@@ -53,8 +75,8 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(40), default="draft")
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class ProjectVersion(Base):
@@ -70,7 +92,7 @@ class ProjectVersion(Base):
     doc: Mapped[dict[str, Any]] = mapped_column(JSON)
     message: Mapped[str] = mapped_column(Text, default="")
     author: Mapped[str] = mapped_column(String(40), default="user")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class Artifact(Base):
@@ -87,8 +109,8 @@ class Artifact(Base):
     provider: Mapped[str | None] = mapped_column(String(60), nullable=True)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class Job(Base):
@@ -103,9 +125,9 @@ class Job(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class CostEntry(Base):
@@ -119,7 +141,7 @@ class CostEntry(Base):
     units: Mapped[float] = mapped_column(Float, default=0.0)
     unit_name: Mapped[str] = mapped_column(String(40), default="")
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class ProviderCredential(Base):
@@ -128,7 +150,7 @@ class ProviderCredential(Base):
     provider: Mapped[str] = mapped_column(String(60), primary_key=True)
     secret: Mapped[str] = mapped_column(Text)
     """JSON criptografado (Fernet) com os campos da credencial."""
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class ProviderUsage(Base):
@@ -160,10 +182,10 @@ class Publication(Base):
     language: Mapped[str] = mapped_column(String(10))
     driver: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(30), default="draft")
-    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     package_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

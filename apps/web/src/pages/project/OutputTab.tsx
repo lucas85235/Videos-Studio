@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
-import { api, fileUrl, type ProjectDetail } from '../../api';
+import { api, type ChannelSlots, fileUrl, formatWhen, type ProjectDetail, toLocalInput } from '../../api';
 import { Badge, Button, Card, Empty, ErrorBox, Select, formatSeconds } from '../../ui';
 import { useStartJob } from '../ProjectPage';
 
@@ -16,8 +16,35 @@ const PLATFORMS = [
 type PackageItem = { id: string; platform: string; folder: string; upload_url: string; caption: string; blocked: boolean };
 type YouTubeStatus = { client_configured: boolean; connected: boolean; channel_title: string };
 
-const YouTubeCard: React.FC<{ projectId: string; lang: string; otherLangs: string[]; hasVideo: boolean; busy: boolean }> = ({
+/** Próximos horários livres do canal do projeto (configurados em Canais). */
+const useChannelSlots = (channelId: string | null) =>
+  useQuery({
+    queryKey: ['channel-slots', channelId],
+    queryFn: () => api.get<ChannelSlots>(`/api/channels/${channelId}/slots?count=3`),
+    enabled: Boolean(channelId),
+  });
+
+const SlotChips: React.FC<{ channelId: string | null; onPick: (localValue: string) => void }> = ({ channelId, onPick }) => {
+  const slots = useChannelSlots(channelId);
+  if (!channelId || !slots.data) return null;
+  if (!slots.data.configured) {
+    return <div className="text-[11px] text-zinc-600">Dica: configure os horários de postagem do canal em Canais para ter sugestões aqui.</div>;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className="text-zinc-500">Horários livres do canal:</span>
+      {slots.data.slots.map((iso) => (
+        <button key={iso} type="button" className="rounded-md border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:border-amber-400" onClick={() => onPick(toLocalInput(iso))}>
+          {formatWhen(iso)}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+const YouTubeCard: React.FC<{ projectId: string; channelId: string | null; lang: string; otherLangs: string[]; hasVideo: boolean; busy: boolean }> = ({
   projectId,
+  channelId,
   lang,
   otherLangs,
   hasVideo,
@@ -40,7 +67,11 @@ const YouTubeCard: React.FC<{ projectId: string; lang: string; otherLangs: strin
         publish_at: privacy === 'scheduled' && when ? new Date(when).toISOString() : null,
         localize: localize && otherLangs.length > 0,
       }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['project', projectId] }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['project', projectId] });
+      client.invalidateQueries({ queryKey: ['agenda'] });
+      client.invalidateQueries({ queryKey: ['channel-slots'] });
+    },
   });
   const s = status.data;
   return (
@@ -64,6 +95,13 @@ const YouTubeCard: React.FC<{ projectId: string; lang: string; otherLangs: strin
             </Select>
             {privacy === 'scheduled' ? <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 text-xs" /> : null}
           </div>
+          <SlotChips
+            channelId={channelId}
+            onPick={(value) => {
+              setPrivacy('scheduled');
+              setWhen(value);
+            }}
+          />
           {otherLangs.length ? (
             <label className="flex items-start gap-2 text-xs text-zinc-400">
               <input type="checkbox" className="mt-0.5" checked={localize} onChange={(e) => setLocalize(e.target.checked)} />
@@ -92,11 +130,19 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
   const [lang, setLang] = useState(doc.primary_language);
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [pkg, setPkg] = useState<PackageItem[] | null>(null);
+  const [planned, setPlanned] = useState('');
   const makePackage = useMutation({
-    mutationFn: () => api.post<{ items: PackageItem[] }>(`/api/projects/${doc.id}/publish/package`, { lang, platforms }),
+    mutationFn: () =>
+      api.post<{ items: PackageItem[] }>(`/api/projects/${doc.id}/publish/package`, {
+        lang,
+        platforms,
+        planned_at: planned ? new Date(planned).toISOString() : null,
+      }),
     onSuccess: (data) => {
       setPkg(data.items);
       client.invalidateQueries({ queryKey: ['project', doc.id] });
+      client.invalidateQueries({ queryKey: ['agenda'] });
+      client.invalidateQueries({ queryKey: ['channel-slots'] });
     },
   });
   const entry = final?.langs?.[lang];
@@ -164,6 +210,7 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
         </Card>
         <YouTubeCard
           projectId={doc.id}
+          channelId={doc.channel_id}
           lang={lang}
           otherLangs={doc.languages.filter((l) => l !== lang && doc.metadata[l]?.title)}
           hasVideo={Boolean(entry?.video)}
@@ -199,6 +246,11 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
               </button>
             ))}
           </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+            <span>Planejar para (opcional)</span>
+            <input type="datetime-local" value={planned} onChange={(e) => setPlanned(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs" />
+          </div>
+          <SlotChips channelId={doc.channel_id} onPick={setPlanned} />
           <Button variant="primary" disabled={!entry?.video || !platforms.length} busy={makePackage.isPending} onClick={() => makePackage.mutate()}>
             Preparar pacote de publicação
           </Button>
@@ -221,7 +273,8 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
             </div>
           ) : null}
           <div className="text-[11px] text-zinc-600">
-            Upload automático: YouTube pela API oficial e TikTok/Instagram pelo Buffer estão no backlog (precisam das suas contas). Nunca por robô de navegador: os termos das redes proíbem.
+            Os pacotes aparecem na Agenda até você marcar como postados. Envio automático para TikTok/Instagram pelo Buffer está no backlog (precisa da sua conta).
+            Nunca por robô de navegador: os termos das redes proíbem.
           </div>
         </Card>
       </div>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -79,6 +80,7 @@ class ApproveRequest(BaseModel):
 class PackageRequest(BaseModel):
     lang: str | None = None
     platforms: list[str] = ["youtube", "tiktok", "instagram"]
+    planned_at: datetime | None = None  # horário planejado para postar (vai para a agenda)
 
 
 def _not_found(exc: Exception) -> HTTPException:
@@ -255,7 +257,7 @@ def apply_edit(project_id: str, body: ApplyEditRequest) -> dict[str, Any]:
 def publish_package(project_id: str, body: PackageRequest) -> dict[str, Any]:
     doc = service.get_doc(project_id)
     try:
-        return build_package(project_id, body.lang or doc.primary_language, body.platforms)
+        return build_package(project_id, body.lang or doc.primary_language, body.platforms, body.planned_at)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

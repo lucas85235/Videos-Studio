@@ -17,7 +17,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 ### Publicação
 - [ ] **Driver do Buffer** (TikTok e Instagram pelo plano grátis, API e MCP). Ficou de fora porque a API atual do Buffer precisa ser conferida na documentação oficial e testada com uma conta; hoje há o pacote manual por rede.
 - [ ] Hospedagem das URLs públicas que o Buffer e o Instagram exigem (Cloudflare R2).
-- [ ] Calendário com slots por canal, fusos e fila de publicação.
+- [ ] Fila de publicação: agendar vários vídeos de uma vez nos próximos horários livres do canal (a agenda e os horários por canal já existem).
 - [ ] YouTube: playlists, medidor de cota, várias contas/canais. (Títulos traduzidos no mesmo vídeo já funcionam.)
 - [ ] Driver nativo do Instagram (Standard Access) e teste de visibilidade pública.
 

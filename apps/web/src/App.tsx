@@ -11,6 +11,7 @@ const StylesPage = lazy(() => import('./pages/Styles').then((m) => ({ default: m
 const StyleEditorPage = lazy(() => import('./pages/StyleEditor').then((m) => ({ default: m.StyleEditorPage })));
 const ChannelsPage = lazy(() => import('./pages/Channels').then((m) => ({ default: m.ChannelsPage })));
 const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
+const AgendaPage = lazy(() => import('./pages/Agenda').then((m) => ({ default: m.AgendaPage })));
 
 const PageLoading: React.FC = () => (
   <div className="flex items-center gap-2 p-6 text-sm text-zinc-500">
@@ -45,6 +46,7 @@ export const App: React.FC = () => {
         </div>
         <NavItem to="/" label="Projetos" icon="◧" />
         <NavItem to="/novo" label="Novo projeto" icon="+" />
+        <NavItem to="/agenda" label="Agenda" icon="◷" />
         <NavItem to="/estilos" label="Estilos" icon="✦" />
         <NavItem to="/canais" label="Canais" icon="◉" />
         <NavItem to="/configuracoes" label="Configurações" icon="⚙" />
@@ -60,6 +62,7 @@ export const App: React.FC = () => {
             <Route path="/projetos/:projectId" element={<ProjectPage />} />
             <Route path="/estilos" element={<StylesPage />} />
             <Route path="/estilos/:styleId" element={<StyleEditorPage />} />
+            <Route path="/agenda" element={<AgendaPage />} />
             <Route path="/canais" element={<ChannelsPage />} />
             <Route path="/configuracoes" element={<SettingsPage />} />
           </Routes>
