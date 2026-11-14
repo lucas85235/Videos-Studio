@@ -40,6 +40,24 @@ def youtube_status_body(style, privacy: str, publish_at: str | None) -> dict[str
     return status
 
 
+def _description(meta: Metadata) -> str:
+    description = meta.description
+    if meta.hashtags:
+        description = f"{description}\n\n{' '.join(meta.hashtags[:15])}".strip()
+    return description[:5000]
+
+
+def youtube_localizations(doc, lang: str) -> dict[str, dict[str, str]]:
+    """Título e descrição dos outros idiomas do projeto (o YouTube mostra a versão no idioma de quem assiste)."""
+    out: dict[str, dict[str, str]] = {}
+    for other in doc.languages:
+        meta = doc.metadata.get(other)
+        if other == lang or meta is None or not meta.title.strip():
+            continue
+        out[other] = {"title": meta.title.strip()[:100], "description": _description(meta)}
+    return out
+
+
 @job("publish_youtube")
 def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     """Envia o vídeo final de um idioma ao YouTube (privado, não listado, público ou agendado)."""
@@ -62,17 +80,15 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
         )
     status = youtube_status_body(style, privacy, payload.get("publish_at"))
     meta = doc.metadata.get(lang) or Metadata(title=doc.title)
-    description = meta.description
-    if meta.hashtags:
-        description = f"{description}\n\n{' '.join(meta.hashtags[:15])}".strip()
     snippet = {
         "title": (meta.title or doc.title)[:100],
-        "description": description[:5000],
+        "description": _description(meta),
         "tags": meta.tags[:30],
         "categoryId": str(payload.get("category_id") or "24"),
         "defaultLanguage": lang,
         "defaultAudioLanguage": lang,
     }
+    localizations = youtube_localizations(doc, lang) if payload.get("localize") else {}
     data_dir = get_settings().data_dir
     warnings: list[str] = []
     with httpx.Client(timeout=httpx.Timeout(120, read=900, write=900)) as client:
@@ -81,6 +97,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
             data_dir / entry["video"],
             snippet=snippet,
             status=status,
+            localizations=localizations or None,
             http=client,
             on_progress=lambda p: ctx.progress(0.02 + p * 0.85, "Enviando vídeo ao YouTube"),
         )
@@ -108,7 +125,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 external_id=video_id,
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,
-                         "synthetic": status.get("containsSyntheticMedia")},
+                         "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations)},
             )
         )
     ctx.progress(1.0, "Agendado no YouTube" if privacy == "scheduled" else "Enviado ao YouTube")

@@ -36,6 +36,7 @@ Registro do que foi feito em cada marco, para manter o histórico e poder retoma
 - **Biblioteca de músicas**: faixas do usuário em `library/music` (clima pela subpasta/nome), escolha determinística pela semente, faixa fixável por projeto (`set_music.track`), repetição/corte com fade e −16 LUFS em estéreo. Biblioteca vazia cai na trilha procedural com aviso. Interface: cartão em Configurações (abrir pasta, contagem por clima), fonte da trilha no editor de estilo e cartão *Trilha* na prévia.
 - **Limpeza do cache** (marcar e varrer): cada build grava o manifesto dos artefatos usados; a limpeza preserva o que as últimas prévias/renders usam (builds antigos: blocos recalculados pela timeline salva) e apaga blocos, finais e mixagens sem uso, falhas, registros sem arquivo, pastas órfãs, bundles velhos e temporários. Narração e imagem nunca são varridas; 24 h de carência. Cartão *Armazenamento* em Configurações e `videos-studio clean [--dry-run]`.
 - **Interface mais leve**: páginas carregadas sob demanda; o Player do Remotion só carrega na aba de prévia. Bundle inicial de 749 kB para 295 kB.
+- **YouTube: títulos traduzidos** (`localizations`): opção no envio que inclui título e descrição dos outros idiomas do projeto no mesmo vídeo. Testado com API simulada.
 
 ## Como retomar
 

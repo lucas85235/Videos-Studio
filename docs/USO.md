@@ -92,6 +92,8 @@ Toda mudança vira uma versão (aba Versões). Voltar a uma versão não paga de
 
 Marque os idiomas no novo projeto (o primeiro é o principal). Depois do roteiro aprovado, o piloto automático traduz por segmento e narra cada idioma. Cada idioma gera o seu próprio vídeo (modo A). O modo de várias faixas de áudio no mesmo vídeo (modo B) está no backlog.
 
+Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** coloca os títulos dos outros idiomas no mesmo vídeo (o YouTube mostra a versão no idioma de quem assiste). Deixe desmarcada se cada idioma vai ganhar o próprio vídeo ou canal, para os vídeos não competirem entre si.
+
 ## 9. Problemas comuns
 
 | Sintoma | O que fazer |

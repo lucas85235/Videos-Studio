@@ -74,6 +74,47 @@ def test_resumable_upload_thumbnail_and_captions(tmp_path: Path):
     assert len(puts) == 2
 
 
+def test_localizations_use_other_languages(isolated_settings):
+    from studio.core.project import service
+    from studio.core.project.document import Metadata
+    from studio.workers.publish_tasks import youtube_localizations
+
+    doc = service.create_project(title="T", style_id="misterios-short", topic="farol", languages=["pt-BR", "en-US", "es-ES"])
+    doc.metadata = {
+        "pt-BR": Metadata(title="O farol"),
+        "en-US": Metadata(title="The lighthouse", description="Desc", hashtags=["#mystery"]),
+        "es-ES": Metadata(title="   "),
+    }
+    assert youtube_localizations(doc, "pt-BR") == {"en-US": {"title": "The lighthouse", "description": "Desc\n\n#mystery"}}
+    assert set(youtube_localizations(doc, "en-US")) == {"pt-BR"}
+
+
+def test_upload_sends_localizations(tmp_path: Path):
+    _configure()
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"\x00" * 1000)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith(yt.TOKEN_URL):
+            return httpx.Response(200, json={"access_token": "at"})
+        if request.method == "POST" and "/upload/youtube/v3/videos" in url:
+            seen["part"] = request.url.params["part"]
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, headers={"Location": "https://upload.example/session/2"})
+        if request.method == "PUT":
+            return httpx.Response(200, json={"id": "VID9"})
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    yt.upload_video(video, snippet={"title": "T", "defaultLanguage": "pt-BR"}, status={"privacyStatus": "private"},
+                    localizations={"en-US": {"title": "The T", "description": ""}}, http=client)
+    assert "localizations" in seen["part"].split(",")
+    assert seen["body"]["localizations"]["en-US"]["title"] == "The T"
+    assert seen["body"]["snippet"]["defaultLanguage"] == "pt-BR"
+
+
 def test_schedule_requires_future_and_sets_private():
     style = get_style("misterios-short")
     with pytest.raises(ValueError):

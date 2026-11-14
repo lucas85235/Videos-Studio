@@ -55,6 +55,7 @@ class YouTubePublishRequest(BaseModel):
     publish_at: str | None = None
     category_id: str = "24"
     captions: bool = True
+    localize: bool = False  # títulos/descrições dos outros idiomas do projeto no mesmo vídeo
 
 
 @router.post("/projects/{project_id}/publish/youtube")

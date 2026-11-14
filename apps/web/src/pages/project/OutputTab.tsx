@@ -16,11 +16,18 @@ const PLATFORMS = [
 type PackageItem = { id: string; platform: string; folder: string; upload_url: string; caption: string; blocked: boolean };
 type YouTubeStatus = { client_configured: boolean; connected: boolean; channel_title: string };
 
-const YouTubeCard: React.FC<{ projectId: string; lang: string; hasVideo: boolean; busy: boolean }> = ({ projectId, lang, hasVideo, busy }) => {
+const YouTubeCard: React.FC<{ projectId: string; lang: string; otherLangs: string[]; hasVideo: boolean; busy: boolean }> = ({
+  projectId,
+  lang,
+  otherLangs,
+  hasVideo,
+  busy,
+}) => {
   const client = useQueryClient();
   const status = useQuery({ queryKey: ['youtube-status'], queryFn: () => api.get<YouTubeStatus>('/api/youtube/status'), refetchInterval: 10_000 });
   const [privacy, setPrivacy] = useState('private');
   const [when, setWhen] = useState('');
+  const [localize, setLocalize] = useState(false);
   const connect = useMutation({
     mutationFn: () => api.post<{ auth_url: string }>('/api/youtube/connect'),
     onSuccess: (data) => window.open(data.auth_url, '_blank', 'noopener'),
@@ -31,6 +38,7 @@ const YouTubeCard: React.FC<{ projectId: string; lang: string; hasVideo: boolean
         lang,
         privacy,
         publish_at: privacy === 'scheduled' && when ? new Date(when).toISOString() : null,
+        localize: localize && otherLangs.length > 0,
       }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['project', projectId] }),
   });
@@ -56,6 +64,15 @@ const YouTubeCard: React.FC<{ projectId: string; lang: string; hasVideo: boolean
             </Select>
             {privacy === 'scheduled' ? <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 text-xs" /> : null}
           </div>
+          {otherLangs.length ? (
+            <label className="flex items-start gap-2 text-xs text-zinc-400">
+              <input type="checkbox" className="mt-0.5" checked={localize} onChange={(e) => setLocalize(e.target.checked)} />
+              <span>
+                Incluir título e descrição traduzidos ({otherLangs.join(', ')}). O YouTube mostra a versão no idioma de quem assiste.
+                Deixe desmarcado se cada idioma vai ganhar o próprio vídeo ou canal.
+              </span>
+            </label>
+          ) : null}
           <Button variant="primary" disabled={!hasVideo || busy || (privacy === 'scheduled' && !when)} busy={publish.isPending} onClick={() => publish.mutate()}>
             Enviar ao YouTube
           </Button>
@@ -145,7 +162,13 @@ export const OutputTab: React.FC<{ detail: ProjectDetail; busy: boolean }> = ({ 
             <div className="text-xs text-zinc-500">Gere os metadados depois de renderizar (os capítulos entram na descrição).</div>
           )}
         </Card>
-        <YouTubeCard projectId={doc.id} lang={lang} hasVideo={Boolean(entry?.video)} busy={busy} />
+        <YouTubeCard
+          projectId={doc.id}
+          lang={lang}
+          otherLangs={doc.languages.filter((l) => l !== lang && doc.metadata[l]?.title)}
+          hasVideo={Boolean(entry?.video)}
+          busy={busy}
+        />
         {detail.publications.filter((p) => p.driver === 'youtube_native').length ? (
           <Card className="flex flex-col gap-1 text-xs">
             <div className="mb-1 text-sm font-semibold">Enviados</div>
