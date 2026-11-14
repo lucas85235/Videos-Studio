@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, type Job, JOB_LABELS, type ProjectDetail, STATUS_LABELS } from '../api';
-import { Badge, Button, ErrorBox, ProgressBar, Tabs } from '../ui';
+import { Badge, Button, ErrorBox, ProgressBar, Spinner, Tabs } from '../ui';
 import { OutputTab } from './project/OutputTab';
-import { PreviewTab } from './project/PreviewTab';
 import { ScenesTab } from './project/ScenesTab';
 import { ScriptTab } from './project/ScriptTab';
 import { VersionsTab } from './project/VersionsTab';
+
+// A prévia traz o Player do Remotion e o renderer: só carrega quando a aba é aberta.
+const PreviewTab = lazy(() => import('./project/PreviewTab').then((m) => ({ default: m.PreviewTab })));
 
 export const useProject = (projectId: string) =>
   useQuery({ queryKey: ['project', projectId], queryFn: () => api.get<ProjectDetail>(`/api/projects/${projectId}`) });
@@ -147,7 +149,11 @@ export const ProjectPage: React.FC = () => {
       <div className="pt-4">
         {tab === 'script' ? <ScriptTab detail={project.data} busy={busy} /> : null}
         {tab === 'scenes' ? <ScenesTab detail={project.data} busy={busy} /> : null}
-        {tab === 'preview' ? <PreviewTab detail={project.data} busy={busy} /> : null}
+        {tab === 'preview' ? (
+          <Suspense fallback={<div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> carregando o player…</div>}>
+            <PreviewTab detail={project.data} busy={busy} />
+          </Suspense>
+        ) : null}
         {tab === 'output' ? <OutputTab detail={project.data} busy={busy} /> : null}
         {tab === 'versions' ? <VersionsTab detail={project.data} /> : null}
       </div>

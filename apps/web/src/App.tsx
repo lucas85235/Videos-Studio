@@ -1,13 +1,22 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { NavLink, Route, Routes } from 'react-router-dom';
-import { ChannelsPage } from './pages/Channels';
-import { NewProjectPage } from './pages/NewProject';
-import { ProjectPage } from './pages/ProjectPage';
-import { ProjectsPage } from './pages/Projects';
-import { SettingsPage } from './pages/Settings';
-import { StyleEditorPage } from './pages/StyleEditor';
-import { StylesPage } from './pages/Styles';
+import { Spinner } from './ui';
 import { useBackendEvents } from './useEvents';
+
+// Cada página vira um pedaço separado do bundle (o Player do Remotion só carrega na prévia).
+const ProjectsPage = lazy(() => import('./pages/Projects').then((m) => ({ default: m.ProjectsPage })));
+const NewProjectPage = lazy(() => import('./pages/NewProject').then((m) => ({ default: m.NewProjectPage })));
+const ProjectPage = lazy(() => import('./pages/ProjectPage').then((m) => ({ default: m.ProjectPage })));
+const StylesPage = lazy(() => import('./pages/Styles').then((m) => ({ default: m.StylesPage })));
+const StyleEditorPage = lazy(() => import('./pages/StyleEditor').then((m) => ({ default: m.StyleEditorPage })));
+const ChannelsPage = lazy(() => import('./pages/Channels').then((m) => ({ default: m.ChannelsPage })));
+const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
+
+const PageLoading: React.FC = () => (
+  <div className="flex items-center gap-2 p-6 text-sm text-zinc-500">
+    <Spinner /> carregando…
+  </div>
+);
 
 const NavItem: React.FC<{ to: string; label: string; icon: string }> = ({ to, label, icon }) => (
   <NavLink
@@ -44,15 +53,17 @@ export const App: React.FC = () => {
         </div>
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <Routes>
-          <Route path="/" element={<ProjectsPage />} />
-          <Route path="/novo" element={<NewProjectPage />} />
-          <Route path="/projetos/:projectId" element={<ProjectPage />} />
-          <Route path="/estilos" element={<StylesPage />} />
-          <Route path="/estilos/:styleId" element={<StyleEditorPage />} />
-          <Route path="/canais" element={<ChannelsPage />} />
-          <Route path="/configuracoes" element={<SettingsPage />} />
-        </Routes>
+        <Suspense fallback={<PageLoading />}>
+          <Routes>
+            <Route path="/" element={<ProjectsPage />} />
+            <Route path="/novo" element={<NewProjectPage />} />
+            <Route path="/projetos/:projectId" element={<ProjectPage />} />
+            <Route path="/estilos" element={<StylesPage />} />
+            <Route path="/estilos/:styleId" element={<StyleEditorPage />} />
+            <Route path="/canais" element={<ChannelsPage />} />
+            <Route path="/configuracoes" element={<SettingsPage />} />
+          </Routes>
+        </Suspense>
       </main>
     </div>
   );

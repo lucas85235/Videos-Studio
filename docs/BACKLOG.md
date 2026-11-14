@@ -51,5 +51,4 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 
 - [ ] Migrações com Alembic (hoje o schema é criado com `create_all`).
 - [ ] Limpeza do cache: opção de também apagar narrações e imagens de versões antigas (hoje elas nunca são apagadas) e limpeza automática por limite de espaço.
-- [ ] O tamanho do bundle da interface (740 kB) pode ser dividido por rota.
 - [ ] Testes de interface (Playwright) e CI.
