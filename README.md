@@ -2,7 +2,7 @@
 
 > Plataforma de **uso próprio** para **criar, editar por IA, publicar e gerenciar** vídeos "dark" (canais sem rosto) para **YouTube, Instagram Reels e TikTok**, em **formato longo (16:9)** e **Shorts/Reels (9:16)**, **multi-idioma**.
 
-**Status:** v0.1 funcionando (roteiro, storyboard, prévia, render, edição por instrução, publicação no YouTube) · **Última revisão:** 14/11/2026 · [Guia de uso](docs/USO.md) · [Estado atual](#140-estado-atual-14112026) · [Backlog](docs/BACKLOG.md)
+**Status:** v0.1 funcionando (roteiro, storyboard, prévia, render, edição por instrução, publicação no YouTube, agenda por canal) · **Última revisão:** 14/11/2026 · [Guia de uso](docs/USO.md) · [Estado atual](#140-estado-atual-14112026) · [Backlog](docs/BACKLOG.md)
 
 ## Começar agora
 
@@ -824,15 +824,15 @@ Videos-Studio/
 │  │  ├─ api/                     # FastAPI: projetos, estilos, canais, provedores, jobs, YouTube, SSE, arquivos
 │  │  ├─ core/
 │  │  │  ├─ project/              # documento de projeto, operações de patch, versões
-│  │  │  ├─ graph/                # armazenamento de artefatos por hash (cache do grafo)
+│  │  │  ├─ graph/                # artefatos por hash (cache do grafo) e limpeza do cache
 │  │  │  ├─ agent/                # agente de edição por instrução e estilo a partir de texto
 │  │  │  ├─ styles/               # StyleSpec, biblioteca (presets + do usuário), avisos de política
 │  │  │  └─ timeline.py           # cenas, legendas, SFX e blocos de render
 │  │  ├─ providers/               # llm, tts, image, align + registro com cadeias de fallback e cofre
-│  │  ├─ media/                   # FFmpeg, áudio procedural, mix, montagem, thumbnail, cliente de render
+│  │  ├─ media/                   # FFmpeg, áudio procedural, biblioteca de músicas, mix, montagem, thumbnail, render
 │  │  └─ workers/
 │  │     ├─ pipeline/             # roteiro, storyboard, tradução, metadados, build incremental
-│  │     ├─ publish/              # pacote manual por rede, YouTube nativo
+│  │     ├─ publish/              # pacote manual por rede, YouTube nativo, agenda e horários por canal
 │  │     ├─ jobs.py               # fila de jobs persistida
 │  │     └─ tasks.py              # jobs do pipeline e piloto automático
 │  └─ tests/                      # pytest (VS_TEST_RENDER=1 renderiza de verdade)
@@ -840,6 +840,7 @@ Videos-Studio/
 ├─ apps/web/                      # Vite + React: interface
 ├─ presets/styles/                # 6 presets das famílias da v1
 ├─ assets/fonts/                  # fontes OFL/Apache com licenças
+├─ assets/textures/               # texturas de grão pré-geradas
 ├─ scripts/                       # setup.ps1, start.ps1, iniciar.cmd
 ├─ docs/                          # USO.md, BACKLOG.md, DEVLOG.md, adr/
 └─ README.md
@@ -854,9 +855,9 @@ Videos-Studio/
 | Fase | Feito | Falta (ver [backlog](docs/BACKLOG.md)) |
 |---|---|---|
 | 0. Fundação | Backend, banco, cofre de credenciais, provedores com fallback, grafo de artefatos por hash, filas, custos, render por blocos (testado) | Testes cegos de voz/imagem e do Codex (precisam das suas chaves e do Codex instalado) |
-| 1. MVP Shorts | Roteiro → storyboard → narração (com controle de qualidade por Whisper e nova tentativa) → alinhamento → imagens → timeline → trilha/SFX → render → montagem → thumbnail; regenerar por cena | Instalar o Whisper local (`--extra asr`) para ativar o controle de qualidade e legendas mais precisas |
+| 1. MVP Shorts | Roteiro → storyboard → narração (com controle de qualidade por Whisper e nova tentativa) → alinhamento → imagens → timeline → trilha (procedural ou da sua biblioteca de músicas)/SFX → render → montagem → thumbnail; regenerar por cena; limpeza do cache | Instalar o Whisper local (`--extra asr`) para ativar o controle de qualidade e legendas mais precisas |
 | 2. Edição por IA + longos | Agente de edição (operações tipadas, escopo, estimativa, travas), versões com desfazer, estilos por texto, cartões de capítulo/contagem/documento/citação, tipografia cinética | Ramos A/B, image-to-video, checagem de fatos com busca web |
-| 3. Publicação | YouTube nativo (OAuth, upload, agendamento, thumbnail, legendas, rótulo de IA); pacote manual por rede | Driver do Buffer (TikTok/Instagram), calendário, slots e fusos |
+| 3. Publicação | YouTube nativo (OAuth, upload, agendamento, thumbnail, legendas, rótulo de IA, títulos traduzidos); pacote manual por rede com horário planejado; horários de postagem por canal com fuso e sugestão do próximo horário livre; página Agenda | Driver do Buffer (TikTok/Instagram), fila em lote, playlists e medidor de cota |
 | 4. Voz e idiomas | Tradução por segmento e vídeo por idioma (modo A) | Clonagem (Applio/RVC, Qwen3-TTS), modo B (várias faixas no mesmo vídeo) |
 | 5–6 | — | Repurposing, comentários, analytics, outras redes, séries |
 
