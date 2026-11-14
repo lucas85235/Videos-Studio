@@ -90,6 +90,19 @@ def compose_image_prompt(style: StyleSpec, prompt: str) -> str:
     )
 
 
+# Cadeias de imagem de versões anteriores. A chave do cache das imagens incluía a cadeia de provedores, e trocar
+# a cadeia (ex.: tirar os provedores pagos) escondia imagens já geradas, que eram geradas de novo gastando cota.
+# A chave nova não depende da cadeia; estas só servem para achar o que foi guardado com a chave antiga.
+_LEGACY_IMAGE_CHAINS: tuple[list[str], ...] = (
+    ["codex_cli", "bfl_flux", "fal_image", "openai_image", "placeholder"],
+)
+
+
+def image_key(inputs: dict[str, Any]) -> str:
+    """Chave da imagem no cache: o que define a imagem (prompt, tamanho, semente), não quem pode gerá-la."""
+    return hash_obj({**{k: v for k, v in inputs.items() if k != "chain"}, "key": 2})
+
+
 def scene_needs_image(scene: Scene) -> bool:
     visual = scene.visual
     if visual.type in ("none", "upload"):
@@ -419,14 +432,25 @@ class Builder:
             "chain": chain,
         }
 
+    def cached_image(self, inputs: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        """Chave da imagem e o que já existe no cache (também com a chave antiga). Entre as guardadas, prefere a
+        que pode ir para o canal: uma imagem de teste guardada depois não esconde a imagem boa."""
+        h = image_key(inputs)
+        found = None
+        for key in (h, *(hash_obj({**inputs, "chain": chain}) for chain in (inputs["chain"], *_LEGACY_IMAGE_CHAINS))):
+            cached = self.store.lookup("image", key)
+            if cached and cached.get("commercial", True):
+                return h, cached
+            found = found or cached
+        return h, found
+
     def image(self, scene: Scene) -> str | None:
         if scene.visual.type == "upload" and scene.visual.asset:
             return scene.visual.asset
         inputs = self.image_inputs(scene)
         if inputs is None:
             return None
-        h = hash_obj(inputs)
-        cached = self.store.lookup("image", h)
+        h, cached = self.cached_image(inputs)
         if cached and not self._better_available(inputs["chain"], cached.get("provider")):
             self.stats.hit("image", True)
             if not cached.get("commercial", True):
@@ -435,8 +459,10 @@ class Builder:
         out_dir = self.store.dir_for("image", h)
 
         def call(provider):
+            self._check()
             if provider.info.id == "codex_cli":
                 with _codex_lock:
+                    self._check()  # cancelado enquanto esperava a vez do Codex: não começa outra imagem
                     return provider.generate(prompt=inputs["prompt"], width=inputs["width"], height=inputs["height"],
                                              seed=inputs["seed"], out_dir=out_dir)
             return provider.generate(prompt=inputs["prompt"], width=inputs["width"], height=inputs["height"],
@@ -692,6 +718,12 @@ class Builder:
             for scene in scenes:
                 futures[img_pool.submit(self.image, scene)] = ("image", scene.id, None)
             for future in as_completed(futures):
+                # Confere antes de tudo: um item que falha não pode pular o cancelamento (senão os próximos
+                # continuam rodando e gastando cota).
+                if self.sink.cancelled():
+                    for f in futures:
+                        f.cancel()
+                    raise BuildCancelled("cancelado pelo usuário")
                 kind, ident, lang = futures[future]
                 try:
                     value = future.result()
@@ -817,7 +849,11 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     missing_images = []
     for scene in builder.doc.ordered_scenes():
         inputs = builder.image_inputs(scene)
-        if inputs and not builder.store.lookup("image", hash_obj(inputs)):
+        if inputs is None:
+            continue
+        # Imagem de teste (placeholder) é refeita quando há um gerador melhor: também entra na conta.
+        _, cached = builder.cached_image(inputs)
+        if not cached or builder._better_available(inputs["chain"], cached.get("provider")):
             missing_images.append(scene.id)
     # Só a voz local quando todos os trechos que faltam saem dela (idioma sem voz local usa a voz final).
     langs = {m["lang"] for m in missing_tts} or set(builder.langs)
