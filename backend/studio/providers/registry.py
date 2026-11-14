@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -44,6 +45,7 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _PROVIDERS: dict[str, Provider] = {}
+_usage_lock = threading.Lock()
 
 
 def _register(*providers: Provider) -> None:
@@ -135,7 +137,7 @@ def quota_exhausted_today(provider_id: str) -> bool:
 
 def record_success(provider_id: str, kind: str, units: float, unit_name: str, cost_usd: float,
                    project_id: str | None = None, job_id: str | None = None) -> None:
-    with session_scope() as s:
+    with _usage_lock, session_scope() as s:
         row = _usage_row(s, provider_id)
         row.calls += 1
         row.units += units
@@ -144,7 +146,7 @@ def record_success(provider_id: str, kind: str, units: float, unit_name: str, co
 
 
 def record_failure(provider_id: str, quota: bool = False) -> None:
-    with session_scope() as s:
+    with _usage_lock, session_scope() as s:
         row = _usage_row(s, provider_id)
         row.errors += 1
         if quota:
