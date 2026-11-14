@@ -16,6 +16,8 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--open", action="store_true", help="abre o navegador")
     serve.add_argument("--reload", action="store_true", help="recarrega ao editar o código (desenvolvimento)")
     sub.add_parser("check", help="verifica FFmpeg, Node, renderer e provedores")
+    clean = sub.add_parser("clean", help="limpa renders antigos e sobras do cache (narração e imagens ficam)")
+    clean.add_argument("--dry-run", action="store_true", help="só mostra o que seria apagado")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -30,6 +32,18 @@ def main(argv: list[str] | None = None) -> None:
         if args.open:
             webbrowser.open(f"http://{host}:{port}/")
         uvicorn.run("studio.api.app:create_app", factory=True, host=host, port=port, reload=args.reload, log_level="info")
+    elif args.command == "clean":
+        from studio.core.graph import gc
+        from studio.db import init_db
+
+        init_db()
+        report = gc.collect(dry_run=args.dry_run)
+        mb = 1024 * 1024
+        print(f"Cache: {sum(report.sizes.values()) / mb:.1f} MB")
+        for category, size in sorted(report.freed.items(), key=lambda kv: -kv[1]):
+            print(f"  {gc.CATEGORY_LABELS.get(category, category)}: {report.removed[category]} itens, {size / mb:.1f} MB")
+        verb = "seriam liberados" if args.dry_run else "liberados"
+        print(f"{sum(report.freed.values()) / mb:.1f} MB {verb}; {report.kept_in_use} artefatos em uso preservados.")
     elif args.command == "check":
         from studio.db import init_db
         from studio.media.ffmpeg import available_encoders

@@ -640,6 +640,7 @@ class Builder:
             "preview_only_providers": sorted(self.stats.noncommercial),
             "warnings": list(dict.fromkeys(self.warnings)),
             "music": self.music_used,
+            "artifacts": sorted(f"{kind}:{h}" for kind, h in self.store.touched),
         }
 
 

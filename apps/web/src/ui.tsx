@@ -101,6 +101,12 @@ export const Tabs: React.FC<{ tabs: { id: string; label: string }[]; active: str
   </div>
 );
 
+export const formatBytes = (n: number) => {
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
 export const formatSeconds = (s: number) => {
   const m = Math.floor(s / 60);
   const r = Math.round(s % 60);

@@ -96,7 +96,8 @@ Marque os idiomas no novo projeto (o primeiro é o principal). Depois do roteiro
 
 | Sintoma | O que fazer |
 |---|---|
-| Render lento | Efeitos como grão, VHS e aberração cromática custam caro. Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
+| Render lento | VHS, desfoque de bordas e aberração cromática custam caro (o grão é leve). Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
+| Disco enchendo | Configurações → *Armazenamento* → **Limpar agora** (ou `uv run videos-studio clean`). Apaga renders e mixagens sem uso; narrações, imagens e os vídeos em *outputs* ficam. |
 | "provedores de teste" na prévia | Configure o Gemini (voz e roteiro) e o Codex ou outra fonte de imagens, e gere a prévia de novo: o app troca sozinho os itens de prévia. |
 | Cota do Gemini esgotada | O app segue para o próximo provedor da cadeia e tenta o Gemini de novo no dia seguinte. |
 | Porta 8765 ocupada | Defina outra porta: `$env:VS_PORT=8766` antes de iniciar. |

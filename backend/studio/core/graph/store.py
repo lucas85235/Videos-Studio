@@ -14,6 +14,8 @@ from studio.models import Artifact
 class ArtifactStore:
     def __init__(self) -> None:
         self.settings = get_settings()
+        # (tipo, hash) de tudo o que foi lido ou gravado: vira o manifesto do build (usado na limpeza do cache).
+        self.touched: set[tuple[str, str]] = set()
 
     def dir_for(self, kind: str, input_hash: str) -> Path:
         path = self.settings.cache_dir / kind / input_hash[:2] / input_hash
@@ -35,6 +37,7 @@ class ArtifactStore:
         for rel in output.get("files", []):
             if not self.abs(rel).exists():
                 return None
+        self.touched.add((kind, input_hash))
         return output
 
     def save(self, kind: str, input_hash: str, output: dict[str, Any], provider: str | None = None, cost: float = 0.0) -> None:
@@ -48,6 +51,7 @@ class ArtifactStore:
             row.provider = provider
             row.cost_usd = cost
             row.error = None
+        self.touched.add((kind, input_hash))
 
     def fail(self, kind: str, input_hash: str, error: str) -> None:
         with session_scope() as s:

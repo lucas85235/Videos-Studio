@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
 import { api, type LibraryMusic, MOOD_LABELS, type Provider } from '../api';
-import { Badge, Button, Card, ErrorBox, Input } from '../ui';
+import { Badge, Button, Card, ErrorBox, Input, formatBytes } from '../ui';
 
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
 type Costs = { by_provider: { provider: string; kind: string; units: number; cost_usd: number; calls: number }[]; total_usd: number };
@@ -104,6 +104,75 @@ const MusicLibraryCard: React.FC = () => {
   );
 };
 
+type CacheReport = {
+  dry_run: boolean;
+  sizes: Record<string, number>;
+  total: number;
+  removed: Record<string, number>;
+  freed: Record<string, number>;
+  freed_total: number;
+  kept_in_use: number;
+  labels: Record<string, string>;
+};
+
+const KIND_SIZE_LABEL: Record<string, string> = {
+  tts: 'narrações',
+  image: 'imagens',
+  align: 'alinhamentos',
+  music: 'trilhas',
+  sfx: 'efeitos sonoros',
+  mix: 'mixagens',
+  chunk: 'blocos de render',
+  final: 'vídeos finais',
+  thumbnail: 'thumbnails',
+  bundles: 'renderer',
+  tmp: 'temporários',
+};
+
+const StorageCard: React.FC = () => {
+  const client = useQueryClient();
+  const report = useQuery({ queryKey: ['cache-report'], queryFn: () => api.get<CacheReport>('/api/maintenance/cache'), staleTime: 60_000 });
+  const clean = useMutation({
+    mutationFn: () => api.post<CacheReport>('/api/maintenance/cache/clean'),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['cache-report'] }),
+  });
+  const data = report.data;
+  const sizes = Object.entries(data?.sizes ?? {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  return (
+    <Card className="mb-6 flex flex-col gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">Armazenamento</span>
+        {data ? <Badge>{formatBytes(data.total)} no cache</Badge> : null}
+        {data?.freed_total ? <Badge tone="info">{formatBytes(data.freed_total)} podem ser liberados</Badge> : null}
+        <div className="ml-auto flex gap-2">
+          <Button className="text-xs" onClick={() => report.refetch()} busy={report.isFetching}>Recalcular</Button>
+          <Button className="text-xs" variant="primary" disabled={!data?.freed_total} busy={clean.isPending} onClick={() => clean.mutate()}>Limpar agora</Button>
+        </div>
+      </div>
+      <p className="text-xs text-zinc-400">
+        A limpeza apaga blocos de render, vídeos finais e mixagens que nenhum projeto usa mais, falhas, sobras e versões antigas do renderer. Narrações e imagens
+        nunca são apagadas (custam cota para refazer), e nada criado nas últimas 24 h é tocado. Os vídeos prontos em <i>outputs</i> ficam.
+      </p>
+      {sizes.length ? (
+        <div className="flex flex-wrap gap-1.5 text-xs">
+          {sizes.map(([k, v]) => (
+            <Badge key={k}>{KIND_SIZE_LABEL[k] ?? k}: {formatBytes(v)}</Badge>
+          ))}
+        </div>
+      ) : null}
+      {data && Object.keys(data.freed).length ? (
+        <div className="grid gap-0.5 text-xs text-zinc-500">
+          {Object.entries(data.freed).map(([k, v]) => (
+            <div key={k}>{data.labels[k] ?? k}: {data.removed[k]} itens · {formatBytes(v)}</div>
+          ))}
+        </div>
+      ) : null}
+      {clean.data ? <div className="text-xs text-emerald-400">Liberados {formatBytes(clean.data.freed_total)}.</div> : null}
+      <ErrorBox error={report.error ?? clean.error} />
+    </Card>
+  );
+};
+
 export const SettingsPage: React.FC = () => {
   const providers = useQuery({ queryKey: ['providers'], queryFn: () => api.get<Provider[]>('/api/providers') });
   const status = useQuery({ queryKey: ['status'], queryFn: () => api.get<Status>('/api/status') });
@@ -125,6 +194,7 @@ export const SettingsPage: React.FC = () => {
         </Card>
       ) : null}
       <MusicLibraryCard />
+      <StorageCard />
       {kinds.map((kind) => (
         <div key={kind} className="mb-6">
           <div className="mb-2 flex items-center gap-2">

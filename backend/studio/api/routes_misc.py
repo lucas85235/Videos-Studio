@@ -311,3 +311,25 @@ def open_library_music() -> dict[str, Any]:
         raise HTTPException(status_code=501, detail=f"abra manualmente: {root}")
     os.startfile(root)  # noqa: S606 - pasta local do próprio app
     return {"opened": str(root)}
+
+
+# --------------------------------------------------------------------------------------------
+# Manutenção: limpeza do cache
+# --------------------------------------------------------------------------------------------
+
+
+@router.get("/maintenance/cache")
+def cache_report() -> dict[str, Any]:
+    """Quanto o cache ocupa e quanto a limpeza liberaria (não apaga nada)."""
+    from studio.core.graph import gc
+
+    return gc.collect(dry_run=True).to_dict()
+
+
+@router.post("/maintenance/cache/clean")
+def cache_clean() -> dict[str, Any]:
+    from studio.core.graph import gc
+
+    if any(j["status"] in ("queued", "running") for j in list_jobs(limit=200)):
+        raise HTTPException(status_code=409, detail="há tarefas em andamento; espere terminarem para limpar o cache")
+    return gc.collect(dry_run=False).to_dict()
