@@ -8,7 +8,7 @@ import webbrowser
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="videos-studio", description="Videos Studio")
+    parser = argparse.ArgumentParser(prog="videos-studio", description="Vulto: estúdio de vídeos sem rosto")
     sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve", help="inicia a API e a interface web")
     serve.add_argument("--host", default=None)

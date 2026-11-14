@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Composições Remotion do Videos Studio e servidor de render por blocos",
+  "description": "Composições Remotion do Vulto e servidor de render por blocos",
   "main": "src/index.ts",
   "exports": {
     ".": "./src/lib.ts",

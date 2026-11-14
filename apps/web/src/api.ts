@@ -81,6 +81,7 @@ export type BuildResult = {
   preview_only_providers: string[];
   warnings?: string[];
   music?: { source: string; track: string | null; mood: string | null } | null;
+  artifacts?: string[];
 };
 
 export type LibraryTrack = { path: string; name: string; mood: string; size: number };
@@ -311,21 +312,71 @@ export class ApiError extends Error {
   }
 }
 
+/** Mensagem mostrada quando o servidor local não responde (fetch rejeitado). */
+export const NETWORK_ERROR_MESSAGE = 'Não foi possível falar com o servidor local. Ele está rodando?';
+
+type ValidationIssue = { loc?: (string | number)[]; msg?: string };
+
+/** Transforma o `detail` do FastAPI em texto legível (422 vira linhas "campo: mensagem"). */
+const formatDetail = (detail: unknown): string => {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item: ValidationIssue | string) => {
+        if (typeof item === 'string') return item;
+        const loc = (item.loc ?? []).filter((part) => part !== 'body' && part !== 'query' && part !== 'path');
+        const field = loc.length ? String(loc[loc.length - 1]) : '';
+        const msg = item.msg ?? JSON.stringify(item);
+        return field ? `${field}: ${msg}` : msg;
+      })
+      .join('\n');
+  }
+  if (detail && typeof detail === 'object') {
+    const obj = detail as Record<string, unknown>;
+    if (typeof obj.message === 'string') return obj.message;
+    if (typeof obj.detail === 'string') return obj.detail;
+  }
+  return JSON.stringify(detail);
+};
+
+/** Mensagens padrão (em inglês) do servidor HTTP traduzidas. */
+const HTTP_MESSAGES: Record<string, string> = {
+  'Not Found': 'Não encontrado no servidor. Se você atualizou o app, reinicie o servidor (scripts\\iniciar.cmd).',
+  'Method Not Allowed': 'O servidor não aceita esta ação. Reinicie o servidor se você atualizou o app.',
+  'Internal Server Error': 'Erro interno do servidor. Veja a janela do terminal para os detalhes.',
+  'Bad Gateway': NETWORK_ERROR_MESSAGE,
+  'Service Unavailable': NETWORK_ERROR_MESSAGE,
+  'Gateway Timeout': NETWORK_ERROR_MESSAGE,
+};
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(0, NETWORK_ERROR_MESSAGE);
+  }
   if (!res.ok) {
-    let detail = res.statusText;
+    let text = '';
     try {
-      const data = await res.json();
-      detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
+      text = await res.text();
+    } catch {
+      /* corpo ilegível */
+    }
+    // No modo dev, o proxy do Vite responde 5xx com corpo vazio quando o backend está fora do ar.
+    if (res.status >= 500 && !text.trim()) throw new ApiError(res.status, NETWORK_ERROR_MESSAGE);
+    let detail = res.statusText || `Erro ${res.status}`;
+    try {
+      const data = JSON.parse(text);
+      detail = formatDetail(data?.detail ?? data);
     } catch {
       /* resposta sem JSON */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, HTTP_MESSAGES[detail] ?? detail);
   }
   return (await res.json()) as T;
 }
@@ -373,4 +424,5 @@ export const JOB_LABELS: Record<string, string> = {
   preview: 'Prévia',
   render: 'Render final',
   autopilot: 'Piloto automático',
+  publish_youtube: 'Envio ao YouTube',
 };

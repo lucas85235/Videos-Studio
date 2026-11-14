@@ -1,7 +1,7 @@
 [project]
 name = "videos-studio"
 version = "0.1.0"
-description = "Backend do Videos Studio: pipeline de vídeos dark, grafo de artefatos, provedores e API."
+description = "Backend do Vulto (antes Videos Studio): pipeline de vídeos dark, grafo de artefatos, provedores e API."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

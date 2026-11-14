@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="Videos Studio", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Vulto", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -112,7 +112,7 @@ def create_app() -> FastAPI:
         if index.exists():
             return FileResponse(index)
         return HTMLResponse(
-            "<h1>Videos Studio</h1><p>A interface web ainda não foi compilada. Rode <code>npm run web:build</code> "
+            "<h1>Vulto</h1><p>A interface web ainda não foi compilada. Rode <code>npm run web:build</code> "
             "na raiz do projeto, ou use <code>npm run web:dev</code> e abra http://127.0.0.1:5173.</p>"
         )
 

@@ -2,7 +2,7 @@
   "name": "videos-studio",
   "private": true,
   "version": "0.1.0",
-  "description": "Videos Studio: estúdio de vídeos dark (renderer Remotion + interface web)",
+  "description": "Vulto: estúdio de vídeos sem rosto (renderer Remotion + interface web)",
   "workspaces": [
     "renderer",
     "apps/web"

@@ -1,4 +1,4 @@
-# Instala tudo o que o Videos Studio precisa (sem Docker).
+# Instala tudo o que o Vulto precisa (sem Docker).
 # Uso: clique com o botão direito > "Executar com o PowerShell", ou: powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

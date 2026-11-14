@@ -1,4 +1,4 @@
-# Inicia o Videos Studio (API + interface) em http://127.0.0.1:8765
+# Inicia o Vulto (API + interface) em http://127.0.0.1:8765
 param([switch]$NoBrowser, [switch]$Dev)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

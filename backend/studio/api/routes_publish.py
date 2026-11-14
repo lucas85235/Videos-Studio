@@ -40,7 +40,7 @@ def youtube_callback(code: str | None = None, state: str | None = None, error: s
     except yt.YouTubeError as exc:
         return HTMLResponse(f"<h2>Não foi possível conectar</h2><p>{exc}</p>", status_code=400)
     title = info["channel_title"] or "sem nome"
-    return HTMLResponse(f"<h2>Canal conectado: {title}</h2><p>Pode fechar esta aba e voltar ao Videos Studio.</p>")
+    return HTMLResponse(f"<h2>Canal conectado: {title}</h2><p>Pode fechar esta aba e voltar ao Vulto.</p>")
 
 
 @router.post("/youtube/disconnect")

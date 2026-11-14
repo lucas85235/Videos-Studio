@@ -1,4 +1,6 @@
-# Videos Studio: estúdio de vídeos dark para YouTube
+# Vulto: estúdio de vídeos sem rosto para YouTube
+
+*Seu canal aparece. Seu rosto, não.* (antes chamado Videos Studio; marca e sistema visual em [docs/MARCA.md](docs/MARCA.md))
 
 > Plataforma de **uso próprio** para **criar, editar por IA, publicar e gerenciar** vídeos "dark" (canais sem rosto) para **YouTube, Instagram Reels e TikTok**, em **formato longo (16:9)** e **Shorts/Reels (9:16)**, **multi-idioma**.
 

@@ -1,4 +1,4 @@
-# Guia de uso do Videos Studio
+# Guia de uso do Vulto
 
 ## 1. Instalar (uma vez)
 
@@ -58,7 +58,7 @@ O Claude da conta usa o Opus mais recente com esforço médio. Para trocar, defi
 
 ## 5. Conectar o YouTube (uma vez)
 
-1. Em https://console.cloud.google.com crie um projeto (ex.: "Videos Studio").
+1. Em https://console.cloud.google.com crie um projeto (ex.: "Vulto").
 2. Em "APIs e serviços › Biblioteca", ative a **YouTube Data API v3**.
 3. Em "Tela de permissão OAuth", escolha **Externo**, preencha o básico e **publique o app ("In production")**. Em "Testing" o acesso expira a cada 7 dias. Para uso pessoal não é preciso verificação: na hora de conectar, clique em "Avançado › Acessar" no aviso do Google.
 4. Em "Credenciais › Criar credenciais › ID do cliente OAuth", escolha **App para computador**.

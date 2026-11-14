@@ -1,34 +1,183 @@
 @import 'tailwindcss';
 
+/* Fontes servidas pelo backend em /fonts (assets/fonts do repositório). */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('/fonts/IBMPlexSans-Variable.ttf') format('truetype');
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 @font-face {
   font-family: 'Montserrat';
   src: url('/fonts/Montserrat-Variable.ttf') format('truetype');
   font-weight: 100 900;
+  font-style: normal;
   font-display: swap;
 }
 
-:root {
-  color-scheme: dark;
+/* Vulto: tokens do sistema visual (docs/MARCA.md). */
+@theme {
+  --color-canvas: #09090b;
+  --color-panel: #0f0f13;
+  --color-card: #15151a;
+  --color-raised: #1c1c22;
+  --color-line: #26262e;
+  --color-line-strong: #34343e;
+  /* Contorno de campos: >= 3:1 sobre canvas (3,62) e card (3,31), WCAG 1.4.11. */
+  --color-line-input: #686874;
+  --color-fg: #ededf2;
+  --color-muted: #a9a9b5;
+  --color-subtle: #8b8b97;
+  --color-accent: #f5a524;
+  --color-accent-strong: #ffb84d;
+  --color-on-accent: #141005;
+
+  /* Texto secundário legado das páginas: clareado para passar no contraste AA. */
+  --color-zinc-500: #8b8b97;
+  --color-zinc-600: #83838f; /* 5,31 canvas · 5,11 panel · 4,86 card · 4,53 raised */
+
+  --font-sans: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Montserrat', 'Segoe UI', system-ui, sans-serif;
+
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 12px;
+
+  --animate-indeterminate: vulto-indeterminate 1.3s ease-in-out infinite;
+  --animate-toast-in: vulto-toast-in 180ms ease-out;
+  --animate-fade-in: vulto-fade-in 150ms ease-out;
+  --animate-pulse-dot: vulto-pulse-dot 1.6s ease-in-out infinite;
+
+  @keyframes vulto-indeterminate {
+    0% {
+      transform: translateX(-110%);
+    }
+    100% {
+      transform: translateX(260%);
+    }
+  }
+  @keyframes vulto-toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes vulto-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes vulto-pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
 }
 
-html,
-body,
-#root {
-  height: 100%;
+@layer base {
+  :root {
+    color-scheme: dark;
+    accent-color: var(--color-accent);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+  }
+
+  /* Foco do teclado sempre visível, em âmbar. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* Cartão dentro de link: o contorno de foco vai no cartão, não no <a> em linha. */
+  a:has(> [data-card]):focus-visible {
+    outline: none;
+  }
+  a:focus-visible > [data-card] {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true']),
+  summary,
+  label:has(> input[type='checkbox']:not(:disabled)) {
+    cursor: pointer;
+  }
+
+  ::selection {
+    background: rgb(245 165 36 / 0.35);
+    color: var(--color-fg);
+  }
+
+  /* Rótulos de campos ficam apagados quando o fieldset está desabilitado. */
+  fieldset:disabled [data-field-label] {
+    color: var(--color-subtle);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #44444f;
+  }
 }
 
-body {
-  margin: 0;
-  background: #0b0c10;
-  color: #e4e4e7;
-  font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif;
-}
-
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 8px;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -1,6 +1,13 @@
-import React, { Suspense, lazy } from 'react';
-import { NavLink, Route, Routes } from 'react-router-dom';
-import { Spinner } from './ui';
+import { ArrowLeft, Menu, SearchX } from 'lucide-react';
+import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Link, Route, Routes, useLocation } from 'react-router-dom';
+import { JOB_LABELS } from './api';
+import { VultoLogo } from './brand';
+import { useCurrentPageTitle } from './documentTitle';
+import { ConnectionBanner } from './shell/ConnectionBanner';
+import { isActiveJob, isBoolean, readLocal, useJobs, writeLocal } from './shell/data';
+import { Sidebar } from './shell/Sidebar';
+import { Empty, ErrorBox, IconButton, Loading, buttonClass } from './ui';
 import { useBackendEvents } from './useEvents';
 
 // Cada página vira um pedaço separado do bundle (o Player do Remotion só carrega na prévia).
@@ -13,61 +20,204 @@ const ChannelsPage = lazy(() => import('./pages/Channels').then((m) => ({ defaul
 const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
 const AgendaPage = lazy(() => import('./pages/Agenda').then((m) => ({ default: m.AgendaPage })));
 
-const PageLoading: React.FC = () => (
-  <div className="flex items-center gap-2 p-6 text-sm text-zinc-500">
-    <Spinner /> carregando…
+const COLLAPSED_KEY = 'vulto.barraRecolhida';
+
+const PageLoading: React.FC = () => <Loading label="Carregando página…" className="px-4 py-6 sm:px-6 lg:px-8" />;
+
+const NotFound: React.FC = () => (
+  <div className="mx-auto max-w-[960px] px-4 py-10 sm:px-6 lg:px-8">
+    <Empty
+      icon={SearchX}
+      title="Página não encontrada"
+      action={
+        <Link to="/" className={buttonClass({ variant: 'primary' })}>
+          <ArrowLeft size={16} aria-hidden="true" />
+          Voltar aos projetos
+        </Link>
+      }
+    >
+      O endereço não existe ou o item foi apagado.
+    </Empty>
   </div>
 );
 
-const NavItem: React.FC<{ to: string; label: string; icon: string }> = ({ to, label, icon }) => (
-  <NavLink
-    to={to}
-    end={to === '/'}
-    className={({ isActive }) =>
-      `flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${isActive ? 'bg-zinc-800 text-zinc-50' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`
+/** Mostra um erro (ex.: falha ao baixar uma página) sem derrubar a casca. Volta ao normal ao trocar de rota. */
+class RouteErrorBoundary extends React.Component<{ resetKey: string; children: React.ReactNode }, { error: unknown; key: string }> {
+  state = { error: null as unknown, key: this.props.resetKey };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error };
+  }
+
+  static getDerivedStateFromProps(props: { resetKey: string }, state: { error: unknown; key: string }) {
+    return props.resetKey !== state.key ? { error: null, key: props.resetKey } : null;
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="mx-auto max-w-[960px] px-4 py-6 sm:px-6 lg:px-8">
+          <ErrorBox error={this.state.error} title="Não foi possível abrir esta página" onRetry={() => window.location.reload()} />
+        </div>
+      );
     }
-  >
-    <span className="w-4 text-center">{icon}</span>
-    {label}
-  </NavLink>
-);
+    return this.props.children;
+  }
+}
+
+/** Um erro na barra lateral não derruba o conteúdo: a barra some e o resto continua. */
+class SidebarBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+/** Título da aba: progresso do job em andamento, senão o título da página. */
+const useDocumentTitle = () => {
+  const jobs = useJobs();
+  const pageTitle = useCurrentPageTitle();
+  const running = (jobs.data ?? []).filter(isActiveJob).sort((a, b) => (a.status === b.status ? 0 : a.status === 'running' ? -1 : 1))[0];
+  const title = running
+    ? `(${Math.round(running.progress * 100)}%) ${JOB_LABELS[running.kind] ?? 'Tarefa'} · Vulto`
+    : pageTitle
+      ? `${pageTitle} · Vulto`
+      : 'Vulto';
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
+};
+
+/** Folha que assina os jobs: os tiques de progresso re-renderizam só ela, não o App e a página aberta. */
+const DocumentTitle: React.FC = () => {
+  useDocumentTitle();
+  return null;
+};
 
 export const App: React.FC = () => {
   useBackendEvents();
+  const { pathname } = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    readLocal<boolean>(COLLAPSED_KEY, typeof window !== 'undefined' && window.innerWidth < 1024, isBoolean),
+  );
+  const toggleCollapsed = () =>
+    setCollapsed((c) => {
+      writeLocal(COLLAPSED_KEY, !c);
+      return !c;
+    });
+
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    window.setTimeout(() => menuButton.current?.focus(), 0);
+  }, []);
+
+  // Rolagem volta ao topo ao trocar de rota (não ao trocar só a query string). Comparar com o caminho anterior
+  // é idempotente no StrictMode, e o layout effect rola antes de pintar a nova rota.
+  const prevPath = useRef(pathname);
+  useLayoutEffect(() => {
+    if (prevPath.current === pathname) return;
+    prevPath.current = pathname;
+    mainRef.current?.scrollTo({ top: 0 });
+    // Depois de navegar pela barra lateral, o teclado passa a rolar o conteúdo.
+    const active = document.activeElement;
+    if (!active || active === document.body || active.closest('aside, [data-drawer]')) mainRef.current?.focus({ preventScroll: true });
+    setDrawerOpen(false);
+  }, [pathname]);
+
+  // Link da gaveta: fecha e, se a rota não mudou (link da página atual), o foco não fica perdido no <body>.
+  const onDrawerNavigate = useCallback(() => {
+    setDrawerOpen(false);
+    window.setTimeout(() => {
+      if (!document.activeElement || document.activeElement === document.body) mainRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }, []);
+
+  // Gaveta: Esc fecha e o foco começa dentro dela.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    drawerRef.current?.querySelector<HTMLElement>('a, button')?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeDrawer();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawerOpen, closeDrawer]);
+
   return (
-    <div className="flex h-full">
-      <aside className="flex w-56 shrink-0 flex-col gap-1 border-r border-zinc-900 bg-zinc-950 p-3">
-        <div className="mb-4 flex items-center gap-2 px-2 pt-1">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-amber-400">▶</div>
-          <div>
-            <div className="text-sm font-bold text-zinc-100">Videos Studio</div>
-            <div className="text-[11px] text-zinc-500">estúdio de vídeos dark</div>
+    <div className="flex h-full overflow-hidden bg-canvas text-fg">
+      <DocumentTitle />
+      <a
+        href="#conteudo"
+        inert={drawerOpen || undefined}
+        className="fixed left-3 top-3 z-[90] -translate-y-24 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent transition-transform focus:translate-y-0"
+      >
+        Pular para o conteúdo
+      </a>
+
+      <aside className={`hidden shrink-0 transition-[width] duration-200 md:block ${collapsed ? 'w-16' : 'w-64'}`} aria-label="Barra lateral">
+        <SidebarBoundary>
+          <Sidebar collapsed={collapsed} mode="desktop" onToggleCollapsed={toggleCollapsed} />
+        </SidebarBoundary>
+      </aside>
+
+      {drawerOpen ? (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Menu" data-drawer="">
+          <div className="absolute inset-0 animate-fade-in bg-black/60" onClick={closeDrawer} aria-hidden="true" />
+          <div ref={drawerRef} id="menu-gaveta" className="absolute inset-y-0 left-0 w-72 max-w-[85vw] shadow-2xl shadow-black/60">
+            <SidebarBoundary>
+              <Sidebar collapsed={false} mode="drawer" onClose={closeDrawer} onNavigate={onDrawerNavigate} />
+            </SidebarBoundary>
           </div>
         </div>
-        <NavItem to="/" label="Projetos" icon="◧" />
-        <NavItem to="/novo" label="Novo projeto" icon="+" />
-        <NavItem to="/agenda" label="Agenda" icon="◷" />
-        <NavItem to="/estilos" label="Estilos" icon="✦" />
-        <NavItem to="/canais" label="Canais" icon="◉" />
-        <NavItem to="/configuracoes" label="Configurações" icon="⚙" />
-        <div className="mt-auto px-2 text-[11px] leading-relaxed text-zinc-600">
-          Uso pessoal. Revise cada vídeo antes de publicar: o YouTube desmonetiza conteúdo repetitivo.
-        </div>
-      </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <Suspense fallback={<PageLoading />}>
-          <Routes>
-            <Route path="/" element={<ProjectsPage />} />
-            <Route path="/novo" element={<NewProjectPage />} />
-            <Route path="/projetos/:projectId" element={<ProjectPage />} />
-            <Route path="/estilos" element={<StylesPage />} />
-            <Route path="/estilos/:styleId" element={<StyleEditorPage />} />
-            <Route path="/agenda" element={<AgendaPage />} />
-            <Route path="/canais" element={<ChannelsPage />} />
-            <Route path="/configuracoes" element={<SettingsPage />} />
-          </Routes>
-        </Suspense>
-      </main>
+      ) : null}
+
+      {/* Com a gaveta aberta, o resto fica inerte: o Tab não navega atrás do fundo escuro. */}
+      <div className="flex min-w-0 flex-1 flex-col" inert={drawerOpen || undefined}>
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-panel px-3 md:hidden">
+          <IconButton
+            ref={menuButton}
+            label="Abrir menu"
+            icon={Menu}
+            aria-expanded={drawerOpen}
+            aria-controls="menu-gaveta"
+            onClick={() => setDrawerOpen(true)}
+          />
+          <Link to="/" className="flex items-center gap-2 rounded-lg p-1">
+            <VultoLogo collapsed />
+            <span aria-hidden="true" className="font-display text-[15px] font-extrabold tracking-[0.14em] text-fg">
+              VULTO
+            </span>
+          </Link>
+        </header>
+        <ConnectionBanner />
+        <main id="conteudo" ref={mainRef} tabIndex={-1} className="@container min-w-0 flex-1 scroll-pt-32 overflow-y-auto focus:outline-none">
+          <RouteErrorBoundary resetKey={pathname}>
+            <Suspense fallback={<PageLoading />}>
+              <Routes>
+                <Route path="/" element={<ProjectsPage />} />
+                <Route path="/novo" element={<NewProjectPage />} />
+                <Route path="/projetos/:projectId" element={<ProjectPage />} />
+                <Route path="/estilos" element={<StylesPage />} />
+                <Route path="/estilos/:styleId" element={<StyleEditorPage />} />
+                <Route path="/agenda" element={<AgendaPage />} />
+                <Route path="/canais" element={<ChannelsPage />} />
+                <Route path="/configuracoes" element={<SettingsPage />} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
+          </RouteErrorBoundary>
+        </main>
+      </div>
     </div>
   );
 };

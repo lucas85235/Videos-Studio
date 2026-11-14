@@ -1,4 +1,4 @@
-"""Configuração do Videos Studio (variáveis de ambiente com prefixo VS_)."""
+"""Configuração do Vulto (variáveis de ambiente com prefixo VS_)."""
 
 from __future__ import annotations
 
