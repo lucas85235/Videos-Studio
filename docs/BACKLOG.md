@@ -49,6 +49,6 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 
 ## Técnico
 
-- [ ] Migrações com Alembic (hoje o schema é criado com `create_all`).
+- [ ] Migrações completas (renomear/apagar colunas) com Alembic. Colunas novas já são criadas sozinhas ao iniciar (`add_missing_columns`).
 - [ ] Limpeza do cache: opção de também apagar narrações e imagens de versões antigas (hoje elas nunca são apagadas) e limpeza automática por limite de espaço.
 - [ ] Testes de interface (Playwright) e CI.
