@@ -309,6 +309,7 @@ class MusicCue(BaseModel):
     volume_db: float | None = None
     enabled: bool = True
     track: str | None = None  # faixa fixada da biblioteca do usuário (caminho relativo em library/music)
+    loop: bool = False  # "só a batida, em loop no compasso": toca só o trecho curado da faixa da biblioteca
 
 
 class Metadata(BaseModel):

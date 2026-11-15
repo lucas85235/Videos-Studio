@@ -43,6 +43,40 @@ CLAUDE_CODE_MODEL = "opus"  # apelido do Claude Code para o Opus mais recente
 # Variáveis que fariam o Claude Code cobrar pela API em vez de usar o plano da conta.
 _API_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 _AUTH_TTL_S = 300.0
+# Tarefas que podem buscar na web (checagem de fatos, ADR 0003 bloco F). As outras rodam sem nenhuma ferramenta.
+WEB_TASKS = frozenset({"factcheck"})
+WEB_TIMEOUT_S = 1800  # a busca e a leitura das páginas levam bem mais que a escrita
+
+
+def web_tools_enabled() -> bool:
+    """Busca web na checagem ligada (padrão). `VS_FACTCHECK_WEB=0` desliga."""
+    return os.environ.get("VS_FACTCHECK_WEB", "1").strip() != "0"
+
+
+def web_search_status() -> tuple[bool, str]:
+    """A checagem de fatos terá busca web? Só quando o 1º LLM disponível da cadeia é o Claude Code."""
+    from studio.providers import registry  # aqui: o registro importa este módulo
+
+    if not web_tools_enabled():
+        return False, "busca web desligada (VS_FACTCHECK_WEB=0)"
+    reasons: list[str] = []
+    for provider_id in registry.resolve_chain("llm", None):
+        try:
+            ok, reason = registry.get(provider_id).availability()
+        except Exception as exc:  # noqa: BLE001 - só informa
+            ok, reason = False, str(exc)
+        if ok and registry.quota_exhausted_today(provider_id):  # o run_chain pula esse provedor
+            ok, reason = False, f"{provider_id}: limite do dia atingido"
+        if ok:
+            if provider_id == "claude_code":
+                return True, "Claude Code com WebSearch e WebFetch"
+            return False, f"o LLM em uso ({provider_id}) não busca na web"
+        reasons.append(reason)
+    return False, "nenhum LLM disponível" + (f": {reasons[0]}" if reasons else "")
+
+
+def web_search_available() -> bool:
+    return web_search_status()[0]
 
 
 def _limit_message(text: str) -> bool:
@@ -142,20 +176,37 @@ class ClaudeCodeLLM(LLMProvider):
         with tempfile.TemporaryDirectory(prefix="vs-claude-") as workdir:
             system_file = Path(workdir) / "system.txt"
             system_file.write_text(system, encoding="utf-8")
-            cmd = [
-                claude, "-p", "--output-format", "json",
-                "--json-schema", json.dumps(schema, ensure_ascii=False),
-                "--tools", "", "--no-session-persistence", "--safe-mode",
-                "--model", self.model, "--effort", self.effort,
-                "--system-prompt-file", str(system_file),
-            ]
+            cmd = [claude, *self._command(task, schema, system_file)]
+            timeout = self._timeout(task)
             try:
-                proc = run_tree(cmd, input=prompt, cwd=workdir, env=self._env(), timeout=self.timeout_s)
+                proc = run_tree(cmd, input=prompt, cwd=workdir, env=self._env(), timeout=timeout)
             except subprocess.TimeoutExpired as exc:
-                raise TransientError(f"o Claude demorou mais de {self.timeout_s // 60} min na tarefa '{task}'") from exc
+                raise TransientError(f"o Claude demorou mais de {timeout // 60} min na tarefa '{task}'") from exc
             except OSError as exc:
                 raise TransientError(f"não consegui iniciar o Claude Code: {exc}") from exc
         return self._parse(task, proc.stdout or "", proc.stderr or "", proc.returncode)
+
+    @staticmethod
+    def _web(task: str) -> bool:
+        return task in WEB_TASKS and web_tools_enabled()
+
+    def _timeout(self, task: str) -> int:
+        return max(self.timeout_s, WEB_TIMEOUT_S) if self._web(task) else self.timeout_s
+
+    def _command(self, task: str, schema: dict[str, Any], system_file: Path) -> list[str]:
+        """Argumentos do `claude` (sem o executável). Só as tarefas de `WEB_TASKS` ganham WebSearch e WebFetch,
+        liberadas também em `--allowedTools` (sem isso o `-p` para pedindo permissão); o resto roda sem ferramentas."""
+        tools = (
+            ["--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch"] if self._web(task)
+            else ["--tools", ""]
+        )
+        return [
+            "-p", "--output-format", "json",
+            "--json-schema", json.dumps(schema, ensure_ascii=False),
+            *tools, "--no-session-persistence", "--safe-mode",
+            "--model", self.model, "--effort", self.effort,
+            "--system-prompt-file", str(system_file),
+        ]
 
     def _parse(self, task: str, stdout: str, stderr: str, returncode: int) -> LLMResult:
         try:

@@ -19,6 +19,14 @@ const StyleEditorPage = lazy(() => import('./pages/StyleEditor').then((m) => ({ 
 const ChannelsPage = lazy(() => import('./pages/Channels').then((m) => ({ default: m.ChannelsPage })));
 const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
 const AgendaPage = lazy(() => import('./pages/Agenda').then((m) => ({ default: m.AgendaPage })));
+// Gestão de canal (ADR 0002)
+const TodayPage = lazy(() => import('./pages/Today').then((m) => ({ default: m.TodayPage })));
+const IdeasPage = lazy(() => import('./pages/Ideas').then((m) => ({ default: m.IdeasPage })));
+const AnalyticsPage = lazy(() => import('./pages/Analytics').then((m) => ({ default: m.AnalyticsPage })));
+const MoneyPage = lazy(() => import('./pages/Money').then((m) => ({ default: m.MoneyPage })));
+// Qualidade e pesquisa (ADR 0003)
+const RadarPage = lazy(() => import('./pages/Radar').then((m) => ({ default: m.RadarPage })));
+const ReferencesPage = lazy(() => import('./pages/References').then((m) => ({ default: m.ReferencesPage })));
 
 const COLLAPSED_KEY = 'vulto.barraRecolhida';
 
@@ -211,6 +219,12 @@ export const App: React.FC = () => {
                 <Route path="/estilos" element={<StylesPage />} />
                 <Route path="/estilos/:styleId" element={<StyleEditorPage />} />
                 <Route path="/agenda" element={<AgendaPage />} />
+                <Route path="/hoje" element={<TodayPage />} />
+                <Route path="/ideias" element={<IdeasPage />} />
+                <Route path="/desempenho" element={<AnalyticsPage />} />
+                <Route path="/dinheiro" element={<MoneyPage />} />
+                <Route path="/radar" element={<RadarPage />} />
+                <Route path="/referencias" element={<ReferencesPage />} />
                 <Route path="/canais" element={<ChannelsPage />} />
                 <Route path="/configuracoes" element={<SettingsPage />} />
                 <Route path="*" element={<NotFound />} />

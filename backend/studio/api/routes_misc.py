@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -137,6 +137,16 @@ class ChannelBody(BaseModel):
     default_style_id: str | None = None
     style_bible: dict[str, Any] = {}
     posting: dict[str, Any] | None = None  # {"timezone": ..., "slots": [{"weekdays": [...], "time": "HH:MM"}]}
+    # Gestão do canal (ADR 0002)
+    audience: str = ""
+    cadence: str = ""
+    posts_per_day: int = Field(default=0, ge=0, le=20)
+    min_stock: int = Field(default=0, ge=0, le=50)
+    stock_format: Literal["short", "long", "any"] = "short"
+    short_hashtag: str = Field(default="", max_length=60, pattern=r"^(#\S+)?$")
+    credits_per_char: float = Field(default=0.0, ge=0)
+    credit_price_usd: float = Field(default=0.0, ge=0)
+    voice_defaults: dict[str, Any] = {}  # {"final": {"provider": ..., "voice": ...}}
 
 
 def _channel_dict(row: Channel) -> dict[str, Any]:
@@ -153,6 +163,15 @@ def _channel_dict(row: Channel) -> dict[str, Any]:
         "style_bible": row.style_bible,
         "posting": plan_of(row.settings).model_dump(),
         "youtube": public_info(row.settings),  # canal do YouTube ligado (None se não houver)
+        "audience": row.audience or "",
+        "cadence": row.cadence or "",
+        "posts_per_day": row.posts_per_day or 0,
+        "min_stock": row.min_stock or 0,
+        "stock_format": row.stock_format or "short",
+        "short_hashtag": row.short_hashtag or "",
+        "credits_per_char": row.credits_per_char or 0.0,
+        "credit_price_usd": row.credit_price_usd or 0.0,
+        "voice_defaults": row.voice_defaults or {},
     }
 
 

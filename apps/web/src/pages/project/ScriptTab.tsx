@@ -12,6 +12,7 @@ import {
   LockOpen,
   RotateCcw,
   Save,
+  ShieldAlert,
   Trash2,
   TriangleAlert,
   Wand2,
@@ -36,6 +37,8 @@ import {
   useConfirm,
 } from '../../ui';
 import { approveKey, useApproving, useJobStarting, useStartJob } from '../ProjectPage';
+import { useFactCheck } from './script/factcheck';
+import { FactCheckPanel } from './script/FactCheckPanel';
 import {
   fieldDrafts,
   isOrphanScriptDraft,
@@ -172,7 +175,9 @@ const SegmentCard: React.FC<{
   onLock: () => void;
   lockBusy: boolean;
   lockBlocked: string | null;
-}> = ({ seg, index, lang, primary, draft, hasAnyDraft, seconds, hookMax, readOnly, onDraft, onUseServer, onKeepMine, onLock, lockBusy, lockBlocked }) => {
+  /** Afirmações abertas da checagem de fatos neste trecho. */
+  factOpen?: number;
+}> = ({ seg, index, lang, primary, draft, hasAnyDraft, seconds, hookMax, readOnly, onDraft, onUseServer, onKeepMine, onLock, lockBusy, lockBlocked, factOpen = 0 }) => {
   const server = seg.text[lang] ?? '';
   const value = draft?.value ?? server;
   const conflict = draft && draft.base !== server;
@@ -196,6 +201,11 @@ const SegmentCard: React.FC<{
         {longHook ? (
           <Badge tone="warn" icon={TriangleAlert} title={`O estilo pede um gancho de até ${formatDuration(hookMax ?? 0)}`}>
             Gancho longo
+          </Badge>
+        ) : null}
+        {factOpen ? (
+          <Badge tone="warn" icon={ShieldAlert} title="Afirmações da checagem de fatos ainda abertas neste trecho (veja o painel Checagem de fatos)">
+            {factOpen === 1 ? '1 fato a resolver' : `${factOpen} fatos a resolver`}
           </Badge>
         ) : null}
         {seg.locked ? <Badge icon={Lock}>Travado</Badge> : null}
@@ -312,7 +322,9 @@ const OrphanDrafts: React.FC<{ projectId: string; entries: [string, Draft][]; mu
 
 type JobOrigin = 'empty' | 'strip' | 'more';
 
-export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabNavigation> = ({ detail, busy }) => {
+export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabNavigation> = ({ detail, busy: pageBusy }) => {
+  // A checagem de fatos não regrava o documento (pode levar até 30 min com busca web): não trava o roteiro.
+  const busy = pageBusy && detail.jobs.some((j) => isActive(j) && j.kind !== 'factcheck');
   const { doc, style } = detail;
   const client = useQueryClient();
   const confirm = useConfirm();
@@ -322,6 +334,8 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   const [origin, setOrigin] = useState<JobOrigin | null>(null);
   const [langState, setLang] = useState(doc.primary_language);
   const lang = doc.languages.includes(langState) ? langState : doc.primary_language;
+  // Mesma consulta do painel de checagem: os selos dos trechos mostram as afirmações ainda abertas.
+  const factOpen = useFactCheck(doc.id, lang, detail.project.current_version).data?.summary.open_by_segment ?? {};
   const drafts = useKeyedStore(scriptDrafts, doc.id);
   const promptBucket = useKeyedStore(promptDrafts, doc.id);
   const promptCount = Object.keys(promptBucket).length;
@@ -716,6 +730,7 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
               onLock={() => lock.mutate({ id: seg.id, locked: !seg.locked })}
               lockBusy={lock.isPending && lock.variables?.id === seg.id}
               lockBlocked={lock.isPending && lock.variables?.id === seg.id ? null : lockBlocked}
+              factOpen={factOpen[seg.id] ?? 0}
             />
           );
         })}
@@ -824,6 +839,8 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
           <p className="text-[13px] text-subtle">{busy ? BUSY_REASON : 'Estas ações usam o Claude.'}</p>
           <ErrorBox error={jobError('more')} title="Não foi possível iniciar" />
         </Section>
+
+        <FactCheckPanel detail={detail} lang={lang} busy={busy} />
 
         {doc.sources.length ? (
           <Section title="Fontes">

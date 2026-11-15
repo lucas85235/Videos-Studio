@@ -1,0 +1,252 @@
+"""Prova na tela: captura a página com os trechos marcados e põe a imagem (já marcada e recortada) na cena.
+
+Origem: `shot_helper.shoot` + `shot_views.main` do canais. A prova vira uma `MediaRef` comum (o renderer não muda),
+anexada pelo mesmo caminho da rota de mídia (`media_edit.attach_media` + `service.commit`).
+Arquivos: `uploads/<projeto>/captures/<id>.png` (página) e `.txt` (texto da página, para a checagem literal).
+"""
+
+from __future__ import annotations
+
+import io
+import threading
+from collections.abc import Callable, Sequence
+from typing import Any
+
+from PIL import Image
+
+from studio.config import get_settings
+from studio.core.project import media_edit, service
+from studio.core.project.document import MediaRef
+from studio.core.styles.library import get_style
+from studio.db import session_scope
+from studio.ids import new_id
+from studio.media import page_capture, real_media
+from studio.media.page_capture import CaptureError, OpenPage
+from studio.models import PageCapture
+
+_LOCK = threading.Lock()  # rebake e captura gravam o mesmo documento e a mesma linha
+
+
+class ProofError(ValueError):
+    """Prova recusada (cena travada, sem trecho, captura não encontrada): mensagem em português."""
+
+
+def capture_dict(row: PageCapture) -> dict[str, Any]:
+    return {
+        "id": row.id, "project_id": row.project_id, "scene_id": row.scene_id, "url": row.url, "domain": row.domain,
+        "title": row.title, "image": row.image, "proof": row.proof, "width": row.width, "height": row.height,
+        "dark": bool(row.dark), "phrases": row.phrases or [], "text_path": row.text_path, "status": row.status,
+        "error": row.error, "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _aspect(project_id: str) -> float:
+    doc = service.get_doc(project_id)
+    fmt = get_style(doc.style_id, doc.style_overrides).format
+    return fmt.width / fmt.height if fmt.height else 16 / 9
+
+
+def _focus_index(phrases: list[dict[str, Any]]) -> int | None:
+    """O trecho que manda no recorte: o marcado como foco, se tiver janela; senão o primeiro com janela."""
+    marked = next((i for i, p in enumerate(phrases) if p.get("focus") and p.get("view")), None)
+    if marked is not None:
+        return marked
+    return next((i for i, p in enumerate(phrases) if p.get("view")), None)
+
+
+def compute_views(img: Image.Image, phrases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Janela de cada trecho visível (como `shot_views.main`); trecho travado mantém a janela ajustada à mão."""
+    W, H = img.size
+    mask = page_capture.ink_mask(img)
+    out = []
+    for ph in phrases:
+        ph = dict(ph)
+        rects = ph.get("rects") or []
+        if ph.get("lock") and ph.get("view"):
+            out.append(ph)
+            continue
+        ph["view"] = page_capture.view_for(mask, rects, W, H) if page_capture.visible(rects) else None
+        out.append(ph)
+    return out
+
+
+def bake(img: Image.Image, phrases: list[dict[str, Any]], dark: bool, aspect: float) -> Image.Image:
+    """A prova: todos os trechos visíveis marcados e o recorte em volta do trecho de foco (página inteira sem
+    nenhum trecho visível)."""
+    rects = [r for ph in phrases if page_capture.visible(ph.get("rects")) for r in ph["rects"]]
+    marked = page_capture.mark(img, rects, dark)
+    focus = _focus_index(phrases)
+    view = phrases[focus]["view"] if focus is not None else [0.0, 0.0, 1.0, 1.0]
+    return page_capture.crop_to_view(marked, view, aspect)
+
+
+def _store(img: Image.Image, project_id: str) -> real_media.StoredImage:
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return real_media.store_image(buf.getvalue(), project_id)
+
+
+def _attach(project_id: str, scene_id: str, media: MediaRef, message: str) -> int:
+    """Mesmo caminho da rota de mídia: documento lido de novo, `attach_media` e `commit`."""
+    doc = service.get_doc(project_id)
+    try:
+        new_doc = media_edit.attach_media(doc, scene_id, media)
+    except Exception as exc:  # OpError: cena travada ou sumiu
+        raise ProofError(str(exc)) from exc
+    return service.commit(project_id, new_doc, f"{media_edit.scene_label(new_doc, scene_id)}: {message}")
+
+
+def _media(stored: real_media.StoredImage, url: str, title: str, domain: str) -> MediaRef:
+    return MediaRef(kind="official", source="link", asset=stored.rel, url="", page_url=url, title=title,
+                    outlet=domain, credit=domain, editorial=False, width=stored.width, height=stored.height)
+
+
+def _record_failure(project_id: str, scene_id: str, url: str, texts: list[str], focus: int, exc: Exception) -> None:
+    """Grava a `PageCapture` com `status="falhou"` e a mensagem, para o painel não mostrar a captura anterior como
+    se fosse a atual. Uma falha aqui não esconde o erro original."""
+    message = str(exc) if isinstance(exc, CaptureError) else f"A captura falhou: {exc}"
+    try:
+        with session_scope() as s:
+            s.add(PageCapture(id=new_id("cap"), project_id=project_id, scene_id=scene_id, url=url,
+                              domain=page_capture.domain_of(url), title="", image="", proof="", width=0, height=0,
+                              dark=False, status="falhou", error=message[:2000],
+                              phrases=[{"text": t, "rects": [], "found": False, "view": None, "lock": False,
+                                        "focus": i == focus} for i, t in enumerate(texts)]))
+    except Exception:  # noqa: BLE001 - o erro que importa é o da captura
+        pass
+
+
+def capture_proof(project_id: str, scene_id: str, url: str, phrases: Sequence[str], focus: int = 0, *,
+                  open_page: OpenPage | None = None,
+                  progress: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+    """Captura, marca, recorta, anexa à cena e grava a `PageCapture`. `status="parcial"` quando um trecho não foi
+    achado ou ficou fora da tela."""
+    say = progress or (lambda f, m: None)
+    texts = [" ".join(p.split()) for p in phrases if p and p.strip()]
+    if not 1 <= len(texts) <= page_capture.MAX_PHRASES:
+        raise ProofError(f"Escreva de 1 a {page_capture.MAX_PHRASES} trechos, um por linha.")
+    doc = service.get_doc(project_id)
+    try:
+        scene = doc.scene(scene_id)
+    except KeyError as exc:
+        raise ProofError("Cena não encontrada.") from exc
+    if scene.locked:
+        raise ProofError("A cena está travada: destrave para mudar a mídia real.")
+    focus = focus if 0 <= focus < len(texts) else 0
+    say(0.05, "Abrindo a página")
+    try:
+        shot = page_capture.capture(url, texts, focus, open_page=open_page)
+    except Exception as exc:
+        _record_failure(project_id, scene_id, url, texts, focus, exc)
+        raise
+    say(0.6, "Marcando os trechos")
+    cap_id = new_id("cap")
+    data_dir = get_settings().data_dir
+    folder = data_dir / "uploads" / project_id / "captures"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{cap_id}.png").write_bytes(shot.png)
+    (folder / f"{cap_id}.txt").write_text(shot.text, encoding="utf-8")
+    with Image.open(io.BytesIO(shot.png)) as im:
+        img = im.convert("RGB")
+    dark = page_capture.is_dark(img)
+    raw = [{"text": t, "rects": shot.rects[i] or [], "found": bool(shot.found[i]) or bool(shot.rects[i]),
+            "view": None, "lock": False, "focus": i == focus} for i, t in enumerate(texts)]
+    phrases_out = compute_views(img, raw)
+    partial = any(not p.get("view") for p in phrases_out)
+    proof = bake(img, phrases_out, dark, _aspect(project_id))
+    say(0.8, "Guardando a prova")
+    with _LOCK:
+        stored = _store(proof, project_id)
+        media = _media(stored, shot.url, shot.title, shot.domain)
+        version = _attach(project_id, scene_id, media, f"prova na tela anexada ({shot.domain})")
+        with session_scope() as s:
+            row = PageCapture(id=cap_id, project_id=project_id, scene_id=scene_id, url=shot.url, domain=shot.domain,
+                              title=shot.title, image=f"uploads/{project_id}/captures/{cap_id}.png", proof=stored.rel,
+                              width=img.width, height=img.height, dark=dark, phrases=phrases_out,
+                              text_path=f"uploads/{project_id}/captures/{cap_id}.txt",
+                              status="parcial" if partial else "ok",
+                              error="Trecho não achado ou fora da tela: confira o texto ou ajuste o enquadramento."
+                              if partial else None)
+            s.add(row)
+            s.flush()
+            out = capture_dict(row)
+    say(1.0, "Prova pronta")
+    return {**out, "version": version, "warnings": stored.warnings}
+
+
+def get_capture(capture_id: str) -> dict[str, Any] | None:
+    with session_scope() as s:
+        row = s.get(PageCapture, capture_id)
+        return capture_dict(row) if row else None
+
+
+def list_captures(project_id: str) -> list[dict[str, Any]]:
+    with session_scope() as s:
+        rows = (s.query(PageCapture).filter_by(project_id=project_id)
+                .order_by(PageCapture.created_at.desc()).all())
+        return [capture_dict(r) for r in rows]
+
+
+def _clean_view(view: Sequence[float]) -> list[float]:
+    if len(view) != 4:
+        raise ProofError("A janela precisa de 4 números (x0, y0, x1, y1).")
+    x0, y0, x1, y1 = (min(1.0, max(0.0, float(v))) for v in view)
+    if x1 - x0 < 0.05 or y1 - y0 < 0.05:
+        raise ProofError("A janela ficou pequena demais.")
+    return [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
+
+
+def rebake(capture_id: str, i: int, view: Sequence[float] | None, lock: bool) -> dict[str, Any]:
+    """Ajuste à mão: a janela do trecho `i` (None = automática de novo), `lock` preserva a janela, e o trecho passa a
+    mandar no recorte. Refaz a prova e troca a imagem na cena quando ela ainda mostra esta captura."""
+    with _LOCK:
+        with session_scope() as s:
+            row = s.get(PageCapture, capture_id)
+            if row is None:
+                raise LookupError(capture_id)
+            data = capture_dict(row)
+        phrases = [dict(p) for p in data["phrases"]]
+        if not 0 <= i < len(phrases):
+            raise ProofError("Trecho não encontrado.")
+        path = get_settings().data_dir / data["image"]
+        if not path.is_file():
+            raise ProofError("A imagem da página sumiu: capture de novo.")
+        with Image.open(path) as im:
+            img = im.convert("RGB")
+        for k, ph in enumerate(phrases):
+            ph["focus"] = k == i
+        if view is not None:
+            phrases[i]["view"] = _clean_view(view)
+            phrases[i]["lock"] = bool(lock)
+        else:
+            phrases[i]["lock"] = False
+            phrases = compute_views(img, phrases)
+        if not phrases[i].get("view"):
+            raise ProofError("Este trecho não aparece na captura: ajuste a janela à mão.")
+        project_id = data["project_id"]
+        aspect = _aspect(project_id) if project_id else 16 / 9
+        proof = bake(img, phrases, bool(data["dark"]), aspect)
+        stored = _store(proof, project_id) if project_id else None
+        if project_id and data["scene_id"] and stored is not None:
+            doc = service.get_doc(project_id)
+            try:
+                current = doc.scene(data["scene_id"]).visual.media
+            except KeyError:
+                current = None
+            if current is not None and current.asset == data["proof"] and current.asset != stored.rel:
+                media = current.model_copy(update={"asset": stored.rel, "width": stored.width, "height": stored.height})
+                _attach(project_id, data["scene_id"], media, "enquadramento da prova ajustado")
+        with session_scope() as s:
+            row = s.get(PageCapture, capture_id)
+            assert row is not None
+            row.phrases = phrases
+            if stored is not None:
+                row.proof = stored.rel
+            missing = any(not p.get("view") for p in phrases)
+            row.status = "parcial" if missing else "ok"
+            row.error = row.error if missing else None
+            s.flush()
+            return capture_dict(row)
+
+
+__all__ = ["CaptureError", "ProofError", "capture_proof", "rebake", "get_capture", "list_captures", "capture_dict"]

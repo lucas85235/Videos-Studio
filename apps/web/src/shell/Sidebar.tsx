@@ -1,4 +1,21 @@
-import { CalendarClock, Clapperboard, PanelLeftClose, PanelLeftOpen, Palette, Plus, Settings, Tv, X, type LucideIcon } from 'lucide-react';
+import {
+  BarChart3,
+  CalendarClock,
+  Clapperboard,
+  Film,
+  Lightbulb,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Palette,
+  Plus,
+  Radar,
+  Settings,
+  Sun,
+  Tv,
+  Wallet,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { VultoLogo } from '../brand';
@@ -12,11 +29,19 @@ const DISCLAIMER = 'Uso pessoal. Revise cada vídeo antes de publicar: o YouTube
 type NavDef = { to: string; label: string; icon: LucideIcon; match: (path: string) => boolean };
 
 const PRODUCTION: NavDef[] = [
+  { to: '/hoje', label: 'Hoje', icon: Sun, match: (p) => p.startsWith('/hoje') },
   { to: '/', label: 'Projetos', icon: Clapperboard, match: (p) => p === '/' || p.startsWith('/projetos') },
+  { to: '/ideias', label: 'Ideias', icon: Lightbulb, match: (p) => p.startsWith('/ideias') },
   { to: '/agenda', label: 'Agenda', icon: CalendarClock, match: (p) => p.startsWith('/agenda') },
+];
+const MANAGEMENT: NavDef[] = [
+  { to: '/radar', label: 'Radar', icon: Radar, match: (p) => p.startsWith('/radar') },
+  { to: '/desempenho', label: 'Desempenho', icon: BarChart3, match: (p) => p.startsWith('/desempenho') },
+  { to: '/dinheiro', label: 'Dinheiro', icon: Wallet, match: (p) => p.startsWith('/dinheiro') },
 ];
 const LIBRARY: NavDef[] = [
   { to: '/estilos', label: 'Estilos', icon: Palette, match: (p) => p.startsWith('/estilos') },
+  { to: '/referencias', label: 'Referências', icon: Film, match: (p) => p.startsWith('/referencias') },
   { to: '/canais', label: 'Canais', icon: Tv, match: (p) => p.startsWith('/canais') },
 ];
 const SETTINGS: NavDef = { to: '/configuracoes', label: 'Configurações', icon: Settings, match: (p) => p.startsWith('/configuracoes') };
@@ -190,6 +215,13 @@ export const Sidebar: React.FC<{
             Produção
           </GroupTitle>
           <ul className="flex flex-col gap-0.5">{PRODUCTION.map(renderItem)}</ul>
+        </section>
+        {collapsed ? <hr className="mx-3 mb-4 border-line" /> : null}
+        <section aria-labelledby={`grupo-gestao-${mode}`} className="mb-4">
+          <GroupTitle id={`grupo-gestao-${mode}`} collapsed={collapsed}>
+            Gestão
+          </GroupTitle>
+          <ul className="flex flex-col gap-0.5">{MANAGEMENT.map(renderItem)}</ul>
         </section>
         {collapsed ? <hr className="mx-3 mb-4 border-line" /> : null}
         <section aria-labelledby={`grupo-biblioteca-${mode}`}>

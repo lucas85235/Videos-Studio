@@ -13,6 +13,7 @@ import {
   type VoiceChoice,
   type VoiceProvider,
 } from "../../../api";
+import type { MusicBed } from "../../../apiAudio";
 import { label, langLabel } from "../../../labels";
 import { useProviders } from "../../../shell/data";
 import {
@@ -20,6 +21,7 @@ import {
   Checkbox,
   ErrorBox,
   Field,
+  formatMoney,
   Loading,
   SegmentedControl,
   Select,
@@ -27,6 +29,7 @@ import {
   useToast,
 } from "../../../ui";
 import { useVoiceCatalog, VoicePicker } from "../../../voices";
+import { MusicTracks } from "./audio/MusicTracks";
 import { Notice, shortProviderName, testProviderKinds } from "./shared";
 
 /** Aviso de música já traduzido para texto humano (sem caminhos de arquivo). */
@@ -299,11 +302,17 @@ export const FinalVoiceSummary: React.FC<{
   });
   const p = plan.data;
   const toRecord = p?.tts_missing.length ?? 0;
+  // Créditos pelo `credits_per_char` do canal (ADR 0002): "≈ 6.846 créditos (US$ 2,05)".
+  // Voz local não gasta créditos: não mostra a conta (o backend também não manda).
+  const est = final.provider?.local ? null : p?.credits_estimate;
+  const credits = est
+    ? ` ≈ ${est.credits.toLocaleString("pt-BR")} créditos${est.usd != null ? ` (${formatMoney(est.usd)})` : ""}`
+    : "";
   const status = !p
     ? null
     : toRecord === 0
       ? "A narração com esta voz já está gravada."
-      : `Ao renderizar, grava ${toRecord} ${toRecord === 1 ? "trecho" : "trechos"} de narração (${p.tts_chars.toLocaleString("pt-BR")} caracteres) com esta voz${final.provider?.local ? ", sem custo" : ""}.`;
+      : `Ao renderizar, grava ${toRecord} ${toRecord === 1 ? "trecho" : "trechos"} de narração (${p.tts_chars.toLocaleString("pt-BR")} caracteres) com esta voz${final.provider?.local ? ", sem custo" : ""}.${credits}`;
   const unavailable = Boolean(p && toRecord > 0 && !p.tts_provider);
 
   return (
@@ -403,6 +412,9 @@ export const MusicPanel: React.FC<{
     playing = `${nameOf(used.track)}${used.mood ? ` · ${label(MOOD_LABELS, used.mood)}` : ""}`;
   else if (used)
     playing = `Música gerada pelo app${used.mood ? ` · ${label(MOOD_LABELS, used.mood)}` : ""}`;
+  // Várias faixas (ADR 0003): "2 faixas, trocando ao longo do vídeo".
+  const beds = (used as { beds?: MusicBed[] } | null | undefined)?.beds ?? [];
+  if (beds.length > 1) playing = `${beds.length} faixas, trocando ao longo do vídeo`;
 
   return (
     <div className="flex flex-col gap-3">
@@ -489,6 +501,7 @@ export const MusicPanel: React.FC<{
           .
         </p>
       ) : null}
+      <MusicTracks detail={detail} busy={busy} />
       {warnings.map((w) => (
         <Notice key={w.raw} tone="warn" title={w.title}>
           {w.detail || null}

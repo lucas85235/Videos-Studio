@@ -79,6 +79,7 @@ def get_project_row(project_id: str) -> dict[str, Any]:
             "style_id": row.style_id,
             "status": row.status,
             "current_version": row.current_version,
+            "parent_id": row.parent_id,  # longo de onde o Short foi cortado
             "settings": row.settings,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -174,6 +175,7 @@ def list_projects() -> list[dict[str, Any]]:
                 "channel_id": r.channel_id,
                 "status": r.status,
                 "current_version": r.current_version,
+                "parent_id": r.parent_id,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }
             for r in rows

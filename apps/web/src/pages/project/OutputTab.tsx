@@ -23,6 +23,11 @@ import {
 } from "../../ui";
 import { formatDuration, nextStep } from "./core/model";
 import { FinalVoiceSummary } from "./delivery/AudioPanels";
+import { AffiliateLinks } from "./delivery/AffiliateLinks";
+import { ShortsFromLong } from "./delivery/ShortsFromLong";
+import { PreflightPanel } from "./delivery/PreflightPanel";
+import { PreflightBadge } from "./delivery/preflight/state";
+import { ThumbVariants } from "./delivery/ThumbVariants";
 import { tabOwnsAction } from "./core/NextStep";
 import {
   discardMetaDraft,
@@ -416,6 +421,7 @@ export const OutputTab: React.FC<
                     <BuildSummary build={final} className="min-w-0 flex-1" />
                   ) : null}
                 </div>
+                <ThumbVariants detail={detail} lang={lang} />
               </>
             ) : renderJob ? null : (
               <Empty
@@ -463,14 +469,20 @@ export const OutputTab: React.FC<
             metadataJob={metadataJob}
             emphasis={firstTodo === 1 && !bannerPrimary}
           />
+          <AffiliateLinks detail={detail} lang={lang} />
         </div>
       </div>
+
+      <PreflightPanel detail={detail} lang={lang} />
 
       {/* 3. Publicar */}
       <div id={STEP_IDS.publish} tabIndex={-1} className="focus:outline-none">
         <Section
           icon={Upload}
           title="Publicar"
+          actions={
+            entry?.video ? <PreflightBadge detail={detail} lang={lang} /> : undefined
+          }
           description={
             doc.languages.length > 1
               ? `Versão em ${langLabel(lang)}`
@@ -549,6 +561,9 @@ export const OutputTab: React.FC<
           <PublicationsList detail={detail} lang={lang} />
         </Section>
       </div>
+
+      {/* Shorts cortados deste vídeo longo */}
+      <ShortsFromLong detail={detail} />
     </div>
   );
 };

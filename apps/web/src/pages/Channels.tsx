@@ -3,19 +3,25 @@ import {
   CalendarClock,
   ClipboardPaste,
   Clock,
+  Coins,
   ExternalLink,
   Globe,
+  Hash,
   LogIn,
+  Mic,
+  Package,
   Palette,
   Pencil,
   Plus,
   RefreshCw,
   Sparkles,
   SquarePlay,
+  Target,
   Trash2,
   Tv,
   Unlink,
   UserRound,
+  Users,
   X,
 } from 'lucide-react';
 import React, { useEffect, useId, useRef, useState } from 'react';
@@ -33,12 +39,14 @@ import {
   type PostingSlot,
   type StyleItem,
   TIMEZONES,
+  type VoiceChoice,
   WEEKDAYS,
   type YouTubeAccountStatus,
   type YouTubeLinkStart,
   type YouTubeLinkStatus,
 } from '../api';
 import { langLabel } from '../labels';
+import { useVoiceCatalog, VoicePicker } from '../voices';
 import {
   Badge,
   type BadgeTone,
@@ -73,7 +81,28 @@ type Form = {
   posting: PostingPlan;
   /** Identidade visual: `style_bible.identidade` do canal. */
   identity: string;
+  /* Operação do canal (ADR 0002). Números como texto: o campo aceita vírgula e fica vazio para "sem meta". */
+  audience: string;
+  cadence: string;
+  posts_per_day: string;
+  min_stock: string;
+  stock_format: StockFormat;
+  short_hashtag: string;
+  credits_per_char: string;
+  credit_price_usd: string;
+  /** Voz final padrão (`voice_defaults.final`): o Novo projeto deste canal já vem com ela. */
+  voice_final: VoiceChoice | null;
 };
+
+type StockFormat = 'short' | 'long' | 'any';
+
+const STOCK_FORMATS: { id: StockFormat; label: string; unit: string }[] = [
+  { id: 'short', label: 'Shorts', unit: 'Shorts' },
+  { id: 'long', label: 'Vídeos longos', unit: 'vídeos longos' },
+  { id: 'any', label: 'Qualquer formato', unit: 'vídeos' },
+];
+
+const numText = (n: number | undefined) => (n ? String(n).replace('.', ',') : '');
 
 const blank = (): Form => ({
   name: '',
@@ -83,6 +112,15 @@ const blank = (): Form => ({
   default_style_id: null,
   posting: { timezone: browserZone, slots: [] },
   identity: '',
+  audience: '',
+  cadence: '',
+  posts_per_day: '',
+  min_stock: '',
+  stock_format: 'short',
+  short_hashtag: '',
+  credits_per_char: '',
+  credit_price_usd: '',
+  voice_final: null,
 });
 
 const identityOf = (c: Channel) => (typeof c.style_bible?.identidade === 'string' ? c.style_bible.identidade : '');
@@ -95,7 +133,49 @@ const formOf = (c: Channel): Form => ({
   default_style_id: c.default_style_id,
   posting: c.posting,
   identity: identityOf(c),
+  audience: c.audience ?? '',
+  cadence: c.cadence ?? '',
+  posts_per_day: numText(c.posts_per_day),
+  min_stock: numText(c.min_stock),
+  stock_format: c.stock_format ?? 'short',
+  short_hashtag: c.short_hashtag ?? '',
+  credits_per_char: numText(c.credits_per_char),
+  credit_price_usd: numText(c.credit_price_usd),
+  voice_final: c.voice_defaults?.final?.provider && c.voice_defaults.final.voice ? { ...c.voice_defaults.final } : null,
 });
+
+/** Inteiro entre min e max ("" = 0); null se inválido. */
+const intIn = (text: string, min: number, max: number) => {
+  const t = text.trim();
+  if (!t) return 0;
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= min && n <= max ? n : null;
+};
+
+/** Decimal >= 0 com vírgula ou ponto ("" = 0); null se inválido. */
+const decimal = (text: string) => {
+  const t = text.trim().replace(',', '.');
+  if (!t) return 0;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
+
+const HASHTAG = /^(#\S+)?$/;
+
+type OpsErrors = Partial<Record<'posts_per_day' | 'min_stock' | 'short_hashtag' | 'credits_per_char' | 'credit_price_usd', string>>;
+
+/** Mesmos limites do servidor (ChannelBody). */
+const opsErrors = (f: Form): OpsErrors => {
+  const e: OpsErrors = {};
+  if (intIn(f.posts_per_day, 0, 20) === null) e.posts_per_day = 'Um número de 0 a 20.';
+  if (intIn(f.min_stock, 0, 50) === null) e.min_stock = 'Um número de 0 a 50.';
+  const tag = f.short_hashtag.trim();
+  if (tag.length > 60 || !HASHTAG.test(tag)) e.short_hashtag = 'Comece com # e não use espaço (ex.: #plantao).';
+  if (decimal(f.credits_per_char) === null) e.credits_per_char = 'Um número maior ou igual a zero (ex.: 0,44).';
+  if (decimal(f.credit_price_usd) === null) e.credit_price_usd = 'Um valor maior ou igual a zero (ex.: 0,0003).';
+  return e;
+};
 
 /** Corpo do POST/PUT: a identidade vai dentro do `style_bible` (as outras chaves dele ficam como estão). */
 const bodyOf = (f: Form, base: Channel | undefined) => {
@@ -110,7 +190,23 @@ const bodyOf = (f: Form, base: Channel | undefined) => {
     default_style_id: f.default_style_id,
     posting: f.posting,
     style_bible: bible,
+    audience: f.audience.trim(),
+    cadence: f.cadence.trim(),
+    posts_per_day: intIn(f.posts_per_day, 0, 20) ?? 0,
+    min_stock: intIn(f.min_stock, 0, 50) ?? 0,
+    stock_format: f.stock_format,
+    short_hashtag: f.short_hashtag.trim(),
+    credits_per_char: decimal(f.credits_per_char) ?? 0,
+    credit_price_usd: decimal(f.credit_price_usd) ?? 0,
+    voice_defaults: voiceDefaultsOf(f, base),
   };
+};
+
+/** `voice_defaults` com a voz final do formulário (outras chaves que existam ficam como estão). */
+const voiceDefaultsOf = (f: Form, base: Channel | undefined) => {
+  const rest: Record<string, unknown> = { ...(base?.voice_defaults ?? {}) };
+  delete rest.final;
+  return f.voice_final ? { ...rest, final: { provider: f.voice_final.provider, voice: f.voice_final.voice } } : rest;
 };
 
 /* ------------------------------------------------------------------ */
@@ -139,6 +235,19 @@ const describeDays = (days: number[]) => {
 };
 
 const validTime = (t: string) => /^\d{2}:\d{2}$/.test(t);
+
+/** Dias da semana com menos horários (distintos) que a meta de posts por dia. */
+const thinDays = (slots: PostingSlot[], perDay: number) =>
+  perDay > 0 ? ALL_DAYS.filter((d) => new Set(slots.filter((s) => s.weekdays.includes(d) && validTime(s.time)).map((s) => s.time)).size < perDay) : [];
+
+const thinDaysText = (slots: PostingSlot[], perDay: number) => {
+  const thin = thinDays(slots, perDay);
+  if (!thin.length) return null;
+  const goal = `Meta de ${perDay} ${perDay === 1 ? 'post' : 'posts'} por dia`;
+  if (!slots.length) return `${goal}, mas o canal não tem horários de postagem.`;
+  const which = thin.length === 7 ? 'todos os dias têm' : `${thin.map((d) => DAY_NAMES[d]).join(', ')} ${thin.length === 1 ? 'tem' : 'têm'}`;
+  return `${goal}, mas ${which} menos horários que isso. Um horário para cada post do dia: o que fica sem horário não entra na agenda.`;
+};
 
 /** Hora sugerida para um horário novo: a primeira ainda não usada. */
 const NO_SLOTS_TEXT = 'Sem horários: a Fila do YouTube não agenda vídeos deste canal e a Agenda não sugere horários.';
@@ -214,6 +323,14 @@ const SlotEditor: React.FC<{
         })}
         {onlyOne ? <span className="ml-1 text-xs text-subtle">Pelo menos um dia fica marcado.</span> : null}
       </div>
+      <Input
+        aria-label={`Motivo do horário ${n}`}
+        placeholder="Motivo (opcional), ex.: pico de audiência no almoço"
+        maxLength={120}
+        value={slot.reason ?? ''}
+        onChange={(e) => onChange({ reason: e.target.value })}
+        className="text-[13px]"
+      />
     </fieldset>
   );
 };
@@ -296,6 +413,205 @@ const PostingEditor: React.FC<{ value: PostingPlan; onChange: (p: PostingPlan) =
         </div>
       </FieldGroup>
       {value.slots.length ? <WeekOverview slots={value.slots} /> : null}
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Operação do canal e voz final padrão                                */
+/* ------------------------------------------------------------------ */
+
+/** Nome humano da voz (catálogo de vozes finais do idioma); null enquanto o catálogo não tem a voz. */
+const useVoiceName = (lang: string, choice: VoiceChoice | null) => {
+  const catalog = useVoiceCatalog(lang, { purpose: 'final' });
+  if (!choice) return null;
+  const group = catalog.data?.providers.find((g) => g.id === choice.provider);
+  const found = group?.voices.find((v) => v.id === choice.voice);
+  return found && group ? `${found.label} · ${group.name}` : null;
+};
+
+const VoiceName: React.FC<{ lang: string; choice: VoiceChoice }> = ({ lang, choice }) => <>{useVoiceName(lang, choice) ?? 'voz escolhida'}</>;
+
+const VoiceDefaultField: React.FC<{ lang: string; value: VoiceChoice | null; onChange: (v: VoiceChoice | null) => void }> = ({ lang, value, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const name = useVoiceName(lang, value);
+  return (
+    <FieldGroup
+      legend="Voz final padrão"
+      hint="O Novo projeto deste canal já vem com esta voz (dá para trocar em cada projeto). A prévia continua com a voz local grátis."
+    >
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Mic size={16} aria-hidden="true" className="shrink-0 text-muted" />
+        <span className={value ? 'text-fg' : 'text-muted'}>{value ? (name ?? 'Voz escolhida') : 'Nenhuma: vale a voz do estilo'}</span>
+        <Button size="sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          {open ? 'Fechar a lista' : value ? 'Trocar' : 'Escolher voz'}
+        </Button>
+        {value ? (
+          <Button size="sm" variant="ghost" icon={X} onClick={() => onChange(null)}>
+            Tirar
+          </Button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-line bg-canvas p-3">
+          <VoicePicker
+            lang={lang}
+            purpose="final"
+            value={value}
+            onChange={(v) => {
+              onChange(v);
+              setOpen(false);
+            }}
+          />
+        </div>
+      ) : null}
+    </FieldGroup>
+  );
+};
+
+const OpsFields: React.FC<{ form: Form; setForm: (f: Form) => void; errors: OpsErrors; showErrors: boolean }> = ({ form, setForm, errors, showErrors }) => {
+  const err = (k: keyof OpsErrors) => (showErrors ? errors[k] : undefined);
+  const warning = thinDaysText(form.posting.slots, intIn(form.posts_per_day, 0, 20) ?? 0);
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="font-display text-[15px] font-semibold text-fg">Operação do canal</h3>
+        <p className="text-[13px] text-muted">Meta de posts, estoque mínimo (alerta na página Hoje), hashtag dos Shorts e créditos da voz.</p>
+      </div>
+      <Field label="Público" hint="Para quem é o canal: idade, interesses, país.">
+        <Textarea rows={2} value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} placeholder="ex.: gamers de 18 a 34 anos no Brasil" />
+      </Field>
+      <Field label="Cadência" hint="Texto livre: o ritmo combinado do canal.">
+        <Input value={form.cadence} onChange={(e) => setForm({ ...form, cadence: e.target.value })} placeholder="ex.: 2 Shorts por dia + 1 vídeo longo por semana" />
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="Posts por dia" hint="Vazio = sem meta." error={err('posts_per_day')}>
+          <Input
+            inputMode="numeric"
+            value={form.posts_per_day}
+            invalid={Boolean(err('posts_per_day'))}
+            onChange={(e) => setForm({ ...form, posts_per_day: e.target.value })}
+            placeholder="0"
+          />
+        </Field>
+        <Field label="Estoque mínimo" hint="Prontos ou agendados. Vazio = sem alerta." error={err('min_stock')}>
+          <Input
+            inputMode="numeric"
+            value={form.min_stock}
+            invalid={Boolean(err('min_stock'))}
+            onChange={(e) => setForm({ ...form, min_stock: e.target.value })}
+            placeholder="0"
+          />
+        </Field>
+        <Field label="Formato do estoque">
+          <Select value={form.stock_format} onChange={(e) => setForm({ ...form, stock_format: e.target.value as StockFormat })}>
+            {STOCK_FORMATS.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+      {warning ? <p className="-mt-2 text-[13px] text-amber-200">{warning}</p> : null}
+      <Field label="Hashtag dos Shorts" hint="Vai no fim do título dos Shorts cortados do longo." error={err('short_hashtag')}>
+        <Input
+          value={form.short_hashtag}
+          maxLength={60}
+          invalid={Boolean(err('short_hashtag'))}
+          onChange={(e) => setForm({ ...form, short_hashtag: e.target.value })}
+          placeholder="#plantao"
+        />
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Créditos por caractere" hint="Medido no uso real (ex.: 0,44 no ElevenLabs). Mostra os créditos antes de renderizar." error={err('credits_per_char')}>
+          <Input
+            inputMode="decimal"
+            value={form.credits_per_char}
+            invalid={Boolean(err('credits_per_char'))}
+            onChange={(e) => setForm({ ...form, credits_per_char: e.target.value })}
+            placeholder="0,44"
+          />
+        </Field>
+        <Field label="Preço do crédito (US$)" hint="Opcional: converte os créditos em dólar." error={err('credit_price_usd')}>
+          <Input
+            inputMode="decimal"
+            value={form.credit_price_usd}
+            invalid={Boolean(err('credit_price_usd'))}
+            onChange={(e) => setForm({ ...form, credit_price_usd: e.target.value })}
+            placeholder="0,0003"
+          />
+        </Field>
+      </div>
+      <VoiceDefaultField lang={form.languages[0] ?? 'pt-BR'} value={form.voice_final} onChange={(voice_final) => setForm({ ...form, voice_final })} />
+    </div>
+  );
+};
+
+/** Resumo da operação no cartão do canal. */
+const OpsSummary: React.FC<{ c: Channel }> = ({ c }) => {
+  const voice = c.voice_defaults?.final;
+  const perDay = c.posts_per_day ?? 0;
+  const stock = c.min_stock ?? 0;
+  const unit = STOCK_FORMATS.find((f) => f.id === (c.stock_format ?? 'short'))?.unit ?? 'vídeos';
+  const thinText = thinDaysText(c.posting.slots, perDay);
+  const hasVoice = Boolean(voice?.provider && voice.voice);
+  const badges = Boolean(perDay || stock || c.short_hashtag || c.credits_per_char || hasVoice);
+  if (!c.audience && !c.cadence && !badges) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {c.cadence ? (
+        <div className="flex gap-1.5" title={c.cadence}>
+          <CalendarClock size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-subtle" />
+          <p className="line-clamp-2 min-w-0 text-[13px] leading-snug text-muted">{c.cadence}</p>
+        </div>
+      ) : null}
+      {c.audience ? (
+        <div className="flex gap-1.5" title={c.audience}>
+          <Users size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-subtle" />
+          <p className="line-clamp-2 min-w-0 text-[13px] leading-snug text-muted">{c.audience}</p>
+        </div>
+      ) : null}
+      {badges ? (
+        <ul aria-label="Operação do canal" className="flex flex-wrap gap-1.5">
+          {perDay ? (
+            <li>
+              <Badge icon={Target} tone={thinText ? 'warn' : 'neutral'} title={thinText ?? undefined}>
+                {perDay} {perDay === 1 ? 'post' : 'posts'} por dia{thinText ? ' · faltam horários' : ''}
+              </Badge>
+            </li>
+          ) : null}
+          {stock ? (
+            <li>
+              <Badge icon={Package} title="Estoque mínimo de vídeos prontos ou agendados">
+                Estoque mínimo: {stock} {unit}
+              </Badge>
+            </li>
+          ) : null}
+          {c.short_hashtag ? (
+            <li>
+              <Badge icon={Hash} title="Hashtag no fim do título dos Shorts">
+                {c.short_hashtag.replace(/^#/, '')}
+              </Badge>
+            </li>
+          ) : null}
+          {c.credits_per_char ? (
+            <li>
+              <Badge icon={Coins} title="Créditos da voz final por caractere">
+                {numText(c.credits_per_char)} créditos/caractere
+                {c.credit_price_usd ? ` · US$ ${numText(c.credit_price_usd)} o crédito` : ''}
+              </Badge>
+            </li>
+          ) : null}
+          {voice && hasVoice ? (
+            <li>
+              <Badge icon={Mic} title="Voz final padrão dos projetos novos">
+                <VoiceName lang={c.languages[0] ?? 'pt-BR'} choice={voice} />
+              </Badge>
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
     </div>
   );
 };
@@ -506,6 +822,7 @@ const ChannelCard: React.FC<
           <p className="line-clamp-2 min-w-0 text-[13px] leading-snug text-muted">{c.persona}</p>
         </div>
       ) : null}
+      <OpsSummary c={c} />
       {!y ? (
         <div className="flex flex-wrap items-center gap-2 text-[13px] text-subtle">
           Não ligado ao YouTube.
@@ -520,8 +837,9 @@ const ChannelCard: React.FC<
             <ul aria-label="Horários de postagem" className="flex flex-wrap gap-1.5">
               {c.posting.slots.map((s, i) => (
                 <li key={i}>
-                  <Badge icon={Clock}>
+                  <Badge icon={Clock} title={s.reason || undefined}>
                     {describeDays(s.weekdays)} · <span className="tabular-nums">{s.time}</span>
+                    {s.reason ? <span className="max-w-[16rem] truncate text-subtle">· {s.reason}</span> : null}
                   </Badge>
                 </li>
               ))}
@@ -931,9 +1249,11 @@ export const ChannelsPage: React.FC = () => {
 
   const nameMissing = !form.name.trim();
   const badTime = form.posting.slots.some((s) => !validTime(s.time));
+  const formOpsErrors = opsErrors(form);
+  const badOps = Object.keys(formOpsErrors).length > 0;
   const submit = () => {
     setTried(true);
-    if (nameMissing || badTime) {
+    if (nameMissing || badTime || badOps) {
       // Depois do render com os erros: leva o foco (e a rolagem) até o primeiro campo inválido.
       window.setTimeout(() => document.querySelector<HTMLElement>('dialog[open] [aria-invalid="true"]')?.focus(), 0);
       return;
@@ -1037,9 +1357,13 @@ export const ChannelsPage: React.FC = () => {
             <>
               {/* Erro do servidor perto do botão (o corpo do painel pode estar rolado para baixo). */}
               <ErrorBox error={save.error} title="Não foi possível salvar o canal" onClose={() => save.reset()} className="w-full" />
-              {tried && (nameMissing || badTime) ? (
+              {tried && (nameMissing || badTime || badOps) ? (
                 <p role="alert" className="w-full text-[13px] text-red-300">
-                  {nameMissing ? 'Dê um nome ao canal.' : 'Preencha a hora de todos os horários (ou remova os vazios).'}
+                  {nameMissing
+                    ? 'Dê um nome ao canal.'
+                    : badTime
+                      ? 'Preencha a hora de todos os horários (ou remova os vazios).'
+                      : 'Corrija os campos da operação do canal.'}
                 </p>
               ) : null}
               <Button onClick={() => void closeSheet()}>Cancelar</Button>
@@ -1140,6 +1464,9 @@ export const ChannelsPage: React.FC = () => {
           <div className="border-t border-line pt-4">
             <PostingEditor value={form.posting} onChange={(posting) => setForm({ ...form, posting })} />
             {tried && badTime ? <p className="mt-2 text-[13px] text-red-300">Preencha a hora de todos os horários (ou remova os vazios).</p> : null}
+          </div>
+          <div className="border-t border-line pt-4">
+            <OpsFields form={form} setForm={setForm} errors={formOpsErrors} showErrors={tried} />
           </div>
         </Sheet>
       ) : null}

@@ -7,12 +7,20 @@ import random
 import re
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from studio.config import get_settings
-from studio.media.ffmpeg import SAMPLE_RATE, FFmpegError, read_wav, run_ffmpeg, wav_duration, write_wav
+from studio.media.ffmpeg import (
+    SAMPLE_RATE,
+    FFmpegError,
+    pcm16_to_wav,
+    read_wav,
+    run_ffmpeg,
+    wav_duration,
+    write_wav,
+)
 
 # --------------------------------------------------------------------------------------------
 # Trilhas procedurais
@@ -334,6 +342,12 @@ def generate_music(mood: str | None, duration: float, seed: int, out_path: Path)
 # --------------------------------------------------------------------------------------------
 
 SFX_KINDS = ("whoosh", "impact", "glitch", "static", "riser")
+SFX_VERSION = 3
+"""Versão dos arquivos de efeito no cache. v3: glitch e riser sem tom agudo afinado (passam na guarda de apito, regra 13
+do padrão do estúdio); v2: impacto em camadas e loudness normalizada por arquivo."""
+SFX_RETUNED = frozenset({"glitch", "riser"})
+"""Tipos que mudaram de som na última `SFX_VERSION`: um mix com eles leva a versão na chave (é refeito) e a conferência
+acusa a prévia montada com a versão antiga (que tinha apito)."""
 
 VOICE_LUFS = -16.0
 """Loudness da narração no mix, antes do master. Os SFX são normalizados nessa mesma referência."""
@@ -402,9 +416,13 @@ def _sfx_args(kind: str) -> list[str]:
             "alimiter=limit=0.35:attack=1:release=60:level=false:latency=true[out]",
         ]
     if kind == "glitch":
+        # Rajadas de ruído e um pulso quadrado grave (sem agudo afinado): a versão com seno de 3,1 kHz e quadrada de
+        # 820 Hz dava apito na guarda (padrão do estúdio, regra 13).
         return [
-            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.35*sgn(sin(2*PI*820*t))*lt(mod(t,0.07),0.035)+0.2*sin(2*PI*3100*t)*lt(mod(t,0.05),0.02)':s={r}:d=0.35",
-            "-filter_complex", "[0:a]acrusher=bits=6:mix=0.7,afade=t=out:st=0.25:d=0.1[out]",
+            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.4*(2*random(0)-1)*lt(mod(t,0.07),0.035)':s={r}:d=0.35",
+            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.3*sgn(sin(2*PI*150*t))*lt(mod(t,0.05),0.02)':s={r}:d=0.35",
+            "-filter_complex",
+            "[1:a]lowpass=f=900[q];[0:a][q]amix=inputs=2:normalize=0,acrusher=bits=6:mix=0.7,afade=t=out:st=0.25:d=0.1[out]",
         ]
     if kind == "static":
         return [
@@ -412,9 +430,13 @@ def _sfx_args(kind: str) -> list[str]:
             "-filter_complex", "[0:a]highpass=f=1200,afade=t=in:d=0.05,afade=t=out:st=0.2:d=0.3[out]",
         ]
     if kind == "riser":
+        # Subida em tom grave (até ~850 Hz) com ruído que cresce: a varredura de seno até 2,3 kHz dava apito na guarda.
         return [
-            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.25*sin(2*PI*(180*t+260*t*t)*t)*(t/1.5)':s={r}:d=1.5",
-            "-filter_complex", "[0:a]aecho=0.8:0.6:90:0.3,afade=t=out:st=1.35:d=0.15[out]",
+            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.25*sin(2*PI*(60*t+100*t*t)*t)*(t/1.5)':s={r}:d=1.5",
+            "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.5:d=1.5:r={r}:seed=15",
+            "-filter_complex",
+            "[1:a]highpass=f=700,volume='pow(t/1.5,2)':eval=frame[n];[0:a][n]amix=inputs=2:normalize=0,"
+            "aecho=0.8:0.6:90:0.3,afade=t=out:st=1.35:d=0.15[out]",
         ]
     # whoosh: ruído em banda larga que sobe até 0,35 s e desce
     return [
@@ -520,16 +542,29 @@ def _music_chain(highpass: float) -> str:
     return f"aformat=channel_layouts=stereo,pan=mono|c0=0.5*c0+0.5*c1,highpass=f={highpass:g}"
 
 
-def _music_gain(music: Path, music_db: float, highpass: float, total: float | None = None) -> float:
+def voice_gain_db(voice: Path) -> float:
+    """Ganho (dB) que o mix aplica à voz posicionada para levá-la a `VOICE_LUFS` (com ou sem trilha)."""
+    return _gain_to(VOICE_LUFS, _ebur128(["-i", str(voice), "-af", _EBUR128])["lufs"])
+
+
+def _music_gain(music: Path, music_db: float, highpass: float, total: float | None = None,
+                ref_s: float | None = None) -> float:
     """Ganho (dB) que leva a trilha, já em mono e com o passa-altas, a `VOICE_LUFS + music_db + 10` LUFS.
 
     O arquivo vem em -16 LUFS na banda toda, mas o passa-altas tira o bumbo e o baixo, e com eles uns 5 LU nos climas
     animados. Medida depois do mesmo corte, a trilha fica onde `volume_db` diz em qualquer clima: com -16, 6 LU abaixo
     da voz (antes do ducking). Com `total`, mede só o trecho que toca (o arquivo passa do fim do vídeo e termina em
-    fade).
+    fade). Com `ref_s` (várias faixas), mede só os primeiros `ref_s` s, a 1ª cama: ela fica no `volume_db` dela e as
+    outras, que já vêm com o ganho relativo, ficam no delas (medir o arquivo todo puxaria a 1ª pelo volume das outras).
     """
-    head = ["-t", f"{total:.3f}"] if total else []
-    measured = _ebur128([*head, "-i", str(music), "-af", f"{_music_chain(highpass)},{_EBUR128}"])["lufs"]
+    chain = f"{_music_chain(highpass)},{_EBUR128}"
+    measured = math.nan
+    if ref_s:
+        window = min(ref_s, total) if total else ref_s
+        measured = _ebur128(["-t", f"{window:.3f}", "-i", str(music), "-af", chain])["lufs"]
+    if not (math.isfinite(measured) and measured > _SILENT_LUFS):
+        head = ["-t", f"{total:.3f}"] if total else []
+        measured = _ebur128([*head, "-i", str(music), "-af", chain])["lufs"]
     return _gain_to(VOICE_LUFS + music_db + 10.0, measured)
 
 
@@ -594,6 +629,7 @@ def mix_tracks(
     total: float | None = None,
     short: bool = False,
     music_highpass: float = MUSIC_HIGHPASS_HZ,
+    music_ref_s: float | None = None,
 ) -> Path:
     """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo.
 
@@ -605,10 +641,11 @@ def mix_tracks(
     Só ganhos medidos (o loudnorm dinâmico de antes ficava ~1 LU abaixo do alvo): a voz vai a `VOICE_LUFS`, a
     referência da trilha e dos SFX; o mix é medido e o master aplica o ganho exato até `loudness`, com um limitador
     sobreamostrado (pega os picos entre amostras). Se o limitador comer loudness, mede de novo e compensa.
+    `music_ref_s` (várias faixas): o ganho da trilha é medido só na 1ª cama (ver `_music_gain`).
     """
     total = wav_duration(voice) if total is None else total
-    voice_gain = _gain_to(VOICE_LUFS, _ebur128(["-i", str(voice), "-af", _EBUR128])["lufs"])
-    music_gain = _music_gain(music, music_db, music_highpass, total) if music is not None else 0.0
+    voice_gain = voice_gain_db(voice)
+    music_gain = _music_gain(music, music_db, music_highpass, total, music_ref_s) if music is not None else 0.0
     inputs, graph = _premix(voice, music, music_gain, ducking, sfx, total, short, music_highpass, voice_gain)
     # Mede e limita já em estéreo (o mono vira dois canais a -3 dB): é o que o arquivo final tem.
     stereo = "[mx]aformat=channel_layouts=stereo"
@@ -636,3 +673,151 @@ def mix_tracks(
     run_ffmpeg([*inputs, "-filter_complex", master(gain, "[out]"), "-map", "[out]", "-ac", "2", "-ar", str(SAMPLE_RATE),
                 "-c:a", "aac", "-b:a", "192k", str(out_path)])
     return out_path
+
+
+def write_stereo_wav(path: Path, audio: np.ndarray, rate: int = SAMPLE_RATE) -> Path:
+    """Grava float (n, canais) ou (n,) em WAV PCM16."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    return pcm16_to_wav(data, rate, path, channels=audio.shape[1] if audio.ndim > 1 else 1)
+
+
+def music_stem(
+    voice: Path,
+    music: Path,
+    out_path: Path,
+    *,
+    music_db: float = -22.0,
+    ducking: bool = True,
+    total: float | None = None,
+    short: bool = False,
+    music_highpass: float = MUSIC_HIGHPASS_HZ,
+    music_ref_s: float | None = None,
+) -> tuple[Path, float]:
+    """Só a trilha como ela entra no mix (passa-altas, ganho e ducking pela voz), com o mesmo grafo do `_premix`, em WAV
+    mono de 48 kHz. Devolve (arquivo, ganho da voz em dB): a conferência de áudio põe a voz no mesmo nível do mix.
+
+    O master aplica o mesmo ganho em tudo, então a distância entre voz e trilha medida aqui é a do arquivo final."""
+    total = wav_duration(voice) if total is None else total
+    voice_gain = voice_gain_db(voice)
+    music_gain = _music_gain(music, music_db, music_highpass, total, music_ref_s)
+    inputs, graph = _premix(voice, music, music_gain, ducking, None, total, short, music_highpass, voice_gain)
+    branch = "[md]" if ducking else "[m]"
+    end = round(total * SAMPLE_RATE)
+    # a voz segue em silêncio (apad) para sempre: sem o atrim, o anullsink nunca deixa o grafo terminar
+    stem = [*graph[:-1], f"[vout]atrim=end_sample={end},anullsink", f"{branch}atrim=end_sample={end}[ms]"]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg([*inputs, "-filter_complex", ";".join(stem), "-map", "[ms]", "-ac", "1", "-ar", str(SAMPLE_RATE),
+                "-c:a", "pcm_s16le", str(out_path)])
+    return out_path, voice_gain
+
+
+# --------------------------------------------------------------------------------------------
+# Várias faixas por vídeo: uma "cama" por troca de trilha (= music_beds do canais, ADR 0003 bloco G)
+# --------------------------------------------------------------------------------------------
+
+BED_SEAM_S = 0.08
+"""Crossfade seno/cosseno na emenda do loop (o loop tem um número inteiro de compassos e o fim foi afinado na onda)."""
+BED_TAIL_S = 0.6
+"""Sobra de cada cama para cruzar com a seguinte."""
+BED_FADE_IN_S, BED_FADE_OUT_S = 0.4, 1.4
+BED_LUFS = -21.0
+"""Loudness de cada loop: todas as camas no mesmo volume (regra 12: "no mesmo volume o vídeo todo")."""
+VOICE_BAND_REF_DB = -18.0
+"""Banda da voz (1 a 4 kHz) relativa ao total; acima disso, a cama corta metade da diferença (até 3 dB)."""
+
+
+def bed_trim_db(voz_db: float | None, manual: float | None = None) -> float:
+    """Corte da cama pela banda da voz da faixa: `-min(3, max(0, (voz_db + 18) × 0,5))`; o ajuste manual vence."""
+    if manual is not None:
+        return float(manual)
+    if voz_db is None:
+        return 0.0
+    return -min(3.0, max(0.0, (float(voz_db) - VOICE_BAND_REF_DB) * 0.5))
+
+
+def bed_durations(starts: list[float], total: float) -> list[float]:
+    """Duração de cada cama: até o início da seguinte mais `BED_TAIL_S`; a última vai até o fim do vídeo."""
+    out = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] + BED_TAIL_S if i + 1 < len(starts) else total
+        out.append(max(0.0, min(total, end) - start))
+    return out
+
+
+def _loop_bed(x: np.ndarray, loop: tuple[float, float], need: int, intro: bool) -> np.ndarray:
+    """Repete `x[início:início+tamanho]` até `need` amostras; a emenda cruza o que vem depois do fim do loop com o
+    começo do loop (seno/cosseno em `BED_SEAM_S`). Com `intro`, toca a faixa desde o começo antes do loop."""
+    s = int(round(loop[0] * SAMPLE_RATE))
+    e = min(x.shape[0], s + int(round(loop[1] * SAMPLE_RATE)))
+    xf = int(BED_SEAM_S * SAMPLE_RATE)
+    if e - s <= 2 * xf:
+        raise ValueError("loop curto demais para emendar")
+    # depois do fim do loop precisa haver `xf` amostras para a emenda; sem isso, o fim do próprio loop cruza
+    tail = x[e:e + xf]
+    if tail.shape[0] < xf:
+        tail = np.concatenate([tail, x[s:s + xf - tail.shape[0]]])
+    body = np.concatenate([x[s:e], tail])  # loop + o que vem depois (para cruzar)
+    loop_audio = x[s:e]
+    up = np.sin(np.linspace(0, np.pi / 2, xf, dtype=np.float32))[:, None]
+    down = np.cos(np.linspace(0, np.pi / 2, xf, dtype=np.float32))[:, None]
+    head = np.concatenate([x[:s], body]) if intro else body.copy()
+    parts = [head[:-xf]]
+    last_tail = head[-xf:]
+    size = head.shape[0] - xf
+    nxt = body[xf:]  # o loop a partir de xf, com a sobra depois do fim
+    while size < need:
+        parts.append(last_tail * down + loop_audio[:xf] * up)
+        parts.append(nxt[:-xf])
+        last_tail = nxt[-xf:]
+        size += xf + nxt.shape[0] - xf
+    parts.append(last_tail)
+    return np.concatenate(parts)[:need]
+
+
+def build_beds(beds: list[dict[str, Any]], total: float, out_path: Path) -> Path:
+    """Monta a trilha do vídeo inteiro, uma cama por faixa, em WAV estéreo de 48 kHz com exatamente `total` s.
+
+    Cada cama: `src` (arquivo), `start_s`, `dur_s`, `loop` ((início, tamanho) em s ou None = a faixa desde o começo,
+    repetida inteira se faltar), `intro`, `gain_db` (ajuste extra de volume da faixa), `voz_db` e `trim_db` (manual,
+    vence o corte automático). Cada cama vai a `BED_LUFS` (medido no loop, ou na própria cama sem loop) com o corte da
+    banda da voz; entra em fade de 0,4 s (sem intro) e sai em fade de 1,4 s (até 1/3 da cama)."""
+    # import tardio: audio_check importa este módulo
+    from studio.media.audio_check import decode, integrated_lufs
+
+    n_total = int(round(total * SAMPLE_RATE))
+    mixbuf = np.zeros((n_total, 2), dtype=np.float32)
+    cache: dict[str, np.ndarray] = {}
+    for bed in beds:
+        a = int(round(float(bed["start_s"]) * SAMPLE_RATE))
+        if a >= n_total:
+            continue
+        need = min(n_total - a, int(round(float(bed["dur_s"]) * SAMPLE_RATE)))
+        if need <= 0:
+            continue
+        key = str(bed["src"])
+        if key not in cache:
+            cache[key] = decode(Path(bed["src"]), SAMPLE_RATE, 2).astype(np.float32)
+        x = cache[key]
+        if x.shape[0] == 0:
+            continue
+        loop = bed.get("loop")
+        intro = bool(bed.get("intro"))
+        if loop:
+            y = _loop_bed(x, (float(loop[0]), float(loop[1])), need, intro)
+            s = int(round(float(loop[0]) * SAMPLE_RATE))
+            ref = integrated_lufs(x[s:s + int(round(float(loop[1]) * SAMPLE_RATE))])
+        else:
+            y = x[:need] if x.shape[0] >= need else _loop_bed(x, (0.0, x.shape[0] / SAMPLE_RATE), need, True)
+            ref = integrated_lufs(y)
+        trim = bed_trim_db(bed.get("voz_db"), bed.get("trim_db")) if loop else float(bed.get("trim_db") or 0.0)
+        gain = (BED_LUFS - ref if math.isfinite(ref) else 0.0) + trim + float(bed.get("gain_db") or 0.0)
+        y = y * np.float32(10 ** (gain / 20))
+        if not intro or not loop:
+            fi = min(int(BED_FADE_IN_S * SAMPLE_RATE), y.shape[0])
+            y[:fi] *= np.linspace(0, 1, fi, dtype=np.float32)[:, None]
+        fo = min(int(BED_FADE_OUT_S * SAMPLE_RATE), y.shape[0] // 3)
+        if fo > 0:
+            y[-fo:] *= np.linspace(1, 0, fo, dtype=np.float32)[:, None]
+        mixbuf[a:a + y.shape[0]] += y
+    return write_stereo_wav(out_path, mixbuf)

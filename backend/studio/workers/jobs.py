@@ -195,5 +195,14 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return job_dict(row) if row else None
 
 
-# Registra os jobs do pipeline e de publicação
+# Registra os jobs do pipeline, de publicação, da gestão de canal (ADR 0002) e da qualidade e pesquisa (ADR 0003:
+# radar, factcheck, audiocheck, finalcheck e visual)
 from studio.workers import publish_tasks, tasks  # noqa: E402,F401
+from studio.workers.analytics import tasks as _analytics_tasks  # noqa: E402,F401
+from studio.workers.audiocheck import tasks as _audiocheck_tasks  # noqa: E402,F401
+from studio.workers.factcheck import tasks as _factcheck_tasks  # noqa: E402,F401
+from studio.workers.finalcheck import tasks as _finalcheck_tasks  # noqa: E402,F401
+from studio.workers.ops import tasks as _ops_tasks  # noqa: E402,F401
+from studio.workers.radar import tasks as _radar_tasks  # noqa: E402,F401
+from studio.workers.shorts import tasks as _shorts_tasks  # noqa: E402,F401
+from studio.workers.visual import tasks as _visual_tasks  # noqa: E402,F401

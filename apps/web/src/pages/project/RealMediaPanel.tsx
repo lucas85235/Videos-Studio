@@ -19,6 +19,7 @@ import {
 import { FOCUS_LABELS, label, MEDIA_FIT_LABELS, MEDIA_SOURCE_LABELS, REAL_KIND_LABELS } from '../../labels';
 import { Badge, Button, Checkbox, ErrorBox, IconButton, Input, Select, Skeleton, useConfirm } from '../../ui';
 import { sceneChanges } from './core/drafts';
+import { ProofCapture } from './proof/ProofCapture';
 import {
   attachCandidate,
   attachLink,
@@ -476,6 +477,8 @@ const MediaOptions: React.FC<OptionsProps> = ({ scene, doc, projectId, hint, loc
         </Button>
         <span className="text-xs text-subtle">JPG, PNG ou WEBP, até 25 MB.</span>
       </div>
+
+      <ProofCapture projectId={projectId} sceneId={scene.id} locked={locked} />
     </div>
   );
 };

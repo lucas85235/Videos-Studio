@@ -294,3 +294,28 @@ def mock_style(ctx: dict[str, Any]) -> dict[str, Any]:
     if "grande" in text and "legenda" in text:
         change("edit.captions.size", 96, "legendas grandes")
     return {"summary": f"{len(changes)} ajuste(s) a partir da descrição." if changes else "Nada reconhecido na descrição (offline).", "changes": changes}
+
+
+def mock_factcheck(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Checagem offline: cada segmento com algarismo vira um item `ok` com a 1ª fonte do contexto e as 6 primeiras
+    palavras do segmento como citação. Sem algarismo, nada."""
+    sources = ctx.get("sources") or []
+    first = sources[0] if sources else {}
+    items: list[dict[str, Any]] = []
+    for seg in ctx.get("segments") or []:
+        text = str(seg.get("text") or "")
+        if not re.search(r"\d", text):
+            continue
+        sentence = re.split(r"(?<=[.!?])\s+", text.strip())[0]
+        items.append({
+            "segment_id": seg.get("id", ""),
+            "excerpt": sentence,
+            "claim": sentence,
+            "verdict": "ok",
+            "source_title": first.get("title", ""),
+            "url": first.get("url", ""),
+            "quote": " ".join(text.split()[:6]),
+            "correction": "",
+            "note": "checagem offline (regras)",
+        })
+    return {"items": items}

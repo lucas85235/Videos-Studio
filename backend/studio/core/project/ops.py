@@ -145,6 +145,7 @@ class SetMusic(_Op):
     volume_db: float | None = None
     enabled: bool | None = None
     track: str | None = None  # "" solta a faixa fixada
+    loop: bool | None = None  # só a batida, em loop no compasso
 
 
 class SetLock(_Op):
@@ -396,7 +397,14 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             if any(s.locked for s in doc.scenes_of(seg.id)):
                 raise OpError("o segmento tem cenas travadas")
             _remove_scenes(doc, {s.id for s in doc.scenes if s.segment_id == seg.id})
+            index = next(i for i, s in enumerate(doc.segments) if s.id == seg.id)
             doc.segments = [s for s in doc.segments if s.id != seg.id]
+            # faixa de música que trocava neste segmento passa a trocar no seguinte; sem seguinte, é desligada
+            following = doc.segments[index].id if index < len(doc.segments) else None
+            for cue in doc.music:
+                if cue.start_segment == seg.id:
+                    cue.start_segment = following
+                    cue.enabled = cue.enabled and following is not None
         case MoveSegment():
             seg = _segment(doc, op.segment_id)
             doc.segments = [s for s in doc.segments if s.id != seg.id]
@@ -505,6 +513,11 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
                 cue = next((c for c in doc.music if c.id == op.cue_id), None)
                 if cue is None:
                     raise OpError(f"faixa de música não encontrada: {op.cue_id}")
+                if op.start_segment is not None:
+                    # troca o segmento de início de uma faixa existente ("" = começo do vídeo)
+                    if op.start_segment:
+                        _segment(doc, op.start_segment, editable=False)
+                    cue.start_segment = op.start_segment or None
             elif op.start_segment:
                 cue = MusicCue(start_segment=op.start_segment)
                 _segment(doc, op.start_segment, editable=False)
@@ -522,6 +535,8 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
                 cue.enabled = op.enabled
             if op.track is not None:
                 cue.track = op.track or None
+            if op.loop is not None:
+                cue.loop = op.loop
         case SetLock():
             for target in op.ids:
                 if target.startswith("seg"):

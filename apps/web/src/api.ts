@@ -271,6 +271,8 @@ export type ProjectRow = {
   };
   created_at?: string;
   updated_at: string | null;
+  /** Projeto longo de onde este Short foi cortado (Shorts do longo). */
+  parent_id?: string | null;
 };
 
 export type LangOutput = {
@@ -430,6 +432,8 @@ export type BuildPlan = {
   image_provider: string | null;
   estimated_cost_usd: number;
   estimated_seconds: number;
+  /** Créditos estimados da narração (caracteres × créditos por caractere do canal); null sem configuração. */
+  credits_estimate?: { credits: number; per_char: number; usd: number | null } | null;
 };
 
 /** Resposta de POST /ops e /edit/apply: `notice` diz por que a prévia não foi atualizada (job null). */
@@ -458,7 +462,7 @@ export type Provider = {
   quota_exhausted_today: boolean;
 };
 
-export type PostingSlot = { weekdays: number[]; time: string };
+export type PostingSlot = { weekdays: number[]; time: string; /** Motivo do horário (até 120 caracteres). */ reason?: string };
 export type PostingPlan = { timezone: string; slots: PostingSlot[] };
 export type Channel = {
   id: string;
@@ -472,6 +476,20 @@ export type Channel = {
   style_bible?: Record<string, unknown>;
   /** Canal do YouTube ligado (login do Google ou link público). Tipos no bloco "Canais e YouTube", no fim. */
   youtube?: ChannelYouTube | null;
+  /* Gestão do canal (ADR 0002) */
+  audience?: string;
+  cadence?: string;
+  /** Meta de posts por dia (0 = sem meta). */
+  posts_per_day?: number;
+  /** Estoque mínimo de vídeos prontos (0 = sem alerta). */
+  min_stock?: number;
+  stock_format?: 'short' | 'long' | 'any';
+  /** Hashtag no fim do título dos Shorts ("" ou "#palavra"). */
+  short_hashtag?: string;
+  credits_per_char?: number;
+  credit_price_usd?: number;
+  /** Voz final padrão do canal, pré-selecionada no Novo projeto. */
+  voice_defaults?: { final?: { provider: string; voice: string } };
 };
 export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
 
@@ -686,6 +704,19 @@ export const JOB_LABELS: Record<string, string> = {
   render: 'Render final',
   autopilot: 'Piloto automático',
   publish_youtube: 'Envio ao YouTube',
+  metrics_collect: 'Coleta de métricas',
+  shorts_suggest: 'Sugestão de Shorts',
+  routine_morning: 'Rotina da manhã',
+  backup: 'Cópia do banco',
+  // Qualidade e pesquisa (ADR 0003)
+  radar_collect: 'Radar de nichos',
+  factcheck: 'Checagem de fatos',
+  music_curate: 'Curadoria das trilhas',
+  audio_check: 'Conferência do áudio',
+  final_check: 'Conferência do vídeo final',
+  page_capture: 'Captura de página',
+  reference_shots: 'Planos do vídeo de referência',
+  thumbs_variants: 'Miniaturas para o teste A/B',
 };
 
 /* ------------------------------------------------------------------ */

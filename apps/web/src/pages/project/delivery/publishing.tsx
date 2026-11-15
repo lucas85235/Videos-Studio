@@ -12,6 +12,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   api,
+  ApiError,
   type ChannelSlots,
   formatWhen,
   type LangOutput,
@@ -38,6 +39,10 @@ import {
   useToast,
 } from "../../../ui";
 import { createKeyedStore, useKeyedStore } from "../core/drafts";
+import { type ChecksChoice, ChecksDialog } from "./preflight/ChecksDialog";
+import { usePreflight } from "./preflight/state";
+import type { CheckItem } from "../../../apiChecks";
+import { visualApi } from "../../../apiVisual";
 import {
   CopyButton,
   finalJobKinds,
@@ -215,6 +220,16 @@ export const YouTubeCard: React.FC<{
   const confirm = useConfirm();
   const { toast } = useToast();
   const status = useYouTubeStatus(projectId);
+  // Miniatura que vai no envio: a escolhida do teste A/B (sem erro e atualizada) ou a capa do vídeo final.
+  const thumbs = useQuery({
+    queryKey: ["thumbs", projectId, lang],
+    queryFn: () => visualApi.thumbs(projectId, lang),
+  });
+  const chosenThumb = thumbs.data?.stale
+    ? undefined
+    : thumbs.data?.variants.find(
+        (v) => v.n === thumbs.data?.chosen && !v.errors.length,
+      );
   const [privacyChoice, setPrivacy] = useState("private");
   const [when, setWhen] = useState("");
   const [localize, setLocalize] = useState(false);
@@ -238,15 +253,35 @@ export const YouTubeCard: React.FC<{
     mutationFn: () => api.post<{ auth_url: string }>("/api/youtube/connect"),
     onSuccess: (data) => window.open(data.auth_url, "_blank", "noopener"),
   });
+  // Conferência antes de publicar (ADR 0003, bloco H): público/agendado com erro pede confirmação.
+  const preflight = usePreflight(detail, lang);
+  const [checksPrompt, setChecksPrompt] = useState<{
+    items: CheckItem[];
+    message: string | null;
+    locked?: boolean;
+  } | null>(null);
   const publish = useMutation({
-    mutationFn: () =>
-      api.post(`/api/projects/${projectId}/publish/youtube`, {
+    mutationFn: (opts: { privacy?: string; ignoreChecks?: boolean } = {}) => {
+      const p = opts.privacy ?? privacy;
+      return api.post(`/api/projects/${projectId}/publish/youtube`, {
         lang,
-        privacy,
+        privacy: p,
         publish_at:
-          privacy === "scheduled" && when ? new Date(when).toISOString() : null,
+          p === "scheduled" && when ? new Date(when).toISOString() : null,
         localize: localize && otherLangs.length > 0,
-      }),
+        ignore_checks: Boolean(opts.ignoreChecks),
+      });
+    },
+    onError: (error, opts) => {
+      // O servidor travou o envio pela conferência: o diálogo oferece as saídas (sem "mesmo assim" se já foi recusado).
+      if (error instanceof ApiError && error.status === 409) {
+        setChecksPrompt({
+          items: (preflight.data?.items ?? []).filter((i) => i.level === "erro"),
+          message: error.message,
+          locked: Boolean(opts?.ignoreChecks),
+        });
+      }
+    },
     // Devolve a invalidação: o botão fica ocupado até o job novo aparecer (evita um segundo envio).
     onSuccess: () =>
       Promise.all([
@@ -303,7 +338,23 @@ export const YouTubeCard: React.FC<{
       });
       if (!ok) return;
     }
-    publish.mutate();
+    if (privacy !== "private") {
+      const errors = (preflight.data?.items ?? []).filter(
+        (i) => i.level === "erro",
+      );
+      if (errors.length) {
+        setChecksPrompt({ items: errors, message: null });
+        return;
+      }
+    }
+    publish.mutate({});
+  };
+
+  const onChecksChoice = (choice: ChecksChoice) => {
+    setChecksPrompt(null);
+    publish.reset();
+    if (choice === "ignore") publish.mutate({ ignoreChecks: true });
+    else if (choice === "private") publish.mutate({ privacy: "private" });
   };
 
   const s = status.data;
@@ -482,7 +533,13 @@ export const YouTubeCard: React.FC<{
                 : ""}
             </dd>
             <dt className="text-subtle">Capa</dt>
-            <dd className="text-fg">{entry?.thumbnail ? "Sim" : "Não"}</dd>
+            <dd className="text-fg">
+              {chosenThumb
+                ? `Miniatura ${chosenThumb.n} do teste A/B`
+                : entry?.thumbnail
+                  ? "Capa do vídeo final"
+                  : "Não"}
+            </dd>
             <dt className="text-subtle">Legendas</dt>
             <dd className="text-fg">{entry?.srt ? "Sim" : "Não"}</dd>
             {localize && otherLangs.length ? (
@@ -542,7 +599,22 @@ export const YouTubeCard: React.FC<{
           </div>
         </>
       )}
-      <ErrorBox error={connect.error ?? publish.error} />
+      <ErrorBox
+        error={
+          connect.error ??
+          (publish.error instanceof ApiError && publish.error.status === 409
+            ? null
+            : publish.error)
+        }
+      />
+      {checksPrompt ? (
+        <ChecksDialog
+          items={checksPrompt.items}
+          message={checksPrompt.message}
+          locked={checksPrompt.locked}
+          onResult={onChecksChoice}
+        />
+      ) : null}
     </Card>
   );
 };

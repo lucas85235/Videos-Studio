@@ -13,6 +13,7 @@ from studio.config import get_settings
 from studio.core.project import service
 from studio.db import session_scope
 from studio.models import Channel
+from studio.workers.finalcheck.report import preflight
 from studio.workers.jobs import get_runner
 from studio.workers.publish import youtube as yt
 
@@ -122,6 +123,31 @@ class YouTubePublishRequest(BaseModel):
     category_id: str = "24"
     captions: bool = True
     localize: bool = False  # títulos/descrições dos outros idiomas do projeto no mesmo vídeo
+    ignore_checks: bool = False  # "publicar mesmo assim": passa por cima da conferência antes de publicar (ADR 0003)
+
+
+def _checks_block(project_id: str, lang: str | None, ignore_checks: bool = False) -> str | None:
+    """Mensagem do 409 quando a conferência antes de publicar (avisos rápidos + relatório fresco) tem erro.
+
+    `ignore_checks` ("publicar mesmo assim") só libera erros que o envio aceita; os marcados `blocking` (ex.: voz ou
+    imagens só de prévia, que o job de envio recusa) continuam travando.
+    """
+    state = preflight(project_id, lang)
+    errors = [i for i in state["items"] if i.get("level") == "erro"]
+    blocking = [i for i in errors if i.get("blocking")]
+    if ignore_checks:
+        if not blocking:
+            return None
+        return (f"Não dá para publicar mesmo assim: {'; '.join(i['title'] for i in blocking[:3])}. Corrija e "
+                "renderize de novo, ou envie como privado.")
+    if not errors:
+        return None
+    titles = [i["title"] for i in errors][:3]
+    if blocking:
+        return (f"A conferência antes de publicar achou problema: {'; '.join(titles)}. Corrija ou envie como "
+                "privado.")
+    return (f"A conferência antes de publicar achou problema: {'; '.join(titles)}. Corrija, envie como privado ou "
+            "confirme 'publicar mesmo assim'.")
 
 
 @router.post("/projects/{project_id}/publish/youtube")
@@ -136,4 +162,9 @@ def publish_youtube(project_id: str, body: YouTubePublishRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if body.privacy not in ("private", "unlisted", "public", "scheduled"):
         raise HTTPException(status_code=400, detail="privacidade inválida")
+    # Privado sempre passa; público, não listado e agendado param na conferência com erro (ADR 0003, bloco H).
+    if body.privacy != "private":
+        message = _checks_block(project_id, body.lang, body.ignore_checks)
+        if message:
+            raise HTTPException(status_code=409, detail=message)
     return get_runner().submit("publish_youtube", body.model_dump(), project_id)

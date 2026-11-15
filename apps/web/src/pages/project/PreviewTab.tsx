@@ -39,6 +39,7 @@ import {
 import { awaitingScenes, formatDuration, isShort, nextStep } from "./core/model";
 import { tabOwnsAction } from "./core/NextStep";
 import { MusicPanel, VoicePanel } from "./delivery/AudioPanels";
+import { AudioCheckPanel } from "./delivery/audio/AudioCheckPanel";
 import { type CurrentScene, EditPanel } from "./delivery/EditPanel";
 import {
   buildToken,
@@ -772,6 +773,7 @@ export const PreviewTab: React.FC<
                 busy={busy}
                 warnings={musicWarnings}
               />
+              <AudioCheckPanel detail={detail} lang={lang} />
             </div>
           ) : null}
         </aside>

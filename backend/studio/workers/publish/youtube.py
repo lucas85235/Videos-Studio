@@ -41,7 +41,12 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/youtube/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/youtube/v3"
-SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl"
+# Métricas (ADR 0002): retenção e duração média vêm do YouTube Analytics. Tokens antigos sem este escopo continuam
+# publicando; a coleta segue só com a Data API e a tela pede para vincular de novo.
+ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly"
+ANALYTICS_API = "https://youtubeanalytics.googleapis.com/v2/reports"
+SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl "
+          f"{ANALYTICS_SCOPE}")
 READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 LINK_SCOPES = f"{SCOPES} {READONLY_SCOPE}"
 CHUNK = 8 * 1024 * 1024
@@ -514,6 +519,7 @@ def upload_video(
     http: httpx.Client | None = None,
     on_progress=None,
     account: str | None = None,
+    paid_placement: bool = False,
 ) -> dict[str, Any]:
     client = http or httpx.Client(timeout=httpx.Timeout(120, read=600, write=600))
     token = access_token(client, account)
@@ -521,6 +527,9 @@ def upload_video(
     body: dict[str, Any] = {"snippet": snippet, "status": status}
     if localizations:
         body["localizations"] = localizations
+    if paid_placement:  # selo "Inclui promoção paga" (links de afiliado na descrição)
+        parts.append("paidProductPlacementDetails")
+        body["paidProductPlacementDetails"] = {"hasPaidProductPlacement": True}
     size = video.stat().st_size
     init = client.post(
         f"{UPLOAD_API}/videos",

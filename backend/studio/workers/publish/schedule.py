@@ -35,6 +35,7 @@ PUBLISHED = "published"  # postado à mão e marcado como feito
 class Slot(BaseModel):
     weekdays: list[int] = Field(default_factory=lambda: list(range(7)))
     time: str = "18:00"
+    reason: str = Field(default="", max_length=120)  # motivo do horário (slots antigos vêm sem)
 
     @field_validator("time")
     @classmethod
@@ -265,6 +266,15 @@ def plan_youtube_batch(
         base.update(title=info["title"], channel_name=info["channel_name"])
         if info["preview_only"]:
             results.append({**base, "error": "usou provedores só de prévia: renderize com voz e imagens comerciais antes de agendar"})
+            continue
+        # Agendado com erro na conferência antes de publicar para aqui também (ADR 0003, bloco H). Arquivo do vídeo
+        # ausente fica com o erro do próprio envio.
+        from studio.workers.finalcheck.report import preflight
+
+        checks = [i["title"] for i in preflight(project_id, lang)["items"]
+                  if i.get("level") == "erro" and i.get("code") != "final_video"]
+        if checks:
+            results.append({**base, "error": f"a conferência antes de publicar achou problema: {'; '.join(checks[:3])}"})
             continue
         channel_id = info["channel_id"]
         if not channel_id:

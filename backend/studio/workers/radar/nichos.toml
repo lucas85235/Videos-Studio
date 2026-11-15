@@ -1,0 +1,162 @@
+# Radar de nichos: o catálogo de nichos e as regras da coleta (página Radar do Vulto; cópia do catálogo do canais).
+# Cada nicho tem os termos em inglês (mercado EUA) e em português (mercado Brasil), o principal primeiro: cada termo é
+# uma busca (100 unidades); o orçamento cobre o 1º termo de todos e os seguintes enquanto der. Não use | (OR): a API
+# devolve vídeos minúsculos. duracao: "medium" (4 a 20 min) ou "long" (mais de 20 min).
+# Mudou o catálogo? Use "Simular" na página Radar para ver as buscas e a cota antes.
+
+[radar]
+orcamento = 3500        # unidades de cota por coleta (busca = 100, o resto = 1). A cota diária do projeto é 10.000 e
+                        # os envios do Vulto têm cota própria (100/dia).
+dias = 30               # vídeos publicados nos últimos N dias
+hit_us = 100000         # views para contar como "hit" no mercado dos EUA
+hit_br = 50000          # e no Brasil (mercado menor)
+novo_meses = 12         # canal "novo" = criado há até N meses
+candidatos = 40         # canais novos com hit cujos vídeos recentes são lidos (2 unidades cada)
+# O que evitar no primeiro canal (aparece no painel)
+evitar = [
+  ["Bodycam narrada", "Imagens de terceiros e violência/drogas: risco de conteúdo reutilizado e anúncios limitados."],
+  ["Compilações 'disturbing'", "Conteúdo chocante pode receber anúncios limitados."],
+  ["Vídeos de 'fábrica' com IA", "Títulos quase iguais em vários canais: cara de produção em massa, que não monetiza."],
+  ["Alertas de benefício para idosos", "Títulos alarmistas (Social Security, INSS): risco de política e de anúncios."],
+  ["Filmes de IA realistas", "Produção cara; conteúdo sintético realista precisa ser declarado."],
+]
+# Alerta automático: o canal fica no painel, marcado, e fora das contas e das recomendações. Vale a palavra no nome do canal
+# ou em metade ou mais dos títulos dele na amostra. Canais do sul da Ásia (IN, PK, BD, NP, LK) são marcados sempre.
+alertas = [
+  ["bodycam", "Bodycam: imagens de terceiros e violência, risco de conteúdo reutilizado e anúncios limitados"],
+  ["disturbing", "Conteúdo chocante: anúncios limitados"],
+  ["social security", "Alerta de benefício para idosos: títulos alarmistas"],
+  ["inss", "Alerta de benefício para idosos: títulos alarmistas"],
+]
+
+# RPM mediano por categoria (US$ por mil views), da pesquisa de 29/10/2026 (AIR Media-Tech, 2026).
+# pequena = categoria com menos de 10 canais na fonte. Nunca invente RPM por nicho.
+[rpm]
+"Education & Science" = { rpm = 10.22, pequena = false }
+"Gadgets & Tech" = { rpm = 2.33, pequena = false }
+"News & Politics" = { rpm = 2.60, pequena = true }
+"Transport" = { rpm = 5.69, pequena = true }
+"Business & Finance" = { rpm = 2.01, pequena = true }
+"Entertainment" = { rpm = 2.43, pequena = false }
+"Lifestyle" = { rpm = 2.98, pequena = false }
+"Gaming" = { rpm = 2.43, pequena = true }   # sem dado próprio na fonte: usa o de Entertainment
+
+[[nichos]]
+id = "historia"
+nome = "História (documentário)"
+cat = "Education & Science"
+duracao = "long"
+en = ["history documentary", "ancient history documentary"]
+pt = ["documentário de história", "história antiga documentário"]
+
+[[nichos]]
+id = "historia-dinheiro"
+nome = "História do dinheiro"
+cat = "Business & Finance"
+duracao = "medium"
+en = ["history of money", "financial crisis explained"]
+pt = ["história do dinheiro", "crise financeira explicada"]
+
+[[nichos]]
+id = "economia"
+nome = "Economia e geopolítica"
+cat = "News & Politics"
+duracao = "medium"
+en = ["economy explained", "geopolitics explained"]
+pt = ["economia explicada", "geopolítica explicada"]
+
+[[nichos]]
+id = "negocios"
+nome = "Negócios e empresas"
+cat = "Business & Finance"
+duracao = "medium"
+en = ["business documentary", "rise and fall of company"]
+pt = ["história da empresa", "ascensão e queda de empresa"]
+
+[[nichos]]
+id = "financas"
+nome = "Finanças pessoais"
+cat = "Business & Finance"
+duracao = "medium"
+en = ["personal finance explained", "how the rich get richer"]
+pt = ["educação financeira", "como os ricos ficam ricos"]
+
+[[nichos]]
+id = "ia-tecnologia"
+nome = "IA e tecnologia"
+cat = "Gadgets & Tech"
+duracao = "medium"
+en = ["AI explained", "tech documentary"]
+pt = ["inteligência artificial", "documentário tecnologia"]
+
+[[nichos]]
+id = "espaco-ciencia"
+nome = "Espaço e ciência"
+cat = "Education & Science"
+duracao = "medium"
+en = ["space documentary", "science explained"]
+pt = ["universo documentário", "ciência explicada"]
+
+[[nichos]]
+id = "desastres"
+nome = "Desastres e engenharia"
+cat = "Education & Science"
+duracao = "medium"
+en = ["aviation disaster documentary", "engineering disaster"]
+pt = ["desastre aéreo", "desastre de engenharia"]
+
+[[nichos]]
+id = "carros"
+nome = "Carros"
+cat = "Transport"
+duracao = "medium"
+en = ["car documentary", "automotive history"]
+pt = ["história do carro", "documentário carros"]
+
+[[nichos]]
+id = "true-crime"
+nome = "True crime e mistérios"
+cat = "Entertainment"
+duracao = "long"
+en = ["true crime documentary", "unsolved mysteries"]
+pt = ["caso criminal documentário", "mistérios não resolvidos"]
+
+[[nichos]]
+id = "psicologia"
+nome = "Psicologia e autoajuda"
+cat = "Lifestyle"
+duracao = "medium"
+en = ["psychology explained", "stoicism"]
+pt = ["psicologia explicada", "estoicismo"]
+
+[[nichos]]
+id = "luxo"
+nome = "Luxo e bilionários"
+cat = "Lifestyle"
+duracao = "medium"
+en = ["billionaire lifestyle", "luxury documentary"]
+pt = ["bilionários", "vida de bilionário"]
+
+[[nichos]]
+id = "aposentadoria"
+nome = "Aposentadoria e 60+"
+cat = "Business & Finance"
+duracao = "medium"
+en = ["retirement tips", "social security update"]
+pt = ["aposentadoria dicas", "INSS aposentadoria"]
+
+[[nichos]]
+id = "historia-dormir"
+nome = "História para dormir"
+cat = "Education & Science"
+duracao = "long"
+en = ["history for sleep", "boring history for sleep"]
+pt = ["história para dormir", "história chata para dormir"]
+
+[[nichos]]
+id = "games"
+nome = "Games e lançamentos"
+cat = "Gaming"
+duracao = "medium"
+en = ["video game documentary", "gaming history"]
+pt = ["história dos games", "documentário videogame"]

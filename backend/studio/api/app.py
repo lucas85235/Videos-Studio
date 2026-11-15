@@ -12,7 +12,21 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
-from studio.api import routes_media, routes_misc, routes_projects, routes_publish
+from studio.api import (
+    routes_analytics,
+    routes_audio,
+    routes_business,
+    routes_checks,
+    routes_factcheck,
+    routes_media,
+    routes_misc,
+    routes_ops,
+    routes_projects,
+    routes_publish,
+    routes_radar,
+    routes_shorts,
+    routes_visual,
+)
 from studio.config import REPO_ROOT, get_settings
 from studio.db import init_db
 from studio.events import bus
@@ -26,7 +40,11 @@ async def lifespan(app: FastAPI):
     from studio.workers.jobs import get_runner
 
     get_runner().recover()
+    from studio.workers.ops.routines import start_routines, stop_routines
+
+    start_routines()  # rotinas automáticas (só agem com workers_enabled)
     yield
+    stop_routines()
     from studio.media.render import get_render_client
 
     get_render_client().shutdown()
@@ -45,6 +63,17 @@ def create_app() -> FastAPI:
     app.include_router(routes_misc.router)
     app.include_router(routes_publish.router)
     app.include_router(routes_media.router)
+    # Gestão de canal (ADR 0002)
+    app.include_router(routes_analytics.router)
+    app.include_router(routes_shorts.router)
+    app.include_router(routes_ops.router)
+    app.include_router(routes_business.router)
+    # Qualidade e pesquisa (ADR 0003)
+    app.include_router(routes_radar.router)
+    app.include_router(routes_factcheck.router)
+    app.include_router(routes_audio.router)
+    app.include_router(routes_checks.router)
+    app.include_router(routes_visual.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

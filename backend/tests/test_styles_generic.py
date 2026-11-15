@@ -146,5 +146,8 @@ def test_new_style_preview_offline(isolated_settings, style_id, mood):
         final = get_job(job["id"])
         assert final is not None and final["status"] == "done", final and final["error"]
     preview = final["result"]
-    assert preview["music"] == {"source": "procedural", "track": None, "mood": mood}
+    music = preview["music"]
+    assert {k: music[k] for k in ("source", "track", "mood")} == {"source": "procedural", "track": None, "mood": mood}
+    # Uma faixa só: uma cama do começo ao fim, sem loop (ADR 0003, bloco G).
+    assert len(music["beds"]) == 1 and music["beds"][0]["start_s"] == 0.0 and music["beds"][0]["loop"] is None
     assert (isolated_settings.data_dir / preview["langs"]["pt-BR"]["mix"]).exists()

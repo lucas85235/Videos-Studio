@@ -63,6 +63,8 @@ type Draft = {
   extras: string[];
   autopilot: boolean;
   voice: VoiceChoice | null;
+  /** A voz do rascunho veio do padrão do canal (rascunhos antigos não têm o campo). */
+  voiceFromChannel?: boolean;
   touched: Touched;
   savedAt: string;
 };
@@ -85,6 +87,7 @@ const isDraft = (v: unknown): v is Draft => {
     isStringArray(v.extras) &&
     isBoolean(v.autopilot) &&
     voiceOk &&
+    (v.voiceFromChannel === undefined || isBoolean(v.voiceFromChannel)) &&
     touchedOk &&
     isStr(v.savedAt)
   );
@@ -162,6 +165,12 @@ export const NewProjectPage: React.FC = () => {
   const [extras, setExtras] = useState<string[]>(draft?.extras ?? []);
   const [autopilot, setAutopilot] = useState(draft?.autopilot ?? true);
   const [voice, setVoice] = useState<VoiceChoice | null>(draft?.voice ?? null);
+  // A voz atual veio da voz final padrão do canal (não foi escolhida à mão): trocar de canal pode trocá-la.
+  const [voiceFromChannel, setVoiceFromChannel] = useState(draft?.voiceFromChannel ?? false);
+  const pickVoice = (v: VoiceChoice | null) => {
+    setVoice(v);
+    setVoiceFromChannel(false);
+  };
   // O que o usuário já escolheu à mão não é sobrescrito pelo canal.
   const [touched, setTouched] = useState<Touched>(draft?.touched ?? { style: false, langs: false });
   const [applied, setApplied] = useState<ChannelApplied | null>(null);
@@ -236,11 +245,12 @@ export const NewProjectPage: React.FC = () => {
       extras,
       autopilot,
       voice,
+      voiceFromChannel,
       touched,
       savedAt: new Date().toISOString(),
     };
     writeLocal(DRAFT_KEY, value);
-  }, [dirty, create.isSuccess, title, topic, brief, styleId, channelId, primary, extras, autopilot, voice, touched]);
+  }, [dirty, create.isSuccess, title, topic, brief, styleId, channelId, primary, extras, autopilot, voice, voiceFromChannel, touched]);
 
   // Fechar ou recarregar a aba: o rascunho já está salvo, mas o aviso do navegador evita a surpresa.
   useEffect(() => {
@@ -277,7 +287,7 @@ export const NewProjectPage: React.FC = () => {
     setPrimary(DEFAULT_PRIMARY);
     setExtras([]);
     setAutopilot(true);
-    setVoice(null);
+    pickVoice(null);
     setTouched({ style: false, langs: false });
     setApplied(null);
     setChannelNote(null);
@@ -288,7 +298,7 @@ export const NewProjectPage: React.FC = () => {
   const pickStyle = (id: string) => {
     if (id === effectiveStyleId) return;
     setStyleId(id);
-    setVoice(null);
+    pickVoice(null);
     setTouched((t) => ({ ...t, style: true }));
     setApplied((a) => (a && a.prevStyle !== undefined ? { ...a, prevStyle: undefined } : a));
     setChannelNote(null);
@@ -297,7 +307,7 @@ export const NewProjectPage: React.FC = () => {
   const pickPrimary = (code: string) => {
     setPrimary(code);
     setExtras((list) => list.filter((c) => c !== code));
-    setVoice(null);
+    pickVoice(null);
     setTouched((t) => ({ ...t, langs: true }));
     setApplied((a) => (a?.prevLangs ? { ...a, prevLangs: undefined } : a));
     setChannelNote(null);
@@ -339,7 +349,16 @@ export const NewProjectPage: React.FC = () => {
     }
     const nextApplied = next && (next.prevStyle !== undefined || next.prevLangs) ? next : null;
 
-    if (nextStyle !== effectiveStyleId || nextPrimary !== primary) setVoice(null);
+    // 3. Voz final: a padrão do canal entra se você não escolheu outra à mão (estilo e idioma iguais mantêm a sua).
+    // Só vale no idioma em que foi escolhida (o primeiro do canal, em Canais): projeto em outro idioma não a recebe.
+    const manualVoice = voice !== null && !voiceFromChannel && nextStyle === effectiveStyleId && nextPrimary === primary;
+    const channelVoice = c?.voice_defaults?.final;
+    if (!manualVoice) {
+      if (channelVoice?.provider && channelVoice.voice && nextPrimary === c?.languages[0]) {
+        setVoice({ provider: channelVoice.provider, voice: channelVoice.voice });
+        setVoiceFromChannel(true);
+      } else pickVoice(null);
+    }
     setStyleId(nextStyle);
     setPrimary(nextPrimary);
     setExtras(nextExtras);
@@ -606,7 +625,7 @@ export const NewProjectPage: React.FC = () => {
             effectiveVoice ? (
               effectiveVoiceName ? (
                 <>
-                  {chosenVoice ? 'Escolhida: ' : 'Padrão do estilo: '}
+                  {chosenVoice ? (voiceFromChannel ? 'Padrão do canal: ' : 'Escolhida: ') : 'Padrão do estilo: '}
                   <span className="font-medium text-fg">{effectiveVoiceName}</span>
                   {chosenVoice ? null : '. Escolha outra abaixo, se quiser.'}
                 </>
@@ -626,7 +645,7 @@ export const NewProjectPage: React.FC = () => {
               hint="A prévia sai com uma voz local grátis, para você conferir o conteúdo; esta voz só é gravada quando você renderiza o vídeo final (dá para trocar até lá). Clique em Ouvir (▶) para escutar uma amostra e no nome para escolher."
             >
               <div className="max-h-80 overflow-y-auto rounded-lg border border-line bg-canvas p-3">
-                <VoicePicker lang={primary} purpose="final" value={effectiveVoice} defaultVoice={defaultVoice} onChange={setVoice} />
+                <VoicePicker lang={primary} purpose="final" value={effectiveVoice} defaultVoice={defaultVoice} onChange={pickVoice} />
               </div>
             </FieldGroup>
           ) : styles.isLoading ? (

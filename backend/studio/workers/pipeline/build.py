@@ -32,7 +32,8 @@ from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
 from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
 from studio.media import audio as audio_mod
-from studio.media import music_library
+from studio.media import audio_check, music_library
+from studio.media.ffmpeg import read_wav
 from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
@@ -643,11 +644,17 @@ class Builder:
             self.stats.noncommercial.add(provider.info.id)
         return rel
 
-    def music(self, duration: float) -> tuple[str, dict[str, Any]] | None:
+    def music(self, duration: float, timeline: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]] | None:
+        """Trilha do vídeo. Uma faixa ativa sem `loop` = o caminho de sempre (mesma chave de cache: projeto antigo não
+        refaz o áudio). Com várias faixas ou `loop` (e a `timeline`, que diz onde cada segmento começa), monta uma
+        cama por faixa com `audio.build_beds` (ADR 0003, bloco G)."""
         music_spec = self.style.audio.music
-        cue = next((c for c in self.doc.music if c.enabled), None)
-        if music_spec.source == "none" or cue is None:
+        cues = [c for c in self.doc.music if c.enabled]
+        if music_spec.source == "none" or not cues:
             return None
+        if timeline is not None and (len(cues) > 1 or any(c.loop for c in cues)):
+            return self._music_beds_of(cues, duration, timeline)
+        cue = cues[0]
         mood = cue.mood or music_spec.mood
         bucket = float(int(duration // 5 + 1) * 5)
         volume = cue.volume_db if cue.volume_db is not None else music_spec.volume_db
@@ -668,12 +675,108 @@ class Builder:
         self.stats.hit("music", False)
         return h, {**output, "volume_db": volume}
 
-    def _library_music(self, mood: str, bucket: float, pinned: str | None) -> tuple[str, dict[str, Any]] | None:
-        """Trilha da biblioteca do usuário (library/music), ajustada à duração. None = biblioteca vazia."""
+    def _music_beds_of(self, cues: list[Any], duration: float, timeline: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Parte de `music()`: uma cama por faixa ativa, trocando no início da narração do segmento marcado.
+
+        Ordem pelo segmento de início (vazio = começo do vídeo); a 1ª cama começa em 0. Duas faixas no mesmo ponto:
+        vale a que vem depois na lista."""
+        music_spec = self.style.audio.music
+        seg_order = {s.id: i for i, s in enumerate(self.doc.segments)}
+        seg_start = {n["segment_id"]: float(n["start"]) for n in timeline.get("narration", [])}
+
+        def order(pair: tuple[int, Any]) -> tuple[int, int]:
+            index, cue = pair
+            return (seg_order.get(cue.start_segment, -1) if cue.start_segment else -1, index)
+
+        # Faixa que começa num segmento que não existe mais (apagado, roteiro refeito): fica fora, com aviso. Sem
+        # isso ela caía no 0,0 e tomava o lugar da faixa de abertura.
+        lost = [c for c in cues if c.start_segment and (c.start_segment not in seg_order or c.start_segment not in seg_start)]
+        kept = [c for c in cues if c not in lost]
+        if not kept:  # só sobraram faixas soltas: a 1ª delas toca o vídeo todo, como antes das várias faixas
+            kept, lost = lost[:1], lost[1:]
+        if lost:
+            self.warnings.append(f"{len(lost)} faixa(s) de música começava(m) num trecho que não está mais no vídeo "
+                                 "(apagado ou sem narração) e ficou(aram) fora. Escolha outro início no painel Trilha.")
+        cues = kept
+        has_library = bool(music_library.list_tracks())
+        by_start: dict[float, Any] = {}
+        for _index, cue in sorted(enumerate(cues), key=order):
+            start = seg_start.get(cue.start_segment, 0.0) if cue.start_segment else 0.0
+            by_start[round(min(max(0.0, start), duration), 3)] = cue
+        starts = sorted(by_start)
+        chosen = [by_start[s] for s in starts]
+        starts[0] = 0.0  # a 1ª cama começa no início do vídeo
+        durs = audio_mod.bed_durations(starts, duration)
+        beds: list[dict[str, Any]] = []
+        base_volume: float | None = None
+        for i, (cue, start, dur) in enumerate(zip(chosen, starts, durs, strict=True)):
+            mood = cue.mood or music_spec.mood
+            volume = cue.volume_db if cue.volume_db is not None else music_spec.volume_db
+            base_volume = volume if base_volume is None else base_volume
+            # a 1ª faixa mantém a semente de sempre; as outras, uma por faixa
+            seed = seed_from(self.doc.seed, "music", mood) if i == 0 else seed_from(self.doc.seed, "music", cue.id)
+            bed: dict[str, Any] = {"cue_id": cue.id, "start_s": round(start, 3), "dur_s": round(dur, 3),
+                                   "gain_db": round(volume - base_volume, 2), "loop": None, "intro": False}
+            lib = None
+            # `loop` só puxa a biblioteca quando ela tem faixas: com o estilo procedural e a biblioteca vazia, a
+            # faixa segue procedural sem o aviso de "biblioteca vazia" (o usuário não pediu biblioteca)
+            if music_spec.source == "library" or cue.track or (cue.loop and has_library):
+                lib = self._library_music(mood, 0.0, cue.track, seed=seed, prepare=False)
+            if lib:
+                key, info = lib
+                bed.update({"src": info["src"], "key": key, "source": "library", "track": info["track"],
+                            "mood": info["mood"]})
+                if cue.loop:
+                    cur = music_library.curate_track(info["track"])
+                    if cur.get("ok"):
+                        bed.update({"loop": [cur["loop_start_s"], cur["loop_s"]], "intro": bool(cur.get("intro")),
+                                    "voz_db": cur.get("voz_db"), "trim_db": cur.get("trim_db")})
+                    else:
+                        reason = cur.get("reason") or "sem curadoria"
+                        self.warnings.append(f"A faixa '{info['track']}' ficou sem loop no compasso ({reason}): "
+                                             "tocou desde o começo.")
+            else:
+                bucket = float(int(dur // 5 + 1) * 5)
+                inputs = {"mood": audio_mod.mood_key(mood), "duration": bucket, "seed": seed, "v": 2}
+                h = hash_obj(inputs)
+                cached = self.store.lookup("music", h)
+                if cached:
+                    self.stats.hit("music", True)
+                else:
+                    path = audio_mod.generate_music(mood, bucket, seed, self.store.dir_for("music", h) / "music.wav")
+                    cached = {"path": self.store.rel(path), "files": [self.store.rel(path)], "mood": inputs["mood"]}
+                    self.store.save("music", h, cached, "procedural")
+                    self.stats.hit("music", False)
+                bed.update({"src": str(self.store.abs(cached["path"])), "key": h, "source": "procedural",
+                            "track": None, "mood": inputs["mood"]})
+            beds.append(bed)
+        spec = [(b["key"], b["start_s"], b["dur_s"], b["loop"], b["intro"], b["gain_db"], b.get("voz_db"),
+                 b.get("trim_db")) for b in beds]
+        h = hash_obj({"beds": spec, "total": duration, "v": 1})
+        public = [{"cue_id": b["cue_id"], "track": b["track"], "mood": b["mood"], "start_s": b["start_s"],
+                   "dur_s": b["dur_s"], "loop": b["loop"]} for b in beds]
+        first = beds[0]
+        meta = {"mood": first["mood"], "source": first["source"], "track": first["track"], "beds": public}
+        cached = self.store.lookup("music", h)
+        if cached:
+            self.stats.hit("music", True)
+            return h, {**cached, **meta, "volume_db": base_volume}
+        path = audio_mod.build_beds(beds, duration, self.store.dir_for("music", h) / "beds.wav")
+        output = {"path": self.store.rel(path), "files": [self.store.rel(path)], **meta}
+        self.store.save("music", h, output, "beds")
+        self.stats.hit("music", False)
+        return h, {**output, "volume_db": base_volume}
+
+    def _library_music(self, mood: str, bucket: float, pinned: str | None, *, seed: int | None = None,
+                       prepare: bool = True) -> tuple[str, dict[str, Any]] | None:
+        """Trilha da biblioteca do usuário (library/music), ajustada à duração. None = biblioteca vazia.
+
+        Com `prepare=False` (camas de várias faixas), só escolhe a faixa: devolve o hash do arquivo e `src` (absoluto)."""
         tracks = music_library.list_tracks()
         if pinned and not any(t.path == pinned for t in tracks):
             self.warnings.append(f"A faixa fixada '{pinned}' não está mais na biblioteca; escolhi outra.")
-        track = music_library.pick_track(tracks, mood, seed_from(self.doc.seed, "music", mood), pinned)
+        seed = seed_from(self.doc.seed, "music", mood) if seed is None else seed
+        track = music_library.pick_track(tracks, mood, seed, pinned)
         src = music_library.resolve(track.path) if track else None
         if track is None or src is None:
             self.warnings.append(
@@ -681,6 +784,8 @@ class Builder:
                 f"Coloque arquivos de áudio em {music_library.music_root()}."
             )
             return None
+        if not prepare:
+            return hash_file(src), {"source": "library", "track": track.path, "mood": track.mood, "src": str(src)}
         inputs = {"source": "library", "track": hash_file(src), "duration": bucket, "v": 1}
         h = hash_obj(inputs)
         cached = self.store.lookup("music", h)
@@ -694,8 +799,15 @@ class Builder:
         self.stats.hit("music", False)
         return h, output
 
+    def music_track(self, timeline: dict[str, Any]) -> tuple[Path, dict[str, Any]] | None:
+        """Trilha já montada para a timeline (a mesma do mix), para a conferência de áudio: (arquivo, medidas)."""
+        found = self.music(timeline["duration"], timeline)
+        if found is None:
+            return None
+        return self.store.abs(found[1]["path"]), found[1]
+
     def sfx_file(self, kind: str) -> Path:
-        h = hash_obj({"sfx": kind, "v": 2})  # v2: impacto em camadas e loudness normalizada por arquivo
+        h = hash_obj({"sfx": kind, "v": audio_mod.SFX_VERSION})  # ver SFX_VERSION
         cached = self.store.lookup("sfx", h)
         if cached:
             return self.store.abs(cached["path"])
@@ -705,17 +817,38 @@ class Builder:
 
     def mix(self, lang: str, timeline: dict[str, Any], tts_hashes: dict[str, str]) -> str:
         total = timeline["duration"]
-        music = self.music(total)
-        self.music_used = (
-            {"source": music[1].get("source", "procedural"), "track": music[1].get("track"), "mood": music[1].get("mood")}
-            if music
-            else None
-        )
+        music = self.music(total, timeline)
+        beds = music[1].get("beds") if music else None
+        if music:
+            first_cue = next((c.id for c in self.doc.music if c.enabled), None)
+            single = [{"cue_id": first_cue, "track": music[1].get("track"), "mood": music[1].get("mood"),
+                       "start_s": 0.0, "dur_s": total, "loop": None}]
+            self.music_used = {"source": music[1].get("source", "procedural"), "track": music[1].get("track"),
+                               "mood": music[1].get("mood"), "beds": beds or single}
+        else:
+            self.music_used = None
+        # Guarda de apito (regra 13 do padrão do estúdio): efeito com apito ou banido sai do mix, com aviso.
         sfx_events = timeline.get("sfx", [])
+        blocked: set[str] = set()
+        for kind in sorted({e["type"] for e in sfx_events}):
+            gh = hash_obj({"sfx_guard": kind, "sfx_v": audio_mod.SFX_VERSION, "v": 1})
+            guard = self.store.lookup("sfx_guard", gh)
+            if guard:
+                report = guard["report"]
+            else:
+                sound, _rate = read_wav(self.sfx_file(kind))
+                report = audio_check.tone_report(sound)
+                self.store.save("sfx_guard", gh, {"report": report, "files": []}, "numpy")
+            if kind in audio_check.SFX_BANNED or report.get("apito"):
+                blocked.add(kind)
+                self.warnings.append(f"efeito sonoro '{kind}' tem apito: ficou fora do mix (padrão do estúdio: sem apito)")
+        sfx_events = [e for e in sfx_events if e["type"] not in blocked]
         short = self.style.format.type == "short"
         music_hp = audio_mod.music_highpass(music[1].get("mood")) if music else None
-        # v3: trilha medida em mono depois do passa-altas; o mix dura exatamente o vídeo e termina num fade curto (v2:
-        # passa-altas e ducking leve, fades contra o fim real, SFX normalizados e master com ganho medido).
+        music_ref = music_ref_s(music[1]) if music else None
+        # v5: o ganho da trilha de várias faixas é medido só na 1ª cama (`music_ref_s`). v4: várias faixas ou loop no compasso (uma cama por faixa, `build_beds`). v3: trilha medida em mono depois do
+        # passa-altas; o mix dura exatamente o vídeo e termina num fade curto (v2: passa-altas e ducking leve, fades
+        # contra o fim real, SFX normalizados e master com ganho medido).
         inputs = {
             "voice": [(tts_hashes[n["segment_id"]], n["start"]) for n in timeline["narration"]],
             "music": (music[0], music[1]["volume_db"], self.style.audio.music.ducking, music_hp) if music else None,
@@ -724,8 +857,12 @@ class Builder:
             "loudness": self.style.audio.loudness_lufs,
             "total": total,
             "short": short,
-            "v": 3,
+            "v": 5 if beds else 3,
         }
+        # Efeito que mudou de som na última SFX_VERSION (glitch e riser perderam o apito): a versão entra na chave e o
+        # mix guardado com o som antigo é refeito. Sem esses tipos, a chave fica a de antes (nada é refeito à toa).
+        if any(e["type"] in audio_mod.SFX_RETUNED for e in sfx_events):
+            inputs["sfx_v"] = audio_mod.SFX_VERSION
         h = hash_obj(inputs)
         cached = self.store.lookup("mix", h)
         if cached:
@@ -751,12 +888,14 @@ class Builder:
             total=total,
             short=short,
             music_highpass=music_hp or audio_mod.MUSIC_HIGHPASS_HZ,
+            music_ref_s=music_ref,
         )
         for tmp in (voice, sfx_track):
             if tmp is not None:
                 tmp.unlink(missing_ok=True)
         rel = self.store.rel(mixed)
-        self.store.save("mix", h, {"path": rel, "files": [rel]}, "ffmpeg")
+        # `sfx_v`: a conferência de áudio sabe com que versão dos efeitos este mix foi montado
+        self.store.save("mix", h, {"path": rel, "files": [rel], "sfx_v": audio_mod.SFX_VERSION}, "ffmpeg")
         self.stats.hit("mix", False)
         return rel
 
@@ -992,6 +1131,13 @@ class Builder:
         }
 
 
+def music_ref_s(info: dict[str, Any]) -> float | None:
+    """Trecho (s) onde o mix mede o ganho da trilha: com várias camas, só a 1ª (cada faixa fica no `volume_db` dela);
+    com uma, None (o arquivo todo). Vai até o início da 2ª cama (antes do cruzamento)."""
+    beds = info.get("beds") or []
+    return float(beds[1]["start_s"]) if len(beds) > 1 else None
+
+
 def resolve_reused_images(doc: ProjectDoc, images: dict[str, str | None]) -> None:
     """Cena que reaproveita mostra a imagem da raiz da cadeia; referência solta ou ciclo fica sem imagem (o
     renderer usa o fundo animado). Imagem fixada na própria cena vale mais que a da raiz."""
@@ -1081,6 +1227,10 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
         "estimated_cost_usd": round(est, 4),
         "estimated_seconds": round(tts_seconds + len(missing_images) * (40 if img_provider == "codex_cli" else 12)),
     }
+    # Créditos da voz final pelo `credits_per_char` do canal (ADR 0002); None quando não se aplica.
+    from studio.workers.ops.estimate import credits_estimate
+
+    result["credits_estimate"] = credits_estimate(project_id, result["tts_chars"], local, tts_provider)
     # Mídia real (só quando há: o plano de um projeto sem mídia fica igual): cenas que mostram a mídia em vez de
     # gerar imagem, e as que perderam o arquivo.
     media_scenes = [s for s in builder.doc.ordered_scenes() if s.visual.media is not None and s.visual.media.asset]

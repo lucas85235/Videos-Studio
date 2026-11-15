@@ -1,0 +1,123 @@
+/* Cliente do bloco I (ADR 0003): provas na tela (captura com marca-texto), vídeos de referência e miniaturas A/B. */
+import { api, type Job } from './api';
+
+export type ToolStatus = { ok: boolean; message: string };
+export type VisualCapabilities = { browser: ToolStatus; ytdlp: ToolStatus };
+
+/** Trecho marcado: retângulos de 0 a 1 e a janela de enquadramento ([x0, y0, x1, y1]). */
+export type CapturePhrase = {
+  text: string;
+  rects: [number, number, number, number][];
+  view: [number, number, number, number] | null;
+  lock: boolean;
+  /** O trecho foi achado na página (pode estar fora da tela capturada). */
+  found?: boolean;
+  /** Trecho que manda no recorte da prova. */
+  focus?: boolean;
+};
+
+export type PageCapture = {
+  id: string;
+  project_id: string | null;
+  scene_id: string | null;
+  url: string;
+  domain: string;
+  title: string;
+  /** Caminhos relativos à pasta de dados (use com `fileUrl`). */
+  image: string;
+  proof: string;
+  width: number;
+  height: number;
+  dark: boolean;
+  phrases: CapturePhrase[];
+  text_path: string;
+  status: 'ok' | 'parcial' | 'falhou';
+  error: string | null;
+  created_at: string | null;
+};
+
+export type ProofInput = { url: string; phrases: string[]; focus?: number };
+
+export type ReferenceShot = { k: number; a: number; b: number; dur: number };
+
+export type ReferenceVideo = {
+  id: string;
+  title: string;
+  source_url: string;
+  path: string;
+  info: { w?: number; h?: number; fps?: number; codec?: string; dur?: number };
+  shots: ReferenceShot[];
+  sheets: string[];
+  stats: { shots?: number; median_s?: number; mean_s?: number; cuts_per_min?: number; palette?: string[] };
+  status: 'novo' | 'pronto' | 'falhou';
+  error: string | null;
+  created_at: string | null;
+};
+
+export type ThumbSpec = { scene_id: string | null; text: string; template: string; label?: string };
+
+export type ThumbVariant = ThumbSpec & {
+  n: number;
+  label: string;
+  path: string;
+  preview: string;
+  size: string;
+  mb: number;
+  errors: string[];
+  /** Avisos que não impedem o uso (ex.: mais de 3 palavras no longo). */
+  warnings?: string[];
+};
+
+export type ThumbsState = {
+  lang: string;
+  variants: ThumbVariant[];
+  chosen: number;
+  spec: ThumbSpec[];
+  sheet_big: string;
+  sheet_small: string;
+  made_at: string | null;
+  /** As miniaturas são de antes da última mudança na capa ou nas imagens: o envio usa a capa do vídeo final. */
+  stale?: boolean;
+  ab: { eligible: boolean; median_impressions: number | null; n: number };
+  /** Texto da regra do A/B para mostrar na tela. */
+  rule: string;
+  is_long: boolean;
+  /** Tamanho final ("3840x2160" no longo, "1080x1920" no Short). */
+  size: string;
+  templates: string[];
+  /** Quantas miniaturas o estilo pede (até 3). */
+  max: number;
+};
+
+/** POST /api/references: a referência criada e o job da análise, que começa sozinho. */
+export type ReferenceUpload = ReferenceVideo & { job: Job };
+
+export const THUMB_TEMPLATE_LABELS: Record<string, string> = {
+  'texto-grande-esquerda': 'Texto grande à esquerda',
+  'texto-centro': 'Texto no centro',
+  'texto-baixo': 'Texto embaixo',
+  'sem-texto': 'Sem texto',
+};
+
+export const visualApi = {
+  capabilities: () => api.get<VisualCapabilities>('/api/visual/capabilities'),
+  captureProof: (projectId: string, sceneId: string, body: ProofInput) =>
+    api.post<Job>(`/api/projects/${projectId}/scenes/${sceneId}/proof`, body),
+  captures: (projectId: string) => api.get<PageCapture[]>(`/api/projects/${projectId}/captures`),
+  capture: (captureId: string) => api.get<PageCapture>(`/api/captures/${captureId}`),
+  setPhraseView: (captureId: string, i: number, view: [number, number, number, number] | null, lock: boolean) =>
+    api.put<PageCapture>(`/api/captures/${captureId}/phrases/${i}/view`, { view, lock }),
+  references: () => api.get<ReferenceVideo[]>('/api/references'),
+  uploadReference: (form: FormData) => api.upload<ReferenceUpload>('/api/references', form),
+  referenceFromLink: (url: string, title?: string) => api.post<Job>('/api/references/link', { url, title }),
+  reference: (id: string) => api.get<ReferenceVideo>(`/api/references/${id}`),
+  deleteReference: (id: string) => api.del<{ ok: boolean }>(`/api/references/${id}`),
+  analyzeReference: (id: string) => api.post<Job>(`/api/references/${id}/analyze`),
+  thumbs: (projectId: string, lang: string) =>
+    api.get<ThumbsState>(`/api/projects/${projectId}/thumbs?lang=${encodeURIComponent(lang)}`),
+  setThumbSpec: (projectId: string, lang: string, variants: ThumbSpec[]) =>
+    api.put<ThumbsState>(`/api/projects/${projectId}/thumbs/spec`, { lang, variants }),
+  makeThumbs: (projectId: string, lang: string) => api.post<Job>(`/api/projects/${projectId}/thumbs`, { lang }),
+  chooseThumb: (projectId: string, lang: string, n: number) =>
+    api.put<ThumbsState>(`/api/projects/${projectId}/thumbs/chosen`, { lang, n }),
+};
