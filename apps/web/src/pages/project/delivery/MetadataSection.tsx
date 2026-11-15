@@ -1,6 +1,6 @@
 // Passo 2 da aba Vídeo e publicação: título, descrição, tags e hashtags (editáveis).
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { FileText, Save, Sparkles } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FileText, Save, Sparkles, TriangleAlert } from "lucide-react";
 import React, { useEffect, useId } from "react";
 import { api, type Job, type Metadata, type ProjectDetail } from "../../../api";
 import { langLabel } from "../../../labels";
@@ -14,6 +14,7 @@ import {
   useToast,
 } from "../../../ui";
 import { createKeyedStore, useKeyedStore } from "../core/drafts";
+import { EDITORIAL_NOTICE, mediaCredits } from "../core/media";
 import {
   CopyButton,
   guardUnload,
@@ -206,16 +207,41 @@ export const MetadataSection: React.FC<Props> = ({
         }),
   });
 
+  // Créditos da mídia real: o envio põe a lista no fim da descrição (só busca quando alguma cena tem mídia real).
+  const hasMedia = doc.scenes.some((s) => Boolean(s.visual.media));
+  const credits = useQuery({
+    queryKey: [
+      "media-credits",
+      projectId,
+      lang,
+      detail.project.current_version,
+    ],
+    queryFn: () => mediaCredits(projectId, lang),
+    enabled: hasMedia,
+    retry: false,
+    placeholderData: (prev) => prev,
+  });
+  const creditsText = hasMedia ? (credits.data?.text ?? "").trim() : "";
+
   const locked = Boolean(metadataJob) || save.isPending;
   const titleTooLong = title.length > TITLE_MAX;
   const tagsForDescription = parseHashtags(hashtags).slice(
     0,
     HASHTAGS_IN_DESCRIPTION,
   );
-  // O envio junta descrição + linha em branco + hashtags, e corta em 5.000.
+  // O envio junta descrição + créditos + hashtags (separados por linha em branco) e corta só a descrição em 5.000.
   const descriptionLength =
     description.length +
+    (creditsText ? 2 + creditsText.length : 0) +
     (tagsForDescription.length ? 2 + tagsForDescription.join(" ").length : 0);
+  const counterExtra =
+    creditsText && tagsForDescription.length
+      ? "com os créditos e as hashtags"
+      : creditsText
+        ? "com os créditos"
+        : tagsForDescription.length
+          ? "com as hashtags"
+          : undefined;
   const generateDisabled = Boolean(generateBlock) || locked;
   // O custo fica junto do botão (no cabeçalho), não abaixo da divisória.
   const generateNote =
@@ -342,11 +368,48 @@ export const MetadataSection: React.FC<Props> = ({
             id={`${ids}-descricao`}
             value={descriptionLength}
             max={DESCRIPTION_MAX}
-            extra={tagsForDescription.length ? "com as hashtags" : undefined}
+            extra={counterExtra}
           />
           <CopyButton text={description} label="Copiar descrição" />
         </div>
       </div>
+
+      {creditsText ? (
+        <div
+          role="group"
+          aria-labelledby={`${ids}-creditos`}
+          className="flex flex-col gap-1.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span
+              id={`${ids}-creditos`}
+              className="text-sm font-medium text-fg"
+            >
+              Créditos das imagens (vão no fim da descrição ao publicar)
+            </span>
+            <CopyButton
+              text={creditsText}
+              label="Copiar créditos"
+              ariaLabel="Copiar os créditos das imagens"
+            />
+          </div>
+          <pre
+            className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-canvas px-2.5 py-2 font-sans text-[13px] leading-relaxed text-muted"
+          >
+            {creditsText}
+          </pre>
+          {credits.data?.editorial ? (
+            <p className="flex items-start gap-1.5 text-[13px] text-amber-200">
+              <TriangleAlert
+                size={14}
+                aria-hidden="true"
+                className="mt-0.5 shrink-0"
+              />
+              {EDITORIAL_NOTICE}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <Field label="Tags" hint="Separe por vírgula.">
         <Input

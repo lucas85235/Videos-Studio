@@ -32,7 +32,7 @@ voice:
   gap_s: 0.35
 
 art:
-  bible: "fotografia noturna granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, cores lavadas, sem pessoas nítidas"
+  bible: "fotografia granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, cores lavadas, sem pessoas nítidas"
   banned: ["texto", "letras", "logotipos", "marca d'água", "sangue explícito"]
   languages: [archival, painting]
   image_chain: [codex_cli]
@@ -71,8 +71,8 @@ edit:
   zoom_strength: 0.06
 
 audio:
-  music: { source: procedural, mood: horror, volume_db: -22, ducking: true }
-  sfx: { auto: true, pack: horror, volume_db: -10 }
+  music: { source: procedural, mood: horror, volume_db: -19, ducking: true }
+  sfx: { auto: true, pack: horror, volume_db: -7 }
   loudness_lufs: -14
 
 thumbnail: { template: sem-texto, variations: 1, per_language: false }

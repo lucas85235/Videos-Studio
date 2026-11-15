@@ -38,11 +38,12 @@ from studio.providers.base import (
 log = logging.getLogger(__name__)
 
 
-def fit_image(src: Path, dst: Path, width: int, height: int) -> Path:
-    """Recorta/redimensiona para o tamanho exato (preenche e corta pelo centro)."""
+def fit_image(src: Path, dst: Path, width: int, height: int,
+              centering: tuple[float, float] = (0.5, 0.5)) -> Path:
+    """Recorta/redimensiona para o tamanho exato (preenche e corta em volta de `centering`, padrão o centro)."""
     with Image.open(src) as im:
         im = im.convert("RGB")
-        fitted = ImageOps.fit(im, (width, height), method=Image.Resampling.LANCZOS)
+        fitted = ImageOps.fit(im, (width, height), method=Image.Resampling.LANCZOS, centering=centering)
         dst.parent.mkdir(parents=True, exist_ok=True)
         fitted.save(dst, quality=93)
     return dst

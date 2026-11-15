@@ -141,6 +141,7 @@ class ChannelBody(BaseModel):
 
 def _channel_dict(row: Channel) -> dict[str, Any]:
     from studio.workers.publish.schedule import plan_of
+    from studio.workers.publish.youtube_channels import public_info
 
     return {
         "id": row.id,
@@ -151,7 +152,16 @@ def _channel_dict(row: Channel) -> dict[str, Any]:
         "default_style_id": row.default_style_id,
         "style_bible": row.style_bible,
         "posting": plan_of(row.settings).model_dump(),
+        "youtube": public_info(row.settings),  # canal do YouTube ligado (None se não houver)
     }
+
+
+def _channel_or_404(channel_id: str) -> dict[str, Any]:
+    with session_scope() as s:
+        row = s.get(Channel, channel_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="canal não encontrado")
+        return _channel_dict(row)
 
 
 def _apply_channel(row: Channel, body: ChannelBody, fields: set[str]) -> None:
@@ -207,12 +217,79 @@ def channel_slots(channel_id: str, count: int = 5) -> dict[str, Any]:
 
 @router.delete("/channels/{channel_id}")
 def delete_channel(channel_id: str) -> dict[str, Any]:
+    from studio.workers.publish import youtube_channels
+
     with session_scope() as s:
         row = s.get(Channel, channel_id)
         if row is None:
             return {"deleted": False}
+        settings = dict(row.settings or {})
         s.delete(row)
-        return {"deleted": True}
+    youtube_channels.channel_deleted(channel_id, settings)
+    return {"deleted": True}
+
+
+class ChannelLinkBody(BaseModel):
+    url: str = Field(min_length=2, max_length=500)  # link do canal, @handle ou id UC…
+    channel_id: str | None = Field(default=None, max_length=32)  # canal do Vulto; vazio cria um novo
+
+
+@router.post("/channels/from-link")
+def channel_from_link(body: ChannelLinkBody) -> dict[str, Any]:
+    """Liga (ou cria) um canal pelo link público do YouTube: nome e vídeos recentes, sem login. Não publica."""
+    from studio.workers.publish import youtube as yt
+    from studio.workers.publish import youtube_channels
+
+    try:
+        channel_id, created = youtube_channels.link_from_public(body.url, body.channel_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="canal não encontrado") from exc
+    except yt.YouTubeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"channel": _channel_or_404(channel_id), "created": created}
+
+
+@router.post("/channels/{channel_id}/youtube/refresh")
+def channel_youtube_refresh(channel_id: str) -> dict[str, Any]:
+    """Lê de novo nome, foto, descrição, números e vídeos recentes do canal no YouTube."""
+    from studio.workers.publish import youtube as yt
+    from studio.workers.publish import youtube_channels
+
+    try:
+        warnings = youtube_channels.refresh(channel_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="canal não encontrado") from exc
+    except yt.YouTubeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"channel": _channel_or_404(channel_id), "warnings": warnings}
+
+
+@router.delete("/channels/{channel_id}/youtube")
+def channel_youtube_unlink(channel_id: str, forget: bool = False) -> dict[str, Any]:
+    """Desvincula: apaga só o token deste canal. `forget=true` também tira os dados do YouTube do canal."""
+    from studio.workers.publish import youtube_channels
+
+    try:
+        youtube_channels.unlink(channel_id, forget=forget)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="canal não encontrado") from exc
+    return {"channel": _channel_or_404(channel_id)}
+
+
+@router.post("/channels/{channel_id}/suggest")
+def channel_suggest(channel_id: str) -> dict[str, Any]:
+    """Proposta de nicho, persona, idiomas, estilo padrão e identidade visual pelo Claude (não salva nada)."""
+    from studio.providers.base import ProviderError
+    from studio.workers.publish import youtube_channels
+
+    try:
+        return youtube_channels.suggest_profile(channel_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="canal não encontrado") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProviderError as exc:  # inclui ChainFailed (Claude fora do ar ou sem login)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 # --------------------------------------------------------------------------------------------
@@ -430,8 +507,8 @@ def youtube_batch(body: YouTubeBatchBody) -> dict[str, Any]:
     from studio.workers.publish import schedule
     from studio.workers.publish import youtube as yt
 
-    if not yt.account()["connected"]:
-        raise HTTPException(status_code=400, detail="conecte o canal do YouTube primeiro (aba Vídeo e publicação de um projeto)")
+    if not yt.any_connected():
+        raise HTTPException(status_code=400, detail="vincule um canal do YouTube primeiro (em Canais ou na aba Vídeo e publicação de um projeto)")
     return {"results": schedule.plan_youtube_batch(body.items, get_runner().submit)}
 
 

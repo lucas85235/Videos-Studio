@@ -33,7 +33,7 @@ voice:
   gap_s: 0.45
 
 art:
-  bible: "pintura digital histórica realista e luminosa, cores naturais da época, luz do dia suave, cenas amplas de cidades, mercados, paisagens e pessoas comuns, figurinos e arquitetura fiéis ao período"
+  bible: "pintura digital histórica realista e luminosa, cores naturais da época, luz natural suave, cenas amplas de cidades, mercados, paisagens e pessoas comuns, figurinos e arquitetura fiéis ao período"
   banned: ["texto", "letras", "logotipos", "marca d'água", "violência explícita", "objetos modernos fora da época"]
   languages: [archival, painting, isometric]
   image_chain: [codex_cli]
@@ -68,8 +68,8 @@ edit:
   zoom_strength: 0.08
 
 audio:
-  music: { source: procedural, mood: neutral, volume_db: -25, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -15 }
+  music: { source: procedural, mood: neutral, volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -12 }
   loudness_lufs: -14
 
 thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: "Bebas Neue", accent: "#F2B544" }

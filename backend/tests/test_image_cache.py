@@ -23,6 +23,7 @@ from studio.workers.pipeline.build import (
     compose_directed_prompt,
     compose_image_prompt,
     image_key,
+    legacy_directed_prompt,
     plan,
     resolve_reused_images,
     scene_needs_image,
@@ -197,7 +198,27 @@ def test_legacy_scene_keeps_prompt_and_cache_key(images):
         }
         assert builder.image_inputs(scene) == expected
         assert image_key(builder.image_inputs(scene)) == image_key(expected)
-        assert style.art.bible in expected["prompt"]
+        # a bíblia do estilo mudou (sem "luz de vela"), mas a cena antiga segue com o texto de antes: mesma chave
+        assert expected["prompt"].startswith(
+            f"{visual.prompt}. Estilo visual: pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado "
+            "envelhecido, luz de vela, contraste dramático, grão de tela. Sem nenhum texto")
+        assert "luz de vela" not in style.art.bible
+
+
+def test_legacy_bibles_cover_the_presets_that_changed():
+    from studio.core.styles.library import load_presets
+    from studio.workers.pipeline.build import _LEGACY_BIBLES
+
+    presets = load_presets()
+    changed = {"games-cultura-pop-short", "estoico-short", "historia-documental", "biografias", "misterios-short",
+               "terror-analog", "true-crime"}
+    for style_id in changed:
+        assert presets[style_id].art.bible in _LEGACY_BIBLES, style_id
+    # nenhuma bíblia fixa hora do dia, céu ou luz de uma fonte só
+    for style_id, style in presets.items():
+        for word in ("pôr do sol", "fim de tarde", "amanhecer", "luz do dia", "noturna", "luz de vela", "céu aberto",
+                     "luz de luminária", "de janela"):
+            assert word not in style.art.bible, (style_id, word)
 
 
 def test_directed_prompt_starts_with_shot_and_has_no_bible(images):
@@ -208,11 +229,20 @@ def test_directed_prompt_starts_with_shot_and_has_no_bible(images):
     assert prompt.startswith("Low-angle shot looking up, subject on the left third. illustrated key-art poster")
     assert "a woman walking down a neon street at dusk" in prompt
     assert "dark curly hair" in prompt and "Lucia" not in prompt  # só a aparência, nunca o nome
-    assert "World: sunny neon coastal metropolis" in prompt and "Palette: hot pink, teal, sunset orange" in prompt
-    assert "Treatment: saturated sunset light" in prompt and "Original designs only" in prompt
+    # a cena diz a própria hora ("at dusk"): a hora, o clima e a luz da direção saem; a paleta vira cor de destaque
+    assert "World: neon coastal metropolis, 2020s" in prompt and "Accent colors: hot pink, teal, orange" in prompt
+    assert "Treatment: clean contrast" in prompt and "sunset" not in prompt and "sunny" not in prompt
+    assert "Palette:" not in prompt and "Original designs only" in prompt
     avoid = prompt.split("Avoid: ", 1)[1]
     assert all(term in avoid for term in (*style.art.banned, "candles", "hourglass"))
     assert style.art.bible not in prompt and "Estilo visual" not in prompt
+    # cena sem hora nem luz: a direção entra inteira
+    plain = compose_directed_prompt(style, ART, _directed(prompt="a woman walking down a palm-lined street"))
+    assert "World: sunny neon coastal metropolis, 2020s" in plain
+    assert "Accent colors: hot pink, teal, sunset orange" in plain and "Treatment: saturated sunset light" in plain
+    # direção definida pelo usuário fica como ele escreveu
+    user = compose_directed_prompt(style, ART.model_copy(update={"source": "user"}), _directed())
+    assert "World: sunny neon coastal metropolis" in user and "Treatment: saturated sunset light" in user
     # partes vazias somem (sem plano conhecido, sem mundo nem paleta)
     bare = compose_directed_prompt(style, ArtDirection(), Visual(prompt="a lighthouse", language="editorial",
                                                                  shot="voo"))
@@ -282,6 +312,37 @@ def test_resolve_reused_images_keeps_pinned_asset():
     images = {"scn_a": "cache/a.jpg", "scn_b": "uploads/b.jpg", "scn_c": None}
     resolve_reused_images(doc, images)
     assert images == {"scn_a": "cache/a.jpg", "scn_b": "uploads/b.jpg", "scn_c": None}
+
+
+def test_directed_scene_made_before_accent_colors_keeps_its_image(images):
+    # Imagem gerada com o prompt dirigido de antes ("Palette:", luz inteira): achada no cache, nada é gerado de novo.
+    codex, _ = images
+    scenes = [Scene(id="scn_1", segment_id="seg_1", part=0, visual=_directed()),
+              Scene(id="scn_2", segment_id="seg_1", part=1, visual=_directed(prompt="a woman on a palm-lined street"))]
+    builder = _builder_for({"art": ART, "scenes": scenes})
+    for scene in builder.doc.scenes:
+        inputs = builder.image_inputs(scene)
+        old = {**inputs, "prompt": legacy_directed_prompt(builder.style, ART, scene.visual)}
+        assert "Palette: hot pink, teal, sunset orange" in old["prompt"] and old["prompt"] != inputs["prompt"]
+        _save(builder, image_key(old), codex)
+    assert plan(builder.project_id, mode="preview")["images_missing"] == []
+    assert all(builder.image(s) for s in builder.doc.scenes) and codex.calls == 0
+    # "Outra imagem" gera com o prompt novo
+    builder.doc = apply_ops(builder.doc, parse_ops([{"op": "regenerate_scene", "scene_id": "scn_1"}]))
+    assert "Accent colors" in builder.image_inputs(builder.doc.scene("scn_1"))["prompt"]
+    assert plan(builder.project_id, mode="preview", doc=builder.doc)["images_missing"] == ["scn_1"]
+
+
+def test_legacy_directed_prompt_matches_the_old_format():
+    style = _builder_for({"art": ART, "scenes": []}).style
+    old = legacy_directed_prompt(style, ART, _directed())
+    assert old.startswith("Low-angle shot looking up, subject on the left third. illustrated key-art poster")
+    assert ("World: sunny neon coastal metropolis, 2020s. Palette: hot pink, teal, sunset orange. "
+            "Treatment: saturated sunset light, clean contrast. Original designs only") in old
+    # sem paleta e sem luz da cena, o prompt de antes e o de agora são iguais: nada a procurar a mais
+    bare = ArtDirection(world="a port city", treatment="clean contrast")
+    plain = _directed(prompt="a woman on a palm-lined street")
+    assert legacy_directed_prompt(style, bare, plain) == compose_directed_prompt(style, bare, plain)
 
 
 def test_directed_scenes_without_direction_are_not_generated(images):

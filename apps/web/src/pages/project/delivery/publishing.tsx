@@ -61,12 +61,18 @@ export type YouTubeStatus = {
   client_configured: boolean;
   connected: boolean;
   channel_title: string;
+  /** Com project_id: por que este projeto não pode enviar (null quando pode). */
+  reason?: string | null;
 };
 
-export const useYouTubeStatus = () =>
+/** Conta que o projeto usa de fato para publicar (a do canal dele, ou a global). */
+export const useYouTubeStatus = (projectId: string) =>
   useQuery({
-    queryKey: ["youtube-status"],
-    queryFn: () => api.get<YouTubeStatus>("/api/youtube/status"),
+    queryKey: ["youtube-status", projectId],
+    queryFn: () =>
+      api.get<YouTubeStatus>(
+        `/api/youtube/status?project_id=${encodeURIComponent(projectId)}`,
+      ),
     refetchInterval: 10_000,
   });
 
@@ -208,7 +214,7 @@ export const YouTubeCard: React.FC<{
   const client = useQueryClient();
   const confirm = useConfirm();
   const { toast } = useToast();
-  const status = useYouTubeStatus();
+  const status = useYouTubeStatus(projectId);
   const [privacyChoice, setPrivacy] = useState("private");
   const [when, setWhen] = useState("");
   const [localize, setLocalize] = useState(false);
@@ -334,17 +340,29 @@ export const YouTubeCard: React.FC<{
       ) : !s.connected ? (
         <div className="flex flex-col gap-2">
           <p className="text-[13px] text-muted">
-            Conecte o seu canal: o login abre numa nova aba do navegador.
+            {s.reason
+              ? `Não dá para enviar: ${s.reason}`
+              : "Conecte o seu canal: o login abre numa nova aba do navegador."}
           </p>
-          <Button
-            variant={emphasis ? "primary" : "secondary"}
-            icon={ExternalLink}
-            className="self-start"
-            busy={connect.isPending}
-            onClick={() => connect.mutate()}
-          >
-            Conectar canal do YouTube
-          </Button>
+          {/* Projeto com canal: o vínculo é feito em Canais. Sem canal: a conta global resolve. */}
+          {doc.channel_id ? (
+            <Link
+              to="/canais"
+              className={`${buttonClass({ variant: emphasis ? "primary" : "secondary", size: "sm" })} self-start`}
+            >
+              Abrir Canais
+            </Link>
+          ) : (
+            <Button
+              variant={emphasis ? "primary" : "secondary"}
+              icon={ExternalLink}
+              className="self-start"
+              busy={connect.isPending}
+              onClick={() => connect.mutate()}
+            >
+              Conectar canal do YouTube
+            </Button>
+          )}
         </div>
       ) : (
         <>

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from studio.core.styles.schema import SCENE_KINDS
 from studio.ids import new_id
@@ -18,6 +18,104 @@ assert set(SceneKind.__args__) == set(SCENE_KINDS)  # type: ignore[attr-defined]
 
 # Cenas sem imagem própria em tela cheia (cartões desenhados pelo renderer).
 CARD_KINDS = frozenset({"text", "title", "count", "document", "quote", "stat", "compare"})
+
+# Mídia real: foto de licença livre, cartão de notícia ou material oficial (arte, trailer, foto de imprensa).
+RealKind = Literal["photo", "news", "official"]
+REAL_KINDS: tuple[str, ...] = ("photo", "news", "official")
+MediaSource = Literal["commons", "openverse", "pexels", "link", "upload"]
+MEDIA_SOURCES: tuple[str, ...] = ("commons", "openverse", "pexels", "link", "upload")
+MediaFit = Literal["cover", "contain"]
+
+# Prefixo do crédito na tela por idioma (2 letras): (foto, imagem). Idioma sem entrada usa o inglês.
+CREDIT_PREFIX: dict[str, tuple[str, str]] = {
+    "pt": ("Foto", "Imagem"),
+    "en": ("Photo", "Image"),
+    "es": ("Foto", "Imagen"),
+    "fr": ("Photo", "Image"),
+    "de": ("Foto", "Bild"),
+    "it": ("Foto", "Immagine"),
+}
+_CREDIT_LEADS = ("foto:", "imagem:", "photo:", "image:", "imagen:", "bild:", "immagine:", "crédito:", "credito:",
+                 "credit:", "créditos:", "fonte:", "source:")
+
+
+class MediaRef(BaseModel):
+    """Mídia real anexada pelo usuário: a cena mostra este arquivo no lugar da imagem de IA (o prompt fica de reserva
+    e volta a valer quando a mídia sai). Guarda a origem e a licença para o crédito na tela e na descrição."""
+
+    kind: RealKind = "photo"
+    source: MediaSource = "upload"
+    asset: str | None = None
+    """Original normalizado (JPEG), relativo a VS_DATA_DIR: `uploads/<projeto>/media/<sha256[:16]>.jpg`. None só no
+    cartão de notícia sem imagem. O enquadramento para o vídeo sai no build (cache "media")."""
+    url: str = ""
+    """Endereço de onde a imagem foi baixada (vazio no arquivo enviado)."""
+    page_url: str = ""
+    """Página de origem: arquivo do Commons, página da foto, da notícia ou do material oficial."""
+    title: str = ""
+    author: str = ""
+    license: str = ""
+    """Nome curto da licença ("CC BY-SA 4.0", "CC0", "Public domain", "Pexels License"); vazio: direitos reservados
+    ou desconhecida (material oficial, link, arquivo enviado)."""
+    license_url: str = ""
+    credit: str = ""
+    """Texto do crédito, sem o prefixo ("Fulano / Wikimedia Commons · CC BY-SA 4.0", "Rockstar Games"). O prefixo
+    ("Foto:", "Imagem:") vem do idioma do vídeo (`credit_line`). Editável pelo usuário."""
+    editorial: bool = False
+    """Material de terceiros com direitos (oficial, imprensa): aviso de Content ID e crédito obrigatório."""
+    width: int | None = None
+    height: int | None = None
+    """Tamanho do original normalizado (px)."""
+    focus: str | None = None
+    """Id de `styles.visual.FOCUS_POINTS`: onde está o sujeito na foto (centro do recorte e origem do zoom)."""
+    fit: MediaFit | None = None
+    """cover: preenche a tela (recorta); contain: imagem inteira sobre ela mesma desfocada; None: pela proporção."""
+    outlet: str = ""
+    """Veículo da notícia ("IGN Brasil")."""
+    published: str = ""
+    """Data da notícia: "YYYY-MM-DD", "YYYY-MM", "YYYY" ou vazio."""
+    headline: dict[str, str] = {}
+    """Manchete curta por idioma (citação, até ~14 palavras, sem as aspas)."""
+    candidate_id: str = ""
+    """Id do candidato da busca ("commons:File:X.jpg", "openverse:<uuid>", "pexels:<id>"); vazio em link e arquivo."""
+
+    @field_validator("asset")
+    @classmethod
+    def _relative_asset(cls, value: str | None) -> str | None:
+        """Só caminho relativo dentro da pasta de dados (nada de "..", unidade ou barra inicial)."""
+        if value is None:
+            return None
+        clean = value.replace("\\", "/").strip()
+        if not clean or clean.startswith("/") or ":" in clean or any(p in ("", ".", "..") for p in clean.split("/")):
+            raise ValueError("caminho de mídia inválido")
+        return clean
+
+    def credit_line(self, lang: str) -> str:
+        """Crédito na tela no idioma do vídeo ("Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0"); vazio sem crédito."""
+        text = " ".join(self.credit.split())
+        while text.lower().startswith(_CREDIT_LEADS):
+            text = text.split(":", 1)[1].strip()
+        if not text:
+            return ""
+        photo, image = CREDIT_PREFIX.get(lang.lower()[:2], CREDIT_PREFIX["en"])
+        return f"{photo if self.kind == 'photo' else image}: {text}"
+
+    def headline_for(self, lang: str, fallback: str | None = None) -> str:
+        """Manchete da notícia no idioma (reserva: `fallback`, depois o título)."""
+        return _pick_text(self.headline, lang, fallback) or " ".join(self.title.split())
+
+
+class RealHint(BaseModel):
+    """Sugestão do storyboard: nesta batida, mídia real (anexada pelo usuário) vale mais que a imagem de IA. Nada é
+    aplicado sozinho; a cena continua com o prompt de IA de reserva."""
+
+    kind: RealKind
+    query: str = ""
+    """Busca em inglês para o Commons/Openverse (só faz sentido em "photo")."""
+    note: str = ""
+    """O que mostrar e onde achar, em português ("arte oficial da Lucia no Newswire da Rockstar")."""
+    source_ref: int | None = None
+    """Posição (base 1) em `ProjectDoc.sources` da fonte com link que vira o cartão de notícia."""
 
 
 class Segment(BaseModel):
@@ -55,6 +153,9 @@ class Visual(BaseModel):
     """Ids de `ArtDirection.entities` que aparecem na imagem (a aparência fixa entra no prompt)."""
     reuse_of: str | None = None
     """Id da cena cuja imagem esta usa (nenhuma imagem nova). Ver `ProjectDoc.reuse_root`."""
+    media: MediaRef | None = None
+    """Mídia real anexada: vale mais que a imagem de IA, o `asset` e o `reuse_of` (que ficam de reserva). None: como
+    antes."""
 
 
 def _pick_text(texts: dict[str, str], lang: str, fallback: str | None) -> str:
@@ -155,6 +256,8 @@ class Scene(BaseModel):
     card: SceneCard | None = None
     focus: str | None = None
     """Id de `styles.visual.FOCUS_POINTS`: para onde a câmera olha (reaproveitamento e `zoom_to`)."""
+    real: RealHint | None = None
+    """Sugestão de mídia real do storyboard (None: nenhuma)."""
 
 
 class Entity(BaseModel):
@@ -289,13 +392,14 @@ class ProjectDoc(BaseModel):
         """A cena dona da imagem que `scene` mostra: ela mesma, ou o fim da cadeia de `reuse_of`.
 
         None quando a referência está solta (cena apagada), em ciclo ou com mais de `max_depth` saltos:
-        a cena fica sem imagem e o renderer usa o fundo animado.
+        a cena fica sem imagem e o renderer usa o fundo animado. Cena com mídia real é dona da imagem que mostra: a
+        cadeia para nela (o `reuse_of` dela fica de reserva para quando a mídia sair).
         """
         current = scene
         seen = {scene.id}
         for _ in range(max_depth + 1):
             target = current.visual.reuse_of
-            if not target:
+            if not target or current.visual.media is not None:
                 return current
             nxt = next((s for s in self.scenes if s.id == target), None)
             if nxt is None or nxt.id in seen:
@@ -303,6 +407,16 @@ class ProjectDoc(BaseModel):
             seen.add(nxt.id)
             current = nxt
         return None
+
+    def shown_media(self, scene: Scene) -> MediaRef | None:
+        """Mídia real que a cena mostra: a dela, ou a da cena que ela reaproveita (imagem fixada na própria cena vale
+        mais que a da raiz, como no build). None: imagem de IA, cartão ou fundo animado."""
+        if scene.visual.media is not None:
+            return scene.visual.media
+        if scene.visual.asset or not scene.visual.reuse_of:
+            return None
+        root = self.reuse_root(scene)
+        return root.visual.media if root is not None else None
 
     def ordered_scenes(self) -> list[Scene]:
         order = {seg.id: i for i, seg in enumerate(self.segments)}
@@ -328,6 +442,10 @@ class ProjectDoc(BaseModel):
                 extra = []
                 if scene.visual.reuse_of:
                     extra.append(f"reaproveita={scene.visual.reuse_of}")
+                if scene.visual.media is not None:
+                    extra.append(f"mídia real={scene.visual.media.kind}")
+                elif scene.real is not None:
+                    extra.append(f"sugestão de mídia real={scene.real.kind}")
                 if scene.motion:
                     extra.append(f"câmera={scene.motion}")
                 if scene.transition_in:

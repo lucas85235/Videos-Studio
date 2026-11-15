@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from studio.config import get_settings
 from studio.core.project import service
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.models import Channel
+from studio.providers import media_search
 from studio.workers.jobs import JobContext, job
 from studio.workers.pipeline import authoring
 from studio.workers.pipeline.build import Builder
+
+log = logging.getLogger(__name__)
 
 
 def _channel_info(channel_id: str | None) -> dict[str, Any]:
@@ -65,9 +70,28 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     service.update_settings(project_id, {"storyboard_review": {**review, "provider": provider, "version": version}})
     # Com a parada das cenas ligada, as cenas novas esperam a conferência (storyboard() zera a aprovação).
     service.set_status(project_id, SCENES_REVIEW_STATUS if _gates(project_id).get("storyboard", False) else "storyboard")
+    _prefetch_media(ctx, new_doc, style)
     ctx.progress(1.0, "Cenas prontas para revisão")
-    return {"version": version, "provider": provider, "scenes": counts["scenes"], "new_images": counts["new_images"],
-            "reused": counts["reused"], "cards": counts["cards"]}
+    result = {"version": version, "provider": provider, "scenes": counts["scenes"], "new_images": counts["new_images"],
+              "reused": counts["reused"], "cards": counts["cards"]}
+    if counts.get("real_hints"):
+        result["real_hints"] = counts["real_hints"]
+    return result
+
+
+def _prefetch_media(ctx: JobContext, doc: Any, style: Any) -> None:
+    """Busca de antemão as fotos livres das sugestões (só online): o usuário abre a cena e já vê os candidatos.
+    Nunca derruba o job."""
+    if get_settings().offline:
+        return
+    if not any(s.real is not None and s.real.kind == "photo" and s.real.query.strip() and s.visual.media is None
+               for s in doc.scenes):
+        return
+    ctx.progress(0.9, "Buscando fotos livres para as sugestões")
+    try:
+        media_search.prefetch(doc, style, budget_s=25)
+    except Exception as exc:  # noqa: BLE001 - a busca é só uma ajuda
+        log.warning("a pré-busca de fotos livres falhou: %s", exc)
 
 
 @job("translate")

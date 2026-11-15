@@ -34,7 +34,7 @@ voice:
 
 art:
   # Pessoas reais: nada de rosto identificável (deepfake e direito de imagem).
-  bible: "pintura editorial luminosa e realista, cenas de cada fase da vida e da época, lugares, objetos e paisagens marcantes, cores naturais, luz suave de janela; a pessoa retratada aparece de costas, em silhueta ou à distância"
+  bible: "pintura editorial luminosa e realista, cenas de cada fase da vida e da época, lugares, objetos e paisagens marcantes, cores naturais, luz natural suave; a pessoa retratada aparece de costas, em silhueta ou à distância"
   banned: ["texto", "letras", "logotipos", "marca d'água", "retrato fotorrealista de pessoa real", "rosto identificável de pessoa real"]
   languages: [painting, editorial, archival]
   image_chain: [codex_cli]
@@ -69,8 +69,8 @@ edit:
   zoom_strength: 0.08
 
 audio:
-  music: { source: procedural, mood: inspiring, volume_db: -26, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -15 }
+  music: { source: procedural, mood: inspiring, volume_db: -20, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -12 }
   loudness_lufs: -14
 
 thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: Oswald, accent: "#8ECAE6" }

@@ -1,0 +1,60 @@
+{
+ "_nota": "Resposta real da API do Commons (15/11/2026), titles=File:Miami skyline from the ocean.jpg, iiurlwidth=3840; tirados responsiveUrls, thumbattribs e descriptionshorturl.",
+ "continue": {
+  "iistart": "2022-10-18T19:10:39Z",
+  "continue": "||"
+ },
+ "query": {
+  "pages": [
+   {
+    "pageid": 124346817,
+    "ns": 6,
+    "title": "File:Miami skyline from the ocean.jpg",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 4576073,
+      "width": 3881,
+      "height": 2426,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/c6/Miami_skyline_from_the_ocean.jpg/3840px-Miami_skyline_from_the_ocean.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "thumbwidth": 3840,
+      "thumbheight": 2400,
+      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c6/Miami_skyline_from_the_ocean.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Miami_skyline_from_the_ocean.jpg",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Miami skyline from the ocean",
+        "source": "mediawiki-metadata"
+       },
+       "Credit": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://matthewtrader.com\">matthewtrader.com</a> <span class=\"int-own-work\" lang=\"en\">Own work</span>",
+        "source": "commons-desc-page"
+       },
+       "Artist": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://matthewtrader.com\">Matthew T Rader</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY-SA 4.0",
+        "source": "commons-desc-page"
+       },
+       "AttributionRequired": {
+        "value": "true",
+        "source": "commons-desc-page"
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by-sa/4.0",
+        "source": "commons-desc-page"
+       },
+       "Restrictions": {
+        "value": "",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "image/jpeg"
+     }
+    ]
+   }
+  ]
+ }
+}

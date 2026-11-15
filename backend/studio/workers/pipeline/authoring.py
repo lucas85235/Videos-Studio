@@ -12,11 +12,13 @@ from typing import Any
 from studio.core.hashing import seed_from
 from studio.core.numbers import notable_number_runs, number_runs
 from studio.core.project.document import (
+    REAL_KINDS,
     ArtDirection,
     CardItem,
     Entity,
     Metadata,
     ProjectDoc,
+    RealHint,
     Scene,
     SceneCard,
     Segment,
@@ -174,18 +176,22 @@ aparece na tela usando só o que o app sabe produzir.
 1) Direção de arte ("direction"), decidida pelo assunto e pelo roteiro, não pelo nome do estilo:
 - genre: o tipo de vídeo (notícia de games não é mistério, mesmo com estilo de mistério).
 - approach: literal (mostra o assunto), misto ou alegorico (metáforas).
-- world: o mundo concreto das imagens: lugares, época, objetos e pessoas genéricas do assunto, em inglês.
+- world: o mundo concreto das imagens: lugares, época, objetos e pessoas genéricas do assunto, em inglês, sem
+  hora do dia, clima nem céu (cada imagem diz os seus).
 - languages: 1 a 3 ids do catálogo, o primeiro dominante. Prefira os do estilo; se não combinarem com o
   assunto, escolha os que combinam e diga em style_fit/style_note.
-- treatment: luz, contraste e textura em até 12 palavras, SEM objetos, em inglês. Use o tratamento do estilo
-  como referência e adapte ao assunto (vídeo ensolarado não ganha luz de vela).
-- palette: 3 cores do mundo do assunto. grade: um id de gradação, ou null para manter o do estilo.
+- treatment: contraste, saturação e textura em até 12 palavras, em inglês, SEM hora do dia, clima, céu, luz ou
+  objetos. Use o tratamento do estilo como referência e adapte ao assunto.
+- palette: 3 cores do mundo do assunto (entram como cores de destaque, não pintam a imagem toda). grade: um id de
+  gradação, ou null para manter o do estilo.
 - entities: personagens ou lugares que voltam em mais de uma batida, com id curto ("detetive"), nome, real e
-  aparência fixa em inglês; o look começa por quem ou o que é ("tall woman in her 40s, ...", "seaside city with ...").
+  aparência fixa em inglês; o look começa por quem ou o que é ("tall woman in her 40s, ...", "seaside city with ...");
+  o look de lugar não fixa céu, hora nem luz.
   real: true só para figura histórica já falecida ou lugar, monumento, navio ou evento reais (o prompt pode citar
   pelo nome). Personagem de ficção, marca, produto ou pessoa viva: real false, aparência ORIGINAL (nunca copie
   personagem oficial, logotipo ou tipografia de marca) e o prompt cita pela aparência ou pelo papel ("the
-  detective"), nunca pelo nome.
+  detective"), nunca pelo nome. Personagem oficial de ficção que a narração cita pelo nome (protagonista de jogo,
+  filme, série) não vira entidade com rosto: mostre de costas, em silhueta, ou por objetos e lugar.
 - avoid: objetos, clichês e anacronismos que não pertencem ao assunto, em inglês (inclusive motivos do
   estilo que não servem aqui, como "candles").
 - style_fit: ok | fraco | errado; style_note: o porquê numa frase; suggested_style: id da lista ou null.
@@ -195,16 +201,35 @@ aparece na tela usando só o que o app sabe produzir.
 - image: imagem em tela cheia com câmera. source "new" = imagem nova de IA (~35 s de cota cada; respeite o
   limite); source "reuse" = a imagem de uma batida anterior (reuse_key) com outro enquadramento (focus), custo zero.
 - stat: número grande que conta na tela; value com algarismos e unidade curta ("475 MI", "200 MI+", "2013",
-  "2×"), label até 6 palavras. Fundo: imagem reaproveitada (desfocada) ou fundo animado (source "none").
-- compare: 2 ou 3 itens (label, value); valores numéricos viram barras proporcionais; highlight é o índice
-  (base 0) do item em destaque.
+  "2"), label até 6 palavras com o qualificador que a fala dá (plataforma, janela de tempo: "views em 24 h no
+  YouTube"), mesmo que ele venha na batida seguinte.
+- compare: 2 ou 3 itens (label, value), só com números medidos do mesmo jeito (mesma plataforma, mesma janela,
+  mesma unidade). Se a fala qualifica um número ("no YouTube", "somando as plataformas"), o qualificador vai no
+  label do item; o que é comum aos itens vai em label (o título do cartão). Valores numéricos viram barras
+  proporcionais; highlight é o índice (base 0) do item em destaque.
 - title: até 5 palavras grandes no centro (overlay_text). text: as palavras da narração aparecem grandes no
   ritmo da fala (pergunta ou frase de impacto). quote: citação curta (overlay_text).
 - count: só no formato Top 10, na primeira batida de cada item (o app desenha o número do item).
-Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras, ex. "RECORDE"),
-source_note (fonte curta do dado). Campo que não se aplica vai como null. A faixa compete com a legenda: use no
-gancho e só onde acrescenta o que a fala não diz (data, nome, virada de assunto), no máximo 1 a cada 3 cenas,
-sem repetir a fala da batida.
+Todo cartão (stat, compare, title, text, quote) usa de fundo a imagem de uma batida anterior (source "reuse" e
+reuse_key), desfocada e escurecida.
+Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras, ex. "RECORDE"; nunca
+"INÉDITO" nem "EXCLUSIVO": as imagens são ilustrações), source_ref (o número da fonte em "Fontes do roteiro" que
+traz o dado do cartão, ou null). Campo que não se aplica vai como null. A faixa compete com a legenda: use no
+gancho e só onde acrescenta o que a fala não diz (data, nome, virada de assunto: "TRAILER 2 · MAIO 2025", não só
+"MAIO DE 2025"), no máximo 1 a cada 3 cenas, sem repetir a fala da batida.
+
+Mídia real (real_kind, real_query, real_note, real_source_ref): marque as batidas em que uma imagem real vale mais
+que a de IA: pessoa real citada, lugar real, produto, personagem oficial, notícia ou anúncio, documento. O app não
+baixa nada sozinho: ele busca fotos livres e o usuário escolhe, cola um link ou envia o arquivo.
+- real_kind: photo (pessoa, lugar ou objeto real que pode ter foto livre no Wikimedia Commons), news (a batida cita
+  uma notícia ou anúncio: vira cartão de notícia; real_source_ref = o número da fonte com o link, ou null), official
+  (arte, trailer ou foto de imprensa oficial: só o usuário pode anexar).
+- real_query: 2 a 6 palavras em inglês para a busca (nome próprio vale: "Miami Beach skyline"); null quando não há o
+  que buscar.
+- real_note: em português, o que mostrar e onde achar ("arte oficial da Lucia no Newswire da Rockstar").
+- Só em kind image, no máximo 1 a cada 3 batidas. Sem mídia real: os quatro null.
+- A cena continua com o prompt de IA de reserva (o vídeo funciona sem a mídia real). Com real_kind official de
+  personagem, a reserva mostra de costas, em silhueta ou só objetos e lugar, nunca o rosto.
 
 Regras:
 1. Mostre o sujeito concreto da batida (pessoa, lugar, objeto, ação, na época real do assunto). Metáfora só
@@ -213,15 +238,19 @@ Regras:
    algarismos. Nunca peça número ou texto dentro da imagem. Use só números da narração ou das fontes.
 3. A primeira batida é o gancho: image, source "new", a imagem mais forte e literal do assunto, headline curta,
    motion "punch_zoom".
-4. Quando a narração volta a um lugar, personagem ou objeto, use reuse em vez de outra imagem parecida, com
-   outro focus e motion "zoom_to". A chamada final pode reaproveitar o gancho.
+4. Quando a narração volta ao MESMO momento, lugar, personagem ou objeto, use reuse em vez de outra imagem
+   parecida, com outro focus e motion "zoom_to". Batida com outra data, outro evento ou outra headline nunca
+   reaproveita imagem em tela cheia (kind image): use imagem nova. A chamada final pode reaproveitar o gancho.
 5. No máximo 2 cartões (stat, compare, title, text, quote) seguidos; não repita o shot em imagens novas seguidas.
-6. prompt (só imagem nova): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. NÃO escreva
-   estilo, técnica, paleta, "no text" nem "vertical": o app acrescenta. Nada de logotipo, personagem oficial,
-   tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer. Nome de
-   personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no world, no hook nem no look:
-   descreva o que se vê (figura histórica, cidade e país reais podem). Na imagem nova, preencha também language,
-   shot, composition e entities (ids da direção que aparecem nela).
+6. prompt (só imagem nova): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. Cada imagem nova
+   diz a própria hora e luz, e elas variam: no máximo 1 em cada 3 no mesmo momento (ex.: pôr do sol); siga o clima
+   da narração (passado = luz fria ou de arquivo, revelação = escuro). Tela dentro da imagem (TV, celular, telão)
+   não repete o mesmo conteúdo. NÃO escreva estilo, técnica, paleta, "no text" nem "vertical": o app acrescenta.
+   Nada de logotipo, personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak"
+   ou cena de trailer. Nome de personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no
+   world, no hook nem no look: descreva o que se vê (figura histórica, cidade e país reais podem). Personagem
+   oficial de ficção aparece de costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha
+   também language, shot, composition e entities (ids da direção que aparecem nela).
 7. composition: deixe livre a faixa da legenda informada no pedido."""
 
 # Faixa da legenda na tela (mesmas alturas do renderer, Captions.tsx).
@@ -342,9 +371,9 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
         "Gradações (grade): " + ", ".join(GRADE_PRESETS),
         "Câmera (motion): " + ", ".join(CAMERA_MOVES) + " (zoom_to aproxima do focus; feito para reuse)",
         "",
-        "Fontes do roteiro:",
-        *([f"- {s.title}" + (f": {s.note}" if s.note else "") + (f" ({s.url})" if s.url else "") for s in doc.sources]
-          or ["(nenhuma)"]),
+        "Fontes do roteiro (source_ref é o número entre colchetes):",
+        *([f"- [{n}] {s.title}" + (f": {s.note}" if s.note else "") + (f" ({s.url})" if s.url else "")
+           for n, s in enumerate(doc.sources, 1)] or ["(nenhuma)"]),
         "",
         "Roteiro completo (papel do segmento):",
         *[f"[{seg.role}{'' if seg.id in planned else ', cenas travadas'}] {seg.text_for(lang)}" for seg in doc.segments],
@@ -386,7 +415,8 @@ def _storyboard_context(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], bu
             "values": [_number_label(run[2]) for run in runs],
         })  # fmt: skip
     return {"topic": doc.topic or doc.title, "bible": style.art.bible, "languages": list(style.art.languages),
-            "photoreal": style.art.photoreal, "budget": budget, "scenes": scenes}
+            "photoreal": style.art.photoreal, "budget": budget, "scenes": scenes,
+            "sources": [{"n": n, "title": s.title, "url": s.url} for n, s in enumerate(doc.sources, 1)]}
 
 
 # --- normalização da resposta -------------------------------------------------------------------
@@ -500,9 +530,73 @@ class _Pick:
     card: SceneCard | None = None
     ahead: int | None = None
     """Contador do Top 10: batida seguinte do mesmo item cuja imagem ele mostra (resolvida depois do orçamento)."""
+    real: RealHint | None = None
+    """Sugestão de mídia real da batida (só em cena de imagem)."""
 
 
-def _card_from(data: dict[str, Any], kind: str, lang: str) -> tuple[str, SceneCard | None]:
+_REAL_KINDS = dict.fromkeys(REAL_KINDS)
+_DOUBLE_QUOTES = re.compile(r"[\"“”«»]")
+
+
+def _ref_number(ref: object) -> int | None:
+    if isinstance(ref, str) and ref.strip().isdigit():
+        ref = int(ref.strip())
+    return ref if isinstance(ref, int) and not isinstance(ref, bool) else None
+
+
+def _real_from(data: dict[str, Any], kind: str, sources: list[Source]) -> RealHint | None:
+    """Sugestão de mídia real da resposta: só em cena de imagem (o gancho também), com tipo válido e algo para o
+    usuário usar (busca, nota ou fonte com link)."""
+    real_kind = pick(data.get("real_kind"), _REAL_KINDS)
+    if real_kind is None or kind != "image":
+        return None
+    query = _DOUBLE_QUOTES.sub("", _text(data.get("real_query"), 100)).strip(" '‘’")
+    note = _text(data.get("real_note"), 200)
+    ref = _ref_number(data.get("real_source_ref"))
+    if ref is not None and not (1 <= ref <= len(sources) and sources[ref - 1].url.strip().lower().startswith(
+            ("http://", "https://"))):
+        ref = None
+    if not (query or note or ref):
+        return None
+    return RealHint(kind=real_kind, query=query, note=note, source_ref=ref)  # type: ignore[arg-type]
+
+
+# Sugestões de mídia real: no máximo 1 a cada 3 batidas (o usuário confere cada uma).
+REAL_SHARE = 1 / 3
+
+
+def _real_rank(hint: RealHint) -> int:
+    """Prioridade da sugestão quando passa do limite: notícia com fonte, material oficial, notícia, foto."""
+    if hint.kind == "news" and hint.source_ref is not None:
+        return 0
+    return {"official": 1, "news": 2}.get(hint.kind, 3)
+
+
+def _limit_real(picks: list[_Pick]) -> list[Issue]:
+    hinted = [i for i, p in enumerate(picks) if p.real is not None]
+    limit = max(2, math.ceil(len(picks) * REAL_SHARE))
+    if len(hinted) <= limit:
+        return []
+    keep = set(sorted(hinted, key=lambda i: (_real_rank(picks[i].real), i))[:limit])  # type: ignore[arg-type]
+    for i in hinted:
+        if i not in keep:
+            picks[i].real = None
+    removed = len(hinted) - limit
+    text = ("1 sugestão de mídia real tirada" if removed == 1 else f"{removed} sugestões de mídia real tiradas")
+    return [Issue("sugestoes_cortadas", CORRIGIDO, f"{text}: ficam {limit} neste vídeo.")]
+
+
+def _source_of(ref: object, sources: list[Source]) -> str | None:
+    """Fonte do cartão pelo número dela em "Fontes do roteiro" (base 1): o nome curto da fonte, nunca texto livre."""
+    if isinstance(ref, str) and ref.strip().isdigit():
+        ref = int(ref.strip())
+    if not isinstance(ref, int) or isinstance(ref, bool) or not 1 <= ref <= len(sources):
+        return None
+    return storyboard_check.source_label(sources[ref - 1]) or None
+
+
+def _card_from(data: dict[str, Any], kind: str, lang: str,
+               sources: list[Source] | None = None) -> tuple[str, SceneCard | None]:
     """Tipo final e cartão da cena (stat sem valor e compare sem 2 itens viram outro tipo)."""
     value = _text(data.get("value"), 24)
     label = _words_max(data.get("label"), 6)
@@ -530,7 +624,7 @@ def _card_from(data: dict[str, Any], kind: str, lang: str) -> tuple[str, SceneCa
         highlight=highlight if kind == "compare" and valid_highlight else None,  # type: ignore[arg-type]
         headline={lang: headline} if headline else {},
         stamp={lang: stamp} if stamp else {},
-        source=_text(data.get("source_note"), 40) or None,
+        source=_source_of(data.get("source_ref"), sources or []),
     )
     return kind, (card if card.resolved(lang) else None)
 
@@ -569,7 +663,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             kind = "count"  # Top 10: o contador do item fica como sempre foi
         elif kind == "count":
             kind = "stat"
-        kind, card = _card_from(data, kind, lang)
+        kind, card = _card_from(data, kind, lang, doc.sources)
         overlay: str | None = _words_max(data.get("overlay_text"), 12) or None
         number = None
         if kind == "title":
@@ -609,10 +703,13 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
                 root = None if source == "new" else last_new
         elif kind == "count" and source == "new":
             pass  # contador com imagem própria (item de uma batida só)
-        elif source != "none" and root is None:  # cartão: fundo reaproveitado da última imagem nova, ou animado
+        elif root is None and not (kind == "count" and source == "none"):
+            # Cartão: fundo desfocado da última imagem nova, mesmo que a resposta peça o fundo liso ("none", que parece
+            # slide); sem imagem antes, o fundo animado. O contador do Top 10 sem imagem no item fica como é.
             source, root = ("reuse", last_new) if last_new is not None else ("none", None)
 
-        p = _Pick(beat, kind, source or "none", root, overlay=overlay, number=number, card=card, ahead=ahead)
+        p = _Pick(beat, kind, source or "none", root, overlay=overlay, number=number, card=card, ahead=ahead,
+                  real=_real_from(data, kind, doc.sources))
         if p.source == "new":
             p.prompt = _text(data.get("prompt"), 700) or beat.text
             chosen = pick(data.get("language"), VISUAL_LANGUAGES)
@@ -635,6 +732,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     issues = _enforce_budget(picks, budget, hook, positions)
     _resolve_ahead(picks)
     issues += _trim_headlines(picks, lang, hook)
+    issues += _limit_real(picks)
 
     uses: dict[int, int] = {}
     for i, p in enumerate(picks):
@@ -660,7 +758,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             visual = Visual(type="none")
         scenes.append(Scene(segment_id=beat.segment_id, part=beat.part, parts=beat.parts, kind=p.kind,  # type: ignore[arg-type]
                             visual=visual, overlay_text={lang: p.overlay} if p.overlay else {}, number=p.number,
-                            motion=p.motion, span=len(beat.words), card=p.card, focus=p.focus))
+                            motion=p.motion, span=len(beat.words), card=p.card, focus=p.focus, real=p.real))
     for p, scene in zip(picks, scenes, strict=True):
         if p.source == "reuse" and p.root is not None:
             scene.visual.reuse_of = scenes[p.root].id
@@ -817,6 +915,22 @@ def _detach_kept(old: ProjectDoc, kept: list[Scene]) -> None:
             scene.visual.reuse_of = None
 
 
+def _carry_media(old: ProjectDoc, new: ProjectDoc, keep_segments: set[str]) -> int:
+    """A mídia real anexada pelo usuário sobrevive a "refazer as cenas": a cena nova que cobre o mesmo trecho
+    (mesmo segmento, parte, número de partes e palavras) recebe uma cópia dela. Devolve quantas cenas."""
+    attached = {(s.segment_id, s.part, s.parts, s.span): s.visual.media for s in old.scenes
+                if s.visual.media is not None and s.segment_id not in keep_segments}
+    carried = 0
+    for scene in new.scenes:
+        if scene.segment_id in keep_segments:
+            continue
+        media = attached.get((scene.segment_id, scene.part, scene.parts, scene.span))
+        if media is not None:
+            scene.visual.media = media.model_copy(deep=True)
+            carried += 1
+    return carried
+
+
 @dataclass
 class _Attempt:
     doc: ProjectDoc
@@ -841,10 +955,14 @@ def _attempt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], data: object,
     scenes, issues = _scenes_from(new_doc, style, art, beats, payload.get("scenes"), budget,
                                   _positions(doc, beats, keep_segments))
     new_doc.scenes = kept + scenes
+    carried = _carry_media(doc, new_doc, keep_segments)
+    if carried:
+        text = "1 cena manteve" if carried == 1 else f"{carried} cenas mantiveram"
+        issues.append(Issue("midia_mantida", CORRIGIDO, f"{text} a mídia real que você anexou."))
     new_doc.art = art
     new_doc.storyboard_approved = False
     new_doc = ProjectDoc.model_validate(new_doc.model_dump())
-    issues += storyboard_check.check(new_doc, style, beats)
+    issues += storyboard_check.check(new_doc, style, beats, budget)
     return _Attempt(new_doc, issues)
 
 
@@ -948,12 +1066,19 @@ def _translatable_value(text: str) -> bool:
     return any(ch.isalpha() for ch in text) or bool(_SEPARATED_NUMBER_RE.search(text))
 
 
+_MEDIA_HEADLINE = "media.headline"
+
+
 def _card_texts(scene: Scene, lang: str) -> list[dict[str, str]]:
-    """Textos do cartão para traduzir, com id "{cena}#{campo}" (valor só quando muda com o idioma)."""
+    """Textos do cartão para traduzir, com id "{cena}#{campo}" (valor só quando muda com o idioma). A manchete do
+    cartão de notícia (mídia real) entra como "{cena}#media.headline"."""
+    out = []
+    media = scene.visual.media
+    if media is not None and (media.headline.get(lang) or "").strip():
+        out.append({"id": f"{scene.id}#{_MEDIA_HEADLINE}", "text": media.headline[lang].strip()})
     card = scene.card
     if card is None:
-        return []
-    out = []
+        return out
     for name in _CARD_FIELDS:
         text = (getattr(card, name).get(lang) or "").strip()
         if text and (name != "value" or _translatable_value(text)):
@@ -967,7 +1092,9 @@ def _card_texts(scene: Scene, lang: str) -> list[dict[str, str]]:
 
 
 def _card_target(scene: Scene, path: str) -> dict[str, str] | None:
-    """Textos por idioma de um campo do cartão ("label", "items.1.value"), ou None."""
+    """Textos por idioma de um campo do cartão ("label", "items.1.value", "media.headline"), ou None."""
+    if path == _MEDIA_HEADLINE:
+        return scene.visual.media.headline if scene.visual.media is not None else None
     if scene.card is None:
         return None
     parts = path.split(".")

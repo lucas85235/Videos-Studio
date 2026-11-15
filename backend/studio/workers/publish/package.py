@@ -16,7 +16,9 @@ from studio.core.project import service
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.ids import new_id
+from studio.media.real_media import EDITORIAL_WARNING
 from studio.models import Publication
+from studio.workers.publish.credits import credits_block, has_editorial
 
 UPLOAD_URLS = {
     "youtube": "https://studio.youtube.com/",
@@ -46,7 +48,9 @@ AI_LABEL_HOWTO = {
 }
 
 
-def caption_for(platform: str, meta: dict[str, Any], fallback_title: str) -> str:
+def caption_for(platform: str, meta: dict[str, Any], fallback_title: str, credits: str = "") -> str:
+    """Legenda da rede. Com os créditos das imagens (mídia real): no YouTube vão antes das hashtags (só o texto é
+    cortado para caber); no TikTok, Instagram e Facebook entram só se tudo couber; no Threads e no X, nunca."""
     limits = LIMITS.get(platform, {"description": 2200, "hashtags": 5})
     title = meta.get("title") or fallback_title
     hashtags = [h if h.startswith("#") else f"#{h}" for h in meta.get("hashtags", [])][: limits["hashtags"]]
@@ -59,7 +63,17 @@ def caption_for(platform: str, meta: dict[str, Any], fallback_title: str) -> str
     else:
         body = title
     text = f"{body}\n\n{' '.join(hashtags)}".strip()
-    return text[: limits["description"]]
+    credits = credits.strip()
+    limit = limits["description"]
+    if not credits or platform not in ("youtube", "tiktok", "instagram", "facebook"):
+        return text[:limit]
+    tail = credits + (f"\n\n{' '.join(hashtags)}" if hashtags else "")
+    if platform == "youtube":
+        room = limit - len(tail) - 2
+        cut = body.strip()[: max(0, room)].rstrip()
+        return (f"{cut}\n\n{tail}" if cut else tail)[:limit]
+    full = f"{body}\n\n{tail}".strip()
+    return full if len(full) <= limit else text[:limit]
 
 
 def build_package(project_id: str, lang: str, platforms: list[str], planned_at: datetime | None = None) -> dict[str, Any]:
@@ -79,6 +93,8 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
     meta = doc.metadata.get(lang)
     meta_dict = meta.model_dump() if meta else {"title": doc.title, "description": "", "tags": [], "hashtags": []}
     base = settings.outputs_dir / project_id / lang / "publicar"
+    credits = credits_block(doc, lang)  # mídia real: "Créditos das imagens" (vazio sem mídia)
+    editorial = has_editorial(doc)
     results = []
     for platform in platforms:
         folder = base / platform
@@ -93,8 +109,10 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
             shutil.copyfile(thumb, folder / "capa.jpg")
         if srt and srt.exists() and platform == "youtube":
             shutil.copyfile(srt, folder / "legendas.srt")
-        caption = caption_for(platform, meta_dict, doc.title)
+        caption = caption_for(platform, meta_dict, doc.title, credits)
         (folder / "legenda.txt").write_text(caption, encoding="utf-8")
+        if credits:
+            (folder / "creditos.txt").write_text(credits + "\n", encoding="utf-8")
         if platform == "youtube":
             (folder / "titulo.txt").write_text((meta_dict.get("title") or doc.title)[:100], encoding="utf-8")
             (folder / "tags.txt").write_text(", ".join(meta_dict.get("tags", [])), encoding="utf-8")
@@ -110,6 +128,11 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
         ]
         if platform == "youtube" and srt:
             checklist.append("7. Em Legendas, envie `legendas.srt`.")
+        if credits:
+            checklist.append("\nCréditos das imagens: já estão na legenda." if credits in caption
+                             else "\nCréditos das imagens: cole o texto de creditos.txt na descrição.")
+        if editorial:
+            checklist.append("\n**Atenção:** " + EDITORIAL_WARNING)
         if style.art.photoreal:
             checklist.append("\n**Atenção:** o estilo usa arte fotorrealista: o rótulo de conteúdo sintético é obrigatório.")
         if preview_only:

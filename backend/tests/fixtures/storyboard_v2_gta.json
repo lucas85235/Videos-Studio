@@ -2,8 +2,8 @@
  "direction": {
   "genre": "games",
   "approach": "literal",
-  "world": "sunny neon coastal metropolis inspired by Miami, beaches, palm trees and art deco hotels, 2020s",
-  "treatment": "saturated sunset light, clean contrast, crisp edges, no grain",
+  "world": "neon coastal metropolis inspired by Miami, beaches, palm trees and art deco hotels, 2020s",
+  "treatment": "saturated color, clean contrast, crisp edges, no grain",
   "palette": [
    "hot pink",
    "teal",
@@ -18,12 +18,12 @@
    {
     "id": "lucia",
     "name": "Lucia",
-    "look": "original Latina woman in her 30s, dark curly hair, denim jacket, confident expression"
+    "look": "original Latina woman in her 30s, dark curly hair, denim jacket"
    },
    {
     "id": "vice_city",
     "name": "Vice City",
-    "look": "fictional sunny neon coastal city with art deco hotels, palm-lined avenues and turquoise sea"
+    "look": "fictional neon coastal city with art deco hotels, palm-lined avenues and turquoise sea"
    }
   ],
   "avoid": [
@@ -33,7 +33,7 @@
    "medieval objects"
   ],
   "style_fit": "ok",
-  "style_note": "Notícia de games pede cor, sol e neon; o estilo combina com o assunto.",
+  "style_note": "Notícia de games pede cor e neon; o estilo combina com o assunto.",
   "suggested_style": null,
   "hook": "neon coastal city skyline at sunset seen from the sea, a sports car on the beach road"
  },
@@ -59,7 +59,7 @@
    "highlight": null,
    "headline": "MELHOR JOGO DA HISTÓRIA?",
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#0:1",
@@ -80,16 +80,16 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#1:0",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Sprawling West Coast metropolis at golden hour, hills and highways crossing downtown, early 2010s.",
+   "prompt": "A teenager's bedroom at night in 2013, a boy sitting on the floor lit by the cold blue glow of a big TV showing a sprawling city with hills and freeways.",
    "language": "key_art",
-   "shot": "aerial",
+   "shot": "medium",
    "composition": "upper_half",
    "focus": null,
    "motion": null,
@@ -101,7 +101,7 @@
    "highlight": null,
    "headline": "GTA V · 2013",
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#1:1",
@@ -122,14 +122,35 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": "Take-Two"
+   "source_ref": 1
+  },
+  {
+   "key": "#1:2",
+   "kind": "text",
+   "source": "reuse",
+   "reuse_key": "#1:0",
+   "prompt": null,
+   "language": null,
+   "shot": null,
+   "composition": null,
+   "focus": "bottom_left",
+   "motion": null,
+   "entities": null,
+   "overlay_text": null,
+   "value": null,
+   "label": null,
+   "items": null,
+   "highlight": null,
+   "headline": null,
+   "stamp": null,
+   "source_ref": null
   },
   {
    "key": "#2:0",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Downtown avenue at night with giant blank screens glowing above people on the sidewalk, December 2023.",
+   "prompt": "Downtown avenue on a cold winter night in December 2023, giant blank screens glowing above people in coats on the sidewalk.",
    "language": "render_3d",
    "shot": "low_angle",
    "composition": "upper_half",
@@ -143,7 +164,7 @@
    "highlight": null,
    "headline": "TRAILER 1 · DEZ 2023",
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#2:1",
@@ -159,21 +180,21 @@
    "entities": null,
    "overlay_text": null,
    "value": "90 MI",
-   "label": "visualizações",
+   "label": "views em 24 h no YouTube",
    "items": null,
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#2:2",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Crowd of young people holding up glowing smartphones at night, faces lit by the screens.",
+   "prompt": "Young people on a bright morning commute holding up smartphones, each screen showing a different abstract frame, crisp winter light.",
    "language": "render_3d",
-   "shot": "medium",
+   "shot": "close",
    "composition": "left_third",
    "focus": null,
    "motion": null,
@@ -185,7 +206,7 @@
    "highlight": null,
    "headline": null,
    "stamp": "24 H",
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#2:3",
@@ -206,14 +227,14 @@
    "highlight": null,
    "headline": null,
    "stamp": "RECORDE",
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#3:0",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Red sports car speeding along a sunny coastal highway lined with palm trees, May 2025.",
+   "prompt": "Red sports car speeding along a coastal highway lined with palm trees under the harsh midday sun, May 2025.",
    "language": "key_art",
    "shot": "wide",
    "composition": "right_third",
@@ -227,7 +248,7 @@
    "highlight": null,
    "headline": "TRAILER 2 · MAI 2025",
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#3:1",
@@ -248,7 +269,7 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#3:2",
@@ -264,12 +285,12 @@
    "entities": null,
    "overlay_text": null,
    "value": "475 MI",
-   "label": "visualizações em 24 h",
+   "label": "views em 24 h, todas plataformas",
    "items": null,
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#3:3",
@@ -285,28 +306,28 @@
    "entities": null,
    "overlay_text": null,
    "value": null,
-   "label": "visualizações em 24 h",
+   "label": "views nas primeiras 24 h",
    "items": [
     {
-     "label": "Trailer 1",
+     "label": "Trailer 1 · só YouTube",
      "value": "90 MI"
     },
     {
-     "label": "Trailer 2",
+     "label": "Trailer 2 · todas as plataformas",
      "value": "475 MI"
     }
    ],
    "highlight": 1,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#4:0",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "High aerial view of a fictional sunny state with a neon coastal city, beaches and wetlands at sunset.",
+   "prompt": "High aerial view of a fictional subtropical state with a neon coastal city, beaches and wetlands at dawn, mist over the water.",
    "language": "key_art",
    "shot": "aerial",
    "composition": "upper_half",
@@ -320,16 +341,16 @@
    "label": null,
    "items": null,
    "highlight": null,
-   "headline": "LEONIDA · VICE CITY",
+   "headline": "NOVO MAPA · LEONIDA",
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#4:1",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Lucia leaning on a convertible on a palm-lined avenue at sunset, looking at the camera.",
+   "prompt": "Lucia seen from behind at a neon-lit diner counter, a red convertible parked outside the window.",
    "language": "render_3d",
    "shot": "medium",
    "composition": "right_third",
@@ -345,13 +366,34 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#5:0",
+   "kind": "image",
+   "source": "new",
+   "reuse_key": null,
+   "prompt": "A game controller locked inside a glass display case at the end of a dark, cold blue hallway at night.",
+   "language": "render_3d",
+   "shot": "detail",
+   "composition": "upper_half",
+   "focus": null,
+   "motion": null,
+   "entities": null,
+   "overlay_text": null,
+   "value": null,
+   "label": null,
+   "items": null,
+   "highlight": null,
+   "headline": null,
+   "stamp": null,
+   "source_ref": null
+  },
+  {
+   "key": "#5:1",
    "kind": "stat",
    "source": "reuse",
-   "reuse_key": "#4:1",
+   "reuse_key": "#5:0",
    "prompt": null,
    "language": null,
    "shot": null,
@@ -360,20 +402,20 @@
    "motion": null,
    "entities": null,
    "overlay_text": null,
-   "value": "2×",
-   "label": "adiamentos",
+   "value": "2",
+   "label": "adiamentos do lançamento",
    "items": null,
    "highlight": null,
    "headline": null,
    "stamp": "ADIADO",
-   "source_note": null
+   "source_ref": null
   },
   {
-   "key": "#5:1",
+   "key": "#5:2",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Closed studio gate at night with a security barrier and empty parking lot under street lights.",
+   "prompt": "Closed studio gate with a security barrier and an empty parking lot in the rain at dusk, wet asphalt reflecting the gate lights.",
    "language": "render_3d",
    "shot": "low_angle",
    "composition": "upper_half",
@@ -387,10 +429,10 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
-   "key": "#5:2",
+   "key": "#5:3",
    "kind": "text",
    "source": "reuse",
    "reuse_key": "#4:0",
@@ -408,14 +450,14 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
-   "key": "#5:3",
+   "key": "#5:4",
    "kind": "image",
    "source": "new",
    "reuse_key": null,
-   "prompt": "Huge crowd facing a neon city skyline at night, everyone looking up in anticipation.",
+   "prompt": "Huge crowd on a beach boardwalk at sunrise, everyone looking up at a giant blank billboard in anticipation.",
    "language": "key_art",
    "shot": "wide",
    "composition": "upper_half",
@@ -431,7 +473,7 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   },
   {
    "key": "#6:0",
@@ -452,7 +494,7 @@
    "highlight": null,
    "headline": null,
    "stamp": null,
-   "source_note": null
+   "source_ref": null
   }
  ]
 }

@@ -162,6 +162,11 @@ def test_full_render_short(isolated_settings):
                CardItem(label={"pt-BR": "Depois"}, value={"pt-BR": "475 MI"})],
         highlight=1, headline={"pt-BR": "RECORDE"},
     )  # fmt: skip
+    # Carimbo pela composição da imagem, texto cinético e título sobre a imagem desfocada.
+    scenes[3].card = SceneCard(stamp={"pt-BR": "INÉDITO"})
+    scenes[4].kind = "text"
+    scenes[5].kind = "title"
+    scenes[5].overlay_text = {"pt-BR": "O farol"}
     doc.storyboard_approved = True
     service.commit(project_id, doc, "Cartões de teste")
     final = _run("render", project_id)
@@ -170,3 +175,8 @@ def test_full_render_short(isolated_settings):
     assert video.exists()
     assert abs(duration_of(video) - entry["duration"]) < 0.6
     assert (isolated_settings.data_dir / entry["thumbnail"]).exists()
+    timeline = json.loads((isolated_settings.data_dir / entry["timeline"]).read_text(encoding="utf-8"))
+    stamp_scene = next(s for s in timeline["scenes"] if s["id"] == scenes[3].id)
+    if scenes[3].visual.composition == "right_third" and scenes[3].visual.variation == 0:
+        assert stamp_scene["card"]["stamp_at"] == "left"
+    assert any(e["scene_id"] == scenes[3].id and e["type"] == "impact" for e in timeline["sfx"])

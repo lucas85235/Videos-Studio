@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AudioLines, Check, ExternalLink, FileText, History, Languages, Palette, Plus, TriangleAlert, Tv, Wand2 } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api, type Channel, DEFAULT_STYLE_ID, LANGUAGES, type StyleItem, type VoiceChoice } from '../api';
+import { api, type Channel, type ChannelYouTube, DEFAULT_STYLE_ID, LANGUAGES, type StyleItem, type VoiceChoice } from '../api';
 import { langLabel } from '../labels';
 import { isBoolean, isStringArray, readLocal, writeLocal } from '../shell/data';
 import {
@@ -120,6 +120,14 @@ const appliedParts = (a: ChannelApplied) =>
   [a.prevStyle !== undefined ? 'o estilo' : null, a.prevLangs ? 'os idiomas' : null].filter(Boolean).join(' e ');
 
 /** Link para outra página do app que abre em outra aba, para o formulário não se perder. */
+/** Para onde vão os envios ao YouTube dos projetos do canal escolhido. */
+const youtubeNote = (y: ChannelYouTube) => {
+  const name = y.handle || y.title;
+  if (y.token === 'ok' || y.token === 'global') return `Os envios ao YouTube vão para o canal ${name}.`;
+  if (y.token === 'public') return `O canal ${name} foi ligado só pelo link: para publicar nele, vincule com o login do Google em Canais.`;
+  return `O canal ${name} está sem acesso ao YouTube: vincule de novo em Canais para publicar nele.`;
+};
+
 const NewTabLink: React.FC<{ to: string; children: React.ReactNode }> = ({ to, children }) => (
   <Link
     to={to}
@@ -428,20 +436,24 @@ export const NewProjectPage: React.FC = () => {
           ) : channels.isLoading ? (
             <Skeleton className="h-8 w-full sm:w-80" />
           ) : channels.data?.length ? (
-            <Field label="Para qual canal é este vídeo?" hint={channelHint}>
-              <Select value={channelId} onChange={(e) => pickChannel(e.target.value)} className="w-full sm:w-80">
-                <option value="">Sem canal</option>
-                {channels.data.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            <>
+              <Field label="Para qual canal é este vídeo?" hint={channelHint}>
+                <Select value={channelId} onChange={(e) => pickChannel(e.target.value)} className="w-full sm:w-80">
+                  <option value="">Sem canal</option>
+                  {channels.data.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {c.youtube?.handle ? ` (${c.youtube.handle})` : ''}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              {channel?.youtube ? <p className="text-[13px] text-subtle">{youtubeNote(channel.youtube)}</p> : null}
+            </>
           ) : (
             <p className="text-sm text-muted">
               Você ainda não tem canais. Sem problema: o vídeo pode ficar sem canal.{' '}
-              <NewTabLink to="/canais">Cadastrar um canal</NewTabLink>
+              <NewTabLink to="/canais">Vincular do YouTube ou cadastrar um canal</NewTabLink>
             </p>
           )}
         </Section>

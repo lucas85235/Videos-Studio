@@ -33,7 +33,7 @@ voice:
   gap_s: 0.4
 
 art:
-  bible: "estética noir de arquivo policial, fotografias antigas em preto e branco, papel envelhecido, mesa de investigação, luz de luminária, sem rostos identificáveis"
+  bible: "estética noir de arquivo policial, fotografias antigas em preto e branco, papel envelhecido, mesa de investigação, luz baixa e contrastada, sem rostos identificáveis"
   banned: ["texto", "letras", "logotipos", "marca d'água", "rostos de pessoas reais", "violência explícita"]
   languages: [archival, collage, painting]
   image_chain: [codex_cli]
@@ -68,8 +68,8 @@ edit:
   zoom_strength: 0.08
 
 audio:
-  music: { source: procedural, mood: mystery, volume_db: -25, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -14 }
+  music: { source: procedural, mood: mystery, volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -11 }
   loudness_lufs: -14
 
 thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, accent: "#E53935" }

@@ -92,7 +92,14 @@ STORYBOARD_SCHEMA = _obj(
                     "highlight": NI,
                     "headline": NS,
                     "stamp": NS,
-                    "source_note": NS,
+                    # Número da fonte na lista "Fontes do roteiro" do pedido (o app escreve o nome curto dela).
+                    "source_ref": NI,
+                    # Sugestão de mídia real, em campos achatados (objeto anulável aninhado é arriscado no
+                    # --json-schema do Claude): "photo" | "news" | "official" | null, validado no Python.
+                    "real_kind": NS,
+                    "real_query": NS,  # inglês, 2 a 6 palavras
+                    "real_note": NS,  # português: o que mostrar e onde achar
+                    "real_source_ref": NI,  # número da fonte com o link da notícia em "Fontes do roteiro"
                 }
             ),
         },
@@ -196,7 +203,8 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
 - format.duration.target_s / min_s / max_s (segundos)
 - script.tone (texto), script.structure (lista de etapas), script.cta, script.hook_max_s
 - voice.voice (voz do Gemini, ex.: Charon, Algenib, Orus, Puck, Kore), voice.style_prompt, voice.speed (0.5–2), voice.gap_s
-- art.bible (tratamento de referência: luz, cor e textura), art.banned (lista), art.photoreal (bool)
+- art.bible (tratamento de referência: cor, contraste e textura; sem hora do dia, clima nem luz fixa, que cada
+  imagem diz a sua), art.banned (lista), art.photoreal (bool)
 - art.languages: linguagens visuais preferidas, a primeira dominante (vazio = livre); ids: {", ".join(VISUAL_LANGUAGES)}
   (photo só com art.photoreal)
 - edit.shot_seconds.min / max (duração de cada cena; o storyboard corta a narração por frase nessa faixa)

@@ -30,6 +30,121 @@ export type Visual = {
   entities?: string[];
   /** Id da cena dona da imagem que esta mostra (nenhuma imagem nova). */
   reuse_of?: string | null;
+  /** Mídia real anexada: vale mais que a imagem de IA, o `asset` e o `reuse_of` (que ficam de reserva). */
+  media?: MediaRef | null;
+};
+
+/* ------------------------------------------------------------------ */
+/* Mídia real (foto livre, cartão de notícia, material oficial)        */
+/* ------------------------------------------------------------------ */
+
+/** photo: foto de licença livre; news: cartão de notícia; official: arte, trailer ou foto de imprensa oficial. */
+export type RealKind = 'photo' | 'news' | 'official';
+export type MediaSource = 'commons' | 'openverse' | 'pexels' | 'link' | 'upload';
+/** cover: preenche a tela (recorta); contain: imagem inteira sobre ela mesma desfocada; null: pela proporção. */
+export type MediaFit = 'cover' | 'contain';
+
+/** Mídia real anexada à cena (Visual.media em core/project/document.py). */
+export type MediaRef = {
+  kind: RealKind;
+  source: MediaSource;
+  /** Original normalizado na pasta de dados (use com `fileUrl`); null só na notícia sem imagem. */
+  asset: string | null;
+  url: string;
+  page_url: string;
+  title: string;
+  author: string;
+  /** Nome curto da licença; vazio: direitos reservados ou desconhecida. */
+  license: string;
+  license_url: string;
+  /** Texto do crédito sem o prefixo ("Foto:" / "Imagem:" vêm do idioma do vídeo). */
+  credit: string;
+  /** Material de terceiros com direitos: aviso de Content ID. */
+  editorial: boolean;
+  width: number | null;
+  height: number | null;
+  /** Id de foco (onde está o sujeito na foto). */
+  focus: string | null;
+  fit: MediaFit | null;
+  outlet: string;
+  /** "YYYY-MM-DD", "YYYY-MM", "YYYY" ou vazio. */
+  published: string;
+  headline: LocalizedText;
+  candidate_id: string;
+};
+
+/** Sugestão de mídia real do storyboard (Scene.real). */
+export type RealHint = {
+  kind: RealKind;
+  /** Busca em inglês para o Commons/Openverse. */
+  query: string;
+  /** O que mostrar e onde achar (português). */
+  note: string;
+  /** Posição (base 1) em `doc.sources` da fonte com link (notícia). */
+  source_ref: number | null;
+};
+
+/** Situação de cada fonte na busca: ok, vazio (nada achado), erro (não respondeu), offline, sem_chave (Pexels). */
+/** `sem_contato`: o Commons pede um contato (Configurações) e a busca foi só no Openverse. */
+export type MediaSearchStatus = 'ok' | 'vazio' | 'erro' | 'offline' | 'sem_chave' | 'sem_contato';
+
+/** Foto de licença livre achada na busca (nada é aplicado até o usuário escolher). */
+export type MediaCandidate = {
+  /** "commons:File:X.jpg", "openverse:<uuid>" ou "pexels:<id>". */
+  id: string;
+  source: 'commons' | 'openverse' | 'pexels';
+  title: string;
+  author: string;
+  license: string;
+  license_url: string;
+  page_url: string;
+  /** Miniatura remota (só para mostrar na tela). */
+  thumb: string;
+  width: number;
+  height: number;
+  /** Crédito pronto (sem o prefixo). */
+  credit: string;
+  attribution_required: boolean;
+  /** Aviso curto ("pode ter direito de imagem de pessoa ou marca"); vazio sem aviso. */
+  warning: string;
+};
+
+/** GET /api/projects/:id/scenes/:sceneId/media/candidates */
+export type MediaCandidates = {
+  query: string;
+  candidates: MediaCandidate[];
+  sources: Partial<Record<'commons' | 'openverse' | 'pexels', MediaSearchStatus>>;
+  cached: boolean;
+};
+
+/** POST .../media, POST .../media/upload, PATCH .../media */
+export type MediaAttachResult = { version: number; media: MediaRef; warnings: string[]; job: Job | null; notice?: string | null };
+
+/** PATCH .../media (só os campos enviados mudam; `headline` vale para `lang`, padrão o idioma principal). */
+export type MediaPatch = {
+  kind?: RealKind;
+  credit?: string;
+  editorial?: boolean;
+  focus?: string | null;
+  /** 'auto' volta para a escolha pela proporção. */
+  fit?: MediaFit | 'auto';
+  outlet?: string;
+  published?: string;
+  headline?: string;
+  lang?: string;
+  rebuild?: boolean;
+};
+
+/** GET /api/projects/:id/media/credits?lang= : o que vai no fim da descrição ao publicar. */
+export type MediaCredits = {
+  lang: string;
+  /** Título da lista no idioma ("Créditos das imagens"). */
+  heading: string;
+  lines: string[];
+  /** Bloco pronto (título + linhas); vazio sem mídia real. */
+  text: string;
+  /** Algum material de terceiros com direitos (aviso de Content ID). */
+  editorial: boolean;
 };
 
 export type SceneCardItem = { label: LocalizedText; value: LocalizedText };
@@ -64,6 +179,8 @@ export type Scene = {
   card?: SceneCard | null;
   /** Para onde a câmera olha (id de foco). */
   focus?: string | null;
+  /** Sugestão de mídia real do storyboard (null: nenhuma). */
+  real?: RealHint | null;
 };
 
 export type ArtEntity = { id: string; name: string; look: string; real?: boolean };
@@ -98,7 +215,8 @@ export type StoryboardIssue = {
 
 /** Revisão da curadoria gravada pelo job das cenas (settings.storyboard_review). */
 export type StoryboardReview = {
-  counts: { scenes: number; new_images: number; reused: number; cards: number; budget: number; est_seconds: number };
+  /** `real_hints`: cenas com sugestão de mídia real (falta no servidor antigo). */
+  counts: { scenes: number; new_images: number; reused: number; cards: number; budget: number; est_seconds: number; real_hints?: number };
   issues: StoryboardIssue[];
   retried: boolean;
   style_fit: 'ok' | 'fraco' | 'errado';
@@ -305,6 +423,10 @@ export type BuildPlan = {
   images_missing: string[];
   /** Cenas dirigidas sem direção de arte (o estilo foi trocado): só geram imagem depois de refazer as cenas. */
   direction_missing?: string[];
+  /** Cenas que mostram mídia real própria (não geram imagem de IA). */
+  media_scenes?: string[];
+  /** Cenas com mídia real cujo arquivo sumiu da pasta de dados (ficam sem imagem). */
+  media_missing?: string[];
   image_provider: string | null;
   estimated_cost_usd: number;
   estimated_seconds: number;
@@ -346,6 +468,10 @@ export type Channel = {
   languages: string[];
   default_style_id: string | null;
   posting: PostingPlan;
+  /** Identidade visual (vai para o storyboard). Chave `identidade`: o texto editado na tela de canais. */
+  style_bible?: Record<string, unknown>;
+  /** Canal do YouTube ligado (login do Google ou link público). Tipos no bloco "Canais e YouTube", no fim. */
+  youtube?: ChannelYouTube | null;
 };
 export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
 
@@ -481,11 +607,13 @@ const HTTP_MESSAGES: Record<string, string> = {
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response;
+  // FormData (envio de arquivo) vai como multipart: o navegador põe o Content-Type com o boundary.
+  const form = typeof FormData !== 'undefined' && body instanceof FormData;
   try {
     res = await fetch(path, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: body === undefined || form ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : form ? (body as FormData) : JSON.stringify(body),
     });
   } catch {
     throw new ApiError(0, NETWORK_ERROR_MESSAGE);
@@ -517,6 +645,8 @@ export const api = {
   put: <T,>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   patch: <T,>(path: string, body?: unknown) => request<T>('PATCH', path, body ?? {}),
   del: <T,>(path: string) => request<T>('DELETE', path),
+  /** POST multipart (envio de arquivo). */
+  upload: <T,>(path: string, form: FormData) => request<T>('POST', path, form),
 };
 
 export const fileUrl = (rel: string | null | undefined) => (rel ? `/files/${rel.replace(/^\/+/, '')}` : '');
@@ -556,4 +686,69 @@ export const JOB_LABELS: Record<string, string> = {
   render: 'Render final',
   autopilot: 'Piloto automático',
   publish_youtube: 'Envio ao YouTube',
+};
+
+/* ------------------------------------------------------------------ */
+/* Canais e YouTube (vincular canal já existente)                      */
+/* ------------------------------------------------------------------ */
+
+/** ok: token do canal; global: publica pela conta da aba de publicação; error: o Google recusou o token;
+ *  public: ligado só pelo link (não publica); missing: desvinculado. */
+export type ChannelTokenStatus = 'ok' | 'global' | 'error' | 'public' | 'missing';
+
+export type ChannelVideo = { title: string; video_id: string; published: string };
+
+/** `settings.youtube` do canal, como o servidor manda para a tela. */
+export type ChannelYouTube = {
+  channel_id: string;
+  title: string;
+  handle: string;
+  description: string;
+  url: string;
+  /** Foto baixada para a pasta de dados (use com `fileUrl`). */
+  avatar: string | null;
+  country: string;
+  language: string | null;
+  keywords: string[];
+  subscribers: number | null;
+  videos: number | null;
+  views: number | null;
+  recent_videos: ChannelVideo[];
+  source: 'oauth' | 'public';
+  imported_at: string;
+  token_error: string | null;
+  token: ChannelTokenStatus;
+};
+
+/** GET /api/youtube/status (campos novos opcionais: o servidor antigo não manda). */
+export type YouTubeAccountStatus = {
+  client_configured: boolean;
+  connected: boolean;
+  channel_title: string;
+  channel_id: string;
+  global_connected?: boolean;
+  linked?: { channel_id: string; channel_title: string }[];
+};
+
+/** POST /api/youtube/link */
+export type YouTubeLinkStart = { auth_url: string; state: string };
+/** GET /api/youtube/link/:state */
+export type YouTubeLinkStatus = {
+  status: 'pending' | 'done' | 'error' | 'unknown';
+  channel_title?: string;
+  vulto_channel_id?: string;
+  created?: boolean;
+  warnings?: string[];
+  error?: string;
+};
+
+/** POST /api/channels/:id/suggest: proposta da IA (nada é salvo até o usuário revisar). */
+export type ChannelSuggestion = {
+  niche: string;
+  persona: string;
+  languages: string[];
+  default_style_id: string | null;
+  identity: string;
+  reason: string;
+  provider: string;
 };

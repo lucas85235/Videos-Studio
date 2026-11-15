@@ -91,7 +91,7 @@ export const OutputTab: React.FC<
   const final = detail.outputs.final;
   const entry = final?.langs?.[lang];
   const meta = doc.metadata[lang];
-  const ytStatus = useYouTubeStatus();
+  const ytStatus = useYouTubeStatus(doc.id);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [rate, setRate] = useState(1);
   const [pickedSlot, setPickedSlot] = useState<PickedSlot>(null);

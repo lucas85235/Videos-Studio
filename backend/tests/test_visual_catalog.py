@@ -43,6 +43,8 @@ def test_games_preset_follows_the_plan():
     assert style.art.languages == ["key_art", "render_3d", "ui_mockup", "editorial"]
     assert "interface de jogo" in style.art.banned and "logotipos" in style.art.banned
     assert "vela" not in style.art.bible and "grão" in style.art.bible  # "sem grão"
+    # sem hora do dia nem luz fixa: cada imagem diz a sua (antes, tudo saía no pôr do sol)
+    assert "pôr do sol" not in style.art.bible and "fim de tarde" not in style.art.bible
     assert (style.edit.shot_seconds.min, style.edit.shot_seconds.max) == (1.8, 3.0)
     effects = {e.type: e for e in style.edit.effects}
     assert effects["grade"].preset == "vivid" and effects["grade"].amount == 0.35

@@ -69,8 +69,8 @@ edit:
   zoom_strength: 0.12
 
 audio:
-  music: { source: procedural, mood: upbeat, volume_db: -25, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -11 }
+  music: { source: procedural, mood: upbeat, volume_db: -18, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -9 }
   loudness_lufs: -14
 
 thumbnail: { template: texto-centro, variations: 3, per_language: true, accent: "#00E5FF" }

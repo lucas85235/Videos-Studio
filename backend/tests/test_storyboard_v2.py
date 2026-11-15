@@ -114,7 +114,7 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
     assert provider == "fake_llm" and len(fake.calls) == 1
     assert fake.calls[0]["schema"] is STORYBOARD_SCHEMA
     scenes = new_doc.ordered_scenes()
-    assert len(scenes) == 19
+    assert len(scenes) == 21
     for seg in new_doc.segments:  # cada segmento coberto exatamente pelas batidas
         assert sum(s.span or 0 for s in new_doc.scenes_of(seg.id)) == word_count(seg.text_for("pt-BR"))
 
@@ -122,6 +122,9 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
     assert art is not None and art.source == "ai"
     assert art.genre == "games" and art.languages == ["key_art", "render_3d"] and art.grade == "vivid"
     assert art.entity("lucia") is not None and art.entity("lucia").look.startswith("original Latina")
+    # personagem oficial citado pelo nome: de costas ou em silhueta, sem rosto
+    assert art.entity("lucia").look.endswith(storyboard_check.FACELESS)
+    assert not art.entity("vice_city").look.endswith(storyboard_check.FACELESS)
     assert "candles" in art.avoid and art.style_fit == "ok" and art.suggested_style is None
 
     hook = scenes[0]
@@ -140,36 +143,46 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
 
     stat = scenes[3]
     assert stat.kind == "stat" and stat.visual.reuse_of == scenes[2].id
+    # source_ref 1 vira o nome curto da 1ª fonte do roteiro
     assert stat.card.resolved("pt-BR") == {"value": "200 MI+", "label": "cópias vendidas", "source": "Take-Two"}
-    lone = scenes[10]  # 475 MI sobre o fundo animado
-    assert lone.kind == "stat" and lone.visual.type == "none" and lone.motion == "static"
-    compare = scenes[11].card.resolved("pt-BR")
-    assert scenes[11].kind == "compare" and compare["highlight"] == 1
-    assert compare["items"] == [{"label": "Trailer 1", "value": "90 MI"}, {"label": "Trailer 2", "value": "475 MI"}]
-    assert scenes[7].kind == "title" and scenes[7].overlay_text == {"pt-BR": "Recorde no YouTube"}
-    assert scenes[7].card.resolved("pt-BR") == {"stamp": "RECORDE"}
-    assert scenes[14].kind == "stat" and scenes[14].card.resolved("pt-BR")["stamp"] == "ADIADO"
-    assert scenes[16].kind == "text" and scenes[16].visual.reuse_of == scenes[12].id
-    assert scenes[13].visual.entities == ["lucia"]
+    # "Depois disso, silêncio." é batida própria, sobre a imagem de 2013 escurecida
+    assert scenes[4].kind == "text" and scenes[4].visual.reuse_of == scenes[2].id and scenes[4].span == 3
+    lone = scenes[11]  # 475 MI: a resposta pediu o fundo liso; fica a última imagem nova, desfocada
+    assert lone.kind == "stat" and lone.visual.reuse_of == scenes[9].id and lone.motion is None
+    assert all(s.visual.type != "none" for s in scenes)
+    compare = scenes[12].card.resolved("pt-BR")
+    assert scenes[12].kind == "compare" and compare["highlight"] == 1 and compare["label"] == "views nas primeiras 24 h"
+    assert compare["items"] == [{"label": "Trailer 1 · só YouTube", "value": "90 MI"},
+                                {"label": "Trailer 2 · todas as plataformas", "value": "475 MI"}]
+    assert scenes[8].kind == "title" and scenes[8].overlay_text == {"pt-BR": "Recorde no YouTube"}
+    assert scenes[8].card.resolved("pt-BR") == {"stamp": "RECORDE"}
+    # "Agora, o segredo." fica numa imagem; o cartão do 2 começa em "Depois de dois adiamentos"
+    assert scenes[15].kind == "image" and storyboard_check.has_own_image(scenes[15]) and scenes[15].span == 3
+    assert scenes[16].kind == "stat" and scenes[16].card.resolved("pt-BR") == {
+        "value": "2", "label": "adiamentos do lançamento", "stamp": "ADIADO"}
+    assert scenes[16].visual.reuse_of == scenes[15].id
+    assert scenes[18].kind == "text" and scenes[18].visual.reuse_of == scenes[13].id
+    assert scenes[14].visual.entities == ["lucia"]
     # o nome da personagem (tirado da narração) não vai para o gerador: a imagem descreve a aparência
-    assert scenes[13].visual.prompt.startswith("The Latina woman leaning on a convertible")
-    assert "lucia" not in scenes[13].visual.prompt.lower()
+    assert scenes[14].visual.prompt.startswith("The Latina woman seen from behind at a neon-lit diner")
+    assert "lucia" not in scenes[14].visual.prompt.lower()
 
-    assert review["counts"] == {"scenes": 19, "new_images": 9, "reused": 9, "cards": 7, "budget": 10, "est_seconds": 315}
+    assert review["counts"] == {"scenes": 21, "new_images": 10, "reused": 11, "cards": 8, "budget": 11, "est_seconds": 350}
     assert [(i["code"], i["severity"], i["scene_id"]) for i in review["issues"]] == [
-        ("nome_no_prompt", "corrigido", scenes[13].id)], review["issues"]
+        ("nome_no_prompt", "corrigido", scenes[14].id), ("personagem_sem_rosto", "corrigido", None)], review["issues"]
     assert review["retried"] is False
     assert (review["style_fit"], review["style_note"], review["suggested_style"]) == ("ok", art.style_note, None)
     assert new_doc.storyboard_approved is False
     ProjectDoc.model_validate(json.loads(json.dumps(new_doc.model_dump(mode="json"))))
 
     prompt = fake.calls[0]["prompt"]
-    assert "Tratamento de referência do estilo: cores saturadas de pôr do sol e neon" in prompt
-    assert 'Limite de imagens novas (source "new"): 10 de 19 batidas.' in prompt
+    assert "Tratamento de referência do estilo: cores saturadas e neon, contraste limpo, sem grão" in prompt
+    assert 'Limite de imagens novas (source "new"): 11 de 21 batidas.' in prompt
     assert "Linguagens preferidas do estilo: key_art, render_3d, ui_mockup, editorial" in prompt
     assert "- games-cultura-pop-short: Games e Cultura Pop (Short)" in prompt
     assert "- key_art: Pôster ilustrado" in prompt and "photo" not in prompt.split("Linguagens visuais")[1].split("\n")[1]
-    assert "Legenda: no meio" in prompt and "Fontes do roteiro:\n- Take-Two: GTA V vendeu" in prompt
+    assert "Legenda: no meio" in prompt
+    assert "Fontes do roteiro (source_ref é o número entre colchetes):\n- [1] Take-Two: GTA V vendeu" in prompt
     assert f"- {doc.segments[1].id}:0 [body, ~3,8 s]: Pensa comigo. GTA 5 saiu em dois mil e treze." in prompt
     assert "Direção definida pelo usuário" not in prompt
     assert "diretor de arte" in fake.calls[0]["system"]
@@ -183,21 +196,23 @@ def test_v2_enforces_new_image_budget(monkeypatch):
         scene.update({"kind": "image", "source": "new", "reuse_key": None, "shot": None, "headline": headline,
                       "prompt": scene["prompt"] or f"Quiet subject {index} on a palm avenue.", "value": None,
                       "label": None, "items": None, "overlay_text": None})
-    scene_data(data, doc, "5:3")["entities"] = ["lucia"]  # 2ª aparição da Lucia
+    scene_data(data, doc, "5:4")["entities"] = ["lucia"]  # 2ª aparição da Lucia
     new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
     scenes = new_doc.ordered_scenes()
     assert len(fake.calls) == 1
-    assert review["counts"]["new_images"] == 10 == review["counts"]["budget"]
-    assert codes(review, "corrigido").count("orcamento") == 9
+    assert review["counts"]["new_images"] == 11 == review["counts"]["budget"]
+    assert codes(review, "corrigido").count("orcamento") == 10
     assert all(i["scene_id"] for i in review["issues"] if i["code"] == "orcamento")
     own = [i for i, s in enumerate(scenes) if storyboard_check.has_own_image(s)]
     # gancho e 1ª aparição da Lucia têm prioridade; o resto entra na ordem
-    assert own == [0, 1, 2, 3, 4, 5, 6, 7, 8, 13]
-    assert scenes[17].visual.reuse_of == scenes[13].id  # reaproveita a imagem com a mesma entidade
-    assert scenes[9].visual.reuse_of == scenes[8].id and scenes[9].visual.prompt == ""
-    assert scenes[9].focus == FOCUS_ROTATION[1] and scenes[10].focus == FOCUS_ROTATION[2]
-    assert scenes[9].motion == "zoom_to"
-    assert "cena 9" in next(i["message"] for i in review["issues"] if i["scene_id"] == scenes[9].id)
+    assert own == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 14]
+    assert scenes[19].visual.reuse_of == scenes[14].id  # reaproveita a imagem com a mesma entidade
+    assert scenes[10].visual.reuse_of == scenes[9].id and scenes[10].visual.prompt == ""
+    assert scenes[10].focus == FOCUS_ROTATION[1] and scenes[11].focus == FOCUS_ROTATION[2]
+    assert scenes[10].motion == "zoom_to"
+    assert "cena 10" in next(i["message"] for i in review["issues"] if i["scene_id"] == scenes[10].id)
+    # "475 MI" na faixa é só o número da batida, não outro evento: o reaproveitamento da imagem de maio vale
+    assert "reuso_outra_data" not in codes(review)
     shots = [scenes[i].visual.shot for i in own]
     assert all(a != b for a, b in zip(shots, shots[1:], strict=False))
 
@@ -229,15 +244,15 @@ def test_v2_normalizes_invalid_values(monkeypatch):
     assert scenes[0].visual.language == "key_art"  # photo sem photoreal vira a dominante
     assert scenes[1].visual.reuse_of is None and scenes[1].visual.prompt == "Tem um detalhe que quase ninguém comenta."
     assert scenes[2].visual.shot in SHOTS and scenes[2].visual.shot != scenes[1].visual.shot
-    assert scenes[6].kind == "image" and storyboard_check.has_own_image(scenes[6])
-    assert scenes[7].kind == "stat" and scenes[7].card.resolved("pt-BR")["value"] == "24 H"  # count fora do Top 10
-    assert scenes[8].motion is None and scenes[8].visual.composition in ("upper_half", "left_third", "right_third")
-    assert scenes[9].visual.reuse_of is None and scenes[9].visual.prompt.startswith("Red sports car")
-    assert scenes[10].kind == "stat"
-    assert "highlight" not in scenes[11].card.resolved("pt-BR")
-    assert scenes[13].visual.entities == ["lucia_maria"] and scenes[13].card is None  # valor só vale em stat
-    assert scenes[18].visual.reuse_of == scenes[0].id and scenes[18].focus in FOCUS_ROTATION
-    assert scenes[18].focus != "middle" and scenes[18].motion == "zoom_to"
+    assert scenes[7].kind == "image" and storyboard_check.has_own_image(scenes[7])
+    assert scenes[8].kind == "stat" and scenes[8].card.resolved("pt-BR")["value"] == "24 H"  # count fora do Top 10
+    assert scenes[9].motion is None and scenes[9].visual.composition in ("upper_half", "left_third", "right_third")
+    assert scenes[10].visual.reuse_of is None and scenes[10].visual.prompt.startswith("Red sports car")
+    assert scenes[11].kind == "stat"
+    assert "highlight" not in scenes[12].card.resolved("pt-BR")
+    assert scenes[14].visual.entities == ["lucia_maria"] and scenes[14].card is None  # valor só vale em stat
+    assert scenes[20].visual.reuse_of == scenes[0].id and scenes[20].focus in FOCUS_ROTATION
+    assert scenes[20].focus != "middle" and scenes[20].motion == "zoom_to"
     assert review["counts"]["new_images"] <= review["counts"]["budget"]
     assert codes(review, "grave") == []
 
@@ -281,26 +296,26 @@ def test_v2_locked_segments_keep_old_scenes(monkeypatch):
     assert second.ordered_scenes()[0].id != hook.id
     prompt = fake.calls[0]["prompt"]
     assert f"{locked_seg}:0 [" not in prompt and "[body, cenas travadas] E o cenário?" in prompt
-    assert review["counts"]["scenes"] == 19
-    assert second.reuse_root(second.ordered_scenes()[14]) is not None  # 5:0 apontava para a batida travada
+    assert review["counts"]["scenes"] == 21
+    assert second.reuse_root(second.ordered_scenes()[18]) is not None  # 5:3 apontava para a batida travada
 
 
 def test_check_flags_number_as_image_and_avoid_terms(monkeypatch):
     doc = gta_doc()
     data = load_fixture(doc)
     scene_data(data, doc, "1:1").update({"kind": "image", "source": "new", "reuse_key": None, "value": None, "label": None,
-                                         "source_note": None, "prompt": "Stack of boxed games on a store shelf."})
-    scene_data(data, doc, "5:1")["prompt"] = "Closed studio gate at night with candles burning by the barrier."
+                                         "source_ref": None, "prompt": "Stack of boxed games on a store shelf."})
+    scene_data(data, doc, "5:2")["prompt"] = "Closed studio gate at night with candles burning by the barrier."
     scene_data(data, doc, "4:0")["prompt"] += " Oil painting style."
-    scene_data(data, doc, "5:3")["prompt"] = "Crowd watching a gameplay screenshot on a giant screen."
+    scene_data(data, doc, "5:4")["prompt"] = "Crowd watching a gameplay screenshot on a giant screen."
     new_doc, provider, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
     keys = {i["code"]: i["scene_key"] for i in review["issues"] if i["severity"] == "grave"}
     seg = doc.segments
     assert keys == {
         "numero_sem_cartao": f"{seg[1].id}:1",
-        "motivo_proibido": f"{seg[5].id}:1",
+        "motivo_proibido": f"{seg[5].id}:2",
         "estilo_no_prompt": f"{seg[4].id}:0",
-        "marca": f"{seg[5].id}:3",
+        "marca": f"{seg[5].id}:4",
     }
     message = next(i["message"] for i in review["issues"] if i["code"] == "numero_sem_cartao")
     assert message == "A batida fala de duzentos milhões e não mostra o número."
@@ -376,7 +391,7 @@ def test_check_drops_invented_card_number(monkeypatch):
     data = load_fixture(doc)
     scene_data(data, doc, "2:1")["value"] = "999 MI"
     new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
-    scene = new_doc.ordered_scenes()[5]
+    scene = new_doc.ordered_scenes()[6]
     assert len(fake.calls) == 2 and review["retried"] is True
     assert scene.kind == "text" and scene.card is None
     assert "numero_inventado" not in codes(review)
@@ -400,7 +415,7 @@ def test_v2_retries_once_on_severe_issues(monkeypatch):
     doc = gta_doc()
     good = load_fixture(doc)
     bad = copy.deepcopy(good)
-    scene_data(bad, doc, "1:1").update({"kind": "image", "source": "new", "value": None, "label": None, "source_note": None,
+    scene_data(bad, doc, "1:1").update({"kind": "image", "source": "new", "value": None, "label": None, "source_ref": None,
                                         "prompt": "Stack of boxed games on a store shelf."})
     new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), bad, good, bad)
     assert len(fake.calls) == 2  # no máximo 2 chamadas
@@ -423,7 +438,7 @@ def test_v2_missing_beat_falls_back_to_new_image_without_bible(monkeypatch):
     assert scene.kind == "image" and scene.visual.prompt == "Tem um detalhe que quase ninguém comenta."
     assert style.art.bible not in scene.visual.prompt and scene.visual.language == "key_art"
     assert scene.visual.shot in SHOTS and scene.visual.reuse_of is None and scene.span == 7
-    assert review["counts"]["new_images"] == 10
+    assert review["counts"]["new_images"] == 11
 
 
 def test_v2_hook_card_becomes_new_image(monkeypatch):
@@ -456,7 +471,7 @@ def test_check_warns_repeated_motif_and_too_many_cards(monkeypatch):
     data = load_fixture(doc)
     for ref in ("0:0", "1:0", "2:0", "2:2", "3:0"):
         scene_data(data, doc, ref)["prompt"] += " A golden hourglass on a table."
-    for ref in ("4:0", "4:1", "5:1"):  # cartões seguidos e demais
+    for ref in ("4:0", "4:1", "5:0"):  # cartões seguidos e demais
         scene_data(data, doc, ref).update({"kind": "text", "source": "reuse", "reuse_key": data["scenes"][0]["key"]})
     data["direction"]["avoid"] = []
     _, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
@@ -465,7 +480,7 @@ def test_check_warns_repeated_motif_and_too_many_cards(monkeypatch):
     motifs = [i for i in review["issues"] if i["code"] == "motivo_repetido"]
     assert any('"hourglass" aparece em 5 de' in i["message"] for i in motifs)
     assert all(i["scene_id"] is None for i in motifs) and len(motifs) <= 3
-    assert warnings["cartoes_demais"]["message"].startswith("10 de 19 cenas são cartões")
+    assert warnings["cartoes_demais"]["message"].startswith("11 de 21 cenas são cartões")
     assert len(fake.calls) == 1  # aviso não pede correção
 
 
@@ -510,9 +525,10 @@ def test_translate_carries_card_texts(monkeypatch):
     translated, _ = authoring.translate(new_doc, "en-US")
     stat = translated.ordered_scenes()[3].card
     assert stat.label["en-US"] == "[en-US] cópias vendidas" and stat.value["en-US"] == "[en-US] 200 MI+"
-    assert "en-US" not in translated.ordered_scenes()[14].card.value  # "2×" não tem o que traduzir
-    compare = translated.ordered_scenes()[11].card.resolved("en-US", "pt-BR")
-    assert compare["items"][0] == {"label": "[en-US] Trailer 1", "value": "[en-US] 90 MI"}
+    assert "en-US" not in translated.ordered_scenes()[16].card.value  # "2" não tem o que traduzir
+    compare = translated.ordered_scenes()[12].card.resolved("en-US", "pt-BR")
+    assert compare["items"][0] == {"label": "[en-US] Trailer 1 · só YouTube", "value": "[en-US] 90 MI"}
+    assert compare["label"] == "[en-US] views nas primeiras 24 h"
     assert translated.ordered_scenes()[0].card.headline["en-US"].startswith("[en-US] MELHOR")
 
 
@@ -533,7 +549,9 @@ def test_storyboard_schema_is_strict():
 
     walk(STORYBOARD_SCHEMA)
     fields = STORYBOARD_SCHEMA["properties"]["scenes"]["items"]["properties"]
-    assert {"source", "reuse_key", "value", "items", "headline", "stamp", "source_note", "focus"} <= set(fields)
+    assert {"source", "reuse_key", "value", "items", "headline", "stamp", "source_ref", "focus"} <= set(fields)
+    # a fonte é o número de uma fonte do roteiro, nunca texto livre
+    assert "source_note" not in fields and fields["source_ref"] == {"type": ["integer", "null"]}
 
 
 # --- pipeline offline (mock), revisão gravada nas configurações ----------------------------------
@@ -584,7 +602,7 @@ def test_v2_top10_count_shows_the_image_of_its_own_item(monkeypatch):
         Segment(id="seg_i10", role="item", chapter="#10", text={"pt-BR": "Número dez. O lago que muda de cor sozinho todos os anos "
                                                                           "no verão. Ninguém sabe explicar por que isso acontece."}),
         Segment(id="seg_i9", role="item", chapter="#9", text={"pt-BR": "Número nove. A floresta onde as árvores crescem tortas "
-                                                                        "para o mesmo lado. Os cientistas ainda discutem a causa."}),
+                                                                        "para o mesmo lado e ninguém sabe a causa."}),
     ]
     doc = ProjectDoc(id="prj_top", title="Lugares estranhos", style_id="top10-listas", seed=7, segments=segments)
     beats = authoring.plan_beats(doc, style)
@@ -665,8 +683,8 @@ def test_entity_name_out_of_the_narration_stays(monkeypatch):
             entity["name"] = "Coastal heroine"
     scene_data(data, doc, "4:1")["prompt"] = "Coastal heroine leaning on a convertible at sunset."
     new_doc, _, review, _ = run(monkeypatch, doc, get_style(GAMES), data)
-    assert new_doc.ordered_scenes()[13].visual.prompt == "Coastal heroine leaning on a convertible at sunset."
-    assert "nome_no_prompt" not in codes(review)
+    assert new_doc.ordered_scenes()[14].visual.prompt == "Coastal heroine leaning on a convertible at sunset."
+    assert "nome_no_prompt" not in codes(review) and "personagem_sem_rosto" not in codes(review)
 
 
 def test_entity_name_leaves_hook_and_world(monkeypatch):
@@ -677,7 +695,7 @@ def test_entity_name_leaves_hook_and_world(monkeypatch):
     new_doc, _, _, _ = run(monkeypatch, doc, get_style(GAMES), data)
     art = new_doc.art
     assert art.hook == "The Latina woman on a rooftop over the neon coastal city at sunset"
-    assert art.world == "The sunny neon coastal city in the 2020s, beaches and art deco hotels"
+    assert art.world == "The neon coastal city in the 2020s, beaches and art deco hotels"
 
 
 def test_v2_trims_headlines_keeping_hook_and_numbers(monkeypatch):
@@ -688,15 +706,15 @@ def test_v2_trims_headlines_keeping_hook_and_numbers(monkeypatch):
     new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
     scenes = new_doc.ordered_scenes()
     with_headline = {i for i, s in enumerate(scenes) if s.card and s.card.headline.get("pt-BR")}
-    # gancho, as faixas que são o único número falado da cena (2013, DEZ 2023, MAI 2025), as viradas de assunto
-    # e, para completar 7 (1 a cada 3 de 19), a imagem mais longe das outras faixas
-    assert with_headline == {0, 2, 4, 8, 12, 15, 18}, with_headline
+    # gancho, as faixas que são o único número falado da cena (2013, DEZ 2023, MAI 2025) e, para completar 7 (1 a
+    # cada 3 de 21), as viradas de assunto (1ª batida de cada trecho)
+    assert with_headline == {0, 2, 5, 9, 13, 15, 20}, with_headline
     assert scenes[0].card.headline == {"pt-BR": "MELHOR JOGO DA HISTÓRIA?"}
     assert scenes[2].card.headline == {"pt-BR": "GTA V · 2013"}
     assert scenes[3].kind == "stat" and scenes[3].card.resolved("pt-BR").get("headline") is None
     trimmed = next(i for i in review["issues"] if i["code"] == "faixas_cortadas")
     assert trimmed["severity"] == "corrigido"
-    assert trimmed["message"].startswith("12 faixas no topo tiradas: ficam 7 neste vídeo (limite 7)")
+    assert trimmed["message"].startswith("14 faixas no topo tiradas: ficam 7 neste vídeo (limite 7)")
     assert len(fake.calls) == 1
 
 
@@ -800,8 +818,10 @@ def test_fictional_names_variants_and_looks_are_scrubbed():
     issues = storyboard_check.fix_entity_names(doc, beats)
     prompt = doc.scenes[0].visual.prompt
     assert prompt == "The Latina woman and the detective on a rooftop; The Latina woman's jacket in the wind.", prompt
-    assert doc.art.entities[0].look == "Latina woman in her late 20s"
-    assert [i.code for i in issues] == ["nome_no_prompt"]
+    # o nome sai da aparência e a personagem citada pelo nome fica sem rosto; o detetive (sem nome falado) fica igual
+    assert doc.art.entities[0].look == f"Latina woman in her late 20s, {storyboard_check.FACELESS}"
+    assert doc.art.entities[1].look == "tall man in a trench coat"
+    assert [i.code for i in issues] == ["nome_no_prompt", "personagem_sem_rosto"]
 
 
 def test_user_direction_is_not_rewritten_only_warned():
@@ -823,3 +843,238 @@ def test_entity_real_flag_is_parsed_and_required_in_schema(monkeypatch):
     assert new_doc.art.entities[0].real is True and new_doc.art.entities[1].real is False
     item = STORYBOARD_SCHEMA["properties"]["direction"]["properties"]["entities"]["items"]
     assert "real" in item["required"] and item["properties"]["real"] == {"type": "boolean"}
+
+
+# --- crítica do Short do GTA 6: luz, reaproveitamento, cartões lisos, carimbos, fontes e faixas -------------------
+
+
+def _new_scenes(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for s in data["scenes"] if s["source"] == "new" and s["prompt"]]
+
+
+def test_system_prompt_asks_for_varied_light_and_honest_cards():
+    system = " ".join(authoring.STORYBOARD_SYSTEM.split())
+    assert "SEM hora do dia, clima, céu, luz ou objetos" in system  # tratamento
+    assert "o look de lugar não fixa céu, hora nem luz" in system
+    assert "no máximo 1 em cada 3 no mesmo momento" in system and "Tela dentro da imagem" in system
+    assert "nunca reaproveita imagem em tela cheia" in system
+    assert "não vira entidade com rosto" in system and "de costas, em silhueta" in system
+    assert '"INÉDITO" nem "EXCLUSIVO"' in system and "source_ref" in system and "source_note" not in system
+    assert "mesma plataforma, mesma janela" in system and "o título do cartão" in system
+    assert "fundo animado" not in system and '"2×"' not in system
+
+
+def test_check_flags_the_same_time_of_day_and_retries(monkeypatch):
+    doc = gta_doc()
+    good = load_fixture(doc)
+    bad = copy.deepcopy(good)
+    for scene in _new_scenes(bad):
+        scene["prompt"] = scene["prompt"].rstrip(".") + ", all bathed in sunset light."
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), bad, good)
+    assert len(fake.calls) == 2 and review["retried"] is True and codes(review, "grave") == []
+    retry = fake.calls[1]["prompt"]
+    assert "- [luz_repetida] (10 de 10 imagens novas se passam no mesmo momento (pôr do sol)" in retry
+    assert "no máximo 1 em cada 3 no mesmo momento" in retry
+    # a resposta da correção (luz variada) ganhou
+    assert "sunset light" not in new_doc.ordered_scenes()[2].visual.prompt
+
+
+def test_check_lighting_counts_the_direction_when_the_scene_has_no_light(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    # direção antiga: o tratamento fixa a hora e os prompts não dizem luz nenhuma
+    data["direction"]["treatment"] = "saturated golden-hour light, clean contrast"
+    for index, scene in enumerate(_new_scenes(data)):
+        scene["prompt"] = f"Quiet subject number {index} on a coastal avenue, 2020s."
+    _, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    grave = [i for i in review["issues"] if i["code"] == "luz_repetida"]
+    assert grave and grave[0]["severity"] == "grave" and len(fake.calls) == 2
+    # direção definida pelo usuário: o Claude não pode mudar, fica o aviso (sem pedir correção)
+    first, _, _, _ = run(monkeypatch, doc, get_style(GAMES), load_fixture(doc))
+    first.art.source = "user"
+    first.art.treatment = "saturated golden-hour light, clean contrast"
+    _, _, review, fake = run(monkeypatch, first, get_style(GAMES), load_fixture(first))
+    warning = next(i for i in review["issues"] if i["code"] == "luz_repetida")
+    assert warning["severity"] == "aviso" and "direção definida por você" in warning["message"]
+    assert len(fake.calls) == 1
+
+
+def test_lighting_helpers():
+    from studio.workers.pipeline import lighting
+
+    assert lighting.moments("A boardwalk at sunset, then night falls") == {"por_do_sol", "noite"}
+    assert lighting.moments("late afternoon by the lake") == {"por_do_sol"}
+    assert lighting.moments("early morning fog") == {"amanhecer"} and lighting.moments("under the midday sun") == {"dia"}
+    assert lighting.moments("no sunset, a sunset-orange car, midnight blue walls") == set()
+    assert lighting.names_light("a boy lit by the cold glow of a TV") and lighting.names_light("candlelit hall")
+    assert not lighting.names_light("a light blue jacket on a chair") and not lighting.names_light("a split second")
+    strip = lighting.strip_light
+    assert strip("saturated sunset light, clean contrast, no grain", light=True) == "clean contrast, no grain"
+    assert strip("Saturated sunset and neon glow, clean contrast, golden-hour light", light=True) == "clean contrast"
+    assert strip("seaside city with art deco hotels under a pink-orange sunset sky") == "seaside city with art deco hotels"
+    assert strip("sunny neon coastal metropolis, beaches at sunset, 2020s") == "neon coastal metropolis, beaches, 2020s"
+    assert strip("sunset orange") == "orange" and strip("hot pink") == "hot pink"
+    # sem hora nem luz: o texto volta igual (mesmo prompt, mesma chave de cache)
+    assert strip("art deco hotels; palm trees") == "art deco hotels; palm trees"
+
+
+def test_reuse_for_another_date_asks_for_a_new_image(monkeypatch):
+    doc = gta_doc()
+    good = load_fixture(doc)
+    bad = copy.deepcopy(good)
+    # "Em maio de 2025" reaproveitando a multidão de "dezembro de 2023" em tela cheia
+    scene_data(bad, doc, "3:0").update({"source": "reuse", "reuse_key": scene_data(bad, doc, "2:0")["key"],
+                                        "prompt": None, "language": None, "shot": None, "composition": None,
+                                        "focus": "bottom_left"})
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), bad, good)
+    assert len(fake.calls) == 2 and review["retried"] is True and codes(review, "grave") == []
+    retry = fake.calls[1]["prompt"]
+    assert ('(A batida "Em maio de dois mil e…" reaproveita a imagem de "Até dezembro de dois mil e…": é outra '
+            "data ou outro evento, use imagem nova.)") in retry
+    assert storyboard_check.has_own_image(new_doc.ordered_scenes()[9])
+    # sem vaga para imagem nova: só aviso, sem pedir correção
+    style = get_style(GAMES).model_copy(deep=True)
+    style.edit.new_image_ratio = 0.42  # 9 de 21, as 9 imagens novas da resposta
+    _, _, review, fake = run(monkeypatch, doc, style, bad)
+    issue = next(i for i in review["issues"] if i["code"] == "reuso_outra_data")
+    assert issue["severity"] == "aviso" and "não sobra vaga" in issue["message"] and len(fake.calls) == 1
+    # a mesma faixa ou nenhuma data diferente: reaproveitar vale (o 3:1 volta à imagem de maio)
+    assert "reuso_outra_data" not in codes(run(monkeypatch, doc, style, good)[2])
+    topic = storyboard_check._other_topic
+    assert topic("TRAILER 2 · MAI 2025", "TRAILER 1 · DEZ 2023") and topic("RECORDE", "GTA V · 2013")
+    assert not topic("475 MI", "TRAILER 2 · MAI 2025")  # só o número da batida
+    assert not topic("TRAILER 2 · MAIO DE 2025", "TRAILER 2 · MAI 2025") and not topic("", "GTA V · 2013")
+
+
+def _cards_doc() -> tuple[ProjectDoc, list]:
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    narration = ["O jogo saiu em dois mil e treze.", "Vendeu duzentos milhões de cópias.", "Número dez. O lago."]
+    doc = ProjectDoc(id="prj_c", title="t", topic="t", style_id=GAMES, seed=1,
+                     segments=[Segment(id=f"seg_{i}", role="hook" if i == 0 else "body", text={"pt-BR": text})
+                               for i, text in enumerate(narration)])
+    doc.scenes = [
+        Scene(id="scn_img", segment_id="seg_0", kind="image",
+              visual=Visual(prompt="An old console on a desk at night.", language="key_art", shot="wide")),
+        Scene(id="scn_stat", segment_id="seg_1", kind="stat", visual=Visual(type="none"), motion="static",
+              card=SceneCard(value={"pt-BR": "200 MI"})),
+        Scene(id="scn_count", segment_id="seg_2", kind="count", number=10, visual=Visual(type="none")),
+    ]
+    beats = [storyboard_check.Beat(key=f"seg_{i}:0", segment_id=f"seg_{i}", part=0, parts=1, index=i,
+                                   role="body", words=text.split(), seconds=2.0) for i, text in enumerate(narration)]
+    return doc, beats
+
+
+def test_flat_card_gets_the_previous_image_blurred():
+    doc, beats = _cards_doc()
+    issues = storyboard_check.fix_flat_cards(doc, beats)
+    stat, count = doc.scene("scn_stat"), doc.scene("scn_count")
+    assert stat.visual.reuse_of == "scn_img" and stat.visual.type == "ai_image" and stat.focus in FOCUS_ROTATION
+    assert stat.motion is None and not storyboard_check.has_own_image(stat)
+    assert count.visual.type == "none"  # o contador do Top 10 não mostra a imagem do item anterior
+    assert [(i.code, i.severity, i.scene_id) for i in issues] == [("cartao_sem_fundo", "corrigido", "scn_stat")]
+    assert "imagem da cena 1" in issues[0].message
+    # cartão antes de qualquer imagem fica com o fundo animado
+    doc, beats = _cards_doc()
+    doc.scenes = [s for s in doc.scenes if s.id != "scn_img"]
+    assert storyboard_check.fix_flat_cards(doc, beats[1:]) == []
+
+
+def test_inedito_stamp_is_dropped(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    scene_data(data, doc, "4:1")["stamp"] = "INÉDITO"
+    scene_data(data, doc, "3:2")["stamp"] = "EXCLUSIVO"
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    scenes = new_doc.ordered_scenes()
+    assert scenes[14].card is None and "stamp" not in scenes[11].card.resolved("pt-BR")
+    dropped = [i for i in review["issues"] if i["code"] == "carimbo_tirado"]
+    assert [(i["severity"], i["scene_id"]) for i in dropped] == [("corrigido", scenes[11].id),
+                                                               ("corrigido", scenes[14].id)]
+    assert 'O carimbo "INÉDITO" saiu' in dropped[1]["message"] and len(fake.calls) == 1
+
+
+def test_source_ref_maps_to_a_script_source_and_must_back_the_number(monkeypatch):
+    doc = gta_doc()
+    doc.sources += [Source(title="Guinness World Records — recorde do trailer", note="trailer de game mais visto no YouTube"),
+                    Source(title="Rockstar Newswire: Trailer 2", note="475 milhões de visualizações em 24 horas")]
+    data = load_fixture(doc)
+    scene_data(data, doc, "1:1")["source_ref"] = 2  # 200 MI+ só está na fonte 1 (Take-Two)
+    scene_data(data, doc, "2:1")["source_ref"] = 2  # 90 MI não está em fonte nenhuma, mas está na narração
+    scene_data(data, doc, "3:2")["source_ref"] = 9  # número fora da lista
+    scene_data(data, doc, "3:3")["source_ref"] = 3
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    scenes = new_doc.ordered_scenes()
+    assert scenes[3].card.source == "Take-Two"
+    assert scenes[6].card.source == "Guinness World Records"  # nome curto, até o travessão
+    assert scenes[11].card.source is None
+    assert scenes[12].card.source == "Rockstar Newswire"
+    swapped = next(i for i in review["issues"] if i["code"] == "fonte_trocada")
+    assert swapped["scene_id"] == scenes[3].id and swapped["severity"] == "corrigido"
+    assert '"200 MI+" está na fonte "Take-Two", não em "Guinness World Records"' in swapped["message"]
+    assert "- [2] Guinness World Records — recorde do trailer: trailer de game" in fake.calls[0]["prompt"]
+    assert len(fake.calls) == 1
+
+
+def test_check_sources_drops_a_source_that_is_not_in_the_script():
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    doc = gta_doc()
+    doc.scenes = [Scene(id="scn_a", segment_id=doc.segments[1].id, kind="stat", visual=Visual(type="none"),
+                        card=SceneCard(value={"pt-BR": "200 MI+"}, source="Fonte inventada"))]
+    beat = storyboard_check.Beat(key=f"{doc.segments[1].id}:0", segment_id=doc.segments[1].id, part=0, parts=1,
+                                 index=1, role="body", words=GTA[1].split(), seconds=3.0)
+    issues = storyboard_check._check_sources(doc, [beat])
+    # o 200 MI+ está numa fonte só (Take-Two): o cartão passa a citar essa
+    assert doc.scenes[0].card.source == "Take-Two" and [i.code for i in issues] == ["fonte_trocada"]
+    doc.sources = []
+    doc.scenes[0].card.source = "Fonte inventada"
+    issues = storyboard_check._check_sources(doc, [beat])
+    assert doc.scenes[0].card.source is None and [i.code for i in issues] == ["fonte_tirada"]
+    assert storyboard_check.source_label(Source(title="Um título bem comprido de fonte que passa do limite de 40")) == (
+        "Um título bem comprido de fonte que")
+
+
+def test_headline_that_only_repeats_the_beat_is_dropped(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    scene_data(data, doc, "0:0")["headline"] = "MELHOR JOGO DOS TEMPOS?"  # gancho: fica
+    scene_data(data, doc, "4:0")["headline"] = "LEONIDA · VICE CITY"  # só repete a fala: sai
+    scene_data(data, doc, "2:0")["headline"] = "DEZEMBRO DE 2023"  # repete, mas é o único lugar do número: fica
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    scenes = new_doc.ordered_scenes()
+    assert scenes[0].card.headline == {"pt-BR": "MELHOR JOGO DOS TEMPOS?"}
+    assert scenes[5].card.headline == {"pt-BR": "DEZEMBRO DE 2023"}
+    assert scenes[13].card is None
+    issue = next(i for i in review["issues"] if i["code"] == "faixa_repetida")
+    assert issue["severity"] == "corrigido" and issue["scene_id"] == scenes[13].id
+    assert issue["message"] == 'A faixa "LEONIDA · VICE CITY" só repetia a fala da batida: saiu.'
+    assert codes(review, "grave") == [] and len(fake.calls) == 1
+    repeats = storyboard_check.repeats_speech
+    words = "Até dezembro de dois mil e vinte e três.".split()
+    assert repeats("DEZ 2023", words, "pt-BR") and not repeats("TRAILER 1 · DEZ 2023", words, "pt-BR")
+    assert repeats("200 MI+", "Vendeu mais de duzentos milhões de cópias.".split(), "pt-BR")
+    assert not repeats("2 BI", "Vendeu mais de duzentos milhões de cópias.".split(), "pt-BR")
+
+
+def test_compare_of_different_units_is_a_warning(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    scene_data(data, doc, "3:3")["items"] = [{"label": "Trailer 1", "value": "24%"}, {"label": "Trailer 2", "value": "475 MI"}]
+    _, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    issue = next(i for i in review["issues"] if i["code"] == "comparacao_desigual")
+    assert issue["severity"] == "aviso" and "(%, número)" in issue["message"] and len(fake.calls) == 1
+
+
+def test_motifs_count_world_words_and_es_plurals(monkeypatch):
+    assert [storyboard_check._singular(w) for w in ("beaches", "glasses", "palms", "cities", "houses", "status")] == [
+        "beach", "glass", "palm", "city", "house", "status"]
+    doc = gta_doc()
+    data = load_fixture(doc)
+    data["direction"]["world"] += ", wooden boardwalks"
+    for ref in ("0:0", "1:0", "2:0", "2:2", "3:0"):
+        scene_data(data, doc, ref)["prompt"] += " Wooden boardwalks in the background."
+    _, _, review, _ = run(monkeypatch, doc, get_style(GAMES), data)
+    motifs = [i["message"] for i in review["issues"] if i["code"] == "motivo_repetido"]
+    # palavra do mundo repetida em quase toda imagem conta (antes ficava de fora); cor continua de fora
+    assert any('"boardwalk" aparece em 6 de 10' in m for m in motifs), motifs

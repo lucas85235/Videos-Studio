@@ -89,12 +89,20 @@ def _mock_scene(key: str, kind: str = "image", source: str = "new", **fields: An
 
 def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
     """Storyboard v2 por regras: gancho com imagem nova e headline, número vira `stat` (dois ou mais, `compare`)
-    sobre imagem reaproveitada, o resto alterna imagem nova e reaproveitada e a chamada final reaproveita o gancho."""
+    sobre imagem reaproveitada, o resto alterna imagem nova e reaproveitada e a chamada final reaproveita o gancho.
+    Mídia real: a primeira imagem nova depois do gancho sugere uma foto do tema e, com fonte de link no roteiro, a
+    seguinte sugere o cartão de notícia dessa fonte."""
     beats: list[dict[str, Any]] = ctx.get("scenes", [])
     topic = ctx.get("topic") or "o tema"
+    news_ref = next((s.get("n") for s in ctx.get("sources") or [] if str(s.get("url") or "").startswith("http")), None)
+    hints: list[dict[str, Any]] = [{"real_kind": "photo", "real_query": topic,
+                                    "real_note": f"Foto real de {topic} (Wikimedia Commons)"}]
+    if news_ref is not None:
+        hints.append({"real_kind": "news", "real_source_ref": news_ref,
+                      "real_note": "Cartão de notícia com a fonte do roteiro"})
     direction = {
         "genre": "curiosidades", "approach": "literal", "world": f"everyday places and objects related to {topic}",
-        "treatment": "soft daylight, clean contrast", "palette": ["teal", "warm orange", "off white"],
+        "treatment": "clean contrast, soft texture", "palette": ["teal", "warm orange", "off white"],
         "languages": ["editorial"], "grade": None, "entities": [], "avoid": [], "style_fit": "ok", "style_note": "",
         "suggested_style": None, "hook": " ".join((beats[0].get("text", "") if beats else topic).split()[:12]),
     }  # fmt: skip
@@ -130,7 +138,7 @@ def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
             scenes.append(_mock_scene(key, "image", "reuse", reuse_key=last_new, motion="zoom_to"))
             alternate = False
         else:
-            scenes.append(_mock_scene(key, **image))
+            scenes.append(_mock_scene(key, **image, **(hints.pop(0) if hints else {})))
             last_new = key
             alternate = True
             shots += 1

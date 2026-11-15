@@ -155,6 +155,9 @@ _SPOKEN_NUMBERS = {
 }  # fmt: skip
 _SENTENCE_END = (".", "!", "?", "…")
 _TRAILING_CLOSERS = "\"'”’»)]}"
+# Frase curta de efeito que vira batida própria em vez de colar numa frase com número ("Pensa comigo." ainda junta).
+_DRAMATIC_MIN_WORDS = 3
+_DRAMATIC_MIN_S = 0.9
 
 
 def _lang_key(lang: str) -> str:
@@ -197,7 +200,8 @@ def split_beats(
 
     Devolve as palavras de `words(text)` em grupos contíguos: a soma dos tamanhos é `word_count(text)`
     e `len(batida)` é o `Scene.span`. Ordem: (1) separa as frases; (2) junta frase com menos de
-    `min_s` à seguinte (a última à anterior); (3) divide frase com mais de `1.6 × max_s` num ponto
+    `min_s` à seguinte (a última à anterior), menos a frase curta de efeito (3+ palavras, ~0,9 s) que
+    colaria numa frase com número: essa fica sozinha; (3) divide frase com mais de `1.6 × max_s` num ponto
     válido: nunca dentro de número, depois de preposição/artigo/conjunção nem antes de "de" que segue
     número; depois de vírgula pode e é preferido, assim como antes de conjunção; cada parte com pelo
     menos `min_s`; (4) sem ponto válido, a frase fica inteira. Duração por `estimate_seconds`.
@@ -236,14 +240,26 @@ def split_beats(
     if start < len(tokens):
         spans.append((start, len(tokens)))
 
-    # 2) frase curta junta à seguinte; a última, à anterior
+    def has_number(span: tuple[int, int]) -> bool:
+        return any(i0 < span[1] and i1 > span[0] for i0, i1, _value in runs)
+
+    def dramatic(a: int, b: int) -> bool:
+        return b - a >= _DRAMATIC_MIN_WORDS and dur(b - a) >= _DRAMATIC_MIN_S and not has_number((a, b))
+
+    # 2) frase curta junta à seguinte; a última, à anterior. Frase curta de efeito, sem número ("Depois disso,
+    #    silêncio.", "Agora, o segredo."), não cola em frase com número: vira batida própria (senão o cartão do número
+    #    a cobre e entrega a virada antes da hora).
     merged: list[tuple[int, int]] = []
     carry: int | None = None
-    for a, b in spans:
+    for index, (a, b) in enumerate(spans):
         a = carry if carry is not None else a
         carry = None
         if dur(b - a) < min_s:
-            carry = a
+            target = spans[index + 1] if index + 1 < len(spans) else (merged[-1] if merged else None)
+            if target is not None and has_number(target) and dramatic(a, b):
+                merged.append((a, b))
+            else:
+                carry = a
             continue
         merged.append((a, b))
     if carry is not None:

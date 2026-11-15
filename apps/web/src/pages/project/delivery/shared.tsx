@@ -473,7 +473,11 @@ export const isFutureLocal = (value: string) => {
 /* Estado da prévia e do vídeo final (mesma regra nas duas abas)        */
 /* ------------------------------------------------------------------ */
 
-const isVisualVersion = (v: Version) => !NON_VISUAL_VERSION_MESSAGES.has(v.message);
+/** Dispensar ou editar a sugestão de mídia real (routes_media.py) não muda o vídeo: só a mídia anexada muda. */
+const REAL_HINT_VERSION = /: sugestão de mídia real (dispensada|editada)$/;
+
+const isVisualVersion = (v: Version) =>
+  !NON_VISUAL_VERSION_MESSAGES.has(v.message) && !REAL_HINT_VERSION.test(v.message);
 const parseTime = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
 
 /** Jobs que regravam o timeline.json da prévia. */

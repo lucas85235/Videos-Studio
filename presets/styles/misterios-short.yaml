@@ -33,7 +33,7 @@ voice:
   gap_s: 0.15
 
 art:
-  bible: "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, luz de vela, contraste dramático, grão de tela"
+  bible: "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, pouca luz, contraste dramático, grão de tela"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [painting, archival, collage]
   image_chain: [codex_cli]
@@ -64,8 +64,8 @@ edit:
   zoom_strength: 0.14
 
 audio:
-  music: { source: procedural, mood: tension, volume_db: -24, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -12 }
+  music: { source: procedural, mood: tension, volume_db: -20, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -8 }
   loudness_lufs: -14
 
 thumbnail: { template: sem-texto, variations: 1, per_language: false }

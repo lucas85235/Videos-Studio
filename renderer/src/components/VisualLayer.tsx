@@ -2,7 +2,7 @@ import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { hasEffect, imageFilter } from '../look';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type TextCardStyle, type TimelineScene } from '../types';
-import { MotionBackground } from './DataCards';
+import { MotionBackground, withAlpha } from './DataCards';
 
 type Props = {
   scene: TimelineScene;
@@ -15,6 +15,8 @@ type Props = {
   dim?: number;
   /** Desfoque em px (referência 1080 no menor lado), ex.: fundo dos cartões de dado. */
   blur?: number;
+  /** Sem imagem, cobre o fundo animado com a cor de fundo do estilo quase opaca (contraste do texto cinético). */
+  solid?: boolean;
 };
 
 const focusOrigin = (focus: string | undefined) =>
@@ -43,7 +45,7 @@ const fitAmplitude = (samples: { scale: number; dx: number; dy: number }[], ox: 
 };
 
 /** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco) e gradação de cor. */
-export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, cards, dim = 0, blur = 0 }) => {
+export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, cards, dim = 0, blur = 0, solid = false }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const dur = Math.max(1, scene.durationInFrames - 1);
@@ -131,8 +133,11 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
     // Sem imagem (cartão ou referência solta): fundo animado nas cores do estilo.
     const bgFilter = `${imageFilter(effects, { ...scene.look, blur: 0 })}${dim ? ` brightness(${1 - dim * 0.35})` : ''}`.trim();
     return (
-      <AbsoluteFill style={{ filter: bgFilter || undefined }}>
-        <MotionBackground style={cards} seed={scene.seed} />
+      <AbsoluteFill>
+        <AbsoluteFill style={{ filter: bgFilter || undefined }}>
+          <MotionBackground style={cards} seed={scene.seed} />
+        </AbsoluteFill>
+        {solid ? <AbsoluteFill style={{ backgroundColor: withAlpha(cards.background, 0.85) }} /> : null}
       </AbsoluteFill>
     );
   }

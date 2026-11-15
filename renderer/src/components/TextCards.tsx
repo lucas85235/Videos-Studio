@@ -98,19 +98,54 @@ export const QuoteCard: React.FC<CardProps> = ({ scene, style }) => {
   );
 };
 
-/** Tipografia cinética: as palavras da narração aparecem grandes, no ritmo da fala. */
+/** Palavras por página do texto cinético (a página também vira no fim de cada frase). */
+const KINETIC_PAGE = 6;
+
+const kineticPages = (words: CaptionWord[]) => {
+  const pages: CaptionWord[][] = [];
+  let current: CaptionWord[] = [];
+  for (const w of words) {
+    current.push(w);
+    if (current.length >= KINETIC_PAGE || /[.!?…:;]["'”’»)]*$/u.test(w.text)) {
+      pages.push(current);
+      current = [];
+    }
+  }
+  if (current.length) pages.push(current);
+  return pages;
+};
+
+const core = (text: string) => text.replace(/[^\p{L}\p{N}]/gu, '');
+
+/**
+ * Tipografia cinética: as palavras da narração aparecem grandes, no ritmo da fala. A página inteira já está
+ * diagramada desde o começo (a palavra ainda não dita fica invisível), então nada muda de lugar quando a próxima
+ * entra; o destaque vai para as palavras longas e os números da página (ou a mais longa), nunca "a última".
+ * Fica sobre a imagem escurecida e desfocada (ou o fundo do estilo, sem imagem: ver `VisualLayer`).
+ */
 export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle; uppercase: boolean }> = ({ scene, style, uppercase }) => {
   const frame = useCurrentFrame();
   const { fps, width } = useVideoConfig();
   const words: CaptionWord[] = scene.words.length ? scene.words : scene.text.split(/\s+/).map((t, i) => ({ text: t, from: i * 8, to: i * 8 + 8 }));
-  const visible = words.filter((w) => w.from <= frame);
-  const shown = visible.slice(-6);
+  const pages = kineticPages(words);
+  const said = words.filter((w) => w.from <= frame).length;
+  let index = 0;
+  for (let i = 0, seen = 0; i < pages.length; i += 1) {
+    if (said > seen) index = i;
+    seen += pages[i].length;
+  }
+  const shown = pages[index] ?? [];
+  const marked = shown.map((w) => core(w.text).length >= 7 || /\p{N}/u.test(w.text));
+  if (!marked.some(Boolean) && shown.length > 1) {
+    const longest = shown.reduce((best, w, i) => (core(w.text).length > core(shown[best].text).length ? i : best), 0);
+    marked[longest] = true;
+  }
   return (
-    <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center', padding: width * 0.08, backgroundColor: `${style.background}d9` }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: `${width * 0.01}px ${width * 0.025}px`, maxWidth: '92%' }}>
+    <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center', padding: width * 0.08 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'baseline', gap: `${width * 0.01}px ${width * 0.025}px`, maxWidth: '92%' }}>
         {shown.map((w, i) => {
-          const pop = spring({ frame: frame - w.from, fps, config: { damping: 12, stiffness: 240, mass: 0.5 } });
-          const accent = w.text.replace(/[^\p{L}\p{N}]/gu, '').length >= 7 || i === shown.length - 1;
+          const pop = frame >= w.from ? spring({ frame: frame - w.from, fps, config: { damping: 12, stiffness: 240, mass: 0.5 } }) : 0;
+          const accent = marked[i];
           const text = uppercase ? w.text.toLocaleUpperCase() : w.text;
           return (
             <span
@@ -123,7 +158,7 @@ export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle;
                 transform: `translateY(${interpolate(pop, [0, 1], [30, 0])}px) scale(${interpolate(pop, [0, 1], [0.7, 1])})`,
                 opacity: pop,
                 display: 'inline-block',
-                textShadow: '0 6px 24px rgba(0,0,0,0.6)',
+                textShadow: '0 4px 10px rgba(0,0,0,0.75), 0 6px 28px rgba(0,0,0,0.6)',
               }}
             >
               {text}

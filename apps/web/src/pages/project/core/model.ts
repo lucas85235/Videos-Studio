@@ -373,9 +373,10 @@ export const IMAGE_QUOTA_SECONDS = 35;
 /** Minutos de cota de imagens, arredondados para cima. */
 export const quotaMinutes = (images: number) => Math.ceil((images * IMAGE_QUOTA_SECONDS) / 60);
 
-/** A cena pede uma imagem gerada (a mesma regra de `scene_needs_image` no build). */
+/** A cena pede uma imagem gerada (a mesma regra de `scene_needs_image` no build). Mídia real anexada: nunca. */
 export const sceneNeedsImage = (scene: Scene): boolean => {
   const v = scene.visual;
+  if (v.media) return false;
   if (v.reuse_of) return false;
   if (v.type === 'none' || v.type === 'upload') return false;
   if (scene.kind === 'text' && !v.prompt) return false;
@@ -385,13 +386,14 @@ export const sceneNeedsImage = (scene: Scene): boolean => {
 /**
  * Cena dona da imagem que `scene` mostra: ela mesma, ou o fim da cadeia de `reuse_of` em até `maxDepth` saltos.
  * null com referência solta (cena apagada), ciclo ou cadeia longa demais: a cena fica com o fundo animado.
+ * A cadeia para na cena com mídia real (ela é dona do que mostra), como `ProjectDoc.reuse_root`.
  */
 export const reuseRoot = (byId: ReadonlyMap<string, Scene>, scene: Scene, maxDepth = 3): Scene | null => {
   let current = scene;
   const seen = new Set([scene.id]);
   for (let i = 0; i <= maxDepth; i += 1) {
     const target = current.visual.reuse_of;
-    if (!target) return current;
+    if (!target || current.visual.media) return current;
     const next = byId.get(target);
     if (!next || seen.has(next.id)) return null;
     seen.add(next.id);
@@ -411,7 +413,16 @@ export const sceneNumbers = (doc: ProjectDoc): Map<string, number> => {
   return out;
 };
 
-export type SceneCounts = { scenes: number; newImages: number; reused: number; cards: number };
+export type SceneCounts = {
+  scenes: number;
+  newImages: number;
+  reused: number;
+  cards: number;
+  /** Sugestões de mídia real ainda sem mídia anexada. */
+  realHints: number;
+  /** Cenas com mídia real anexada. */
+  realMedia: number;
+};
 
 const SHOT_ROTATION = ['wide', 'close', 'low_angle', 'medium', 'detail', 'aerial', 'over_shoulder', 'top_down', 'pov'];
 const COMPOSITION_ROTATION = ['center', 'left_third', 'right_third', 'upper_half', 'lower_half'];
@@ -457,6 +468,8 @@ export const screenTextsMissing = (doc: ProjectDoc, lang: string): number => {
   return doc.scenes.filter((s) => {
     const card = s.card;
     if (missing(s.overlay_text)) return true;
+    // Manchete do cartão de notícia (mídia real): traduzida com os outros textos de tela.
+    if (missing(s.visual.media?.headline)) return true;
     if (!card) return false;
     return (
       missing(card.value, true) ||
@@ -474,6 +487,8 @@ export const sceneCounts = (doc: ProjectDoc): SceneCounts => ({
   newImages: doc.scenes.filter((s) => sceneNeedsImage(s) && !s.visual.asset).length,
   reused: doc.scenes.filter((s) => Boolean(s.visual.reuse_of)).length,
   cards: doc.scenes.filter((s) => CARD_KINDS.has(s.kind)).length,
+  realHints: doc.scenes.filter((s) => Boolean(s.real) && !s.visual.media).length,
+  realMedia: doc.scenes.filter((s) => Boolean(s.visual.media)).length,
 });
 
 const pickText = (texts: LocalizedText | undefined, lang: string, fallback: string): string =>

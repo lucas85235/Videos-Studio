@@ -34,8 +34,9 @@ voice:
   gap_s: 0.15
 
 art:
-  # Só o tratamento de referência: o assunto de cada vídeo define o mundo das imagens.
-  bible: "cores saturadas de pôr do sol e neon, contraste limpo, luz de fim de tarde, sem grão"
+  # Só o tratamento de referência: o assunto de cada vídeo define o mundo das imagens. Sem hora do dia nem luz fixa:
+  # cada imagem diz a sua.
+  bible: "cores saturadas e neon, contraste limpo, sem grão"
   banned: ["texto", "letras", "logotipos", "marca d'água", "interface de jogo"]
   languages: [key_art, render_3d, ui_mockup, editorial]
   image_chain: [codex_cli]
@@ -72,8 +73,8 @@ edit:
   zoom_strength: 0.12
 
 audio:
-  music: { source: procedural, mood: upbeat, volume_db: -24, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -13 }
+  music: { source: procedural, mood: upbeat, volume_db: -16, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -8 }
   loudness_lufs: -14
 
 thumbnail: { template: sem-texto, variations: 1, per_language: false }

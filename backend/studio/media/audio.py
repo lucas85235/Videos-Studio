@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import math
 import random
+import re
+import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 
-from studio.media.ffmpeg import SAMPLE_RATE, read_wav, run_ffmpeg, write_wav
+from studio.config import get_settings
+from studio.media.ffmpeg import SAMPLE_RATE, FFmpegError, read_wav, run_ffmpeg, wav_duration, write_wav
 
 # --------------------------------------------------------------------------------------------
 # Trilhas procedurais
@@ -290,13 +294,17 @@ def _music_expr(key: str, f: float, rnd: random.Random) -> tuple[str, str]:
 
 
 def generate_music(mood: str | None, duration: float, seed: int, out_path: Path) -> Path:
+    """Trilha procedural com `duration` s, em -16 LUFS.
+
+    Só leva fades curtos contra estalo: a entrada e a saída de verdade ficam no mix (`mix_tracks`), que sabe
+    onde o vídeo acaba e se é short (a trilha já sobe no gancho) ou vídeo longo.
+    """
     key = mood_key(mood)
     rnd = random.Random(seed)
     f = rnd.choice(_ROOTS)
     duration = max(2.0, duration)
-    fade_out = min(4.0, duration / 4)
     noise_amp = _NOISE.get(key, 0.02)
-    master = f"afade=t=in:d=2.5,afade=t=out:st={duration - fade_out:.2f}:d={fade_out:.2f},loudnorm=I=-16:TP=-2:LRA=7[out]"
+    master = f"afade=t=in:d=0.05,afade=t=out:st={duration - 0.5:.2f}:d=0.5,loudnorm=I=-16:TP=-2:LRA=7[out]"
     noise = ["-f", "lavfi", "-i", f"anoisesrc=color=brown:amplitude={noise_amp}:d={duration:.2f}:r={SAMPLE_RATE}:seed={seed % 100000}"]
     if key in _LIGHT:
         # A parte rítmica se repete a cada ciclo: gera um ciclo só e repete (vídeo longo não fica mais lento por isso).
@@ -327,37 +335,107 @@ def generate_music(mood: str | None, duration: float, seed: int, out_path: Path)
 
 SFX_KINDS = ("whoosh", "impact", "glitch", "static", "riser")
 
+VOICE_LUFS = -16.0
+"""Loudness da narração no mix, antes do master. Os SFX são normalizados nessa mesma referência."""
+SFX_TRIM_DB = {"whoosh": 0.0, "impact": 0.0, "glitch": -4.0, "static": -4.0, "riser": -3.0}
+"""Ajuste fino por tipo sobre a referência: glitch e chiado são ásperos, o riser é longo."""
+SFX_HIT_S = {"whoosh": 0.35, "impact": 0.0, "glitch": 0.0, "static": 0.05, "riser": 1.5}
+"""Onde fica o ponto forte de cada efeito, em s desde o início do arquivo (o pico do whoosh, o golpe do impacto)."""
+_PEAK_CEILING = 10 ** (-1 / 20)  # -1 dBFS
 
-def generate_sfx(kind: str, out_path: Path) -> Path:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+# Ponderação K do BS.1770 a 48 kHz: prateleira de agudos + passa-altas RLB (coeficientes b, a de cada biquad).
+_K_STAGES = (
+    ((1.53512485958697, -2.69169618940638, 1.19839281085285), (1.0, -1.69065929318241, 0.73248077421585)),
+    ((1.0, -2.0, 1.0), (1.0, -1.99004745483398, 0.99007225036621)),
+)
+
+
+def _k_weight(audio: np.ndarray) -> np.ndarray:
+    """Aplica a ponderação K (no domínio da frequência, com folga para a cauda dos filtros)."""
+    size = audio.size + SAMPLE_RATE
+    nfft = 1 << (size - 1).bit_length()
+    z1 = np.exp(-2j * np.pi * np.fft.rfftfreq(nfft))  # z^-1 em cada bin
+    response = np.ones_like(z1)
+    for b, a in _K_STAGES:
+        response *= (b[0] + b[1] * z1 + b[2] * z1 * z1) / (a[0] + a[1] * z1 + a[2] * z1 * z1)
+    return np.fft.irfft(np.fft.rfft(audio, nfft) * response, nfft)[: audio.size]
+
+
+def peak_momentary_lufs(audio: np.ndarray) -> float:
+    """Maior loudness momentânea (janela de 400 ms, BS.1770) de um áudio mono a 48 kHz, em LUFS."""
+    if audio.size == 0:
+        return float("-inf")
+    power = _k_weight(audio.astype(np.float64)) ** 2
+    win = int(0.4 * SAMPLE_RATE)
+    if power.size < win:
+        power = np.pad(power, (0, win - power.size))
+    acc = np.concatenate(([0.0], np.cumsum(power)))
+    mean_square = float(((acc[win:] - acc[:-win]) / win).max())
+    return -0.691 + 10 * np.log10(mean_square) if mean_square > 1e-12 else float("-inf")
+
+
+def normalize_sfx(audio: np.ndarray, target_lufs: float) -> np.ndarray:
+    """Leva o efeito à loudness momentânea `target_lufs`, sem passar de -1 dBFS de pico."""
+    loudness = peak_momentary_lufs(audio)
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    if not np.isfinite(loudness) or peak <= 0:
+        return audio
+    gain = min(10 ** ((target_lufs - loudness) / 20), _PEAK_CEILING / peak)
+    return (audio * gain).astype(np.float32)
+
+
+def _sfx_args(kind: str) -> list[str]:
+    """Entradas e filtros do FFmpeg de cada efeito (ruídos com semente fixa: o arquivo sai sempre igual)."""
+    r = SAMPLE_RATE
     if kind == "impact":
-        args = [
-            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.9*sin(2*PI*(42+70*exp(-9*t))*t)*exp(-3.2*t)':s={SAMPLE_RATE}:d=1.6",
-            "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.5:d=0.25:r={SAMPLE_RATE}",
-            "-filter_complex", "[1:a]lowpass=f=900,afade=t=out:d=0.25[n];[0:a][n]amix=inputs=2:normalize=0,aecho=0.8:0.7:120:0.25[out]",
+        # Camadas: sub (sentido no fone), corpo em 170–640 Hz, estalo agudo e ruído médio (o que o alto-falante do
+        # celular toca). O limitador no fim deixa o golpe mais denso, para ele soar alto sem estourar o pico.
+        sub = "0.4*sin(2*PI*(42+70*exp(-9*t))*t)*exp(-7*t)"
+        body = "0.45*sin(2*PI*(170+150*exp(-30*t))*t)*exp(-9*t)+0.25*sin(2*PI*(340+300*exp(-30*t))*t)*exp(-14*t)"
+        return [
+            "-f", "lavfi", "-i", f"aevalsrc=exprs='{sub}+{body}':s={r}:d=1.2",
+            "-f", "lavfi", "-i", f"anoisesrc=color=white:amplitude=0.45:d=0.04:r={r}:seed=11",
+            "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.5:d=0.25:r={r}:seed=12",
+            "-filter_complex",
+            "[1:a]bandpass=f=3500:width_type=o:w=1.5,afade=t=out:d=0.035[c];[2:a]lowpass=f=2500,afade=t=out:d=0.25[n];"
+            "[0:a][c][n]amix=inputs=3:normalize=0,aecho=0.8:0.6:120:0.25,"
+            "alimiter=limit=0.35:attack=1:release=60:level=false:latency=true[out]",
         ]
-    elif kind == "glitch":
-        args = [
-            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.35*sgn(sin(2*PI*820*t))*lt(mod(t,0.07),0.035)+0.2*sin(2*PI*3100*t)*lt(mod(t,0.05),0.02)':s={SAMPLE_RATE}:d=0.35",
+    if kind == "glitch":
+        return [
+            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.35*sgn(sin(2*PI*820*t))*lt(mod(t,0.07),0.035)+0.2*sin(2*PI*3100*t)*lt(mod(t,0.05),0.02)':s={r}:d=0.35",
             "-filter_complex", "[0:a]acrusher=bits=6:mix=0.7,afade=t=out:st=0.25:d=0.1[out]",
         ]
-    elif kind == "static":
-        args = [
-            "-f", "lavfi", "-i", f"anoisesrc=color=white:amplitude=0.45:d=0.5:r={SAMPLE_RATE}",
+    if kind == "static":
+        return [
+            "-f", "lavfi", "-i", f"anoisesrc=color=white:amplitude=0.45:d=0.5:r={r}:seed=13",
             "-filter_complex", "[0:a]highpass=f=1200,afade=t=in:d=0.05,afade=t=out:st=0.2:d=0.3[out]",
         ]
-    elif kind == "riser":
-        args = [
-            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.25*sin(2*PI*(180*t+260*t*t)*t)*(t/1.5)':s={SAMPLE_RATE}:d=1.5",
+    if kind == "riser":
+        return [
+            "-f", "lavfi", "-i", f"aevalsrc=exprs='0.25*sin(2*PI*(180*t+260*t*t)*t)*(t/1.5)':s={r}:d=1.5",
             "-filter_complex", "[0:a]aecho=0.8:0.6:90:0.3,afade=t=out:st=1.35:d=0.15[out]",
         ]
-    else:  # whoosh
-        args = [
-            "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.7:d=0.7:r={SAMPLE_RATE}",
-            "-filter_complex", "[0:a]bandpass=f=1400:width_type=o:w=2.5,afade=t=in:d=0.35:curve=exp,afade=t=out:st=0.35:d=0.35[out]",
-        ]
-    run_ffmpeg([*args, "-map", "[out]", "-ac", "1", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(out_path)])
-    return out_path
+    # whoosh: ruído em banda larga que sobe até 0,35 s e desce
+    return [
+        "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.7:d=0.7:r={r}:seed=14",
+        "-filter_complex", "[0:a]bandpass=f=1400:width_type=o:w=2.5,afade=t=in:d=0.35:curve=exp,afade=t=out:st=0.35:d=0.35[out]",
+    ]
+
+
+def generate_sfx(kind: str, out_path: Path) -> Path:
+    """Gera o efeito e normaliza a loudness: `audio.sfx.volume_db` vale o mesmo para todos os tipos.
+
+    Com volume 0 dB, o momento mais forte do efeito soa tão alto quanto a narração (`VOICE_LUFS`).
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    raw = out_path.with_suffix(".f32")
+    run_ffmpeg([*_sfx_args(kind), "-map", "[out]", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", str(raw)])
+    try:
+        audio = np.fromfile(raw, dtype="<f4")
+    finally:
+        raw.unlink(missing_ok=True)
+    return write_wav(out_path, normalize_sfx(audio, VOICE_LUFS + SFX_TRIM_DB.get(kind, 0.0)))
 
 
 # --------------------------------------------------------------------------------------------
@@ -381,27 +459,82 @@ def place_clips(clips: list[tuple[Path, float, float]], total: float, out_path: 
     return write_wav(out_path, track)
 
 
-def mix_tracks(
+# Trilha sob a voz: passa-altas antes do ganho (subir a trilha sobe a melodia, não o bumbo) e ducking leve, de uns
+# 4 dB, para a música continuar audível durante a fala.
+MUSIC_HIGHPASS_HZ = 100
+# Climas cujo corpo é o grave (drones, batida de coração, pancadas): só tiram o ronco abaixo das notas.
+_DEEP_MOODS = frozenset({"drone", "horror", "tension", "mystery", "pulse", "epic"})
+_DEEP_HIGHPASS_HZ = 30
+_DUCK = "sidechaincompress=threshold=0.1:ratio=3:attack=15:release=250:makeup=1"
+MUSIC_FADES = {"short": (0.4, 0.3), "long": (2.0, 3.0)}
+"""(entrada, saída) da trilha em s, contra o início e o fim reais do vídeo. No short a trilha já está alta no gancho
+e só some no último instante, então a emenda do loop não fica muda."""
+TRUE_PEAK_DB = -1.0
+"""Teto de pico real do mix final (dBTP)."""
+_LIMIT = 10 ** (-1.5 / 20)  # teto do limitador sobreamostrado; a folga até -1 dBTP cobre o AAC
+_SILENT_LUFS = -70.0
+_EBUR128 = "ebur128=framelog=verbose"  # sem o log de cada 100 ms; o resumo sai no fim
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def music_highpass(mood: str | None) -> int:
+    """Corte de graves da trilha no mix, conforme o clima."""
+    return _DEEP_HIGHPASS_HZ if mood_key(mood) in _DEEP_MOODS else MUSIC_HIGHPASS_HZ
+
+
+def _ebur128(args: list[str]) -> dict[str, float]:
+    """Roda o FFmpeg (com um filtro `ebur128` no fim) e lê o resumo: loudness integrada, LRA e pico real (se pedido)."""
+    cmd = [get_settings().ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info", *args, "-f", "null", "-"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3600,
+                          creationflags=_NO_WINDOW)
+    summary = proc.stderr[proc.stderr.rfind("Summary:"):]
+    lufs = re.search(r"I:\s+(-?inf|-?[\d.]+) LUFS", summary)
+    if proc.returncode != 0 or not lufs:
+        raise FFmpegError(f"ffmpeg não mediu a loudness ({proc.returncode}): {proc.stderr.strip()[-2000:]}")
+    lra = re.search(r"LRA:\s+(-?[\d.]+) LU", summary)
+    peak = re.search(r"True peak:\s+Peak:\s+(-?inf|-?[\d.]+)", summary)
+    return {
+        "lufs": float(lufs.group(1)),
+        "lra": float(lra.group(1)) if lra else math.nan,
+        "true_peak": float(peak.group(1)) if peak else math.nan,
+    }
+
+
+def measure_loudness(path: Path) -> dict[str, float]:
+    """Loudness integrada (LUFS), faixa de loudness (LU) e pico real (dBTP) de um arquivo de áudio."""
+    return _ebur128(["-i", str(path), "-af", f"{_EBUR128}:peak=true"])
+
+
+def _gain_to(target: float, measured: float) -> float:
+    """Ganho (dB) que leva `measured` a `target`; 0 para silêncio."""
+    return target - measured if math.isfinite(measured) and measured > _SILENT_LUFS else 0.0
+
+
+def _premix(
     voice: Path,
-    out_path: Path,
-    *,
-    music: Path | None = None,
-    music_db: float = -22.0,
-    ducking: bool = True,
-    sfx: Path | None = None,
-    loudness: float = -14.0,
-) -> Path:
-    """Mix final: voz + música (com ducking) + SFX, normalizado em loudness. Sai em AAC estéreo."""
+    music: Path | None,
+    music_db: float,
+    ducking: bool,
+    sfx: Path | None,
+    total: float,
+    short: bool,
+    highpass: float = MUSIC_HIGHPASS_HZ,
+    voice_gain: float = 0.0,
+) -> tuple[list[str], list[str]]:
+    """Entradas e grafo do FFmpeg até [mx]: voz (com `voice_gain` dB) + trilha (com ducking) + SFX, sem o master."""
     inputs = ["-i", str(voice)]
-    graph: list[str] = ["[0:a]loudnorm=I=-16:TP=-2:LRA=9[vn]"]
+    graph: list[str] = [f"[0:a]volume={voice_gain:.2f}dB[vn]"]
     mix_inputs = ["[vout]"]
     if music is not None:
         inputs += ["-i", str(music)]
-        gain = music_db + 10.0
-        graph.append(f"[1:a]volume={gain:.1f}dB[m]")
+        fade_in, fade_out = (min(d, total / 4) for d in MUSIC_FADES["short" if short else "long"])
+        graph.append(
+            f"[1:a]highpass=f={highpass:g},volume={music_db + 10.0:.1f}dB,afade=t=in:d={fade_in:.2f},"
+            f"afade=t=out:st={total - fade_out:.3f}:d={fade_out:.2f}[m]"
+        )
         if ducking:
             graph.append("[vn]asplit=2[vout][vsc]")
-            graph.append("[m][vsc]sidechaincompress=threshold=0.025:ratio=6:attack=15:release=380:makeup=1[md]")
+            graph.append(f"[m][vsc]{_DUCK}[md]")
             mix_inputs.append("[md]")
         else:
             graph.append("[vn]anull[vout]")
@@ -413,8 +546,53 @@ def mix_tracks(
         inputs += ["-i", str(sfx)]
         mix_inputs.append(f"[{idx}:a]")
     graph.append(f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:normalize=0:duration=first[mx]")
-    graph.append(f"[mx]loudnorm=I={loudness}:TP=-1.5:LRA=11[out]")
+    return inputs, graph
+
+
+def mix_tracks(
+    voice: Path,
+    out_path: Path,
+    *,
+    music: Path | None = None,
+    music_db: float = -22.0,
+    ducking: bool = True,
+    sfx: Path | None = None,
+    loudness: float = -14.0,
+    total: float | None = None,
+    short: bool = False,
+    music_highpass: float = MUSIC_HIGHPASS_HZ,
+) -> Path:
+    """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo.
+
+    A trilha (em -16 LUFS) entra com `music_db + 10` dB, depois do passa-altas `music_highpass` (ver
+    `music_highpass(clima)`) e antes do ducking. `total` é a duração do vídeo (padrão: a da voz posicionada); a trilha
+    sai em fade contra ele. `short` usa os fades curtos de `MUSIC_FADES`.
+
+    Só ganhos medidos (o loudnorm dinâmico de antes ficava ~1 LU abaixo do alvo): a voz vai a `VOICE_LUFS`, a
+    referência da trilha e dos SFX; o mix é medido e o master aplica o ganho exato até `loudness`, com um limitador
+    sobreamostrado (pega os picos entre amostras). Se o limitador comer loudness, mede de novo e compensa.
+    """
+    total = wav_duration(voice) if total is None else total
+    voice_gain = _gain_to(VOICE_LUFS, _ebur128(["-i", str(voice), "-af", _EBUR128])["lufs"])
+    inputs, graph = _premix(voice, music, music_db, ducking, sfx, total, short, music_highpass, voice_gain)
+    # Mede e limita já em estéreo (o mono vira dois canais a -3 dB): é o que o arquivo final tem.
+    stereo = "[mx]aformat=channel_layouts=stereo"
+
+    def master(gain: float, out: str) -> str:
+        return ";".join([*graph, (
+            f"{stereo},volume={gain:.2f}dB,aresample={SAMPLE_RATE * 4},"
+            f"alimiter=limit={_LIMIT:.4f}:attack=5:release=50:level=false:latency=true,aresample={SAMPLE_RATE}{out}"
+        )])
+
+    measured = _ebur128([*inputs, "-filter_complex", ";".join([*graph, f"{stereo},{_EBUR128}[lu]"]), "-map", "[lu]"])["lufs"]
+    gain = _gain_to(loudness, measured)
+    if gain:
+        for _ in range(2):
+            limited = _ebur128([*inputs, "-filter_complex", master(gain, f",{_EBUR128}[lu]"), "-map", "[lu]"])["lufs"]
+            if not math.isfinite(limited) or abs(loudness - limited) < 0.1:
+                break
+            gain += loudness - limited
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    run_ffmpeg([*inputs, "-filter_complex", ";".join(graph), "-map", "[out]", "-ac", "2", "-ar", str(SAMPLE_RATE),
+    run_ffmpeg([*inputs, "-filter_complex", master(gain, "[out]"), "-map", "[out]", "-ac", "2", "-ar", str(SAMPLE_RATE),
                 "-c:a", "aac", "-b:a", "192k", str(out_path)])
     return out_path

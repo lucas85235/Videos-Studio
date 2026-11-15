@@ -97,6 +97,9 @@ const DEFAULT_CHAIN: Record<Kind, string[]> = {
 const LAST_RESORT = new Set(['windows_sapi', 'mock_tts', 'placeholder', 'estimate']);
 const OFFLINE_ONLY = new Set(['mock_llm']);
 
+/** Campos que não são segredo (aparecem enquanto digita). */
+const PLAIN_FIELDS = new Set(['contact']);
+
 const isReal = (p: Provider) => p.available && p.commercial_use && !p.quota_exhausted_today;
 
 /** Provedores do tipo, na ordem: cadeia padrão, depois os que só entram se o estilo pedir, depois os de último recurso. */
@@ -277,6 +280,7 @@ const chainBadge = (p: Provider, kind: Kind): { text: string; title: string; pos
   if (LAST_RESORT.has(p.id))
     return { text: 'Último recurso', title: kind === 'align' ? 'Usado quando os outros falham' : 'Usado quando os outros falham; gera prévia, que não pode ser publicada' };
   if (p.id === 'pexels') return { text: 'Só para cenas com foto de banco', title: 'Entra apenas nas cenas que pedem foto de banco de imagens' };
+  if (p.id === 'wikimedia_commons') return { text: 'Só para mídia real', title: 'Busca de fotos de licença livre sugeridas nas cenas; não gera imagem' };
   return { text: 'Só se o estilo pedir', title: 'Fora da ordem padrão: entra só se um estilo pedir' };
 };
 
@@ -348,6 +352,9 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
   const creds = p.credentials;
   const dirty = Object.values(values).some(Boolean);
   const masked = p.credential_fields.filter((f) => creds?.fields[f]);
+  /** Provedor que guarda um contato, não um segredo (Wikimedia Commons): outras palavras na tela. */
+  const contact = p.credential_fields.length > 0 && p.credential_fields.every((f) => PLAIN_FIELDS.has(f));
+  const noun = contact ? 'contato' : 'chave';
   const partial = !creds?.configured && masked.length > 0;
   const removable = (creds?.configured || masked.length > 0) && !creds?.from_env;
   const badge = chainBadge(p, kind);
@@ -355,13 +362,15 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
     kind === 'publish' ? (!p.credentials?.configured && p.credential_fields.length ? 'Falta conectar o YouTube: cole abaixo o ID e o segredo do cliente.' : publishHint(p)) : p.reason;
 
   const askClear = async () => {
-    const realKind = p.kind === 'tts' ? 'a voz volta' : p.kind === 'image' ? 'as imagens voltam' : null;
+    const realKind = contact ? null : p.kind === 'tts' ? 'a voz volta' : p.kind === 'image' ? 'as imagens voltam' : null;
     const ok = await confirm({
-      title: `Remover a chave do ${p.name}?`,
-      description: `O app deixa de usar este provedor até você colar a chave de novo.${
-        realKind ? ` Se não houver outro provedor real, ${realKind} ao modo prévia.` : ''
-      }`,
-      confirmLabel: 'Remover chave',
+      title: `Remover ${contact ? 'o contato' : 'a chave'} do ${p.name}?`,
+      description: contact
+        ? 'A busca de fotos deixa de usar o Wikimedia Commons até você informar o contato de novo.'
+        : `O app deixa de usar este provedor até você colar a chave de novo.${
+            realKind ? ` Se não houver outro provedor real, ${realKind} ao modo prévia.` : ''
+          }`,
+      confirmLabel: `Remover ${noun}`,
       tone: 'danger',
     });
     if (ok) clear.mutate();
@@ -419,14 +428,14 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
               </Badge>
             ) : creds?.configured ? (
               <Badge tone="good" icon={KeyRound}>
-                Chave salva
+                {contact ? 'Contato salvo' : 'Chave salva'}
               </Badge>
             ) : partial ? (
               <Badge tone="warn" icon={KeyRound} title="Falta preencher um dos campos abaixo">
                 Chave incompleta
               </Badge>
             ) : (
-              <Badge icon={KeyRound}>Sem chave</Badge>
+              <Badge icon={KeyRound}>{contact ? 'Sem contato' : 'Sem chave'}</Badge>
             )}
             {masked.length && !creds?.from_env ? (
               <span className="text-[13px] text-subtle">
@@ -445,10 +454,10 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
               hint={i === p.credential_fields.length - 1 && p.env_vars.length && !creds?.from_env ? `Ou defina ${p.env_vars.join(' ou ')} antes de abrir o app.` : undefined}
             >
               <Input
-                type="password"
+                type={PLAIN_FIELDS.has(f) ? 'text' : 'password'}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder={creds?.fields[f] ? 'Cole uma nova para trocar' : 'Cole aqui'}
+                placeholder={contact ? 'voce@exemplo.com ou https://seusite.com' : creds?.fields[f] ? 'Cole uma nova para trocar' : 'Cole aqui'}
                 value={values[f] ?? ''}
                 onChange={(e) => setValues({ ...values, [f]: e.target.value })}
               />
@@ -456,11 +465,11 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
           ))}
           <div className="flex flex-wrap items-center gap-2">
             <Button type="submit" size="sm" variant={dirty ? 'primary' : 'secondary'} icon={Check} disabled={!dirty} busy={save.isPending}>
-              {creds?.configured && !creds.from_env ? 'Trocar chave' : 'Salvar chave'}
+              {creds?.configured && !creds.from_env ? `Trocar ${noun}` : `Salvar ${noun}`}
             </Button>
             {removable ? (
               <Button size="sm" variant="ghost" icon={Trash2} busy={clear.isPending} onClick={() => void askClear()} className="hover:text-red-300">
-                Remover chave
+                Remover {noun}
               </Button>
             ) : null}
           </div>
@@ -468,7 +477,7 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
             save.data.available ? (
               <p role="status" className="flex items-start gap-1.5 text-[13px] text-emerald-300">
                 <CircleCheck size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
-                Chave salva e funcionando.
+                {contact ? 'Contato salvo: a busca de fotos já usa o Commons.' : 'Chave salva e funcionando.'}
               </p>
             ) : (
               <p role="status" className="flex items-start gap-1.5 text-[13px] text-amber-200">

@@ -35,7 +35,8 @@ operações pequenas sobre o documento do projeto, e o app regenera só o que mu
 - Use o menor conjunto de operações que atende o pedido. Não mexa no que não foi pedido.
 - Luz, cor, contraste, calor, desfoque de UMA cena: set_scene_look (sem gerar imagem nova; valores de -1 a 1).
 - Conteúdo diferente na imagem: update_scene_prompt (escreva o prompt completo novo, sem texto na imagem).
-- "Outra versão/variação" da mesma imagem: regenerate_scene.
+- "Outra versão/variação" da mesma imagem: regenerate_scene. Cena com "mídia real" (foto, notícia ou material
+  anexado pelo usuário): não use regenerate_scene nela; a mídia se troca no painel Mídia real da aba Cenas.
 - Câmera: set_scene_motion. Transição de entrada: set_scene_transition. Tipo de cena: set_scene_kind.
 - Mudança de texto narrado: update_segment_text (texto completo do segmento, no idioma indicado).
 - Ajustes globais do estilo (legendas, efeitos, ritmo, trilha): set_style com path e value_json (JSON válido).
@@ -75,6 +76,8 @@ def numbered_outline(doc: ProjectDoc, lang: str, max_chars: int = 110) -> tuple[
                 extras.append(f"look={json.dumps(look, ensure_ascii=False)}")
             if scene.visual.reuse_of:
                 extras.append(f"reaproveita a imagem de {scene.visual.reuse_of}")
+            if scene.visual.media is not None:
+                extras.append("mídia real")
             if scene.locked:
                 extras.append("travada")
             card = scene.card.resolved(lang, doc.primary_language) if scene.card else {}

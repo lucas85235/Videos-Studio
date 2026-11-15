@@ -26,24 +26,28 @@ from studio.core.graph.store import ArtifactStore
 from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import service
 from studio.core.project.document import ArtDirection, ProjectDoc, Scene, Visual
+from studio.core.project.media_edit import scene_label
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
 from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
 from studio.media import audio as audio_mod
 from studio.media import music_library
+from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
 from studio.providers import kokoro, registry
 from studio.providers.align import map_to_script, narration_problems, word_error_rate
 from studio.providers.base import Word
+from studio.workers.pipeline.lighting import names_light, strip_light
 
 log = logging.getLogger(__name__)
 
 Mode = Literal["preview", "final"]
 
 _codex_lock = threading.Lock()
+_media_lock = threading.Lock()  # duas cenas com a mesma mídia real não recortam nem gravam o mesmo cache ao mesmo tempo
 
 
 class BuildCancelled(Exception):
@@ -83,10 +87,43 @@ class ProgressSink:
         return None
 
 
+# Bíblias dos estilos antes de tirar delas a hora do dia, o céu e a luz fixa (a imagem dirigida não usa a bíblia). A
+# cena antiga (sem linguagem) continua com o prompt de antes e a mesma chave de cache: nada é gerado de novo.
+_LEGACY_BIBLES: dict[str, str] = {
+    "cores saturadas e neon, contraste limpo, sem grão":
+        "cores saturadas de pôr do sol e neon, contraste limpo, luz de fim de tarde, sem grão",
+    "pintura clássica a óleo, estátuas de mármore greco-romanas, templos e paisagens mediterrâneas, tons quentes, "
+    "atmosfera serena e contemplativa":
+        "pintura clássica a óleo, estátuas de mármore greco-romanas, templos e paisagens mediterrâneas, luz dourada do "
+        "amanhecer, céu aberto e tons quentes, atmosfera serena e contemplativa",
+    "pintura digital histórica realista e luminosa, cores naturais da época, luz natural suave, cenas amplas de "
+    "cidades, mercados, paisagens e pessoas comuns, figurinos e arquitetura fiéis ao período":
+        "pintura digital histórica realista e luminosa, cores naturais da época, luz do dia suave, cenas amplas de "
+        "cidades, mercados, paisagens e pessoas comuns, figurinos e arquitetura fiéis ao período",
+    "pintura editorial luminosa e realista, cenas de cada fase da vida e da época, lugares, objetos e paisagens "
+    "marcantes, cores naturais, luz natural suave; a pessoa retratada aparece de costas, em silhueta ou à distância":
+        "pintura editorial luminosa e realista, cenas de cada fase da vida e da época, lugares, objetos e paisagens "
+        "marcantes, cores naturais, luz suave de janela; a pessoa retratada aparece de costas, em silhueta ou à distância",
+    "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, pouca luz, contraste "
+    "dramático, grão de tela":
+        "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, luz de vela, contraste "
+        "dramático, grão de tela",
+    "fotografia granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, cores "
+    "lavadas, sem pessoas nítidas":
+        "fotografia noturna granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, "
+        "cores lavadas, sem pessoas nítidas",
+    "estética noir de arquivo policial, fotografias antigas em preto e branco, papel envelhecido, mesa de "
+    "investigação, luz baixa e contrastada, sem rostos identificáveis":
+        "estética noir de arquivo policial, fotografias antigas em preto e branco, papel envelhecido, mesa de "
+        "investigação, luz de luminária, sem rostos identificáveis",
+}  # fmt: skip
+
+
 def compose_image_prompt(style: StyleSpec, prompt: str) -> str:
     banned = ", ".join(style.art.banned)
+    bible = _LEGACY_BIBLES.get(style.art.bible, style.art.bible)
     return (
-        f"{prompt.strip().rstrip('.')}. Estilo visual: {style.art.bible}. "
+        f"{prompt.strip().rstrip('.')}. Estilo visual: {bible}. "
         f"Sem nenhum texto, letra, número, legenda ou marca d'água. Evitar: {banned}."
     )
 
@@ -103,23 +140,50 @@ def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual)
     """Prompt em camadas da cena dirigida: enquadramento, linguagem, sujeito, entidades e o mundo do vídeo.
 
     A bible do estilo não entra (a direção já adaptou o tratamento ao assunto) e o "sem texto" vai no
-    envelope do gerador de imagem.
+    envelope do gerador de imagem. A paleta entra como cores de destaque, não como a cor da imagem toda. Quando o
+    prompt da cena já diz a hora, o clima ou a luz, a hora, o clima e o céu saem do mundo, das aparências e da
+    paleta, e a luz sai também do tratamento (direção antiga com "golden hour" não pinta todas as imagens iguais).
+    A direção definida pelo usuário fica como ele escreveu.
     """
     shot, composition, language = directed_variant(art, visual)
     framing = ", ".join(t for t in (shot_text(shot), composition_text(composition)) if t)
-    looks = [e.look.strip() for e in (art.entity(i) for i in visual.entities) if e and e.look.strip()]
+    own_light = art.source != "user" and names_light(visual.prompt)
+
+    def keep(text: str, *, light: bool = False) -> str:
+        return strip_light(text, light=light) if own_light else text.strip()
+
+    looks = [keep(e.look) for e in (art.entity(i) for i in visual.entities) if e and e.look.strip()]
+    palette = [c for c in (keep(x) for x in art.palette if x.strip()) if c]
+    world, treatment = keep(art.world), keep(art.treatment, light=True)
     avoid = list(dict.fromkeys(x.strip() for x in (*style.art.banned, *art.avoid) if x and x.strip()))
     parts = [
         framing[:1].upper() + framing[1:],
         language_prefix(language),
         visual.prompt.strip(),
-        "; ".join(looks),
-        f"World: {art.world.strip()}" if art.world.strip() else "",
-        f"Palette: {', '.join(c.strip() for c in art.palette if c.strip())}" if any(c.strip() for c in art.palette) else "",
-        f"Treatment: {art.treatment.strip()}" if art.treatment.strip() else "",
+        "; ".join(look for look in looks if look),
+        f"World: {world}" if world else "",
+        f"Accent colors: {', '.join(palette)}" if palette else "",
+        f"Treatment: {treatment}" if treatment else "",
         ORIGINAL_ONLY,
         f"Avoid: {', '.join(avoid)}" if avoid else "",
     ]
+    return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip().rstrip(".")) + "."
+
+
+def legacy_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual) -> str:
+    """Prompt da cena dirigida de antes ("Palette:", com a direção inteira, sem tirar a luz). Só serve para achar no
+    cache a imagem já gerada com ele (ver `Builder.cached_image`): a prévia aprovada não muda na renderização e a
+    cena antiga não é gerada de novo. Imagem nova (cena nova, "Outra imagem", prompt editado) usa o prompt novo."""
+    shot, composition, language = directed_variant(art, visual)
+    framing = ", ".join(t for t in (shot_text(shot), composition_text(composition)) if t)
+    looks = [e.look.strip() for e in (art.entity(i) for i in visual.entities) if e and e.look.strip()]
+    avoid = list(dict.fromkeys(x.strip() for x in (*style.art.banned, *art.avoid) if x and x.strip()))
+    palette = [c.strip() for c in art.palette if c.strip()]
+    parts = [framing[:1].upper() + framing[1:], language_prefix(language), visual.prompt.strip(), "; ".join(looks),
+             f"World: {art.world.strip()}" if art.world.strip() else "",
+             f"Palette: {', '.join(palette)}" if palette else "",
+             f"Treatment: {art.treatment.strip()}" if art.treatment.strip() else "",
+             ORIGINAL_ONLY, f"Avoid: {', '.join(avoid)}" if avoid else ""]
     return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip().rstrip(".")) + "."
 
 
@@ -137,8 +201,11 @@ def image_key(inputs: dict[str, Any]) -> str:
 
 
 def scene_needs_image(scene: Scene) -> bool:
-    """A cena gera imagem própria? (cena que reaproveita a imagem de outra não gera; ver `ProjectDoc.reuse_root`)."""
+    """A cena gera imagem própria? (cena que reaproveita a imagem de outra não gera; ver `ProjectDoc.reuse_root`).
+    Cena com mídia real mostra a mídia: o prompt fica de reserva e nada é gerado."""
     visual = scene.visual
+    if visual.media is not None:
+        return False
     if visual.reuse_of:
         return False
     if visual.type in ("none", "upload"):
@@ -486,25 +553,68 @@ class Builder:
             "chain": chain,
         }
 
-    def cached_image(self, inputs: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    def cached_image(self, inputs: dict[str, Any],
+                     scene: Scene | None = None) -> tuple[str, dict[str, Any] | None]:
         """Chave da imagem e o que já existe no cache (também com a chave antiga). Entre as guardadas, prefere a
-        que pode ir para o canal: uma imagem de teste guardada depois não esconde a imagem boa."""
+        que pode ir para o canal: uma imagem de teste guardada depois não esconde a imagem boa. A cena dirigida
+        também acha a imagem gerada com o prompt de antes (`legacy_directed_prompt`); a imagem nova vai na chave nova."""
         h = image_key(inputs)
+        variants = [inputs]
+        visual = scene.visual if scene is not None else None
+        if visual is not None and visual.type != "stock" and visual.language and self.doc.art is not None:
+            old = legacy_directed_prompt(self.style, self.doc.art, visual)
+            if old != inputs["prompt"]:
+                variants.append({**inputs, "prompt": old})
+        keys = [k for v in variants for k in (
+            image_key(v), *(hash_obj({**v, "chain": chain}) for chain in (inputs["chain"], *_LEGACY_IMAGE_CHAINS)))]
         found = None
-        for key in (h, *(hash_obj({**inputs, "chain": chain}) for chain in (inputs["chain"], *_LEGACY_IMAGE_CHAINS))):
+        for key in dict.fromkeys(keys):
             cached = self.store.lookup("image", key)
             if cached and cached.get("commercial", True):
                 return h, cached
             found = found or cached
         return h, found
 
+    def media_image(self, scene: Scene) -> str | None:
+        """A mídia real da cena no tamanho do vídeo (cache "media": recortar de novo é só tempo de máquina). None:
+        notícia sem imagem (fundo animado) ou arquivo sumido (com aviso; nunca gera IA no lugar sem avisar)."""
+        media = scene.visual.media
+        if media is None or not media.asset:
+            return None
+        src = self.store.abs(media.asset)
+        if not src.is_file():
+            self.warnings.append(f"A mídia real da {scene_label(self.doc, scene.id)} sumiu da pasta de dados; a cena "
+                                 "ficou sem imagem. Anexe de novo ou tire a mídia.")
+            return None
+        width, height = self.style.format.width, self.style.format.height
+        fit = resolve_fit(media, width, height)
+        anchor = anchor_for(width, height, self.style.edit.captions.position)
+        inputs = {"media": media.asset, "size": [width, height], "fit": fit, "focus": media.focus or "center",
+                  "anchor": anchor, "v": 1}
+        h = hash_obj(inputs)
+        # Trava: duas cenas com a mesma mídia (mesma chave) não recortam juntas nem gravam o mesmo cache duas vezes
+        # (o banco recusaria a segunda e o build inteiro falharia). Recortar é rápido: a trava global sai barata.
+        with _media_lock:
+            cached = self.store.lookup("media", h)
+            if cached:
+                self.stats.hit("media", True)
+                return cached["path"]
+            out = fit_media(src, self.store.dir_for("media", h) / "image.jpg", width, height, fit=fit,
+                            focus=media.focus, anchor_y=anchor)
+            rel = self.store.rel(out)
+            self.store.save("media", h, {"path": rel, "files": [rel], "source": media.source}, "pillow")
+        self.stats.hit("media", False)
+        return rel
+
     def image(self, scene: Scene) -> str | None:
+        if scene.visual.media is not None:
+            return self.media_image(scene)  # mídia real vale mais que a imagem fixada, o reaproveitamento e a IA
         if scene.visual.asset:
             return scene.visual.asset  # upload ou imagem fixada (qualquer tipo): nada a gerar
         inputs = self.image_inputs(scene)
         if inputs is None:
             return None
-        h, cached = self.cached_image(inputs)
+        h, cached = self.cached_image(inputs, scene)
         if cached and not self._better_available(inputs["chain"], cached.get("provider")):
             self.stats.hit("image", True)
             if not cached.get("commercial", True):
@@ -545,7 +655,8 @@ class Builder:
             found = self._library_music(mood, bucket, cue.track)
             if found:
                 return found[0], {**found[1], "volume_db": volume}
-        inputs = {"mood": audio_mod.mood_key(mood), "duration": bucket, "seed": seed_from(self.doc.seed, "music", mood), "v": 1}
+        # v2: a trilha sai sem os fades longos (o mix faz a entrada e a saída contra o vídeo real).
+        inputs = {"mood": audio_mod.mood_key(mood), "duration": bucket, "seed": seed_from(self.doc.seed, "music", mood), "v": 2}
         h = hash_obj(inputs)
         cached = self.store.lookup("music", h)
         if cached:
@@ -584,7 +695,7 @@ class Builder:
         return h, output
 
     def sfx_file(self, kind: str) -> Path:
-        h = hash_obj({"sfx": kind, "v": 1})
+        h = hash_obj({"sfx": kind, "v": 2})  # v2: impacto em camadas e loudness normalizada por arquivo
         cached = self.store.lookup("sfx", h)
         if cached:
             return self.store.abs(cached["path"])
@@ -601,14 +712,18 @@ class Builder:
             else None
         )
         sfx_events = timeline.get("sfx", [])
+        short = self.style.format.type == "short"
+        music_hp = audio_mod.music_highpass(music[1].get("mood")) if music else None
+        # v2: trilha com passa-altas e ducking leve, fades contra o fim real, SFX normalizados e master com ganho medido.
         inputs = {
             "voice": [(tts_hashes[n["segment_id"]], n["start"]) for n in timeline["narration"]],
-            "music": (music[0], music[1]["volume_db"], self.style.audio.music.ducking) if music else None,
+            "music": (music[0], music[1]["volume_db"], self.style.audio.music.ducking, music_hp) if music else None,
             "sfx": [(e["type"], e["start"]) for e in sfx_events],
             "sfx_db": self.style.audio.sfx.volume_db,
             "loudness": self.style.audio.loudness_lufs,
             "total": total,
-            "v": 1,
+            "short": short,
+            "v": 2,
         }
         h = hash_obj(inputs)
         cached = self.store.lookup("mix", h)
@@ -632,6 +747,9 @@ class Builder:
             ducking=self.style.audio.music.ducking,
             sfx=sfx_track,
             loudness=self.style.audio.loudness_lufs,
+            total=total,
+            short=short,
+            music_highpass=music_hp or audio_mod.MUSIC_HIGHPASS_HZ,
         )
         for tmp in (voice, sfx_track):
             if tmp is not None:
@@ -699,9 +817,17 @@ class Builder:
         self.stats.hit("final", False)
         return rel
 
+    def default_thumbnail_scene(self, images: dict[str, str | None]) -> str | None:
+        """Base padrão da thumbnail: a primeira cena com imagem que não é material de terceiros (a capa é o que mais
+        chama reivindicação de direitos); sem nenhuma, a primeira com imagem."""
+        doc = self.doc
+        with_image = [s for s in doc.ordered_scenes() if images.get(s.id)]
+        free = next((s.id for s in with_image if not ((m := doc.shown_media(s)) is not None and m.editorial)), None)
+        return free or (with_image[0].id if with_image else None)
+
     def thumbnail(self, lang: str, images: dict[str, str | None]) -> str | None:
         doc, style = self.doc, self.style
-        base_scene = doc.thumbnail.scene_id or next((s.id for s in doc.ordered_scenes() if images.get(s.id)), None)
+        base_scene = doc.thumbnail.scene_id or self.default_thumbnail_scene(images)
         base = images.get(base_scene) if base_scene else None
         text = doc.thumbnail.text.get(lang) or doc.thumbnail.text.get(doc.primary_language) or ""
         if style.format.type == "long":
@@ -804,6 +930,8 @@ class Builder:
                      for message, items in errors.items()]
             raise BuildError("falhas na geração:\n- " + "\n- ".join(lines[:20]))
         resolve_reused_images(doc, images)
+        if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
+            self.warnings.append(EDITORIAL_WARNING)
 
         results: dict[str, Any] = {}
         for lang in self.langs:
@@ -923,7 +1051,7 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
         if inputs is None:
             continue
         # Imagem de teste (placeholder) é refeita quando há um gerador melhor: também entra na conta.
-        _, cached = builder.cached_image(inputs)
+        _, cached = builder.cached_image(inputs, scene)
         if not cached or builder._better_available(inputs["chain"], cached.get("provider")):
             missing_images.append(scene.id)
     # Só a voz local quando todos os trechos que faltam saem dela (idioma sem voz local usa a voz final).
@@ -938,7 +1066,7 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     img_price = getattr(registry.get(img_provider), "price", 0.0) if img_provider else 0.0
     est = len(missing_images) * img_price
     tts_seconds = sum(m["chars"] for m in missing_tts) / 15 * 0.5 if local else len(missing_tts) * 6
-    return {
+    result: dict[str, Any] = {
         "mode": mode,
         "tts_missing": missing_tts,
         "tts_chars": sum(m["chars"] for m in missing_tts),
@@ -951,6 +1079,15 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
         "estimated_cost_usd": round(est, 4),
         "estimated_seconds": round(tts_seconds + len(missing_images) * (40 if img_provider == "codex_cli" else 12)),
     }
+    # Mídia real (só quando há: o plano de um projeto sem mídia fica igual): cenas que mostram a mídia em vez de
+    # gerar imagem, e as que perderam o arquivo.
+    media_scenes = [s for s in builder.doc.ordered_scenes() if s.visual.media is not None and s.visual.media.asset]
+    if media_scenes:
+        result["media_scenes"] = [s.id for s in media_scenes]
+    media_missing = [s.id for s in media_scenes if not builder.store.abs(s.visual.media.asset).is_file()]  # type: ignore[union-attr,arg-type]
+    if media_missing:
+        result["media_missing"] = media_missing
+    return result
 
 
 def _first_available(chain: list[str]) -> str | None:

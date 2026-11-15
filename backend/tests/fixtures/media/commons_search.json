@@ -1,0 +1,258 @@
+{
+ "_nota": "Resposta real da API do Commons (15/11/2026), busca 'Miami Beach skyline filetype:bitmap', gsrlimit=5; tirados responsiveUrls, thumbattribs e descriptionshorturl.",
+ "batchcomplete": true,
+ "continue": {
+  "gsroffset": 5,
+  "continue": "gsroffset||"
+ },
+ "query": {
+  "pages": [
+   {
+    "pageid": 22598356,
+    "ns": 6,
+    "title": "File:Miami skyline from Miami Beach 2006 by Averette101.jpg",
+    "index": 2,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 1538772,
+      "width": 3072,
+      "height": 2304,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/9/95/Miami_skyline_from_Miami_Beach_2006_by_Averette101.jpg/500px-Miami_skyline_from_Miami_Beach_2006_by_Averette101.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "thumbwidth": 500,
+      "thumbheight": 375,
+      "url": "https://upload.wikimedia.org/wikipedia/commons/9/95/Miami_skyline_from_Miami_Beach_2006_by_Averette101.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Miami_skyline_from_Miami_Beach_2006_by_Averette101.jpg",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Miami skyline from Miami Beach 2006 by Averette101",
+        "source": "mediawiki-metadata"
+       },
+       "Credit": {
+        "value": "<span class=\"int-own-work\">Self-photographed</span>",
+        "source": "commons-desc-page"
+       },
+       "Artist": {
+        "value": "Marc Averette",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "Public domain",
+        "source": "commons-desc-page"
+       },
+       "AttributionRequired": {
+        "value": "false",
+        "source": "commons-desc-page"
+       },
+       "Restrictions": {
+        "value": "",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "image/jpeg"
+     }
+    ]
+   },
+   {
+    "pageid": 30437917,
+    "ns": 6,
+    "title": "File:Skyline over Miami beach USA.jpg",
+    "index": 3,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 104308,
+      "width": 1024,
+      "height": 618,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/ba/Skyline_over_Miami_beach_USA.jpg/500px-Skyline_over_Miami_beach_USA.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "thumbwidth": 500,
+      "thumbheight": 302,
+      "url": "https://upload.wikimedia.org/wikipedia/commons/b/ba/Skyline_over_Miami_beach_USA.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Skyline_over_Miami_beach_USA.jpg",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Skyline over Miami beach USA",
+        "source": "mediawiki-metadata"
+       },
+       "Credit": {
+        "value": "<span class=\"int-own-work\" lang=\"en\">Own work</span>",
+        "source": "commons-desc-page"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Ethically_Yours\" title=\"User:Ethically Yours\">Ethically Yours</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY-SA 3.0",
+        "source": "commons-desc-page"
+       },
+       "AttributionRequired": {
+        "value": "true",
+        "source": "commons-desc-page"
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by-sa/3.0",
+        "source": "commons-desc-page"
+       },
+       "Restrictions": {
+        "value": "",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "image/jpeg"
+     }
+    ]
+   },
+   {
+    "pageid": 75476551,
+    "ns": 6,
+    "title": "File:Miami Beach and Port of Miami Skyline (2720195951).jpg",
+    "index": 4,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 3310633,
+      "width": 2669,
+      "height": 1870,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/03/Miami_Beach_and_Port_of_Miami_Skyline_%282720195951%29.jpg/500px-Miami_Beach_and_Port_of_Miami_Skyline_%282720195951%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "thumbwidth": 500,
+      "thumbheight": 350,
+      "url": "https://upload.wikimedia.org/wikipedia/commons/0/03/Miami_Beach_and_Port_of_Miami_Skyline_%282720195951%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Miami_Beach_and_Port_of_Miami_Skyline_(2720195951).jpg",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Miami Beach and Port of Miami Skyline (2720195951)",
+        "source": "mediawiki-metadata"
+       },
+       "Credit": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://www.flickr.com/photos/joiseyshowaa/2720195951/\">Miami Beach and Port of Miami Skyline</a>",
+        "source": "commons-desc-page"
+       },
+       "Artist": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://www.flickr.com/people/30201239@N00\">joiseyshowaa</a> from Freehold, NJ, USA",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY-SA 2.0",
+        "source": "commons-desc-page"
+       },
+       "AttributionRequired": {
+        "value": "true",
+        "source": "commons-desc-page"
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by-sa/2.0",
+        "source": "commons-desc-page"
+       },
+       "Restrictions": {
+        "value": "",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "image/jpeg"
+     }
+    ]
+   },
+   {
+    "pageid": 124346817,
+    "ns": 6,
+    "title": "File:Miami skyline from the ocean.jpg",
+    "index": 1,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 4576073,
+      "width": 3881,
+      "height": 2426,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/c6/Miami_skyline_from_the_ocean.jpg/500px-Miami_skyline_from_the_ocean.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "thumbwidth": 500,
+      "thumbheight": 313,
+      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c6/Miami_skyline_from_the_ocean.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Miami_skyline_from_the_ocean.jpg",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Miami skyline from the ocean",
+        "source": "mediawiki-metadata"
+       },
+       "Credit": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://matthewtrader.com\">matthewtrader.com</a> <span class=\"int-own-work\" lang=\"en\">Own work</span>",
+        "source": "commons-desc-page"
+       },
+       "Artist": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://matthewtrader.com\">Matthew T Rader</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY-SA 4.0",
+        "source": "commons-desc-page"
+       },
+       "AttributionRequired": {
+        "value": "true",
+        "source": "commons-desc-page"
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by-sa/4.0",
+        "source": "commons-desc-page"
+       },
+       "Restrictions": {
+        "value": "",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "image/jpeg"
+     }
+    ]
+   },
+   {
+    "pageid": 203033056,
+    "ns": 6,
+    "title": "File:Marina and city skyline at night, Miami Beach, Florida.jpg",
+    "index": 5,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 2245792,
+      "width": 4032,
+      "height": 1960,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/56/Marina_and_city_skyline_at_night%2C_Miami_Beach%2C_Florida.jpg/500px-Marina_and_city_skyline_at_night%2C_Miami_Beach%2C_Florida.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "thumbwidth": 500,
+      "thumbheight": 243,
+      "url": "https://upload.wikimedia.org/wikipedia/commons/5/56/Marina_and_city_skyline_at_night%2C_Miami_Beach%2C_Florida.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Marina_and_city_skyline_at_night,_Miami_Beach,_Florida.jpg",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Marina and city skyline at night, Miami Beach, Florida",
+        "source": "mediawiki-metadata"
+       },
+       "Credit": {
+        "value": "<span class=\"int-own-work\" lang=\"en\">Own work</span>",
+        "source": "commons-desc-page"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Z3lvs\" title=\"User:Z3lvs\">Z3lvs</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC0",
+        "source": "commons-desc-page"
+       },
+       "AttributionRequired": {
+        "value": "false",
+        "source": "commons-desc-page"
+       },
+       "LicenseUrl": {
+        "value": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+        "source": "commons-desc-page"
+       },
+       "Restrictions": {
+        "value": "",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "image/jpeg"
+     }
+    ]
+   }
+  ]
+ }
+}

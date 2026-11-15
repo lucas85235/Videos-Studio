@@ -69,10 +69,23 @@ O Claude da conta usa o Opus mais recente com esforço médio. Para trocar, defi
 3. Em "Tela de permissão OAuth", escolha **Externo**, preencha o básico e **publique o app ("In production")**. Em "Testing" o acesso expira a cada 7 dias. Para uso pessoal não é preciso verificação: na hora de conectar, clique em "Avançado › Acessar" no aviso do Google.
 4. Em "Credenciais › Criar credenciais › ID do cliente OAuth", escolha **App para computador**.
 5. Copie o client ID e o client secret para **Configurações › Publicação › YouTube**.
-6. Na aba 4 de um projeto, clique em **Conectar canal do YouTube** e autorize.
+6. Em **Canais**, clique em **Vincular canal do YouTube › Entrar com o Google** e escolha a conta e o canal (veja abaixo). Ou, na aba 4 de um projeto, clique em **Conectar canal do YouTube** (conta única, como antes).
 7. No YouTube Studio, **verifique o canal por telefone**. Sem isso, uploads acima de 15 min e thumbnails personalizadas falham.
 
 Envio: escolha privado, não listado, público ou **agendado**. O agendamento fica no próprio YouTube, então o notebook pode estar desligado na hora. O rótulo de conteúdo sintético é marcado sozinho quando o estilo é fotorrealista ou usa vídeo IA.
+
+### Vincular um canal que você já tem
+
+Em **Canais › Vincular canal do YouTube** há dois caminhos:
+
+- **Entrar com o Google** (precisa do cliente OAuth acima): o login abre numa nova aba. Escolha a conta e o canal (contas de marca aparecem na tela do Google). O app cria o canal, ou atualiza o que você escolheu, com o nome, o @, a descrição, a foto, o país e o idioma, as palavras-chave, os inscritos e os títulos dos últimos 15 vídeos. Cada canal vinculado guarda o próprio acesso: os envios ao YouTube de um projeto vão para o canal dele. Projeto sem canal vinculado usa a conta conectada na aba 4, como antes.
+- **Colar o link do canal** (sem login): aceita `youtube.com/@seucanal`, `youtube.com/channel/UC…` ou só o `@seucanal`. O app lê a página pública do canal uma vez e o feed oficial (nome, foto e títulos recentes). Por esse caminho o app **não publica** no canal; para publicar, use depois **Vincular com login** no cartão.
+
+No cartão do canal:
+- **Preencher com IA**: o Claude lê a descrição e os títulos recentes e sugere nicho, persona, idiomas, estilo padrão e identidade visual. Gasta um pouco do limite do seu plano. Nada é salvo até você revisar e clicar em **Salvar canal**.
+- **Atualizar dados**: lê de novo nome, foto, números e vídeos recentes (o nome do canal no app volta a ser o do YouTube).
+- **Desvincular**: apaga só o acesso daquele canal; os dados trazidos ficam. **Remover link** tira também os dados do YouTube do canal.
+- Selo **Acesso expirado**: o Google recusou o acesso (tela de consentimento em "Testing" expira em 7 dias). Clique em **Vincular de novo**.
 
 ### Agenda e horários de postagem
 
@@ -93,6 +106,18 @@ Exemplos que funcionam bem:
 - "reescreve o segmento 2 com um exemplo do dia a dia" ou "com mais suspense".
 
 Toda mudança vira uma versão (aba Versões). Voltar a uma versão não paga de novo, porque os arquivos ficam no cache.
+
+### Mídia real (fotos, notícias e material oficial)
+
+Ao criar as cenas, o Claude marca algumas batidas em que uma imagem real vale mais que a de IA: pessoa ou lugar real, produto, personagem oficial, notícia. Na aba Cenas, o cartão da cena mostra **Mídia real sugerida** e o que procurar; o painel da curadoria conta as sugestões (o **Ver** leva à primeira). Nada é anexado sozinho. Em qualquer outra cena, o botão **Mídia real** abre as mesmas opções.
+
+- **Foto real**: o app busca fotos de licença livre no Wikimedia Commons e no Openverse (grátis, sem chave; o Pexels entra se a chave estiver configurada). Escolha uma e clique em **Usar esta**. Para buscar outra coisa, escreva em inglês (ex.: "Miami Beach").
+- **Notícia**: **Usar a fonte** (uma fonte do roteiro) ou cole o link da matéria. O app lê só o título, o veículo, a data e a imagem da página e desenha um cartão de notícia (só em cena do tipo Imagem).
+- **Material oficial** (arte, trailer, foto de imprensa): não há fonte livre. Cole o link da página ou da imagem, ou envie o arquivo (JPG, PNG ou WEBP, até 25 MB), e escreva o crédito (ex.: Rockstar Games). Material de terceiros pode gerar reivindicação de direitos (Content ID).
+- Depois de anexar: **Crédito na tela**, **Enquadramento** (Automático, Preencher a tela ou Imagem inteira com fundo desfocado), **Sujeito na foto** e, na notícia, veículo, data e manchete.
+- A cena com mídia real **não gera imagem de IA** (não gasta cota). O prompt fica de reserva: **Tirar a mídia real** volta para a imagem de IA, e o arquivo fica guardado. Cenas que reaproveitam a imagem dela mostram a mesma mídia.
+- **Créditos**: um selo pequeno no canto da cena e a lista *Créditos das imagens* no fim da descrição do YouTube e dos pacotes (`creditos.txt`). A lista aparece na aba 4, abaixo da descrição.
+- Vídeo real (b-roll em movimento) ainda não: por enquanto só imagem e cartão de notícia.
 
 ## 7. Estilos
 
@@ -153,6 +178,8 @@ Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** col
 | Cota do Gemini esgotada | O app segue para o próximo provedor da cadeia e tenta o Gemini de novo no dia seguinte. |
 | Porta 8765 ocupada | Defina outra porta: `$env:VS_PORT=8766` antes de iniciar. |
 | Erro ao conectar o YouTube | Confira se o cliente OAuth é do tipo "App para computador" e se a tela de consentimento está publicada. |
+| "já está ligado ao canal…" ao vincular | Esse canal do YouTube já pertence a outro canal do app. Use **Atualizar dados** nele, ou **Remover link** lá antes de vincular aqui. |
+| Colar o link do canal falha | Cole no formato `youtube.com/channel/UC…` (o id fica em YouTube Studio › Personalização › Informações básicas). |
 
 ## 10. Para desenvolver
 

@@ -1,7 +1,7 @@
 import React from 'react';
 import { AbsoluteFill, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { fontStack, fontWeight } from '../fonts';
-import type { TextCardStyle, TimelineCardItem, TimelineScene } from '../types';
+import type { StampPlace, TextCardStyle, TimelineCardItem, TimelineScene } from '../types';
 import { useEntrance } from './TextCards';
 
 // Cartões de dado (stat, compare) e sobreposições (faixa, carimbo, fonte), mais o fundo animado.
@@ -10,7 +10,8 @@ import { useEntrance } from './TextCards';
 /** Faixa livre da tela para o painel, em fração da altura: de baixo da faixa do topo até acima da legenda. */
 export type CardBand = { top: number; bottom: number };
 
-export type CardViewProps = { scene: TimelineScene; style: TextCardStyle; uppercase: boolean; lang: string; band?: CardBand };
+/** `pop`: o número já é dito no corte (a legenda já mostra o valor): entra parado, sem contar. */
+export type CardViewProps = { scene: TimelineScene; style: TextCardStyle; uppercase: boolean; lang: string; band?: CardBand; pop?: boolean };
 
 // ---------------------------------------------------------------------------------------------
 // Cores
@@ -35,7 +36,7 @@ export const withAlpha = (color: string, a: number) => {
 };
 
 /** Mistura de duas cores (t = 0 é a primeira). */
-const mix = (a: string, b: string, t: number) => {
+export const mix = (a: string, b: string, t: number) => {
   const ha = hex6(a);
   const hb = hex6(b);
   if (!ha || !hb) return `color-mix(in srgb, ${a} ${Math.round((1 - t) * 100)}%, ${b})`;
@@ -60,7 +61,7 @@ const FONT_EM: Record<string, number> = {
   VT323: 0.42,
 };
 
-const charEm = (font: string) => FONT_EM[font] ?? 0.64;
+export const charEm = (font: string) => FONT_EM[font] ?? 0.64;
 
 /** Fontes de maiúscula baixa parecem menores no mesmo tamanho: ganham um pouco. */
 const FONT_BOOST: Record<string, number> = { VT323: 1.3 };
@@ -209,16 +210,24 @@ export const barValue = (raw: string): BarValue | null => {
 /** Só a grandeza (ver `barValue`). */
 export const barAmount = (raw: string): number | null => barValue(raw)?.amount ?? null;
 
-/** Valor que conta de 0 até o número em ~0,8 s (ano e número pequeno inteiro entram parados). */
-const useCountedValue = (p: ParsedValue | null, delay: number) => {
+/** De onde a contagem parte (fração do valor) e quanto dura: o valor na tela fica perto do dito desde o início. */
+const COUNT_FROM = 0.7;
+const COUNT_SECONDS = 0.4;
+
+/** Valor que conta de ~70% até o número em ~0,4 s (ano, número pequeno inteiro e `pop` entram parados). */
+const useCountedValue = (p: ParsedValue | null, delay: number, pop = false) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   if (!p) return { text: '', counting: false };
-  const counts = !isYear(p) && (Math.abs(p.num) >= 10 || p.decimals > 0);
+  const counts = !pop && !isYear(p) && (Math.abs(p.num) >= 10 || p.decimals > 0);
   if (!counts) return { text: formatValue(p.num, p), counting: false };
-  const k = spring({ frame: frame - delay, fps, config: { damping: 200 }, durationInFrames: Math.round(fps * 0.8) });
-  return { text: formatValue(p.num * k, p), counting: true };
+  const k = spring({ frame: frame - delay, fps, config: { damping: 200 }, durationInFrames: Math.round(fps * COUNT_SECONDS) });
+  return { text: formatValue(p.num * (COUNT_FROM + (1 - COUNT_FROM) * k), p), counting: true };
 };
+
+/** Tamanho do prefixo/sufixo em relação ao número: símbolo sozinho ("×", "x", "%", "$") fica grande para ser lido
+ *  (pequeno, o "×" parece um ícone de fechar); unidade em letras ("MI", "ANOS") fica menor. */
+const affixRatioOf = (affix: string) => (!affix ? 0 : /^(?:[^\p{L}\p{N}]{1,2}|[xX])$/u.test(affix) ? 0.7 : 0.42);
 
 // ---------------------------------------------------------------------------------------------
 // Peças comuns
@@ -239,6 +248,9 @@ const useLayout = () => {
 const linesOf = (text: string, font: string, size: number, maxWidth: number, max = 3) =>
   text ? Math.max(1, Math.min(max, Math.ceil((text.length * charEm(font) * size) / Math.max(1, maxWidth)))) : 0;
 
+/** Centro da faixa do topo em fração da altura: no vertical, abaixo da fileira do topo do TikTok/Reels (~9%). */
+const headlineCenter = (portrait: boolean) => (portrait ? 0.13 : 0.1);
+
 /** Tamanho e altura da faixa do topo (mesma conta do `Headline`), para o painel ficar embaixo dela. */
 export const headlineBox = (text: string, style: TextCardStyle, lang: string, width: number, height: number) => {
   const { portrait, u } = layoutOf(width, height);
@@ -248,7 +260,8 @@ export const headlineBox = (text: string, style: TextCardStyle, lang: string, wi
   const size = fitLines(label, style.font, maxW - padX * 2, u * (portrait ? 0.068 : 0.06), u * 0.04, 2);
   const lines = linesOf(label, style.font, size, maxW - padX * 2, 2);
   const boxH = lines * size * 1.05 + size * 0.34;
-  return { label, maxW, padX, size, top: height * 0.1, bottom: height * 0.1 + boxH / 2 };
+  const center = height * headlineCenter(portrait);
+  return { label, maxW, padX, size, top: center, bottom: center + boxH / 2 };
 };
 
 /** Tamanho do carimbo: uma linha; quebra em duas (palavra por linha) antes de ficar pequeno demais. */
@@ -383,7 +396,7 @@ const Panel: React.FC<{
 // Cartões
 
 /** Número grande: conta até o valor (ano entra com "pop"), com rótulo embaixo. */
-export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band }) => {
+export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, pop: popValue }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { portrait, u, panelW } = useLayout();
@@ -393,7 +406,7 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band }) 
   // Horário, placar, razão ("22H15", "10X1", "24/7"): o valor entra inteiro, com "pop", sem contar.
   const parsed = parseValue(raw);
   const p = parsed && !isCompound(parsed) ? parsed : null;
-  const counted = useCountedValue(p, 4);
+  const counted = useCountedValue(p, 4, popValue);
   const pad = u * (portrait ? 0.06 : 0.05);
   const inner = panelW - pad * 2;
   const font = style.font;
@@ -401,15 +414,16 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band }) 
   const prefix = p?.prefix.trim() ?? '';
   const suffix = p?.suffix.trim() ?? '';
   const main = p ? formatValue(p.num, p) : raw;
-  const affixRatio = 0.42;
-  const affixChars = (prefix ? prefix.length + 0.6 : 0) + (suffix ? suffix.length + 0.6 : 0);
-  const size = Math.min(u * (portrait ? 0.3 : 0.25) * boost(font), inner / Math.max(1, (main.length + affixChars * affixRatio) * charEm(font)));
+  const prefixRatio = affixRatioOf(prefix);
+  const suffixRatio = affixRatioOf(suffix);
+  const affixChars = (prefix ? (prefix.length + 0.6) * prefixRatio : 0) + (suffix ? (suffix.length + 0.6) * suffixRatio : 0);
+  const size = Math.min(u * (portrait ? 0.3 : 0.25) * boost(font), inner / Math.max(1, (main.length + affixChars) * charEm(font)));
   const pop = spring({ frame: frame - 2, fps, config: { damping: 11, stiffness: 140, mass: 0.7 } });
   const scale = counted.counting ? 1 : interpolate(pop, [0, 1], [1.5, 1]);
   const labelSize = raw
     ? fitLines(label, font, inner, u * (portrait ? 0.066 : 0.058), u * 0.04, 2)
     : fitLines(label, font, inner, u * 0.11, u * 0.05, 3);
-  const affix: React.CSSProperties = { fontSize: size * affixRatio, color: style.accent, lineHeight: 1 };
+  const affix = (ratio: number): React.CSSProperties => ({ fontSize: size * ratio, color: style.accent, lineHeight: 1 });
   const estimate = (raw ? size : 0) + (label ? linesOf(label, font, labelSize, inner, raw ? 2 : 3) * labelSize * 1.08 + (raw ? size * 0.12 : 0) : 0);
   const valueRow = raw ? (
     <div
@@ -428,9 +442,9 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band }) 
         whiteSpace: 'nowrap',
       }}
     >
-      {prefix ? <span style={affix}>{prefix}</span> : null}
+      {prefix ? <span style={affix(prefixRatio)}>{prefix}</span> : null}
       <span style={{ fontSize: size, textShadow: `0 ${u * 0.008}px ${u * 0.03}px rgba(0,0,0,0.35)` }}>{p ? counted.text : raw}</span>
-      {suffix ? <span style={affix}>{suffix}</span> : null}
+      {suffix ? <span style={affix(suffixRatio)}>{suffix}</span> : null}
     </div>
   ) : null;
   return (
@@ -564,15 +578,16 @@ const CompareBars: React.FC<{ rows: CompareRow[]; highlight: number | null; styl
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap }}>
       {rows.map((row, i) => {
-        const delay = 4 + i * 6;
-        const grow = spring({ frame: frame - delay, fps, config: { damping: 200 }, durationInFrames: Math.round(fps * 0.8) });
+        // Rótulos e valores finais desde o primeiro quadro (o painel nunca abre vazio nem com outro número); só as
+        // barras crescem, uma depois da outra.
+        const delay = 3 + i * 5;
+        const grow = spring({ frame: frame - delay, fps, config: { damping: 200 }, durationInFrames: Math.round(fps * 0.6) });
         const share = Math.max(0.03, (row.bar?.amount ?? 0) / max);
         // Sem destaque, todas as barras ficam na cor de destaque.
         const on = highlight == null || highlight === i;
         const fill = on ? style.accent : withAlpha(style.color, 0.42);
-        const shown = row.parsed && !isYear(row.parsed) ? `${row.parsed.prefix}${formatValue(row.parsed.num * grow, row.parsed)}${row.parsed.suffix}` : row.value;
         return (
-          <div key={i} style={{ opacity: interpolate(frame - delay, [0, 6], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }) }}>
+          <div key={i}>
             <div
               style={{
                 display: 'flex',
@@ -587,7 +602,7 @@ const CompareBars: React.FC<{ rows: CompareRow[]; highlight: number | null; styl
             >
               <span style={{ fontSize: labelSize, letterSpacing: '0.03em', color: withAlpha(style.color, on ? 0.95 : 0.7), textAlign: 'left' }}>{row.label}</span>
               <span style={{ fontSize: valueSize, color: highlight === i ? style.accent : style.color, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                {shown}
+                {row.value}
               </span>
             </div>
             <div style={{ height: barH, borderRadius: barH / 2, backgroundColor: withAlpha(style.color, 0.1), overflow: 'hidden' }}>
@@ -617,8 +632,8 @@ const CompareTiles: React.FC<{ rows: CompareRow[]; highlight: number | null; sty
   return (
     <div style={{ display: 'flex', flexDirection: across ? 'row' : 'column', alignItems: 'stretch' }}>
       {rows.map((row, i) => {
-        const delay = 4 + i * 6;
-        const s = spring({ frame: frame - delay, fps, config: { damping: 13, stiffness: 150, mass: 0.6 } });
+        // Visíveis desde o primeiro quadro, com uma leve escala.
+        const s = spring({ frame: frame - i * 4, fps, config: { damping: 13, stiffness: 150, mass: 0.6 } });
         const on = highlight === i;
         return (
           <React.Fragment key={i}>
@@ -634,8 +649,7 @@ const CompareTiles: React.FC<{ rows: CompareRow[]; highlight: number | null; sty
                 borderRadius: u * 0.02,
                 backgroundColor: on ? withAlpha(style.accent, 0.16) : withAlpha(style.color, 0.06),
                 boxShadow: on ? `inset 0 0 0 ${Math.max(2, u * 0.004)}px ${style.accent}` : undefined,
-                transform: `scale(${interpolate(s, [0, 1], [0.85, 1])})`,
-                opacity: Math.min(1, s * 1.3),
+                transform: `scale(${interpolate(s, [0, 1], [0.94, 1])})`,
                 display: 'flex',
                 flexDirection: 'column',
                 // Lado a lado, os valores ficam alinhados embaixo mesmo com rótulos de alturas diferentes.
@@ -694,20 +708,21 @@ const VsBadge: React.FC<{ style: TextCardStyle; size: number; across: boolean }>
 // ---------------------------------------------------------------------------------------------
 // Sobreposições (qualquer tipo de cena)
 
-/** Faixa no topo (~10% da altura): fundo na cor de destaque, texto na cor de fundo, desce ao entrar. */
+/** Faixa no topo (centro a 13% da altura no vertical, 10% no horizontal): fundo na cor de destaque, texto na cor de
+ *  fundo, desce ao entrar. */
 export const Headline: React.FC<{ text: string; style: TextCardStyle; lang: string }> = ({ text, style, lang }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, u } = useLayout();
   const s = spring({ frame, fps, config: { damping: 16, stiffness: 170, mass: 0.6 } });
-  const { label, maxW, padX, size } = headlineBox(text, style, lang, width, height);
+  const { label, maxW, padX, size, top } = headlineBox(text, style, lang, width, height);
   return (
     <div
       style={{
         position: 'absolute',
         left: 0,
         right: 0,
-        top: height * 0.1,
+        top,
         display: 'flex',
         justifyContent: 'center',
         transform: `translateY(calc(-50% + ${interpolate(s, [0, 1], [-height * 0.08, 0])}px))`,
@@ -737,6 +752,24 @@ export const Headline: React.FC<{ text: string; style: TextCardStyle; lang: stri
   );
 };
 
+/**
+ * Lugar do carimbo solto, pela composição da imagem (`stamp_at` da timeline): do lado oposto ao sujeito, na altura
+ * `sideY` (30% por padrão: abaixo da faixa do topo, acima da coluna de botões do vertical; mais abaixo quando a
+ * legenda de cima desceu), ou embaixo (`lowY`), à esquerda, quando o sujeito ocupa o meio ou a metade de cima: nunca
+ * cai num rosto na altura da cabeça.
+ */
+const stampPlace = (
+  at: StampPlace | undefined,
+  width: number,
+  height: number,
+  lowY: number,
+  sideY: number,
+): React.CSSProperties => {
+  if (at === 'left') return { position: 'absolute', left: width * 0.07, top: height * sideY };
+  if (at === 'low') return { position: 'absolute', left: width * 0.07, top: height * lowY };
+  return { position: 'absolute', right: width * 0.07, top: height * sideY };
+};
+
 /** Carimbo girado −10° com borda na cor de destaque; entra com mola de escala 2,2 → 1. */
 export const Stamp: React.FC<{
   text: string;
@@ -746,7 +779,12 @@ export const Stamp: React.FC<{
   anchor?: React.CSSProperties;
   /** Largura máxima (px); sem ela, metade da tela no vertical e 30% no horizontal. */
   maxWidth?: number;
-}> = ({ text, style, lang, delay = 6, anchor, maxWidth }) => {
+  /** Lugar sem `anchor` (ver `stampPlace`); `lowY` é a altura do centro no lugar "low". */
+  at?: StampPlace;
+  lowY?: number;
+  /** Altura do centro nos lugares "left"/"right" (padrão 0,3). */
+  sideY?: number;
+}> = ({ text, style, lang, delay = 6, anchor, maxWidth, at, lowY = 0.66, sideY = 0.3 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, portrait, u } = useLayout();
@@ -755,7 +793,7 @@ export const Stamp: React.FC<{
   const fitted = stampFit(upper(text.trim(), lang), style.font, maxWidth ?? width * (portrait ? 0.5 : 0.3), u);
   const size = fitted.size;
   const border = Math.max(3, u * 0.007);
-  const place: React.CSSProperties = anchor ?? { position: 'absolute', right: width * 0.07, top: height * 0.3 };
+  const place: React.CSSProperties = anchor ?? stampPlace(at, width, height, lowY, sideY);
   return (
     <div style={{ ...place, transform: `${anchor ? '' : 'translateY(-50%) '}rotate(-10deg) scale(${interpolate(s, [0, 1], [2.2, 1])})`, opacity: Math.min(1, s * 2) }}>
       <div

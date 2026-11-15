@@ -246,23 +246,41 @@ def _next_focus(focus: str | None) -> str:
 
 
 def _reuse_chain(doc: ProjectDoc, scene: Scene) -> list[str]:
-    """Ids da cadeia de `reuse_of` a partir de `scene` (só chamar quando `doc.reuse_root(scene)` existe)."""
+    """Ids da cadeia de `reuse_of` a partir de `scene` (só chamar quando `doc.reuse_root(scene)` existe). Para na
+    cena com mídia real, como `reuse_root`."""
     ids: list[str] = []
     current = scene
-    while current.visual.reuse_of:
+    while current.visual.reuse_of and current.visual.media is None:
         ids.append(current.visual.reuse_of)
         current = doc.scene(current.visual.reuse_of)
     return ids
 
 
+def _reserve(doc: ProjectDoc, scene: Scene) -> tuple[list[str], Scene | None]:
+    """Cadeia e raiz da reserva de uma cena com mídia real: o reaproveitamento que volta a valer quando a mídia
+    sai (como `reuse_root` sem a parada na própria cena). Raiz None: referência solta ou ciclo."""
+    ids: list[str] = []
+    current = scene
+    seen = {scene.id}
+    while current.visual.reuse_of and (current is scene or current.visual.media is None):
+        target = current.visual.reuse_of
+        ids.append(target)
+        nxt = next((s for s in doc.scenes if s.id == target), None)
+        if nxt is None or nxt.id in seen:
+            return ids, None
+        seen.add(nxt.id)
+        current = nxt
+    return ids, current
+
+
 def _remove_scenes(doc: ProjectDoc, removed: set[str]) -> None:
     """Tira cenas sem perder a imagem que outras reaproveitavam: a primeira cena (na ordem do vídeo) que mostrava
     a imagem de uma cena removida herda o Visual dela, que tem a mesma chave de cache (nenhuma imagem nova), e as
-    outras passam a apontar para a herdeira."""
+    outras passam a apontar para a herdeira. A herdeira de uma cena com mídia real herda a mídia também."""
     heirs: dict[str, str] = {}  # id da raiz removida → cena que herdou o Visual
     for scene in doc.ordered_scenes():
-        if scene.id in removed or not scene.visual.reuse_of:
-            continue
+        if scene.id in removed or not scene.visual.reuse_of or scene.visual.media is not None:
+            continue  # cena com mídia mostra a mídia: o `reuse_of` dela é só reserva (abaixo)
         root = doc.reuse_root(scene)
         if root is None or not removed.intersection(_reuse_chain(doc, scene)):
             continue  # referência solta continua sem imagem; cadeia sem cena removida não muda
@@ -273,17 +291,33 @@ def _remove_scenes(doc: ProjectDoc, removed: set[str]) -> None:
         else:
             scene.visual = root.visual.model_copy(deep=True)
             heirs[root.id] = scene.id
+    # Reserva das cenas com mídia: continua apontando para a mesma imagem de IA (ou fica com uma cópia dela).
+    for scene in doc.ordered_scenes():
+        if scene.id in removed or not scene.visual.reuse_of or scene.visual.media is None:
+            continue
+        chain, root = _reserve(doc, scene)
+        if root is None or not removed.intersection(chain):
+            continue
+        if root.id not in removed:
+            scene.visual.reuse_of = root.id
+        elif root.id in heirs:
+            scene.visual.reuse_of = heirs[root.id]
+        else:
+            scene.visual = root.visual.model_copy(deep=True, update={"media": scene.visual.media})
     doc.scenes = [s for s in doc.scenes if s.id not in removed]
 
 
 def _own_visual(doc: ProjectDoc, scene: Scene) -> Visual:
     """Visual próprio para uma cena que reaproveitava outra (ganha imagem nova): copia o da raiz, inclusive a
     linguagem da cena dirigida, sem `reuse_of` nem imagem fixada. A semente é da própria cena: "Outra imagem"
-    nela e depois na raiz não dá a mesma imagem nas duas."""
+    nela e depois na raiz não dá a mesma imagem nas duas. Raiz com mídia real: a cena pediu imagem de IA própria,
+    então vale a imagem de reserva da raiz, sem a mídia."""
     root = doc.reuse_root(scene)
     if root is None or root.id == scene.id:
         return scene.visual.model_copy(update={"reuse_of": None})
-    return root.visual.model_copy(deep=True, update={"reuse_of": None, "asset": None,
+    if root.visual.media is not None and root.visual.reuse_of:
+        root = _reserve(doc, root)[1] or root
+    return root.visual.model_copy(deep=True, update={"reuse_of": None, "asset": None, "media": None,
                                                      "seed": seed_from(root.visual.seed, scene.id)})
 
 
@@ -322,7 +356,7 @@ def _split_visual(doc: ProjectDoc, scene: Scene, prompt: str) -> Visual:
             shot, composition, _ = rotate_variant(shot, composition, visual.language, [], 1)
         return Visual(prompt=prompt.strip(), seed=visual.seed + 7919, language=visual.language, shot=shot,
                       composition=composition, entities=list(visual.entities))
-    if not (visual.reuse_of or visual.asset or visual.prompt or visual.query):
+    if not (visual.reuse_of or visual.asset or visual.prompt or visual.query or visual.media):
         return Visual(type=visual.type, seed=visual.seed + 7919)  # cena sem imagem (cartão): nada a reaproveitar
     root = doc.reuse_root(scene)
     return Visual(reuse_of=root.id if root else visual.reuse_of)
@@ -377,6 +411,8 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             scene.visual.asset = None
         case RegenerateScene():
             scene = _scene(doc, op.scene_id)
+            if scene.visual.media is not None:
+                raise OpError("a cena mostra mídia real: tire a mídia para pedir outra imagem de IA")
             if scene.visual.reuse_of:
                 # "Outra imagem" numa cena que reaproveita: uma variação da imagem da raiz, só nesta cena.
                 if doc.reuse_root(scene) is None:
@@ -401,8 +437,9 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             scene.kind = op.kind  # type: ignore[assignment]
             if op.number is not None:
                 scene.number = op.number
-            if op.kind not in CARD_KINDS and scene.visual.type == "none":
+            if op.kind not in CARD_KINDS and scene.visual.type == "none" and scene.visual.media is None:
                 # Cartão sem fundo virou imagem: sem isso a cena ficaria sem prompt, sem "Outra imagem" e sem imagem.
+                # Com mídia real, a imagem é a mídia (o Visual fica como está).
                 scene.visual = _image_from_card(doc, scene)
                 if scene.motion == "static":
                     scene.motion = None

@@ -1,11 +1,49 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, Clock, Globe, Palette, Pencil, Plus, Trash2, Tv, UserRound, X } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
-import { api, type Channel, type ChannelSlots, LANGUAGES, type PostingPlan, type PostingSlot, type StyleItem, TIMEZONES, WEEKDAYS } from '../api';
+import {
+  CalendarClock,
+  ClipboardPaste,
+  Clock,
+  ExternalLink,
+  Globe,
+  LogIn,
+  Palette,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  SquarePlay,
+  Trash2,
+  Tv,
+  Unlink,
+  UserRound,
+  X,
+} from 'lucide-react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import {
+  api,
+  type Channel,
+  type ChannelSlots,
+  type ChannelSuggestion,
+  type ChannelTokenStatus,
+  type ChannelYouTube,
+  fileUrl,
+  LANGUAGES,
+  type PostingPlan,
+  type PostingSlot,
+  type StyleItem,
+  TIMEZONES,
+  WEEKDAYS,
+  type YouTubeAccountStatus,
+  type YouTubeLinkStart,
+  type YouTubeLinkStatus,
+} from '../api';
 import { langLabel } from '../labels';
 import {
   Badge,
+  type BadgeTone,
   Button,
+  buttonClass,
   Empty,
   ErrorBox,
   errorMessage,
@@ -17,14 +55,25 @@ import {
   PageHeader,
   Select,
   Skeleton,
+  Spinner,
   Textarea,
   useConfirm,
   useToast,
 } from '../ui';
 import { chipClass, Sheet } from './ops/common';
 import { browserZone, sameOffsetAsBrowser, whenIn, zoneCity, zoneLabel } from './ops/zones';
+import { Notice } from './project/delivery/shared';
 
-type Form = { name: string; niche: string; persona: string; languages: string[]; default_style_id: string | null; posting: PostingPlan };
+type Form = {
+  name: string;
+  niche: string;
+  persona: string;
+  languages: string[];
+  default_style_id: string | null;
+  posting: PostingPlan;
+  /** Identidade visual: `style_bible.identidade` do canal. */
+  identity: string;
+};
 
 const blank = (): Form => ({
   name: '',
@@ -33,7 +82,10 @@ const blank = (): Form => ({
   languages: ['pt-BR'],
   default_style_id: null,
   posting: { timezone: browserZone, slots: [] },
+  identity: '',
 });
+
+const identityOf = (c: Channel) => (typeof c.style_bible?.identidade === 'string' ? c.style_bible.identidade : '');
 
 const formOf = (c: Channel): Form => ({
   name: c.name,
@@ -42,7 +94,24 @@ const formOf = (c: Channel): Form => ({
   languages: c.languages,
   default_style_id: c.default_style_id,
   posting: c.posting,
+  identity: identityOf(c),
 });
+
+/** Corpo do POST/PUT: a identidade vai dentro do `style_bible` (as outras chaves dele ficam como estão). */
+const bodyOf = (f: Form, base: Channel | undefined) => {
+  const bible: Record<string, unknown> = { ...(base?.style_bible ?? {}) };
+  if (f.identity.trim()) bible.identidade = f.identity.trim();
+  else delete bible.identidade;
+  return {
+    name: f.name,
+    niche: f.niche,
+    persona: f.persona,
+    languages: f.languages,
+    default_style_id: f.default_style_id,
+    posting: f.posting,
+    style_bible: bible,
+  };
+};
 
 /* ------------------------------------------------------------------ */
 /* Dias da semana (0 = segunda … 6 = domingo, como no servidor)        */
@@ -269,75 +338,380 @@ const NextSlots: React.FC<{ channelId: string }> = ({ channelId }) => {
   );
 };
 
-const ChannelCard: React.FC<{
-  channel: Channel;
-  styleName: string | null;
-  editing: boolean;
-  onEdit: () => void;
-  onDelete: () => void;
-  deleting: boolean;
-}> = ({ channel: c, styleName, editing, onEdit, onDelete, deleting }) => (
-  <article
-    aria-label={c.name}
-    className={`flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-4 transition-colors ${
-      editing ? 'border-accent/60 ring-1 ring-accent/30' : 'border-line hover:border-line-strong'
-    }`}
-  >
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="font-display text-[15px] font-semibold leading-6 text-fg [overflow-wrap:anywhere]">{c.name}</h2>
-          {editing ? <Badge tone="accent" icon={Pencil}>Editando</Badge> : null}
-        </div>
-        {c.niche ? <div className="text-[13px] text-muted">{c.niche}</div> : null}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button size="sm" icon={Pencil} onClick={onEdit} aria-label={`Editar o canal ${c.name}`}>
-          Editar
-        </Button>
-        <IconButton label={`Apagar o canal ${c.name}`} icon={Trash2} size="sm" busy={deleting} onClick={onDelete} className="hover:text-red-300" />
-      </div>
-    </div>
-    <div className="flex flex-wrap gap-1.5">
-      {c.languages.map((l) => (
-        <Badge key={l} icon={Globe}>
-          {langLabel(l)}
+/* ------------------------------------------------------------------ */
+/* Canal do YouTube ligado                                             */
+/* ------------------------------------------------------------------ */
+
+const compactNumber = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 });
+
+const TOKEN_BADGES: Record<ChannelTokenStatus, { tone: BadgeTone; label: string; title: string }> = {
+  ok: { tone: 'good', label: 'Publica neste canal', title: 'Vinculado pelo login do Google: os envios ao YouTube dos projetos deste canal vão para ele.' },
+  global: { tone: 'good', label: 'Publica pela conta conectada', title: 'A conta conectada na aba Vídeo e publicação é deste mesmo canal do YouTube.' },
+  error: { tone: 'warn', label: 'Acesso expirado', title: 'O Google recusou o acesso a este canal. Vincule de novo com o login.' },
+  public: {
+    tone: 'neutral',
+    label: 'Só leitura (link público)',
+    title: 'Ligado pelo link: o app lê os dados, mas não publica. Para publicar, vincule com o login do Google.',
+  },
+  missing: { tone: 'warn', label: 'Sem acesso para publicar', title: 'Desvinculado. Para publicar neste canal, vincule de novo com o login do Google.' },
+};
+
+const Avatar: React.FC<{ y: ChannelYouTube | null }> = ({ y }) =>
+  y?.avatar ? (
+    <img src={`${fileUrl(y.avatar)}?v=${encodeURIComponent(y.imported_at ?? '')}`} alt="" className="h-10 w-10 shrink-0 rounded-full border border-line object-cover" />
+  ) : y ? (
+    <span aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-line bg-raised text-muted">
+      <SquarePlay size={18} />
+    </span>
+  ) : null;
+
+const YouTubeInfo: React.FC<{ y: ChannelYouTube }> = ({ y }) => {
+  const badge = TOKEN_BADGES[y.token] ?? TOKEN_BADGES.missing;
+  const stats = [
+    y.subscribers != null ? `${compactNumber.format(y.subscribers)} ${y.subscribers === 1 ? 'inscrito' : 'inscritos'}` : null,
+    y.videos != null ? `${y.videos} ${y.videos === 1 ? 'vídeo' : 'vídeos'}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const recent = y.recent_videos ?? [];
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+        <a
+          href={y.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex min-w-0 items-center gap-1 text-fg underline decoration-line-strong underline-offset-2 hover:decoration-fg"
+        >
+          <span className="truncate">{y.handle || 'Ver no YouTube'}</span>
+          <ExternalLink size={12} aria-hidden="true" className="shrink-0" />
+          <span className="sr-only"> (abre o YouTube em outra aba)</span>
+        </a>
+        {stats ? <span className="tabular-nums text-muted">{stats}</span> : null}
+        <Badge tone={badge.tone} title={y.token === 'error' && y.token_error ? `${badge.title} (${y.token_error})` : badge.title}>
+          {badge.label}
         </Badge>
-      ))}
-      <Badge icon={Palette} title="Estilo padrão dos novos projetos deste canal">
-        {styleName ?? 'Sem estilo padrão'}
-      </Badge>
-    </div>
-    {c.persona ? (
-      <div className="flex gap-1.5" title={c.persona}>
-        <UserRound size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-subtle" />
-        <p className="line-clamp-2 min-w-0 text-[13px] leading-snug text-muted">{c.persona}</p>
       </div>
-    ) : null}
-    <div className="flex flex-col gap-2 border-t border-line pt-3">
-      {c.posting.slots.length ? (
-        <>
-          <ul aria-label="Horários de postagem" className="flex flex-wrap gap-1.5">
-            {c.posting.slots.map((s, i) => (
-              <li key={i}>
-                <Badge icon={Clock}>
-                  {describeDays(s.weekdays)} · <span className="tabular-nums">{s.time}</span>
-                </Badge>
+      {y.description ? (
+        <p className="line-clamp-2 text-[13px] leading-snug text-muted" title={y.description}>
+          {y.description}
+        </p>
+      ) : null}
+      {recent.length ? (
+        <details className="text-[13px]">
+          <summary className="cursor-pointer text-muted hover:text-fg">Últimos vídeos ({recent.length})</summary>
+          <ul className="mt-1.5 flex flex-col gap-1 pl-4">
+            {recent.map((v, i) => (
+              <li key={v.video_id || i} className="list-disc truncate text-muted" title={v.title}>
+                {v.title}
               </li>
             ))}
           </ul>
-          <span className="text-[13px] text-subtle">
-            Hora de {zoneCity(c.posting.timezone)}
-            {c.posting.timezone === browserZone ? ' (este computador)' : ''}
-          </span>
-        </>
-      ) : (
-        <p className="text-[13px] text-subtle">{NO_SLOTS_TEXT}</p>
-      )}
-      <NextSlots channelId={c.id} />
+        </details>
+      ) : null}
     </div>
-  </article>
-);
+  );
+};
+
+type CardActions = {
+  onEdit: () => void;
+  onDelete: () => void;
+  onLink: () => void;
+  onRefresh: () => void;
+  onUnlink: () => void;
+  onForget: () => void;
+  onSuggest: () => void;
+};
+
+const ChannelCard: React.FC<
+  {
+    channel: Channel;
+    styleName: string | null;
+    editing: boolean;
+    deleting: boolean;
+    refreshing: boolean;
+    suggesting: boolean;
+    /** Outra sugestão da IA em andamento: uma por vez (a resposta de uma não passa por cima da outra). */
+    suggestDisabled: boolean;
+  } & CardActions
+> = ({ channel: c, styleName, editing, onEdit, onDelete, deleting, onLink, onRefresh, onUnlink, onForget, onSuggest, refreshing, suggesting, suggestDisabled }) => {
+  const y = c.youtube ?? null;
+  const hasToken = y?.token === 'ok' || y?.token === 'error';
+  return (
+    <article
+      aria-label={c.name}
+      className={`flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-4 transition-colors ${
+        editing ? 'border-accent/60 ring-1 ring-accent/30' : 'border-line hover:border-line-strong'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar y={y} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-display text-[15px] font-semibold leading-6 text-fg [overflow-wrap:anywhere]">{c.name}</h2>
+              {editing ? <Badge tone="accent" icon={Pencil}>Editando</Badge> : null}
+            </div>
+            {c.niche ? <div className="text-[13px] text-muted">{c.niche}</div> : null}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button size="sm" icon={Pencil} onClick={onEdit} aria-label={`Editar o canal ${c.name}`}>
+            Editar
+          </Button>
+          <IconButton label={`Apagar o canal ${c.name}`} icon={Trash2} size="sm" busy={deleting} onClick={onDelete} className="hover:text-red-300" />
+        </div>
+      </div>
+      {y ? (
+        <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-canvas p-3">
+          <YouTubeInfo y={y} />
+          <div role="group" aria-label={`Ações do YouTube de ${c.name}`} className="flex flex-wrap gap-1.5">
+            <Button
+              size="sm"
+              icon={Sparkles}
+              busy={suggesting}
+              disabled={suggestDisabled}
+              onClick={onSuggest}
+              title="Usa o Claude (gasta um pouco do limite do plano). Você revisa antes de salvar."
+            >
+              Preencher com IA
+            </Button>
+            <Button size="sm" variant="ghost" icon={RefreshCw} busy={refreshing} onClick={onRefresh}>
+              Atualizar dados
+            </Button>
+            {y.token !== 'ok' ? (
+              <Button size="sm" variant="ghost" icon={LogIn} onClick={onLink}>
+                {y.token === 'public' ? 'Vincular com login' : 'Vincular de novo'}
+              </Button>
+            ) : null}
+            <Button size="sm" variant="ghost" icon={Unlink} onClick={hasToken ? onUnlink : onForget}>
+              {hasToken ? 'Desvincular' : 'Remover link'}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-1.5">
+        {c.languages.map((l) => (
+          <Badge key={l} icon={Globe}>
+            {langLabel(l)}
+          </Badge>
+        ))}
+        <Badge icon={Palette} title="Estilo padrão dos novos projetos deste canal">
+          {styleName ?? 'Sem estilo padrão'}
+        </Badge>
+      </div>
+      {c.persona ? (
+        <div className="flex gap-1.5" title={c.persona}>
+          <UserRound size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-subtle" />
+          <p className="line-clamp-2 min-w-0 text-[13px] leading-snug text-muted">{c.persona}</p>
+        </div>
+      ) : null}
+      {!y ? (
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-subtle">
+          Não ligado ao YouTube.
+          <Button size="sm" variant="ghost" icon={SquarePlay} onClick={onLink}>
+            Vincular ao YouTube
+          </Button>
+        </div>
+      ) : null}
+      <div className="flex flex-col gap-2 border-t border-line pt-3">
+        {c.posting.slots.length ? (
+          <>
+            <ul aria-label="Horários de postagem" className="flex flex-wrap gap-1.5">
+              {c.posting.slots.map((s, i) => (
+                <li key={i}>
+                  <Badge icon={Clock}>
+                    {describeDays(s.weekdays)} · <span className="tabular-nums">{s.time}</span>
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+            <span className="text-[13px] text-subtle">
+              Hora de {zoneCity(c.posting.timezone)}
+              {c.posting.timezone === browserZone ? ' (este computador)' : ''}
+            </span>
+          </>
+        ) : (
+          <p className="text-[13px] text-subtle">{NO_SLOTS_TEXT}</p>
+        )}
+        <NextSlots channelId={c.id} />
+      </div>
+    </article>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Vincular canal do YouTube (login do Google ou link colado)          */
+/* ------------------------------------------------------------------ */
+
+const SETUP_STEPS = [
+  'No Google Cloud (console.cloud.google.com), crie um projeto e ative a YouTube Data API v3.',
+  'Em “Tela de permissão OAuth”, escolha Externo e publique o app (“In production”).',
+  'Em “Credenciais”, crie um ID do cliente OAuth do tipo App para computador.',
+  'Cole o client ID e o client secret em Configurações › Publicação › YouTube.',
+];
+
+const LinkSheet: React.FC<{
+  /** Canal do Vulto que recebe o vínculo; null cria um canal novo. */
+  target: Channel | null;
+  onClose: () => void;
+  onManual?: () => void;
+  onLinked: (channelId: string, name: string, created: boolean) => void;
+}> = ({ target, onClose, onManual, onLinked }) => {
+  const loginId = useId();
+  const pasteId = useId();
+  const status = useQuery({ queryKey: ['youtube-status'], queryFn: () => api.get<YouTubeAccountStatus>('/api/youtube/status') });
+  const [url, setUrl] = useState('');
+  const [tried, setTried] = useState(false);
+  const [login, setLogin] = useState<YouTubeLinkStart | null>(null);
+  const finished = useRef<string | null>(null);
+
+  const start = useMutation({
+    mutationFn: () => api.post<YouTubeLinkStart>('/api/youtube/link', { channel_id: target?.id ?? null }),
+    onSuccess: (data) => {
+      setLogin(data);
+      window.open(data.auth_url, '_blank', 'noopener');
+    },
+  });
+  // Confere a cada 2 s se o login terminou (a aba do Google chama o servidor local no fim).
+  const poll = useQuery({
+    queryKey: ['youtube-link', login?.state],
+    queryFn: () => api.get<YouTubeLinkStatus>(`/api/youtube/link/${login?.state}`),
+    enabled: Boolean(login),
+    refetchInterval: (q) => (q.state.data && q.state.data.status !== 'pending' ? false : 2000),
+  });
+  const result = login ? poll.data : undefined;
+  useEffect(() => {
+    if (!login || result?.status !== 'done' || !result.vulto_channel_id || finished.current === login.state) return;
+    finished.current = login.state;
+    onLinked(result.vulto_channel_id, result.channel_title ?? '', Boolean(result.created));
+  }, [login, result, onLinked]);
+  const failed = result?.status === 'error' || result?.status === 'unknown';
+
+  const paste = useMutation({
+    mutationFn: () => api.post<{ channel: Channel; created: boolean }>('/api/channels/from-link', { url: url.trim(), channel_id: target?.id ?? null }),
+    onSuccess: (data) => onLinked(data.channel.id, data.channel.name, data.created),
+  });
+  const urlMissing = !url.trim();
+  const submit = () => {
+    setTried(true);
+    if (urlMissing || paste.isPending) return;
+    paste.mutate();
+  };
+
+  const s = status.data;
+  return (
+    <Sheet
+      title={target ? `Vincular “${target.name}” ao YouTube` : 'Vincular canal do YouTube'}
+      description={
+        target
+          ? 'O canal passa a ter o nome, a foto e os vídeos do canal do YouTube. Nicho, persona e horários ficam.'
+          : 'Traga o canal que você já tem: nome, foto, descrição e vídeos recentes.'
+      }
+      onRequestClose={onClose}
+      onSubmit={submit}
+      footer={<Button onClick={onClose}>Fechar</Button>}
+    >
+      <section aria-labelledby={loginId} className="flex flex-col gap-2.5">
+        <h3 id={loginId} className="font-display text-[15px] font-semibold text-fg">
+          Entrar com o Google <span className="font-sans text-xs font-normal text-subtle">· recomendado</span>
+        </h3>
+        {status.isLoading ? (
+          <Skeleton className="h-16" />
+        ) : status.error ? (
+          <ErrorBox error={status.error} title="Não foi possível ver a conexão do YouTube" onRetry={() => status.refetch()} />
+        ) : !s?.client_configured ? (
+          <Notice
+            tone="info"
+            title="Falta configurar o acesso do app ao YouTube (uma vez)"
+            actions={
+              <Link to="/configuracoes#provedores-publish" className={buttonClass({ size: 'sm' })}>
+                Abrir Configurações
+              </Link>
+            }
+          >
+            <ol className="mt-1 list-decimal space-y-1 pl-4">
+              {SETUP_STEPS.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <p className="mt-1.5">Depois volte aqui e clique em Entrar com o Google. Enquanto isso, dá para colar o link do canal abaixo.</p>
+          </Notice>
+        ) : login && !failed ? (
+          <div role="status" className="flex flex-col gap-2 rounded-lg border border-line bg-card p-3 text-[13px] text-muted">
+            <p className="flex items-center gap-2 font-medium text-fg">
+              <Spinner /> Esperando você terminar o login no Google…
+            </p>
+            <p>Na aba do Google, escolha a conta e o canal (contas de marca aparecem nessa tela) e autorize o acesso.</p>
+            <div className="flex flex-wrap gap-2">
+              <a href={login.auth_url} target="_blank" rel="noopener" className={buttonClass({ size: 'sm' })}>
+                <ExternalLink size={14} aria-hidden="true" className="shrink-0" />
+                Abrir o login de novo
+                <span className="sr-only"> (abre em outra aba)</span>
+              </a>
+              <Button size="sm" variant="ghost" onClick={() => setLogin(null)}>
+                Cancelar
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="text-[13px] text-muted">
+              Abre o login do Google numa nova aba. Escolha a conta e o canal: o app traz nome, @, descrição, foto, idioma e os vídeos recentes, e passa a
+              publicar nesse canal.
+            </p>
+            {failed ? (
+              <ErrorBox error={new Error(result?.error || 'O pedido de login expirou. Tente de novo.')} title="Não foi possível vincular" />
+            ) : null}
+            <ErrorBox error={start.error} title="Não foi possível abrir o login" onClose={() => start.reset()} />
+            <Button variant="primary" icon={LogIn} className="self-start" busy={start.isPending} onClick={() => start.mutate()}>
+              Entrar com o Google
+            </Button>
+          </>
+        )}
+      </section>
+
+      <div aria-hidden="true" className="flex items-center gap-3 text-xs text-subtle">
+        <span className="h-px flex-1 bg-line" />
+        ou
+        <span className="h-px flex-1 bg-line" />
+      </div>
+
+      <section aria-labelledby={pasteId} className="flex flex-col gap-2.5">
+        <h3 id={pasteId} className="font-display text-[15px] font-semibold text-fg">
+          Colar o link do canal
+        </h3>
+        <Field
+          label="Link do canal"
+          hint="Sem login: traz o nome, a foto e os títulos recentes. Por esse caminho o app não publica no canal."
+          error={tried && urlMissing ? 'Cole o link do canal.' : undefined}
+        >
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="youtube.com/@seucanal"
+            inputMode="url"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Field>
+        <ErrorBox error={paste.error} title="Não foi possível ler o canal" onClose={() => paste.reset()} />
+        <Button type="submit" icon={ClipboardPaste} className="self-start" busy={paste.isPending}>
+          Buscar canal
+        </Button>
+      </section>
+
+      {onManual ? (
+        <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4 text-[13px] text-muted">
+          Prefere preencher tudo à mão?
+          <Button size="sm" variant="ghost" icon={Plus} onClick={onManual}>
+            Criar manualmente
+          </Button>
+        </div>
+      ) : null}
+    </Sheet>
+  );
+};
 
 /* ------------------------------------------------------------------ */
 /* Página                                                              */
@@ -347,30 +721,70 @@ export const ChannelsPage: React.FC = () => {
   const client = useQueryClient();
   const confirm = useConfirm();
   const { toast } = useToast();
-  const channels = useQuery({ queryKey: ['channels'], queryFn: () => api.get<Channel[]>('/api/channels') });
+  // Volta da aba do login do Google: a lista confere de novo (o canal vinculado aparece sem recarregar).
+  const channels = useQuery({ queryKey: ['channels'], queryFn: () => api.get<Channel[]>('/api/channels'), refetchOnWindowFocus: true });
   const styles = useQuery({ queryKey: ['styles'], queryFn: () => api.get<StyleItem[]>('/api/styles') });
   const [form, setForm] = useState<Form>(blank);
   const [initial, setInitial] = useState<string>('');
   const [editing, setEditing] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [tried, setTried] = useState(false);
+  /** Painel "Vincular canal do YouTube" aberto (target null: canal novo). */
+  const [linking, setLinking] = useState<{ target: Channel | null } | null>(null);
+  /** Proposta da IA aplicada no formulário aberto (ainda não salva). */
+  const [suggestion, setSuggestion] = useState<ChannelSuggestion | null>(null);
+
+  const editingChannel = editing ? channels.data?.find((c) => c.id === editing) : undefined;
 
   const save = useMutation({
-    mutationFn: () => (editing ? api.put(`/api/channels/${editing}`, form) : api.post('/api/channels', form)),
+    mutationFn: () => {
+      const body = bodyOf(form, editingChannel);
+      return editing ? api.put(`/api/channels/${editing}`, body) : api.post('/api/channels', body);
+    },
     onSuccess: () => {
       toast({ tone: 'good', title: editing ? `Canal “${form.name.trim()}” salvo` : `Canal “${form.name.trim()}” criado` });
       setForm(blank());
       setEditing(null);
       setOpen(false);
+      setSuggestion(null);
       client.invalidateQueries({ queryKey: ['channels'] });
       client.invalidateQueries({ queryKey: ['channel-slots'] });
     },
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/api/channels/${id}`),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['channels'] }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['channels'] });
+      client.invalidateQueries({ queryKey: ['youtube-status'] });
+    },
     // O erro aparece num aviso (o cartão pode estar longe do topo da página).
     onError: (err) => toast({ tone: 'bad', title: 'Não foi possível apagar o canal', description: errorMessage(err) }),
+  });
+  const refresh = useMutation({
+    mutationFn: (c: Channel) => api.post<{ channel: Channel; warnings: string[] }>(`/api/channels/${c.id}/youtube/refresh`),
+    onSuccess: (data) =>
+      toast({
+        tone: data.warnings.length ? 'warn' : 'good',
+        title: `Dados de “${data.channel.name}” atualizados`,
+        description: data.warnings.join(' ') || undefined,
+      }),
+    onError: (err) => toast({ tone: 'bad', title: 'Não foi possível atualizar os dados do canal', description: errorMessage(err) }),
+    // O nome pode mudar, e um token recusado aparece no cartão: recarrega nos dois casos.
+    onSettled: () => client.invalidateQueries({ queryKey: ['channels'] }),
+  });
+  const unlink = useMutation({
+    mutationFn: ({ c, forget }: { c: Channel; forget: boolean }) => api.del(`/api/channels/${c.id}/youtube${forget ? '?forget=true' : ''}`),
+    onSuccess: (_data, { c, forget }) => {
+      toast({ tone: 'good', title: forget ? `Link do YouTube removido de “${c.name}”` : `“${c.name}” desvinculado do YouTube` });
+      client.invalidateQueries({ queryKey: ['channels'] });
+      client.invalidateQueries({ queryKey: ['youtube-status'] });
+    },
+    onError: (err) => toast({ tone: 'bad', title: 'Não foi possível desvincular', description: errorMessage(err) }),
+  });
+  const suggest = useMutation({
+    mutationFn: (c: Channel) => api.post<ChannelSuggestion>(`/api/channels/${c.id}/suggest`),
+    onSuccess: (s, c) => void offerSuggestion(c, s),
+    onError: (err) => toast({ tone: 'bad', title: 'A IA não conseguiu sugerir', description: errorMessage(err) }),
   });
 
   const styleName = (id: string | null) => {
@@ -380,13 +794,61 @@ export const ChannelsPage: React.FC = () => {
     return styles.isLoading ? 'Carregando…' : styles.error ? 'Estilo indisponível' : 'Estilo removido';
   };
 
-  const openSheet = (next: Form, id: string | null) => {
+  /** `base`: o que conta como "sem alterações" (a proposta da IA já abre como alteração não salva). */
+  const openSheet = (next: Form, id: string | null, base?: Form) => {
     save.reset();
     setTried(false);
+    setSuggestion(null);
     setForm(next);
-    setInitial(JSON.stringify(next));
+    setInitial(JSON.stringify(base ?? next));
     setEditing(id);
     setOpen(true);
+  };
+
+  const applySuggestion = (c: Channel, s: ChannelSuggestion) => {
+    const base = formOf(c);
+    openSheet(
+      {
+        ...base,
+        niche: s.niche || base.niche,
+        persona: s.persona || base.persona,
+        languages: s.languages.length ? s.languages : base.languages,
+        default_style_id: s.default_style_id ?? base.default_style_id,
+        identity: s.identity || base.identity,
+      },
+      c.id,
+      base,
+    );
+    setSuggestion(s);
+  };
+
+  /** A resposta da IA leva alguns segundos: se o usuário abriu outro painel nesse meio-tempo, pergunta antes de trocar. */
+  const offerSuggestion = async (c: Channel, s: ChannelSuggestion) => {
+    if (dirty || linking) {
+      const ok = await confirm({
+        title: `Abrir a sugestão da IA para “${c.name}”?`,
+        description: dirty
+          ? 'O que você mudou no painel aberto ainda não foi salvo e será descartado.'
+          : 'O painel de vincular canal será fechado.',
+        confirmLabel: 'Abrir sugestão',
+        cancelLabel: 'Agora não',
+      });
+      if (!ok) return;
+      setLinking(null);
+    }
+    applySuggestion(c, s);
+  };
+
+  const onLinked =(channelId: string, name: string, created: boolean) => {
+    setLinking(null);
+    client.invalidateQueries({ queryKey: ['channels'] });
+    client.invalidateQueries({ queryKey: ['youtube-status'] });
+    client.invalidateQueries({ queryKey: ['channel-slots', channelId] });
+    toast({
+      tone: 'good',
+      title: created ? `Canal “${name}” criado com os dados do YouTube` : `Canal “${name}” atualizado com os dados do YouTube`,
+      description: 'Para sugerir nicho, persona e identidade, use “Preencher com IA” no cartão do canal.',
+    });
   };
 
   const dirty = open && JSON.stringify(form) !== initial;
@@ -407,7 +869,11 @@ export const ChannelsPage: React.FC = () => {
     if (dirty) {
       const ok = await confirm({
         title: 'Descartar as alterações?',
-        description: editing ? 'O que você mudou neste canal ainda não foi salvo.' : 'O canal novo ainda não foi salvo.',
+        description: suggestion
+          ? 'A sugestão da IA ainda não foi salva neste canal.'
+          : editing
+            ? 'O que você mudou neste canal ainda não foi salvo.'
+            : 'O canal novo ainda não foi salvo.',
         confirmLabel: 'Descartar',
         cancelLabel: 'Continuar editando',
         tone: 'danger',
@@ -416,13 +882,16 @@ export const ChannelsPage: React.FC = () => {
     }
     setOpen(false);
     setEditing(null);
+    setSuggestion(null);
     setForm(blank());
   };
 
   const askDelete = async (c: Channel) => {
     const ok = await confirm({
       title: `Apagar o canal “${c.name}”?`,
-      description: 'A persona e os horários de postagem deste canal são apagados. Os projetos continuam existindo, mas ficam sem canal. Não dá para desfazer.',
+      description: c.youtube
+        ? 'A persona, os horários e o vínculo com o YouTube deste canal são apagados (o canal no YouTube continua lá). Os projetos continuam existindo, mas ficam sem canal. Não dá para desfazer.'
+        : 'A persona e os horários de postagem deste canal são apagados. Os projetos continuam existindo, mas ficam sem canal. Não dá para desfazer.',
       confirmLabel: 'Apagar canal',
       tone: 'danger',
     });
@@ -437,6 +906,27 @@ export const ChannelsPage: React.FC = () => {
         }
       },
     });
+  };
+
+  const askUnlink = async (c: Channel) => {
+    const ok = await confirm({
+      title: `Desvincular “${c.name}” do YouTube?`,
+      description:
+        'O app apaga o acesso a este canal e deixa de publicar nele. O nome, a foto e os vídeos importados ficam. Para publicar de novo, vincule com o login do Google.',
+      confirmLabel: 'Desvincular',
+      tone: 'danger',
+    });
+    if (ok) unlink.mutate({ c, forget: false });
+  };
+
+  const askForget = async (c: Channel) => {
+    const ok = await confirm({
+      title: `Remover o link do YouTube de “${c.name}”?`,
+      description: 'Os dados trazidos do YouTube (foto, descrição e vídeos recentes) saem do canal. Nicho, persona e horários ficam.',
+      confirmLabel: 'Remover link',
+      tone: 'danger',
+    });
+    if (ok) unlink.mutate({ c, forget: true });
   };
 
   const nameMissing = !form.name.trim();
@@ -458,6 +948,17 @@ export const ChannelsPage: React.FC = () => {
   const extraLanguages = form.languages.slice(1);
   const knownStyle = !form.default_style_id || (styles.data ?? []).some((s) => s.style.id === form.default_style_id);
 
+  const createActions = (
+    <>
+      <Button variant="primary" icon={SquarePlay} onClick={() => setLinking({ target: null })}>
+        Vincular canal do YouTube
+      </Button>
+      <Button icon={Plus} onClick={() => openSheet(blank(), null)}>
+        Criar manualmente
+      </Button>
+    </>
+  );
+
   return (
     <Page>
       <PageHeader
@@ -466,15 +967,9 @@ export const ChannelsPage: React.FC = () => {
           // Sem canais, quem explica é o estado vazio (uma explicação só por tela).
           channels.data && !list.length
             ? undefined
-            : 'A persona do canal entra nos roteiros. Os horários de postagem viram sugestões de agendamento na Agenda e na Fila do YouTube.'
+            : 'A persona do canal entra nos roteiros. Os horários de postagem viram sugestões de agendamento na Agenda e na Fila do YouTube. Canal vinculado ao YouTube recebe os envios dos projetos dele.'
         }
-        actions={
-          list.length || channels.error ? (
-            <Button variant="primary" icon={Plus} onClick={() => openSheet(blank(), null)}>
-              Novo canal
-            </Button>
-          ) : null
-        }
+        actions={list.length || channels.error ? createActions : null}
       />
 
       {channels.isLoading ? (
@@ -486,16 +981,9 @@ export const ChannelsPage: React.FC = () => {
       <ErrorBox error={channels.error} title="Não foi possível carregar os canais" onRetry={() => channels.refetch()} />
 
       {channels.data && !list.length ? (
-        <Empty
-          icon={Tv}
-          title="Nenhum canal ainda"
-          action={
-            <Button variant="primary" icon={Plus} onClick={() => openSheet(blank(), null)}>
-              Criar primeiro canal
-            </Button>
-          }
-        >
-          Um canal guarda a persona do narrador, o idioma, o estilo padrão e os horários de postagem.
+        <Empty icon={Tv} title="Nenhum canal ainda" action={createActions}>
+          Vincule o canal que você já tem no YouTube: o app traz o nome, a foto e os vídeos recentes. Ou crie um canal à mão, com persona, idioma, estilo
+          padrão e horários de postagem.
         </Empty>
       ) : null}
 
@@ -508,16 +996,40 @@ export const ChannelsPage: React.FC = () => {
               styleName={styleName(c.default_style_id)}
               editing={open && editing === c.id}
               deleting={remove.isPending && remove.variables === c.id}
+              refreshing={refresh.isPending && refresh.variables?.id === c.id}
+              suggesting={suggest.isPending && suggest.variables?.id === c.id}
+              suggestDisabled={suggest.isPending && suggest.variables?.id !== c.id}
               onEdit={() => openSheet(formOf(c), c.id)}
               onDelete={() => void askDelete(c)}
+              onLink={() => setLinking({ target: c })}
+              onRefresh={() => refresh.mutate(c)}
+              onUnlink={() => void askUnlink(c)}
+              onForget={() => void askForget(c)}
+              onSuggest={() => suggest.mutate(c)}
             />
           ))}
         </div>
       ) : null}
 
+      {linking ? (
+        <LinkSheet
+          target={linking.target}
+          onClose={() => setLinking(null)}
+          onManual={
+            linking.target
+              ? undefined
+              : () => {
+                  setLinking(null);
+                  openSheet(blank(), null);
+                }
+          }
+          onLinked={onLinked}
+        />
+      ) : null}
+
       {open ? (
         <Sheet
-          title={editing ? `Editar “${list.find((c) => c.id === editing)?.name ?? form.name}”` : 'Novo canal'}
+          title={editing ? `Editar “${editingChannel?.name ?? form.name}”` : 'Novo canal'}
           description={dirty ? 'Alterações não salvas.' : editing ? 'As mudanças valem para os próximos roteiros e agendamentos.' : 'Preencha o básico; o resto pode ficar para depois.'}
           onRequestClose={() => void closeSheet()}
           onSubmit={submit}
@@ -537,7 +1049,16 @@ export const ChannelsPage: React.FC = () => {
             </>
           }
         >
-          <Field label="Nome" error={tried && nameMissing ? 'Dê um nome ao canal.' : undefined}>
+          {suggestion ? (
+            <Notice tone="info" icon={Sparkles} title="Sugestão da IA: revise antes de salvar">
+              {suggestion.reason ? `${suggestion.reason} ` : ''}Nicho, persona, idiomas, estilo e identidade vieram do canal do YouTube. Nada foi salvo ainda.
+            </Notice>
+          ) : null}
+          <Field
+            label="Nome"
+            hint={editingChannel?.youtube ? '“Atualizar dados” traz de novo o nome do canal no YouTube.' : undefined}
+            error={tried && nameMissing ? 'Dê um nome ao canal.' : undefined}
+          >
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ex.: Curiosidades do Mundo" />
           </Field>
           <Field label="Nicho">
@@ -545,6 +1066,14 @@ export const ChannelsPage: React.FC = () => {
           </Field>
           <Field label="Persona do narrador" hint="Vai para o Claude junto com cada pedido de roteiro deste canal.">
             <Textarea rows={3} value={form.persona} onChange={(e) => setForm({ ...form, persona: e.target.value })} placeholder="ex.: narrador sóbrio, curioso, que sempre cita fontes" />
+          </Field>
+          <Field label="Identidade visual" hint="Vai para o Claude ao planejar as cenas: paleta, clima, tipo de imagem.">
+            <Textarea
+              rows={2}
+              value={form.identity}
+              onChange={(e) => setForm({ ...form, identity: e.target.value })}
+              placeholder="ex.: tons escuros com vermelho, fotos antigas, muito contraste"
+            />
           </Field>
           <ErrorBox error={styles.error} title="Não foi possível carregar os estilos" onRetry={() => styles.refetch()} />
           <div className="grid gap-4 sm:grid-cols-2">

@@ -40,6 +40,24 @@ export type TimelineCard = {
   headline?: string;
   stamp?: string;
   source?: string;
+  /** Onde fica o carimbo solto, pela composição da imagem: do lado oposto ao sujeito ou embaixo. Ausente: à direita. */
+  stamp_at?: StampPlace;
+  /** Quadro (relativo à cena) em que o carimbo entra: quando o número dele é dito. Ausente: logo depois do corte. */
+  stamp_from?: number;
+};
+
+export type StampPlace = 'left' | 'right' | 'low';
+
+/**
+ * Cartão de notícia desenhado pelo app (nunca captura de tela), só na cena dona da notícia. Os textos já vêm no idioma
+ * do vídeo: `date` formatada ("14 nov. 2026"), `headline` sem aspas (o cartão põe), `image` é o caminho relativo do
+ * og:image original (miniatura dentro do cartão; o `src` da cena é a mesma imagem enquadrada, para o fundo).
+ */
+export type TimelineNews = {
+  outlet: string;
+  headline: string;
+  date?: string;
+  image?: string;
 };
 
 export type TimelineScene = {
@@ -59,6 +77,15 @@ export type TimelineScene = {
   words: CaptionWord[];
   card?: TimelineCard;
   focus?: FocusPoint;
+  /** Stat/compare: quadro (relativo à cena) em que o número do cartão é dito; o cartão entra nele. */
+  reveal?: number;
+  /**
+   * Crédito da mídia real que a cena mostra (a dela ou a reaproveitada), pronto no idioma do vídeo: "Foto: Fulano /
+   * Wikimedia Commons · CC BY-SA 4.0", "Imagem: Rockstar Games". Ausente: imagem de IA ou cartão sem mídia real.
+   */
+  credit?: string;
+  /** Cartão de notícia (cena de imagem dona da notícia). Ausente: cena sem notícia. */
+  news?: TimelineNews;
 };
 
 export type EffectSpec = { type: string; amount: number; preset?: string | null; params?: Record<string, unknown> };
@@ -76,6 +103,8 @@ export type CaptionStyle = {
   max_words_per_line: number;
   uppercase: boolean;
   background: string | null;
+  /** Karaokê: cor (opaca) das palavras ainda não ditas. Ausente: a cor do texto puxada para o contorno. */
+  dim_color?: string | null;
 };
 
 export type TextCardStyle = {

@@ -15,7 +15,7 @@ import {
   Type,
 } from 'lucide-react';
 import React, { memo, useCallback, useId, useMemo, useState } from 'react';
-import { api, ApiError, fileUrl, type ProjectDetail, type Scene, type StoryboardIssue, type Version } from '../../api';
+import { api, ApiError, fileUrl, type ProjectDetail, type ProjectDoc, type Scene, type StoryboardIssue, type Version } from '../../api';
 import {
   CAMERA_LABELS,
   COMPOSITION_LABELS,
@@ -31,6 +31,7 @@ import { Badge, Button, Card, Empty, ErrorBox, IconButton, Select, Skeleton, Spi
 import { useJobStarting, useStartJob } from '../ProjectPage';
 import { promptDrafts, sceneChanges, useKeyedStore, useKeyedValue } from './core/drafts';
 import { ImageDialog } from './core/ImageDialog';
+import { shownMedia } from './core/media';
 import { tabOwnsAction } from './core/NextStep';
 import {
   awaitingScenes,
@@ -48,6 +49,7 @@ import {
   storyboardReviewOf,
   STYLE_MISSING_REASON,
 } from './core/model';
+import { RealMediaPanel } from './RealMediaPanel';
 import { StoryboardReview } from './StoryboardReview';
 import type { TabNavigation } from './types';
 
@@ -58,9 +60,9 @@ const AUTO = 'Automática';
 const BUILD_KINDS = new Set(['preview', 'autopilot', 'render']);
 const BUSY_REASON = 'Aguarde o trabalho em andamento terminar.';
 
-/** Versões que não mudam o que a prévia mostra (aprovações, título, briefing, travas). */
+/** Versões que não mudam o que a prévia mostra (aprovações, título, briefing, travas, sugestão de mídia real). */
 const NON_VISUAL_VERSION =
-  /^(Prévia aprovada|Roteiro aprovado|Cenas aprovadas|Título editado|Briefing editado|Trecho (des)?travado|Segmento (des)?travado)|: (des)?travada$/;
+  /^(Prévia aprovada|Roteiro aprovado|Cenas aprovadas|Título editado|Briefing editado|Trecho (des)?travado|Segmento (des)?travado)|: (des)?travada$|: sugestão de mídia real (dispensada|editada)$/;
 
 /** Id do cartão da cena na página (os avisos da curadoria e o "Reaproveita a imagem da cena N" levam até ele). */
 const sceneDomId = (sceneId: string) => `cena-${sceneId}`;
@@ -115,10 +117,27 @@ const SceneThumb: React.FC<{
   loading: boolean;
   /** Número da cena dona da imagem (cena que reaproveita); undefined quando a cena tem imagem própria. */
   reuseNumber: number | null | undefined;
+  /** Arquivo da mídia real que a cena mostra (dela ou da cena reaproveitada): aparece na hora, sem esperar a prévia. */
+  mediaAsset: string | null;
   onOpen: (src: string) => void;
-}> = ({ scene, index, src, primaryLang, short, loading, reuseNumber, onOpen }) => {
+}> = ({ scene, index, src, primaryLang, short, loading, reuseNumber, mediaAsset, onOpen }) => {
   const box = `relative overflow-hidden rounded-lg border border-line bg-canvas ${short ? 'aspect-[9/16] w-28 shrink-0' : 'aspect-video w-full'}`;
-  if (src) {
+  const realBadge = (
+    <span className="pointer-events-none absolute left-1 top-1">
+      <Badge tone="info" title="Mídia real (no lugar da imagem de IA)">
+        Real
+      </Badge>
+    </span>
+  );
+  if (mediaAsset && scene.kind === 'image') {
+    return (
+      <button type="button" className={`${box} group`} onClick={() => onOpen(mediaAsset)} aria-label={`Ampliar a mídia real da cena ${index}`}>
+        <img src={fileUrl(mediaAsset)} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]" loading="lazy" />
+        {realBadge}
+      </button>
+    );
+  }
+  if (src && !(mediaAsset && scene.kind !== 'image')) {
     return (
       <button type="button" className={`${box} group`} onClick={() => onOpen(src)} aria-label={`Ampliar a imagem da cena ${index}`}>
         <img src={fileUrl(src)} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]" loading="lazy" />
@@ -131,10 +150,13 @@ const SceneThumb: React.FC<{
     const big = card.value || (card.items?.length ? card.items.map((i) => i.value || i.label).join(' × ') : '') || overlay || scene.number;
     return (
       <div className={`${box} flex flex-col items-center justify-center gap-1 p-2 text-center`}>
-        <Type size={16} aria-hidden="true" className="text-subtle" />
-        {big != null && big !== '' ? <span className={`line-clamp-4 font-display font-bold text-fg ${short ? 'text-sm' : 'text-lg'}`}>{big}</span> : null}
-        {card.label ? <span className="line-clamp-2 text-xs text-muted">{card.label}</span> : null}
-        <span className="text-xs text-subtle">{label(SCENE_KIND_LABELS, scene.kind)}</span>
+        {/* Cartão com mídia real: a foto é o fundo (escurecida), o texto fica por cima. */}
+        {mediaAsset ? <img src={fileUrl(mediaAsset)} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover opacity-25" /> : null}
+        <Type size={16} aria-hidden="true" className="relative text-subtle" />
+        {big != null && big !== '' ? <span className={`relative line-clamp-4 font-display font-bold text-fg ${short ? 'text-sm' : 'text-lg'}`}>{big}</span> : null}
+        {card.label ? <span className="relative line-clamp-2 text-xs text-muted">{card.label}</span> : null}
+        <span className="relative text-xs text-subtle">{label(SCENE_KIND_LABELS, scene.kind)}</span>
+        {mediaAsset ? realBadge : null}
       </div>
     );
   }
@@ -175,6 +197,10 @@ type SceneCardProps = {
   issues: StoryboardIssue[] | undefined;
   /** Linguagens da direção de arte ("Outra imagem" alterna entre elas). */
   artLanguages: string[] | undefined;
+  /** Arquivo da mídia real que a cena mostra (dela ou da cena reaproveitada), ou null. */
+  mediaAsset: string | null;
+  /** Documento inteiro (o painel de mídia real usa as fontes do roteiro e o idioma principal). */
+  doc: ProjectDoc;
   onOpenImage: (src: string, index: number, prompt: string) => void;
 };
 
@@ -233,6 +259,8 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
   reuseRootId,
   issues,
   artLanguages,
+  mediaAsset,
+  doc,
   onOpenImage,
 }) => {
   const client = useQueryClient();
@@ -363,7 +391,7 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2">
         <label htmlFor={promptId} className="text-xs font-medium text-subtle">
-          Prompt da imagem
+          {scene.visual.media ? 'Prompt de reserva (vale se você tirar a mídia real)' : 'Prompt da imagem'}
         </label>
         {draft && !disabled ? <span className="text-xs text-subtle">Ctrl+Enter salva</span> : null}
       </div>
@@ -417,7 +445,9 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
         <Badge tone="info" icon={LayoutTemplate}>
           Cartão (sem imagem nova)
         </Badge>
-        {reuses ? null : <span className="text-xs text-subtle">Fundo animado nas cores do estilo.</span>}
+        {reuses ? null : (
+          <span className="text-xs text-subtle">{scene.visual.media?.asset ? 'Fundo: a mídia real anexada.' : 'Fundo animado nas cores do estilo.'}</span>
+        )}
       </div>
     ) : null;
 
@@ -496,7 +526,8 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
       short={short}
       loading={thumbLoading}
       reuseNumber={reuseNumber}
-      onOpen={(s) => onOpenImage(s, index, prompt)}
+      mediaAsset={mediaAsset}
+      onOpen={(s) => onOpenImage(s, index, s === mediaAsset ? (scene.visual.media?.title ?? '') : prompt)}
     />
   );
 
@@ -524,6 +555,7 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
       {visualInfo}
       {reuseInfo}
       <CardSummary scene={scene} primaryLang={primaryLang} />
+      <RealMediaPanel scene={scene} index={index} doc={doc} projectId={projectId} disabled={scene.locked || run.isPending} blockedReason={blockedReason} />
       {directed.length ? <p className="text-xs text-subtle">{directed.join(' · ')}</p> : null}
       {showPrompt ? promptBlock : null}
       {short ? null : <div className="grid grid-cols-1 gap-2 @md:grid-cols-3">{selects}</div>}
@@ -576,17 +608,18 @@ export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   const action = nextStep(detail).action;
   // Número de exibição, dona da imagem reaproveitada e avisos da revisão de cada cena.
   const numbers = useMemo(() => sceneNumbers(doc), [doc]);
+  const scenesById = useMemo(() => new Map(doc.scenes.map((s) => [s.id, s])), [doc]);
   const reuse = useMemo(() => {
-    const scenesById = new Map(doc.scenes.map((s) => [s.id, s]));
     const out = new Map<string, { number: number | null; rootId: string | null }>();
     for (const s of doc.scenes) {
-      if (!s.visual.reuse_of) continue;
+      // Cena com mídia real mostra a mídia dela: o `reuse_of` fica de reserva.
+      if (!s.visual.reuse_of || s.visual.media) continue;
       const root = reuseRoot(scenesById, s);
       const number = root && root.id !== s.id ? (numbers.get(root.id) ?? null) : null;
       out.set(s.id, { number, rootId: number ? root!.id : null });
     }
     return out;
-  }, [doc, numbers]);
+  }, [doc, numbers, scenesById]);
   const review = storyboardReviewOf(detail);
   const issuesByScene = useMemo(() => {
     const out = new Map<string, StoryboardIssue[]>();
@@ -779,6 +812,8 @@ export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
                     reuseRootId={r?.rootId ?? null}
                     issues={issuesByScene.get(scene.id)}
                     artLanguages={doc.art?.languages}
+                    mediaAsset={shownMedia(scenesById, scene)?.asset ?? null}
+                    doc={doc}
                     onOpenImage={onOpenImage}
                   />
                 );

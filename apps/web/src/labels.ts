@@ -114,6 +114,29 @@ export const FOCUS_LABELS: LabelMap = {
   bottom_right: 'Embaixo à direita',
 };
 
+/* Mídia real: os mesmos ids de RealKind, MediaSource e MediaFit em core/project/document.py. */
+
+export const REAL_KIND_LABELS: LabelMap = {
+  photo: 'Foto real',
+  news: 'Notícia',
+  official: 'Material oficial',
+};
+
+export const MEDIA_SOURCE_LABELS: LabelMap = {
+  commons: 'Wikimedia Commons',
+  openverse: 'Openverse',
+  pexels: 'Pexels',
+  link: 'Link',
+  upload: 'Arquivo enviado',
+};
+
+/** `auto` é a escolha pela proporção da foto (MediaRef.fit null). */
+export const MEDIA_FIT_LABELS: LabelMap = {
+  auto: 'Automático',
+  cover: 'Preencher a tela',
+  contain: 'Imagem inteira (fundo desfocado)',
+};
+
 export const APPROACH_LABELS: LabelMap = {
   literal: 'Literal',
   misto: 'Misto',
@@ -188,6 +211,7 @@ export const CREDENTIAL_FIELD_LABELS: LabelMap = {
   api_key: 'Chave de API',
   client_id: 'ID do cliente (OAuth)',
   client_secret: 'Segredo do cliente (OAuth)',
+  contact: 'Seu contato (site ou e-mail)',
   voice_id: 'ID da voz',
   token: 'Token de acesso',
   access_token: 'Token de acesso',

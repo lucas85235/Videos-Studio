@@ -1,10 +1,12 @@
 """Revisão determinística do storyboard, antes de gastar imagens.
 
-`check(doc, style, beats)` confere as cenas planejadas para as batidas e devolve os problemas:
+`check(doc, style, beats, budget)` confere as cenas planejadas para as batidas e devolve os problemas:
 - grave: justifica pedir a correção ao Claude (número sem cartão, motivo proibido, estilo ou marca no
-  prompt, número inventado no cartão);
-- corrigido: o código já arrumou no documento (plano repetido, gancho sem imagem nova);
-- aviso: o usuário vê, nada muda (motivo repetido, cartões seguidos ou demais).
+  prompt, número inventado no cartão, imagens novas quase todas na mesma hora do dia, imagem reaproveitada para
+  outra data ou outro evento quando ainda há vaga para imagem nova);
+- corrigido: o código já arrumou no documento (plano repetido, gancho sem imagem nova, cartão sem fundo, carimbo
+  "INÉDITO", faixa que só repete a fala, fonte do cartão que não traz o número, personagem de ficção sem rosto);
+- aviso: o usuário vê, nada muda (motivo repetido, cartões seguidos ou demais, comparação de medidas diferentes).
 
 As correções mudam o `doc` recebido. Nada aqui chama serviço externo.
 """
@@ -18,16 +20,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from studio.core.hashing import seed_from
-from studio.core.numbers import card_number, notable_number_runs, text_numbers
-from studio.core.project.document import CARD_KINDS, ProjectDoc, Scene, SceneCard
+from studio.core.numbers import card_number, is_number_token, notable_number_runs, text_numbers
+from studio.core.project.document import CARD_KINDS, ProjectDoc, Scene, SceneCard, Source, Visual
 from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import (
+    FOCUS_ROTATION,
     SHOT_ROTATION,
     SHOTS,
     compositions_for_caption,
 )
-from studio.core.text import normalize_token
+from studio.core.text import normalize_token, span_ranges
 from studio.core.text import words as split_words
+from studio.workers.pipeline import lighting
 from studio.workers.pipeline.build import scene_needs_image
 
 GRAVE = "grave"
@@ -40,6 +44,8 @@ SECONDS_PER_IMAGE = 35
 MAX_CARDS_IN_ROW = 2
 MAX_CARD_SHARE = 0.45
 MOTIF_SHARE = 0.30
+# Imagens novas no mesmo momento do dia (pôr do sol, noite...): acima disso o vídeo vira um papel de parede só.
+LIGHT_SHARE = 0.40
 
 # Estilo e técnica no prompt: o app já acrescenta a linguagem visual e o tratamento. Palavras comuns ("canvas",
 # "palette", "style", "4K") só contam na forma técnica: "a canvas tent", "a retro style diner" e "a 4K TV" passam.
@@ -94,6 +100,44 @@ _SUBJECT_NOUNS = {
 }  # fmt: skip
 # Corte da aparência para citar a entidade no prompt: "Latina woman in her 30s, dark hair" → "Latina woman".
 _LOOK_CUT_RE = re.compile(r",|;|\.|\s(?:in|with|of|wearing|who|that|whose)\s", re.IGNORECASE)
+# Entidade que é gente (tem rosto): o personagem de ficção citado pelo nome aparece de costas ou em silhueta.
+_PERSON_NOUNS = {
+    "woman", "women", "man", "men", "girl", "boy", "person", "teen", "teenager", "child", "kid", "guy", "lady",
+    "gentleman", "soldier", "officer", "detective", "agent", "driver", "worker", "figure", "hero", "heroine",
+    "villain", "king", "queen", "captain", "sailor", "protagonist", "character", "robot", "android", "criminal",
+    "gangster", "thief", "outlaw", "cop", "warrior", "knight", "wizard", "prince", "princess", "assassin", "hunter",
+    "survivor", "explorer", "pilot",
+}  # fmt: skip
+_FACELESS_RE = re.compile(
+    r"\b(?:from behind|back view|from the back|silhouett\w*|faceless|face (?:hidden|not visible|unseen|out of frame)|"
+    r"no face|without (?:a )?face)\b", re.IGNORECASE)
+FACELESS = "seen from behind or in silhouette, face not visible"
+# Carimbo que vende a imagem ilustrativa como material novo ou vazado.
+_BANNED_STAMPS = {
+    "inedito", "inedita", "ineditos", "ineditas", "exclusivo", "exclusiva", "exclusivos", "exclusivas", "exclusive",
+    "unseen", "leaked", "leak", "vazou", "vazado", "vazada", "vazamento", "filtrado", "filtrada",
+}  # fmt: skip
+# Palavras de ligação que não contam ao comparar a faixa com a fala.
+_FUNCTION_WORDS = {
+    "de", "do", "da", "dos", "das", "e", "o", "a", "os", "as", "em", "no", "na", "nos", "nas", "um", "uma", "para",
+    "pra", "por", "pelo", "pela", "com", "sem", "ao", "aos", "que", "se", "the", "an", "of", "and", "in", "on",
+    "to", "for", "at", "by", "with", "el", "la", "los", "las", "y", "en", "del", "al", "con",
+}  # fmt: skip
+# Escala logo depois do número na faixa ("200 MI", "1,5 BI").
+_SCALE_TOKENS = {
+    "mi", "bi", "tri", "mil", "k", "m", "b", "mn", "bn", "milhao", "milhoes", "bilhao", "bilhoes", "trilhao",
+    "trilhoes", "million", "millions", "billion", "billions", "millon", "millones",
+}  # fmt: skip
+_MONTHS = {
+    "janeiro": 1, "fevereiro": 2, "marco": 3, "abril": 4, "maio": 5, "junho": 6, "julho": 7, "agosto": 8,
+    "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12, "january": 1, "february": 2, "march": 3,
+    "april": 4, "may": 5, "june": 6, "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12, "enero": 1, "febrero": 2, "marzo": 3, "mayo": 5, "junio": 6, "julio": 7, "septiembre": 9,
+    "octubre": 10, "noviembre": 11, "diciembre": 12,
+}  # fmt: skip
+# Nome de mês que também é palavra comum ("um marco", "it may", "march on"): só conta perto de um número.
+_AMBIGUOUS_MONTHS = {"marco", "may", "march", "august"}
+_CURRENCY_RE = re.compile(r"R\$|US\$|U\$|€|£|¥|\$")
 
 
 @dataclass
@@ -162,9 +206,10 @@ def is_hook_beat(doc: ProjectDoc, beat: Beat) -> bool:
 
 
 def review_counts(doc: ProjectDoc, budget: int) -> dict[str, int]:
-    """Contagens do documento final (inclui as cenas dos segmentos travados)."""
+    """Contagens do documento final (inclui as cenas dos segmentos travados). `real_hints` (sugestões de mídia real
+    ainda sem mídia) só aparece quando há alguma."""
     new_images = sum(1 for s in doc.scenes if scene_needs_image(s) and not s.visual.asset)
-    return {
+    counts = {
         "scenes": len(doc.scenes),
         "new_images": new_images,
         "reused": sum(1 for s in doc.scenes if s.visual.reuse_of),
@@ -172,6 +217,10 @@ def review_counts(doc: ProjectDoc, budget: int) -> dict[str, int]:
         "budget": budget,
         "est_seconds": new_images * SECONDS_PER_IMAGE,
     }
+    real_hints = sum(1 for s in doc.scenes if s.real is not None and s.visual.media is None)
+    if real_hints:
+        counts["real_hints"] = real_hints
+    return counts
 
 
 def _term_re(term: str) -> re.Pattern[str]:
@@ -253,19 +302,34 @@ def _half_scales(text: str) -> list[float]:
     return [0.5 * _HALF_SCALES[b] for a, b in zip(tokens, tokens[1:], strict=False) if a in _HALF_WORDS and b in _HALF_SCALES]
 
 
+def _numbers_in(text: str, lang: str) -> list[float]:
+    """Números do texto (inclusive "GTA 6" e, em português, "meio milhão")."""
+    values = [float(v) for v in text_numbers(text, lang, names=True)]
+    if lang.lower().startswith("pt"):
+        values += _half_scales(text)
+    return values
+
+
 def allowed_numbers(doc: ProjectDoc) -> list[float]:
     """Números que um cartão pode mostrar: os da narração (inclusive "GTA 6") e os das fontes.
 
     O 1 sempre vale ("#1", "1º", "1 DIA" para "o primeiro", "em um dia"): "um" sozinho é artigo para o leitor.
     """
     lang = doc.primary_language
-    texts = [doc.full_text(lang), *(f"{source.title}. {source.note}" for source in doc.sources)]
-    values = [1.0]
-    for text in texts:
-        values += [float(v) for v in text_numbers(text, lang, names=True)]
-        if lang.lower().startswith("pt"):
-            values += _half_scales(text)
+    values = [1.0, *_numbers_in(doc.full_text(lang), lang)]
+    for source in doc.sources:
+        values += _numbers_in(f"{source.title}. {source.note}", lang)
     return values
+
+
+def source_label(source: Source) -> str:
+    """Nome curto da fonte para o cartão: o título até o travessão ou os dois pontos, com até 40 caracteres
+    ("Guinness World Records — recorde do trailer" → "Guinness World Records")."""
+    title = re.split(r"\s+[—–|]\s+|\s+-\s+|:\s+", (source.title or "").strip(), maxsplit=1)[0].strip()
+    if len(title) > 40:
+        head = title[:41]
+        title = (head.rsplit(" ", 1)[0] if " " in head else head[:40]).rstrip(" ,;:-")
+    return title
 
 
 def card_numbers(card: SceneCard) -> list[str]:
@@ -285,8 +349,9 @@ def fix_hook(doc: ProjectDoc, style: StyleSpec, beats: list[Beat]) -> list[Issue
         return []
     beat = beats[0]
     scene = scene_for(doc, beat)
-    if scene is None or scene.locked or scene.kind == "count" or (scene.kind == "image" and has_own_image(scene)):
-        return []  # o contador do Top 10 fica como é
+    if scene is None or scene.locked or scene.kind == "count" or (
+            scene.kind == "image" and (has_own_image(scene) or scene.visual.media is not None)):
+        return []  # o contador do Top 10 fica como é; a mídia real anexada (mantida ao refazer) também
     art = doc.art
     lang = doc.primary_language
     languages = (art.languages if art else []) or style.art.languages or ["editorial"]
@@ -338,6 +403,130 @@ def fix_repeated_shots(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
                 break
         label = SHOTS[scene.visual.shot].label.lower() if scene.visual.shot in SHOTS else scene.visual.shot
         issues.append(Issue("plano_repetido", CORRIGIDO, f"Plano repetido trocado para {label}.", beat.key, scene.id))
+    return issues
+
+
+def _shows_own_image(scene: Scene) -> bool:
+    """A cena mostra uma imagem dela (nova, fixada, enviada ou mídia real), não a de outra cena."""
+    visual = scene.visual
+    if visual.media is not None:
+        return True  # o cartão pode usar a mídia real de fundo
+    return not visual.reuse_of and visual.type != "none" and (bool(visual.asset) or scene_needs_image(scene))
+
+
+def fix_flat_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Cartão sobre o fundo animado (liso, parece slide) passa a usar de fundo, desfocada, a imagem mais próxima
+    antes dele. Sem custo de cota. O contador do Top 10 fica como é (nunca mostra a imagem do item anterior)."""
+    ordered = doc.ordered_scenes()
+    keyed = {scene.id: beat for beat in beats if (scene := scene_for(doc, beat)) is not None}
+    uses: dict[str, int] = {}
+    for scene in ordered:
+        if scene.visual.reuse_of:
+            uses[scene.visual.reuse_of] = uses.get(scene.visual.reuse_of, 0) + 1
+    issues: list[Issue] = []
+    for index, scene in enumerate(ordered):
+        beat = keyed.get(scene.id)
+        visual = scene.visual
+        if beat is None or scene.locked or scene.kind not in CARD_KINDS or scene.kind == "count":
+            continue
+        if visual.type != "none" or visual.reuse_of or visual.asset or visual.media is not None:
+            continue  # a mídia real anexada já é o fundo do cartão
+        position, root = next(((k, s) for k, s in reversed(list(enumerate(ordered[:index]))) if _shows_own_image(s)),
+                              (None, None))
+        if root is None or position is None:
+            continue
+        uses[root.id] = uses.get(root.id, 0) + 1
+        scene.visual = Visual(reuse_of=root.id)
+        scene.focus = scene.focus or FOCUS_ROTATION[uses[root.id] % len(FOCUS_ROTATION)]
+        if scene.motion == "static":
+            scene.motion = None
+        issues.append(Issue("cartao_sem_fundo", CORRIGIDO,
+                            f"O cartão ficava sobre o fundo liso: agora usa de fundo a imagem da cena {position + 1}, "
+                            "desfocada.", beat.key, scene.id))
+    return issues
+
+
+def fix_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Carimbo "INÉDITO", "EXCLUSIVO" ou "VAZOU" sai: sobre imagem ilustrativa de IA ele vende a ilustração como
+    material oficial ou vazado. Só a foto enviada pelo usuário (ou a mídia real anexada) pode ter."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None:
+            continue
+        stamp = (scene.card.stamp.get(lang) or "").strip()
+        if not stamp or not any(normalize_token(w) in _BANNED_STAMPS for w in stamp.split()):
+            continue
+        root = doc.reuse_root(scene)
+        if root is not None and (root.visual.type == "upload" or root.visual.media is not None):
+            continue
+        scene.card.stamp = {}
+        scene.card = scene.card if scene.card.resolved(lang) else None
+        issues.append(Issue("carimbo_tirado", CORRIGIDO,
+                            f'O carimbo "{stamp}" saiu: a imagem é uma ilustração, não material inédito.',
+                            beat.key, scene.id))
+    return issues
+
+
+def _other_digits(scene: Scene, lang: str) -> bool:
+    """A cena mostra algum número além da faixa (contador, cartão, itens, carimbo ou sobreposição)."""
+    if scene.number is not None:
+        return True
+    texts = [scene.overlay_text.get(lang) or ""]
+    if scene.card:
+        texts += [scene.card.value.get(lang, ""), scene.card.label.get(lang, ""), scene.card.stamp.get(lang, "")]
+        for item in scene.card.items:
+            texts += [item.value.get(lang, ""), item.label.get(lang, "")]
+    return any(_has_digit(t) for t in texts)
+
+
+def repeats_speech(text: str, words: list[str], lang: str) -> bool:
+    """Todas as palavras do texto (fora as de ligação) já estão na fala: "DEZ 2023" para "Até dezembro de dois mil e
+    vinte e três" repete; "TRAILER 1 · DEZ 2023" acrescenta. Abreviação conta ("DEZ" de "dezembro")."""
+    spoken = {normalize_token(w) for w in words} - {""}
+    numbers = _numbers_in(" ".join(words), lang)
+    tokens = [t for t in re.split(r"[\s·•|/—–]+", text or "") if t]
+    content = 0
+    i = 0
+    while i < len(tokens):
+        token, norm = tokens[i], normalize_token(tokens[i])
+        i += 1
+        if not norm:
+            continue
+        if _has_digit(token):
+            if i < len(tokens) and normalize_token(tokens[i]) in _SCALE_TOKENS:
+                token, i = f"{token} {tokens[i]}", i + 1
+            value = card_number(token)
+            if value is None or not _known_number(value, numbers):
+                return False
+        elif norm in _FUNCTION_WORDS:
+            continue
+        elif norm not in spoken and not (len(norm) >= 3 and any(w.startswith(norm) for w in spoken)):
+            return False
+        content += 1
+    return content > 0
+
+
+def fix_repeated_headlines(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Faixa no topo que só repete a fala da batida sai (a legenda já mostra): fica a do gancho e a que é o único
+    lugar onde o número da batida aparece (sem ela a revisão acusaria número sem cartão)."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None or is_hook_beat(doc, beat):
+            continue
+        headline = (scene.card.headline.get(lang) or "").strip()
+        if not headline or not repeats_speech(headline, beat.words, lang):
+            continue
+        if (scene.kind != "text" and _has_digit(headline) and notable_number_runs(beat.words, lang)
+                and not _other_digits(scene, lang)):
+            continue
+        scene.card.headline = {}
+        scene.card = scene.card if scene.card.resolved(lang) else None
+        issues.append(Issue("faixa_repetida", CORRIGIDO, f'A faixa "{headline}" só repetia a fala da batida: saiu.',
+                            beat.key, scene.id))
     return issues
 
 
@@ -438,6 +627,7 @@ def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     narration = doc.full_text(doc.primary_language)
     user = art.source == "user"
     names: list[tuple[str, str]] = []
+    faceless: list[str] = []
     for entity in art.entities:
         if entity.real:
             continue
@@ -450,6 +640,11 @@ def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
             entity.look = look
         reference = entity_reference(look, role)
         names += [(alias, reference) for alias in aliases]
+        # Personagem oficial de ficção citado pelo nome (protagonista de jogo, filme, série) não aparece de frente:
+        # a imagem de rosto parece arte oficial ou vazada. Em história original (narrativa) o personagem é do canal.
+        if not user and art.genre != "narrativa" and _is_person(look, role) and not _FACELESS_RE.search(look):
+            entity.look = f"{look.rstrip(' .,;')}, {FACELESS}" if look.strip() else FACELESS
+            faceless.append(name)
     if not names:
         return []
     names.sort(key=lambda item: -len(item[0]))  # "Lucia Caminos" antes de "Lucia"
@@ -486,6 +681,56 @@ def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         for entity in art.entities:
             if not entity.real:
                 entity.look = scrub(entity.look)
+    for name in faceless:
+        issues.append(Issue("personagem_sem_rosto", CORRIGIDO,
+                            f'"{name}" é personagem de ficção citado pelo nome: aparece de costas ou em silhueta, '
+                            "sem rosto."))
+    return issues
+
+
+def _is_person(look: str, role: str) -> bool:
+    """A entidade é gente: quem a aparência diz que é ("Latina woman", "the detective"), o papel ou, sem nenhum dos
+    dois, cabelo, barba, olhos ou rosto na descrição."""
+    for part in re.split(r"[,;.]", look or ""):
+        head = _LOOK_CUT_RE.split(part, maxsplit=1)[0]
+        words = [w.lower().strip("'’") for w in head.split()]
+        if words and _singular(words[-1]) in _SUBJECT_NOUNS | _PERSON_NOUNS:
+            return _singular(words[-1]) in _PERSON_NOUNS
+    if role and _singular(role.split()[-1].lower()) in _PERSON_NOUNS:
+        return True
+    return bool(re.search(r"\b(?:hair|beard|eyes|skin|face)\b", look or "", re.IGNORECASE))
+
+
+def _with_faceless(prompt: str) -> str:
+    """O prompt com `FACELESS` no fim (antes do ponto final, se houver)."""
+    text = prompt.rstrip()
+    end = "." if text.endswith(".") else ""
+    return f"{text.rstrip(' .,;')}, {FACELESS}{end}" if text.strip(" .") else FACELESS
+
+
+def fix_real_reserve(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Batida que sugere material oficial (personagem, arte, foto de imprensa): a imagem de IA de reserva não mostra
+    o rosto da pessoa (pareceria arte oficial ou vazada). O rosto real só entra pela mídia que o usuário anexar."""
+    art = doc.art
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.real is None or scene.real.kind != "official":
+            continue
+        if not has_own_image(scene):
+            continue
+        prompt = scene.visual.prompt
+        entities = [e for e in (art.entity(i) for i in scene.visual.entities) if e] if art else []
+        people = [e for e in entities if _is_person(e.look, _split_entity_name(e.name)[1])]
+        named = any(_singular(w) in _PERSON_NOUNS for w in re.findall(r"[a-z]+", prompt.lower()))
+        if not (named or people):
+            continue
+        if _FACELESS_RE.search(prompt) or any(_FACELESS_RE.search(e.look) for e in people):
+            continue
+        scene.visual.prompt = _with_faceless(prompt)
+        issues.append(Issue("reserva_sem_rosto", CORRIGIDO,
+                            "A imagem de reserva mostra a pessoa de costas ou em silhueta: o rosto real só entra pela "
+                            "mídia que você anexar.", beat.key, scene.id))
     return issues
 
 
@@ -549,9 +794,12 @@ def _check_prompts(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 
 
 def _singular(word: str) -> str:
+    """Singular simples em inglês: "cities" → "city", "beaches" → "beach", "glasses" → "glass", "palms" → "palm"."""
     if len(word) > 4 and word.endswith("ies"):
         return word[:-3] + "y"
-    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+    if len(word) > 4 and word.endswith(("ches", "shes", "sses", "xes", "zzes")):
+        return word[:-2]
+    if len(word) > 4 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
         return word[:-1]
     return word
 
@@ -570,10 +818,11 @@ def _check_motifs(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     if len(prompts) < 4:
         return []
     spoken = {_singular(normalize_token(w)) for w in split_words(doc.full_text(doc.primary_language))}
+    # Só cor e o nome das entidades ficam de fora: palavra do mundo, do tratamento ou da aparência repetida em quase
+    # toda imagem ("sunset", "beach") é o motivo repetido que deixa o vídeo engessado.
     skip: set[str] = set(_COLOR_WORDS)
     if doc.art:
-        skip |= _prompt_words(" ".join([doc.art.world, doc.art.hook, doc.art.treatment, *doc.art.palette,
-                                        *(f"{e.id} {e.name} {e.look}" for e in doc.art.entities)]))
+        skip |= _prompt_words(" ".join(f"{e.id.replace('_', ' ')} {e.name}" for e in doc.art.entities))
     counts: dict[str, int] = {}
     for prompt in prompts:
         for word in _prompt_words(prompt):
@@ -611,13 +860,241 @@ def _check_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     return issues
 
 
-def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat]) -> list[Issue]:
-    """Revisa as cenas das batidas: corrige o que dá (no próprio `doc`) e devolve os problemas."""
+def _direction_light_text(doc: ProjectDoc, scene: Scene) -> str:
+    """O que a direção acrescenta ao prompt da imagem e pode fixar a hora: tratamento, mundo, aparências e paleta."""
+    art = doc.art
+    if art is None:
+        return ""
+    looks = [e.look for e in (art.entity(i) for i in scene.visual.entities) if e]
+    return ". ".join(t for t in (art.treatment, art.world, *looks, *art.palette) if t)
+
+
+def _check_lighting(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Imagens novas demais no mesmo momento do dia (todas no pôr do sol, todas à noite) deixam o vídeo com uma cara
+    só. Conta o momento que vai para o gerador: o do prompt da cena ou, quando ele não diz luz nenhuma, o da direção
+    (a mesma regra de `compose_directed_prompt`)."""
+    scenes = [s for b in beats if (s := scene_for(doc, b)) is not None and has_own_image(s)]
+    if len(scenes) < 4:
+        return []
+    user = doc.art is not None and doc.art.source == "user"
+    counts: dict[str, int] = {}
+    fixed: set[str] = set()  # momentos que a direção definida pelo usuário impõe (o Claude não pode mudar)
+    for scene in scenes:
+        text = scene.visual.prompt
+        if doc.art is not None and (user or not lighting.names_light(text)):
+            extra = _direction_light_text(doc, scene)
+            text = f"{text}. {extra}"
+            if user:
+                fixed |= lighting.moments(extra)
+        for moment in lighting.moments(text):
+            counts[moment] = counts.get(moment, 0) + 1
+    issues: list[Issue] = []
+    for moment, n in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        if n / len(scenes) <= LIGHT_SHARE:
+            continue
+        where = f"{n} de {len(scenes)} imagens novas se passam no mesmo momento ({lighting.moment_label(moment)})"
+        if moment in fixed:
+            issues.append(Issue("luz_repetida", AVISO, f"{where}: a direção definida por você fixa esse momento."))
+        else:
+            issues.append(Issue("luz_repetida", GRAVE, f"{where}: cada imagem diz a sua hora e luz, no máximo 1 em "
+                                                       "cada 3 no mesmo momento, seguindo o clima da narração."))
+    return issues
+
+
+def _dates(words: list[str], lang: str) -> tuple[set[int], set[int]]:
+    """Anos (1900 a 2100) e meses que a fala cita."""
+    years = {int(v) for v in text_numbers(" ".join(words), lang) if float(v).is_integer() and 1900 <= v <= 2100}
+    months: set[int] = set()
+    for index, word in enumerate(words):
+        token = normalize_token(word)
+        month = _MONTHS.get(token)
+        if month is None:
+            continue
+        near = words[index + 1 : index + 3]
+        if token in _AMBIGUOUS_MONTHS and not any(_has_digit(w) or is_number_token(w, lang) for w in near):
+            continue
+        months.add(month)
+    return years, months
+
+
+def _scene_words(doc: ProjectDoc, scene: Scene, by_scene: dict[str, Beat]) -> list[str]:
+    """As palavras da narração que a cena cobre (pela batida ou, em cena travada, pelos spans do segmento)."""
+    beat = by_scene.get(scene.id)
+    if beat is not None:
+        return beat.words
+    try:
+        segment = doc.segment(scene.segment_id)
+    except KeyError:
+        return []
+    tokens = split_words(segment.text_for(doc.primary_language))
+    scenes = doc.scenes_of(segment.id)
+    if any(s.span is None for s in scenes):
+        return []
+    for other, (a, b) in zip(scenes, span_ranges([s.span or 0 for s in scenes], len(tokens)), strict=True):
+        if other.id == scene.id:
+            return tokens[a:b]
+    return []
+
+
+def _quote(words: list[str], limit: int = 6) -> str:
+    text = " ".join(words[:limit]).strip(" .,;:!?…")
+    return text + ("…" if len(words) > limit else "")
+
+
+def _headline_of(scene: Scene, lang: str) -> str:
+    return (scene.card.headline.get(lang) or "").strip() if scene.card else ""
+
+
+def _headline_topic(headline: str) -> tuple[set[str], set[str]]:
+    """O assunto da faixa: as palavras (sem número, escala nem ligação) e os anos. "475 MI" não tem assunto (é só o
+    número da batida); "TRAILER 2 · MAI 2025" tem {trailer, mai} e {2025}."""
+    words: set[str] = set()
+    years: set[str] = set()
+    for token in re.split(r"[\s·•|/—–]+", headline or ""):
+        norm = normalize_token(token)
+        if not norm:
+            continue
+        if _has_digit(norm):
+            if re.fullmatch(r"(?:19|20)\d\d", norm):
+                years.add(norm)
+        elif norm not in _FUNCTION_WORDS and norm not in _SCALE_TOKENS:
+            words.add(norm)
+    return words, years
+
+
+def _other_topic(headline: str, root_headline: str) -> bool:
+    """A faixa da cena anuncia outro assunto que a da cena dona da imagem (outra data, outro nome)."""
+    if not headline or not root_headline:
+        return False
+    words, years = _headline_topic(headline)
+    root_words, root_years = _headline_topic(root_headline)
+
+    def known(word: str) -> bool:  # abreviação conta ("MAI" e "MAIO")
+        return any(word == r or (min(len(word), len(r)) >= 3 and (r.startswith(word) or word.startswith(r)))
+                   for r in root_words)
+
+    return not all(known(w) for w in words) or bool(years and root_years and years != root_years)
+
+
+def _check_reuse(doc: ProjectDoc, beats: list[Beat], budget: int | None) -> list[Issue]:
+    """Imagem em tela cheia reaproveitada numa batida com outra data ou outra faixa que a da cena dona da imagem
+    (dezembro de 2023 e maio de 2025 com a mesma multidão): o público lê como clipe repetido. Grave enquanto sobra
+    vaga para imagem nova (a correção troca por imagem nova); senão, aviso. Fundo desfocado de cartão pode."""
+    lang = doc.primary_language
+    by_scene = {scene.id: beat for beat in beats if (scene := scene_for(doc, beat)) is not None}
+    has_slot = budget is not None and review_counts(doc, budget)["new_images"] < budget
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.kind != "image" or not scene.visual.reuse_of or beat.role == "cta":
+            continue
+        root = doc.reuse_root(scene)
+        if root is None or root.id == scene.id:
+            continue
+        root_words = _scene_words(doc, root, by_scene)
+        years, months = _dates(beat.words, lang)
+        root_years, root_months = _dates(root_words, lang)
+        other_date = bool(years and root_years and not years <= root_years) or bool(
+            months and root_months and not months <= root_months)
+        other_headline = _other_topic(_headline_of(scene, lang), _headline_of(root, lang))
+        if not (other_date or other_headline):
+            continue
+        where = (f'A batida "{_quote(beat.words)}" reaproveita a imagem de "{_quote(root_words)}"' if root_words
+                 else f'A batida "{_quote(beat.words)}" reaproveita a imagem de outra cena')
+        if has_slot:
+            issues.append(Issue("reuso_outra_data", GRAVE, f"{where}: é outra data ou outro evento, use imagem nova.",
+                                beat.key, scene.id))
+        else:
+            issues.append(Issue("reuso_outra_data", AVISO, f"{where}: é outra data ou outro evento, e não sobra vaga "
+                                                           "para imagem nova.", beat.key, scene.id))
+    return issues
+
+
+def _check_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """A fonte do cartão precisa sustentar o número dele: o número está na fonte citada (título e nota) ou, se não
+    está em fonte nenhuma, na narração. Se outra fonte (uma só) traz o número, o cartão passa a citar essa; se a fonte
+    não é do roteiro ou nada sustenta o número, a fonte sai do cartão."""
+    lang = doc.primary_language
+    sources = doc.sources
+    labels = [source_label(s) for s in sources]
+    backed = [_numbers_in(f"{s.title}. {s.note}", lang) for s in sources]
+    narration = [1.0, *_numbers_in(doc.full_text(lang), lang)]
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        card = scene.card if scene is not None else None
+        if scene is None or scene.locked or card is None or not (card.source or "").strip():
+            continue
+        values = [(text, value) for text in card_numbers(card) if (value := card_number(text)) is not None]
+        if not values:
+            continue
+        cited = (card.source or "").strip()
+        ref = next((i for i, s in enumerate(sources) if cited.lower() in (labels[i].lower(), s.title.strip().lower())),
+                   None)
+        missing = [(text, value) for text, value in values if ref is None or not _known_number(value, backed[ref])]
+        if not missing:
+            continue
+        others = [i for i in range(len(sources)) if i != ref and all(_known_number(v, backed[i]) for _t, v in values)]
+        text = missing[0][0]
+        if len(others) == 1:
+            card.source = labels[others[0]]
+            issues.append(Issue("fonte_trocada", CORRIGIDO, f'O número "{text}" está na fonte "{card.source}", não em '
+                                                            f'"{cited}": o cartão passou a citar essa fonte.',
+                                beat.key, scene.id))
+            continue
+        if ref is not None and not others and all(_known_number(v, narration) for _t, v in missing):
+            continue  # número da narração, que o roteiro tira das fontes dele
+        card.source = None
+        scene.card = card if card.resolved(lang) else None
+        message = (f'A fonte "{cited}" não está nas fontes do roteiro: saiu do cartão.' if ref is None
+                   else f'A fonte "{cited}" não traz o número "{text}": saiu do cartão.')
+        issues.append(Issue("fonte_tirada", CORRIGIDO, message, beat.key, scene.id))
+    return issues
+
+
+def _unit(value: str) -> str:
+    if "%" in value:
+        return "%"
+    match = _CURRENCY_RE.search(value)
+    return match.group(0) if match else ""
+
+
+def _check_compare_units(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Comparação entre medidas diferentes (porcentagem contra total, reais contra dólares): as barras enganam."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.kind != "compare" or scene.card is None:
+            continue
+        values = [v for v in (item.value.get(lang, "") for item in scene.card.items) if _has_digit(v)]
+        units = {_unit(v) for v in values}
+        if len(units) > 1:
+            shown = ", ".join(sorted(u or "número" for u in units))
+            issues.append(Issue("comparacao_desigual", AVISO,
+                                f"O cartão compara medidas diferentes ({shown}): compare só números medidos do mesmo "
+                                "jeito.", beat.key, scene.id))
+    return issues
+
+
+def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | None = None) -> list[Issue]:
+    """Revisa as cenas das batidas: corrige o que dá (no próprio `doc`) e devolve os problemas.
+
+    `budget` é o limite de imagens novas: com vaga sobrando, imagem reaproveitada para outra data é grave.
+    """
     issues = fix_hook(doc, style, beats)
     issues += fix_entity_names(doc, beats)
+    issues += fix_real_reserve(doc, beats)
     issues += fix_repeated_shots(doc, beats)
+    issues += fix_flat_cards(doc, beats)
+    issues += fix_stamps(doc, beats)
+    issues += fix_repeated_headlines(doc, beats)
+    issues += _check_sources(doc, beats)
     issues += _check_numbers(doc, beats)
     issues += _check_prompts(doc, beats)
+    issues += _check_lighting(doc, beats)
+    issues += _check_reuse(doc, beats, budget)
     issues += _check_motifs(doc, beats)
     issues += _check_cards(doc, beats)
+    issues += _check_compare_units(doc, beats)
     return issues

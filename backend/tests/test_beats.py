@@ -41,8 +41,8 @@ def test_split_beats_keeps_every_word_in_order():
         assert sum(len(b) for b in beats) == word_count(text)
         assert all(beats)
         total += len(beats)
-    # 19 batidas contra as 29 cenas cortadas por caracteres
-    assert total == 19
+    # 21 batidas contra as 29 cenas cortadas por caracteres
+    assert total == 21
 
 
 def test_split_beats_never_cuts_inside_numbers():
@@ -79,10 +79,12 @@ def test_split_beats_never_ends_on_preposition_or_article():
 
 def test_split_beats_cuts_at_sentence_end_and_merges_short():
     beats = _beats(GTA[1])
-    # "Pensa comigo." (0,8 s) se junta à frase seguinte; "Depois disso, silêncio." (a última) à anterior
+    # "Pensa comigo." (0,8 s, 2 palavras) se junta à frase seguinte; "Depois disso, silêncio." (frase de efeito)
+    # não cola na frase do número: fica sozinha
     assert beats == [
         "Pensa comigo. GTA 5 saiu em dois mil e treze.",
-        "Vendeu mais de duzentos milhões de cópias. Depois disso, silêncio.",
+        "Vendeu mais de duzentos milhões de cópias.",
+        "Depois disso, silêncio.",
     ]
     assert _beats(GTA[0]) == [
         "GTA 6 vai ser o melhor jogo de todos os tempos?",
@@ -106,8 +108,26 @@ def test_split_beats_respects_min_and_max():
         beats = split_beats(text, **SHORT)
         for beat in beats:
             assert _secs(beat) <= 1.6 * SHORT["max_s"] + 1e-9
-            if len(beats) > 1:
-                assert _secs(beat) >= SHORT["min_s"] - 1e-9
+            if len(beats) > 1 and _secs(beat) < SHORT["min_s"] - 1e-9:
+                # só a frase curta de efeito (3+ palavras, ~0,9 s, sem número) fica abaixo do mínimo
+                assert len(beat) >= 3 and _secs(beat) >= 0.9 and not number_runs(beat), beat
+
+
+def test_split_beats_keeps_short_dramatic_sentence_off_the_number():
+    # "Agora, o segredo." ia colar em "Depois de dois adiamentos...": o cartão do 2 cobriria a virada
+    assert _beats(GTA[5])[0] == "Agora, o segredo."
+    assert _beats(GTA[5])[1].startswith("Depois de dois adiamentos,")
+    # frase curta perto de frase sem número continua juntando
+    assert _beats(GTA[4]) == [
+        "E o cenário? Leonida. A volta de Vice City.",
+        "Com Lucia, a primeira protagonista mulher da era moderna da série.",
+    ]
+    # duas palavras (0,8 s) ainda juntam, mesmo na frente de um número
+    assert _beats("Pensa comigo. Vendeu duzentos milhões de cópias no mundo inteiro.") == [
+        "Pensa comigo. Vendeu duzentos milhões de cópias no mundo inteiro."]
+    # frase curta com número próprio segue a regra de sempre (junta à seguinte)
+    assert _beats("Dez anos atrás. Vendeu duzentos milhões de cópias no mundo inteiro.") == [
+        "Dez anos atrás. Vendeu duzentos milhões de cópias no mundo inteiro."]
 
 
 def test_split_beats_long_sentence_without_valid_cut_stays_whole():

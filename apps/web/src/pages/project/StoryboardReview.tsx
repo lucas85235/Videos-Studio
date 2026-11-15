@@ -15,6 +15,7 @@ import {
 import { Badge, type BadgeTone, Button, ErrorBox, useConfirm, useToast } from '../../ui';
 import { approveKey, useJobStarting, useStartJob } from '../ProjectPage';
 import { useUnsavedCount } from './core/drafts';
+import { EDITORIAL_NOTICE, hasEditorialMedia, realSuggestions } from './core/media';
 import {
   awaitingScenes,
   DIRECTION_MISSING_REASON,
@@ -289,6 +290,10 @@ export const StoryboardReview: React.FC<{
     counts.cards || art ? `${plural(counts.cards, 'cartão', 'cartões')} (sem cota)` : '',
   ].filter(Boolean);
 
+  // Mídia real: sugestões ainda abertas (o "Ver" leva à primeira) e cenas que já mostram uma.
+  const firstSuggestion = counts.realHints ? realSuggestions(doc)[0] : undefined;
+  const editorial = counts.realMedia > 0 && hasEditorialMedia(doc);
+
   const fit = art?.style_fit ?? 'ok';
   const hasDetails = Boolean(art) || Boolean(review);
 
@@ -303,7 +308,35 @@ export const StoryboardReview: React.FC<{
           <h2 id={headingId} className="font-display text-[15px] font-semibold leading-6 text-fg">
             {awaiting ? 'Confira as cenas antes das imagens' : 'Curadoria das cenas'}
           </h2>
-          <p className="mt-0.5 text-[13px] leading-snug text-muted">{parts.join(' · ')}</p>
+          <p className="mt-0.5 text-[13px] leading-snug text-muted">
+            {parts.join(' · ')}
+            {counts.realHints ? (
+              <>
+                {' · '}
+                {plural(counts.realHints, 'sugestão de mídia real', 'sugestões de mídia real')}
+                {firstSuggestion ? (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      className="rounded-sm underline underline-offset-2 hover:text-fg"
+                      aria-label="Ver a primeira cena com sugestão de mídia real"
+                      onClick={() => onShowScene(firstSuggestion.id)}
+                    >
+                      Ver
+                    </button>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+            {counts.realMedia ? ` · ${plural(counts.realMedia, 'cena com mídia real', 'cenas com mídia real')}` : null}
+          </p>
+          {editorial ? (
+            <p className="mt-1 flex items-start gap-1.5 text-[13px] text-amber-200">
+              <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+              {EDITORIAL_NOTICE}
+            </p>
+          ) : null}
           {lost && !awaiting ? (
             <p className="mt-1 flex items-start gap-1.5 text-[13px] text-amber-200">
               <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />O estilo mudou: refaça as cenas para gerar as imagens com a

@@ -14,9 +14,11 @@ from studio.core.styles.library import get_style
 from studio.core.styles.schema import Family
 from studio.db import session_scope
 from studio.ids import new_id
+from studio.media.real_media import EDITORIAL_WARNING
 from studio.models import Publication
 from studio.workers.jobs import JobContext, job
 from studio.workers.publish import youtube as yt
+from studio.workers.publish.credits import credit_lines, credits_block, has_editorial
 
 
 def youtube_status_body(style, privacy: str, publish_at: str | None) -> dict[str, Any]:
@@ -40,11 +42,22 @@ def youtube_status_body(style, privacy: str, publish_at: str | None) -> dict[str
     return status
 
 
-def _description(meta: Metadata) -> str:
-    description = meta.description
-    if meta.hashtags:
-        description = f"{description}\n\n{' '.join(meta.hashtags[:15])}".strip()
-    return description[:5000]
+DESCRIPTION_MAX = 5000
+
+
+def _description(meta: Metadata, credits: str = "") -> str:
+    """Descrição do YouTube: texto, créditos das imagens (mídia real) e hashtags. Com créditos, só o texto é cortado
+    para caber no limite (créditos e hashtags ficam inteiros); sem créditos, como sempre foi."""
+    credits = credits.strip()
+    if not credits:
+        description = meta.description
+        if meta.hashtags:
+            description = f"{description}\n\n{' '.join(meta.hashtags[:15])}".strip()
+        return description[:DESCRIPTION_MAX]
+    tail = credits + (f"\n\n{' '.join(meta.hashtags[:15])}" if meta.hashtags else "")
+    room = DESCRIPTION_MAX - len(tail) - 2
+    body = meta.description.strip()[: max(0, room)].rstrip()
+    return (f"{body}\n\n{tail}" if body else tail)[:DESCRIPTION_MAX]
 
 
 def youtube_localizations(doc, lang: str) -> dict[str, dict[str, str]]:
@@ -54,7 +67,7 @@ def youtube_localizations(doc, lang: str) -> dict[str, dict[str, str]]:
         meta = doc.metadata.get(other)
         if other == lang or meta is None or not meta.title.strip():
             continue
-        out[other] = {"title": meta.title.strip()[:100], "description": _description(meta)}
+        out[other] = {"title": meta.title.strip()[:100], "description": _description(meta, credits_block(doc, other))}
     return out
 
 
@@ -82,15 +95,23 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
     meta = doc.metadata.get(lang) or Metadata(title=doc.title)
     snippet = {
         "title": (meta.title or doc.title)[:100],
-        "description": _description(meta),
+        "description": _description(meta, credits_block(doc, lang)),
         "tags": meta.tags[:30],
         "categoryId": str(payload.get("category_id") or "24"),
         "defaultLanguage": lang,
         "defaultAudioLanguage": lang,
     }
     localizations = youtube_localizations(doc, lang) if payload.get("localize") else {}
+    # Token do canal do projeto (vinculado em Canais); sem vínculo, a conta global como antes.
+    account = yt.account_for_channel(row.get("channel_id") or doc.channel_id)
     data_dir = get_settings().data_dir
     warnings: list[str] = []
+    credits_details: dict[str, Any] = {}
+    if (lines := credit_lines(doc, lang)):
+        credits_details["credits"] = len(lines)
+    if has_editorial(doc):
+        credits_details["editorial"] = True
+        warnings.append(EDITORIAL_WARNING)
     with httpx.Client(timeout=httpx.Timeout(120, read=900, write=900)) as client:
         ctx.progress(0.02, "Enviando vídeo ao YouTube")
         video = yt.upload_video(
@@ -100,16 +121,17 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
             localizations=localizations or None,
             http=client,
             on_progress=lambda p: ctx.progress(0.02 + p * 0.85, "Enviando vídeo ao YouTube"),
+            account=account,
         )
         video_id = video["id"]
         if entry.get("thumbnail"):
             try:
-                yt.set_thumbnail(video_id, data_dir / entry["thumbnail"], client)
+                yt.set_thumbnail(video_id, data_dir / entry["thumbnail"], client, account=account)
             except yt.YouTubeError as exc:
                 warnings.append(str(exc))
         if entry.get("srt") and payload.get("captions", True):
             try:
-                yt.upload_captions(video_id, data_dir / entry["srt"], lang, client)
+                yt.upload_captions(video_id, data_dir / entry["srt"], lang, client, account=account)
             except yt.YouTubeError as exc:
                 warnings.append(str(exc))
     url = f"https://youtu.be/{video_id}"
@@ -126,7 +148,8 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 external_id=video_id,
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,
-                         "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations)},
+                         "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
+                         "youtube_channel": yt.account_title(account), **credits_details},
             )
         )
     ctx.progress(1.0, "Agendado no YouTube" if privacy == "scheduled" else "Enviado ao YouTube")

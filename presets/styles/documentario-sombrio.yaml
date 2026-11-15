@@ -69,8 +69,8 @@ edit:
   zoom_strength: 0.09
 
 audio:
-  music: { source: procedural, mood: "dark ambient drone", volume_db: -24, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -14 }
+  music: { source: procedural, mood: "dark ambient drone", volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -11 }
   loudness_lufs: -14
 
 thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: "Bebas Neue", accent: "#E8B04A" }

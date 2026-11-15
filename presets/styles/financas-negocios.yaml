@@ -68,8 +68,8 @@ edit:
   zoom_strength: 0.08
 
 audio:
-  music: { source: procedural, mood: corporate, volume_db: -25, ducking: true }
-  sfx: { auto: true, pack: basic, volume_db: -15 }
+  music: { source: procedural, mood: corporate, volume_db: -20, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -12 }
   loudness_lufs: -14
 
 thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: Oswald, accent: "#34D399" }
