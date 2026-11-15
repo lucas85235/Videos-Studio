@@ -6,10 +6,12 @@ FLUX (BFL), fal.ai e OpenAI Images (pagos por imagem) foram retirados a pedido d
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
 import tempfile
@@ -52,6 +54,44 @@ def generation_size(width: int, height: int, max_side: int = 1536) -> tuple[int,
     w = max(256, int(width * scale) // 16 * 16)
     h = max(256, int(height * scale) // 16 * 16)
     return w, h
+
+
+_UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
+
+
+def codex_session_ids(output: str) -> list[str]:
+    """Ids da sessão do `codex exec --json` (o `thread_id` do evento "thread.started" primeiro, depois qualquer
+    uuid da saída): o Codex grava a imagem em `generated_images/<id da sessão>/`."""
+    ids: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            for key in ("thread_id", "session_id"):
+                value = event.get(key)
+                if isinstance(value, str) and value not in ids:
+                    ids.append(value)
+    ids += [u for u in dict.fromkeys(m.lower() for m in _UUID_RE.findall(output)) if u not in ids]
+    return ids
+
+
+def codex_new_images(images_dir: Path, before: set[Path], started: float, output: str) -> list[Path]:
+    """As imagens desta chamada do Codex. Outro programa usando o Codex ao mesmo tempo (outro projeto) grava na mesma
+    pasta: a imagem certa é a da pasta da nossa sessão. Sem id na saída, vale a mais nova criada durante a chamada."""
+    if not images_dir.exists():
+        return []
+    for session in codex_session_ids(output):
+        own = images_dir / session
+        if own.is_dir():
+            files = [p for p in own.glob("*.png") if p not in before]
+            if files:
+                return files
+    return [p for p in images_dir.rglob("*.png") if p not in before and p.stat().st_mtime >= started - 5]
 
 
 def _download(url: str, dst: Path, timeout: float = 120) -> Path:
@@ -122,9 +162,7 @@ class CodexCLIImage(ImageProvider):
         lowered = output.lower()
         if "usage_limit_reached" in lowered or "rate limit" in lowered or " 429" in lowered:
             raise QuotaExceeded("cota de imagens do Codex esgotada")
-        new_files = []
-        if images_dir.exists():
-            new_files = [p for p in images_dir.rglob("*.png") if p not in before and p.stat().st_mtime >= started - 5]
+        new_files = codex_new_images(images_dir, before, started, proc.stdout or "")
         if not new_files:
             if "refus" in lowered or "can't help" in lowered or "não posso" in lowered:
                 raise Refused("o Codex recusou o pedido de imagem")
