@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import re
 import uuid
@@ -41,6 +42,8 @@ BACKGROUND = (17, 17, 17)  # #111111 atrás da transparência
 ACCEPTED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "BMP", "TIFF", "MPO", "AVIF"}
 UNREADABLE = "Não é uma imagem que o app lê (use JPG, PNG ou WEBP)."
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+log = logging.getLogger(__name__)
 
 
 class MediaError(ValueError):
@@ -296,7 +299,8 @@ def media_from_link(url: str, project_id: str, *, kind: RealKind | None, lang: s
                 try:
                     # Sem aviso de imagem pequena: a og:image comum (1200x630) só vira miniatura e fundo desfocado.
                     stored = store_image(_media_fetch(preview.image_url, http), project_id)
-                except (safe_http.FetchError, MediaError):
+                except (safe_http.FetchError, MediaError) as exc:
+                    log.warning("imagem da notícia %s não baixou: %r (%r)", preview.image_url, exc, exc.__cause__)
                     warnings.append("Não consegui baixar a imagem da notícia: o cartão usa o fundo animado.")
             headline = link_preview.clean_headline(preview.title, site)
             outlet = _short(site, 60)

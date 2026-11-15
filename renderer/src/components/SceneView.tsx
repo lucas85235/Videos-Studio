@@ -48,6 +48,11 @@ const REVEAL_LEAD = 3;
 /** Cartão de notícia: fundo (a própria imagem da notícia) como o dos cartões de dado. */
 const NEWS_DIM = 0.6;
 const NEWS_BLUR = 8;
+/** Cartões que mostram o texto da própria cena em destaque: a fonte solta apoia esse texto. */
+const TEXT_KINDS = new Set<SceneKind>(['title', 'count', 'quote', 'text', 'document']);
+/** Quadro em que o `SourceChip` começa a aparecer (ele entra nos quadros 8–16) e quando o carimbo entra por padrão. */
+const SOURCE_FADE_IN = 8;
+const STAMP_DELAY = 6;
 
 // Medidas do `SourceChip` (mesma conta de DataCards), para o crédito e o cartão de notícia desviarem dele.
 const sourceChipFont = (width: number, height: number) => Math.max(14, Math.min(width, height) * 0.028);
@@ -59,18 +64,33 @@ const sourceChipWidth = (source: string, width: number, height: number) => {
   return Math.min(width * 0.7, (source.length + 8) * 0.58 * size + size * 1.4);
 };
 
+const filled = (t: string | undefined) => Boolean(t?.trim());
+
 /**
  * Tipo que a cena desenha de fato: número sem valor nem rótulo e comparação com menos de 2 itens (tipo trocado na aba
  * Cenas, sem cartão) viram imagem, ou a fala em destaque quando não há imagem, em vez de um painel vazio.
  */
 const effectiveKind = (scene: TimelineScene, hasImage: boolean): SceneKind => {
   const card = scene.card;
-  const filled = (t: string | undefined) => Boolean(t?.trim());
   const empty =
     (scene.kind === 'stat' && !filled(card?.value) && !filled(card?.label) && scene.number == null && !filled(scene.text)) ||
     (scene.kind === 'compare' && (card?.items ?? []).filter((it) => filled(it.label) || filled(it.value)).length < 2);
   if (!empty) return scene.kind;
   return hasImage ? 'image' : 'text';
+};
+
+/**
+ * O que a fonte solta ("Fonte: X") apoia na tela. 'shown': algo que já está lá no corte (faixa do topo, cartão de
+ * notícia, painel do dado ou o texto grande da própria cena); 'stamp': só o carimbo, e a fonte entra junto com ele;
+ * null: nada (só a fonte, sobre a imagem), e a fonte sai — sozinha ela parece crédito da imagem.
+ */
+const sourceSupport = (scene: TimelineScene, kind: SceneKind, hasNews: boolean): 'shown' | 'stamp' | null => {
+  const card = scene.card;
+  if (filled(card?.headline) || hasNews || PANEL_KINDS.has(kind)) return 'shown';
+  if (TEXT_KINDS.has(kind) && (filled(scene.text) || (kind === 'text' && scene.words.length > 0) || (kind === 'count' && scene.number != null))) {
+    return 'shown';
+  }
+  return filled(card?.stamp) ? 'stamp' : null;
 };
 
 const tokens = (text: string) =>
@@ -80,6 +100,12 @@ const tokens = (text: string) =>
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
+
+/** Mesmo nome sem caixa, acento nem pontuação ("Rockstar Newswire" = "rockstar newswire"). */
+const sameName = (a: string | undefined, b: string) => {
+  const left = tokens(a ?? '').join(' ');
+  return Boolean(left) && left === tokens(b).join(' ');
+};
 
 /** O título só repete a fala da cena ("EM 24 HORAS" sobre a legenda "EM 24 HORAS"): a legenda sai. */
 const titleEchoesSpeech = (scene: TimelineScene) => {
@@ -100,11 +126,17 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const Card = CARD_VIEWS[kind];
   const headline = scene.card?.headline?.trim();
   const stamp = scene.card?.stamp?.trim();
-  const source = scene.card?.source?.trim();
   const inPanel = PANEL_KINDS.has(kind);
   const headBox = headline ? headlineBox(headline, cards, lang, width, height) : null;
   // Mídia real: cartão de notícia (só na cena de imagem dona dela) e o crédito de quem fez a foto/imagem.
   const news = kind === 'image' && scene.news && (scene.news.outlet?.trim() || scene.news.headline?.trim()) ? scene.news : undefined;
+  // A fonte solta igual ao veículo do cartão de notícia sai: o cartão já diz de onde veio. Sem nada na tela que ela
+  // apoie, também sai; se só apoia o carimbo, entra junto com ele.
+  const cardSource = scene.card?.source?.trim();
+  const support = cardSource ? sourceSupport(scene, kind, Boolean(news)) : null;
+  const source = cardSource && support && !(news && sameName(news.outlet, cardSource)) ? cardSource : undefined;
+  const stampDelay = Math.round(scene.card?.stamp_from ?? STAMP_DELAY);
+  const sourceFrom = support === 'stamp' ? Math.max(0, stampDelay - SOURCE_FADE_IN) : 0;
   const credit = scene.credit?.trim();
   const creditAt = credit ? creditChipPlace(width, height, headBox ? headBox.bottom / height : undefined) : null;
   // No vertical o chip fica no topo: a legenda de cima e o painel começam abaixo dele.
@@ -150,6 +182,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const cardFrom = reveal !== undefined && !spokenAtCut ? Math.max(0, reveal - REVEAL_LEAD) : 0;
   const card = Card ? <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={spokenAtCut} /> : null;
   const hideCaptions = NO_CAPTIONS.has(kind) || (kind === 'title' && titleEchoesSpeech(scene));
+  const sourceChip = source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null;
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
@@ -179,11 +212,17 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
       {headline ? <Headline text={headline} style={cards} lang={lang} /> : null}
       {stamp && !inPanel ? (
-        <Stamp text={stamp} style={cards} lang={lang} delay={scene.card?.stamp_from ?? 6} at={scene.card?.stamp_at} lowY={stampLowY} sideY={stampSideY} />
+        <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} at={scene.card?.stamp_at} lowY={stampLowY} sideY={stampSideY} />
       ) : null}
-      {source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null}
+      {sourceChip && sourceFrom > 0 ? (
+        <Sequence from={sourceFrom} layout="none" name="Fonte">
+          {sourceChip}
+        </Sequence>
+      ) : (
+        sourceChip
+      )}
       {credit && creditAt ? <CreditChip text={credit} corner={creditAt.corner} y={creditAt.y} maxWidth={creditMaxW} /> : null}
-      {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} />}
+      {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} />}
       <TransitionIn type={scene.transition} frames={style.transitionFrames} seed={scene.seed} />
     </AbsoluteFill>
   );

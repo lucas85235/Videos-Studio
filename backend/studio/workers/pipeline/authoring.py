@@ -7,6 +7,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from studio.core.hashing import seed_from
@@ -106,17 +107,23 @@ Escreva narrações originais, envolventes e fáceis de ouvir: frases curtas, ri
 emojis, listas ou indicações de cena. Cada segmento é um bloco de narração contínua.
 Regras de qualidade: conteúdo original, com ângulo próprio e informação real; nunca invente fatos apresentados como
 verdadeiros; quando o tema for real, use só fatos verificáveis e liste as fontes. Evite frases genéricas e repetitivas.
-Escreva números de forma natural para leitura em voz alta."""
+Escreva números de forma natural para leitura em voz alta.
+Datas: o pedido traz a data de hoje. Se o tema tem data marcada (lançamento, estreia, evento) perto de hoje, diga a
+data e quanto falta ("chega em <dia> de <mês>, daqui a <n> dias"). Evite afirmação que vence em poucos dias ("ainda
+não saiu", "ninguém jogou") sem dizer a data ("até hoje, <dia> de <mês>")."""
 
 
 def generate_script(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = None, job_id: str | None = None,
-                    persona: str = "") -> tuple[ProjectDoc, str]:
+                    persona: str = "", today: date | None = None) -> tuple[ProjectDoc, str]:
+    """Roteiro do tema. `today` (padrão: a data de hoje) entra no pedido para o roteiro situar datas próximas."""
+    today = today or date.today()
     lang = doc.primary_language
     wpm = style.script.words_per_minute.get(lang, 150)
     target_words = max(30, round(style.format.duration.target_s * wpm / 60 * style.voice.speed))
     structure = style.script.structure
     is_top = style.structure == Structure.top10
-    prompt = f"""Tema: {doc.topic or doc.title}
+    prompt = f"""Data de hoje: {today.isoformat()}
+Tema: {doc.topic or doc.title}
 Briefing: {doc.brief or "(nenhum)"}
 Idioma da narração: {lang_name(lang)}
 Formato: {"Short vertical (até 3 min)" if style.format.type == "short" else "vídeo longo"} com cerca de {style.format.duration.target_s:.0f} segundos.
@@ -176,15 +183,17 @@ aparece na tela usando só o que o app sabe produzir.
 1) Direção de arte ("direction"), decidida pelo assunto e pelo roteiro, não pelo nome do estilo:
 - genre: o tipo de vídeo (notícia de games não é mistério, mesmo com estilo de mistério).
 - approach: literal (mostra o assunto), misto ou alegorico (metáforas).
-- world: o mundo concreto das imagens: lugares, época, objetos e pessoas genéricas do assunto, em inglês, sem
-  hora do dia, clima nem céu (cada imagem diz os seus).
+- world: só o cenário, lugar e época, em até 20 palavras em inglês ("big Brazilian city, 1990s"), sem hora do dia,
+  clima nem céu (cada imagem diz os seus). O app junta o world a TODA imagem nova: nada de pessoas, objetos ou ações
+  nele. Personagem, lugar ou objeto que volta em várias batidas vira entidade (só entra nas imagens que a citam); o
+  que é de uma batida só vai no prompt dela.
 - languages: 1 a 3 ids do catálogo, o primeiro dominante. Prefira os do estilo; se não combinarem com o
   assunto, escolha os que combinam e diga em style_fit/style_note.
 - treatment: contraste, saturação e textura em até 12 palavras, em inglês, SEM hora do dia, clima, céu, luz ou
   objetos. Use o tratamento do estilo como referência e adapte ao assunto.
 - palette: 3 cores do mundo do assunto (entram como cores de destaque, não pintam a imagem toda). grade: um id de
   gradação, ou null para manter o do estilo.
-- entities: personagens ou lugares que voltam em mais de uma batida, com id curto ("detetive"), nome, real e
+- entities: personagens, lugares ou objetos que voltam em mais de uma batida, com id curto ("detetive"), nome, real e
   aparência fixa em inglês; o look começa por quem ou o que é ("tall woman in her 40s, ...", "seaside city with ...");
   o look de lugar não fixa céu, hora nem luz.
   real: true só para figura histórica já falecida ou lugar, monumento, navio ou evento reais (o prompt pode citar
@@ -241,6 +250,8 @@ Regras:
 4. Quando a narração volta ao MESMO momento, lugar, personagem ou objeto, use reuse em vez de outra imagem
    parecida, com outro focus e motion "zoom_to". Batida com outra data, outro evento ou outra headline nunca
    reaproveita imagem em tela cheia (kind image): use imagem nova. A chamada final pode reaproveitar o gancho.
+   Espalhe o reaproveitamento: no máximo 3 batidas seguidas na mesma imagem, contando os cartões sobre ela;
+   depois alterne com imagem nova ou mídia real.
 5. No máximo 2 cartões (stat, compare, title, text, quote) seguidos; não repita o shot em imagens novas seguidas.
 6. prompt (só imagem nova): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. Cada imagem nova
    diz a própria hora e luz, e elas variam: no máximo 1 em cada 3 no mesmo momento (ex.: pôr do sol); siga o clima

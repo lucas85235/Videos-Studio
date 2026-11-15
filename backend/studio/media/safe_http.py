@@ -30,7 +30,8 @@ NO_CONTACT_MESSAGE = ("O Wikimedia Commons pede um contato (site ou e-mail) de q
 _CONTACT_RE = re.compile(r"^[A-Za-z0-9._%+\-@:/~?=&#]{3,120}$")
 HTML_MAX_BYTES = 1_500_000
 IMAGE_MAX_BYTES = 20_000_000
-TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+# A conexão inclui o aperto de mão TLS: CDNs de notícia (futurecdn: PC Gamer, GamesRadar) chegam a levar ~10 s nele.
+TIMEOUT = httpx.Timeout(10.0, connect=12.0)
 WALL_CLOCK_S = 20.0
 """Teto de relógio do fetch inteiro (redirecionamentos e leitura do corpo)."""
 MAX_REDIRECTS = 4

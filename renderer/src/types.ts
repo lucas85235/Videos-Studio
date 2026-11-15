@@ -50,14 +50,17 @@ export type StampPlace = 'left' | 'right' | 'low';
 
 /**
  * Cartão de notícia desenhado pelo app (nunca captura de tela), só na cena dona da notícia. Os textos já vêm no idioma
- * do vídeo: `date` formatada ("14 nov. 2026"), `headline` sem aspas (o cartão põe), `image` é o caminho relativo do
- * og:image original (miniatura dentro do cartão; o `src` da cena é a mesma imagem enquadrada, para o fundo).
+ * do vídeo: `date` formatada ("14 nov. 2026"), `headline` sem aspas (o cartão põe quando `quoted`), `image` é o
+ * caminho relativo do og:image original (miniatura dentro do cartão; o `src` da cena é a mesma imagem enquadrada,
+ * para o fundo).
  */
 export type TimelineNews = {
   outlet: string;
   headline: string;
   date?: string;
   image?: string;
+  /** A manchete é a do veículo, literal: vai entre aspas. Traduzida ou editada (ou ausente), sem aspas. */
+  quoted?: boolean;
 };
 
 export type TimelineScene = {

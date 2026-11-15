@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -155,7 +156,7 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
     assert compare["items"] == [{"label": "Trailer 1 · só YouTube", "value": "90 MI"},
                                 {"label": "Trailer 2 · todas as plataformas", "value": "475 MI"}]
     assert scenes[8].kind == "title" and scenes[8].overlay_text == {"pt-BR": "Recorde no YouTube"}
-    assert scenes[8].card.resolved("pt-BR") == {"stamp": "RECORDE"}
+    assert scenes[8].card is None  # o carimbo "RECORDE" só repetia o título da cena: saiu
     # "Agora, o segredo." fica numa imagem; o cartão do 2 começa em "Depois de dois adiamentos"
     assert scenes[15].kind == "image" and storyboard_check.has_own_image(scenes[15]) and scenes[15].span == 3
     assert scenes[16].kind == "stat" and scenes[16].card.resolved("pt-BR") == {
@@ -168,8 +169,12 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
     assert "lucia" not in scenes[14].visual.prompt.lower()
 
     assert review["counts"] == {"scenes": 21, "new_images": 10, "reused": 11, "cards": 8, "budget": 11, "est_seconds": 350}
+    # a imagem de maio de 2025 fica em 3 cenas seguidas (~9 s) e o roteiro (do estilo de mistério) fecha com a chamada
+    # do outro estilo: só avisos, sem pedir correção
     assert [(i["code"], i["severity"], i["scene_id"]) for i in review["issues"]] == [
-        ("nome_no_prompt", "corrigido", scenes[14].id), ("personagem_sem_rosto", "corrigido", None)], review["issues"]
+        ("imagem_seguida", "aviso", scenes[11].id), ("cta_outro_estilo", "aviso", None),
+        ("nome_no_prompt", "corrigido", scenes[14].id), ("personagem_sem_rosto", "corrigido", None),
+        ("carimbo_repetido", "corrigido", scenes[8].id)], review["issues"]
     assert review["retried"] is False
     assert (review["style_fit"], review["style_note"], review["suggested_style"]) == ("ok", art.style_note, None)
     assert new_doc.storyboard_approved is False
@@ -476,7 +481,11 @@ def test_check_warns_repeated_motif_and_too_many_cards(monkeypatch):
     data["direction"]["avoid"] = []
     _, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
     warnings = {i["code"]: i for i in review["issues"] if i["severity"] == "aviso"}
-    assert set(warnings) == {"motivo_repetido", "cartoes_seguidos", "cartoes_demais"}
+    assert set(warnings) == {"motivo_repetido", "cartoes_seguidos", "cartoes_demais", "imagem_seguida",
+                             "cta_outro_estilo"}
+    # os cartões seguidos ficam todos sobre a imagem do gancho
+    same = [i["message"] for i in review["issues"] if i["code"] == "imagem_seguida"]
+    assert any(m.startswith("A mesma imagem fica em 4 cenas seguidas (cenas 14 a 17") for m in same), same
     motifs = [i for i in review["issues"] if i["code"] == "motivo_repetido"]
     assert any('"hourglass" aparece em 5 de' in i["message"] for i in motifs)
     assert all(i["scene_id"] is None for i in motifs) and len(motifs) <= 3
@@ -1035,6 +1044,53 @@ def test_check_sources_drops_a_source_that_is_not_in_the_script():
         "Um título bem comprido de fonte que")
 
 
+def test_check_sources_with_two_sources_of_the_same_name():
+    """Dois posts do mesmo site viram o mesmo nome curto: o cartão que cita esse nome vale se um deles traz o número
+    (antes saía "está na fonte "Rockstar Newswire", não em "Rockstar Newswire"")."""
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    doc = gta_doc()
+    doc.sources = [Source(title="Rockstar Newswire — Trailer 1", note="primeiro trailer em dezembro de 2023"),
+                   Source(title="Take-Two — resultados", note="200 milhões de cópias"),
+                   Source(title="Rockstar Newswire — Trailer 2", note="475 milhões de visualizações em 24 horas")]
+    doc.scenes = [Scene(id="scn_a", segment_id=doc.segments[1].id, kind="stat", visual=Visual(type="none"),
+                        card=SceneCard(value={"pt-BR": "475 MI"}, source="Rockstar Newswire"))]
+    beat = storyboard_check.Beat(key=f"{doc.segments[1].id}:0", segment_id=doc.segments[1].id, part=0, parts=1,
+                                 index=1, role="body", words=GTA[1].split(), seconds=3.0)
+    assert storyboard_check._check_sources(doc, [beat]) == []
+    assert doc.scenes[0].card.source == "Rockstar Newswire"
+    # O número só está em outras duas fontes com o mesmo nome: o cartão passa a citar esse nome.
+    doc.sources = [Source(title="Guinness World Records — recorde", note="recorde de 2023"),
+                   Source(title="Rockstar Newswire — Trailer 2", note="475 milhões de visualizações"),
+                   Source(title="Rockstar Newswire — balanço", note="475 milhões de visualizações em um dia")]
+    doc.scenes[0].card.source = "Guinness World Records"
+    issues = storyboard_check._check_sources(doc, [beat])
+    assert doc.scenes[0].card.source == "Rockstar Newswire" and [i.code for i in issues] == ["fonte_trocada"]
+
+
+def test_stamp_that_repeats_the_scene_title_is_dropped():
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    doc = gta_doc()
+    seg = doc.segments[2].id
+    doc.scenes = [
+        Scene(id="scn_a", segment_id=seg, kind="title", visual=Visual(type="none"),
+              overlay_text={"pt-BR": "RECORDE NO YOUTUBE"}, card=SceneCard(stamp={"pt-BR": "RECORDE"})),
+        Scene(id="scn_b", segment_id=seg, part=1, parts=3, kind="stat", visual=Visual(type="none"),
+              card=SceneCard(value={"pt-BR": "2"}, label={"pt-BR": "adiamentos do lançamento"},
+                             stamp={"pt-BR": "ADIADO"})),
+        Scene(id="scn_c", segment_id=seg, part=2, parts=3, kind="image", visual=Visual(type="none"),
+              card=SceneCard(headline={"pt-BR": "TRAILER 1 · DEZ 2023"}, stamp={"pt-BR": "2013"})),
+    ]
+    beats = [storyboard_check.Beat(key=f"{seg}:{i}", segment_id=seg, part=i, parts=3, index=2, role="body",
+                                   words=GTA[2].split(), seconds=3.0) for i in range(3)]
+    issues = storyboard_check.fix_echo_stamps(doc, beats)
+    assert [(i.code, i.scene_id) for i in issues] == [("carimbo_repetido", "scn_a")]
+    assert issues[0].message == 'O carimbo "RECORDE" só repetia "RECORDE NO YOUTUBE" na mesma cena: saiu.'
+    assert doc.scenes[0].card is None
+    assert doc.scenes[1].card.stamp == {"pt-BR": "ADIADO"} and doc.scenes[2].card.stamp == {"pt-BR": "2013"}
+
+
 def test_headline_that_only_repeats_the_beat_is_dropped(monkeypatch):
     doc = gta_doc()
     data = load_fixture(doc)
@@ -1078,3 +1134,148 @@ def test_motifs_count_world_words_and_es_plurals(monkeypatch):
     motifs = [i["message"] for i in review["issues"] if i["code"] == "motivo_repetido"]
     # palavra do mundo repetida em quase toda imagem conta (antes ficava de fora); cor continua de fora
     assert any('"boardwalk" aparece em 6 de 10' in m for m in motifs), motifs
+
+
+# --- crítica do vídeo do GTA 6 (15/11/2026): mundo, fonte solta, mesma imagem seguida, chamada final e datas ----------
+
+
+def test_system_prompt_keeps_the_world_to_the_setting_and_spreads_reuse():
+    system = " ".join(authoring.STORYBOARD_SYSTEM.split())
+    # o app junta o world a toda imagem nova: só lugar e época, curto; o resto vira entidade ou vai no prompt da cena
+    assert "world: só o cenário, lugar e época, em até 20 palavras" in system
+    assert "nada de pessoas, objetos ou ações nele" in system and "vira entidade (só entra nas imagens que a citam)" in system
+    assert "pessoas genéricas do assunto" not in system
+    assert "no máximo 3 batidas seguidas na mesma imagem" in system
+
+
+def test_card_left_with_only_a_source_is_dropped(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    # a faixa só repete a fala e sai; a fonte, sem nada que ela apoie, ficaria sozinha na tela ("Fonte: Take-Two")
+    scene_data(data, doc, "4:0").update({"headline": "LEONIDA · VICE CITY", "source_ref": 1})
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    scene = new_doc.ordered_scenes()[13]
+    assert scene.card is None
+    lone = next(i for i in review["issues"] if i["code"] == "fonte_solta")
+    assert (lone["severity"], lone["scene_id"]) == ("corrigido", scene.id)
+    assert lone["message"] == ('A fonte "Take-Two" ficava sozinha na cena, sem número, faixa nem texto que ela '
+                               "apoiasse: saiu.")
+    assert "faixa_repetida" in codes(review, "corrigido") and len(fake.calls) == 1
+    assert new_doc.ordered_scenes()[3].card.source == "Take-Two"  # o cartão com número fica com a fonte
+
+
+def test_lone_source_check_keeps_text_cards_and_drops_empty_ones_quietly():
+    from studio.core.project.document import MediaRef, Scene, SceneCard, Visual
+
+    doc = gta_doc()
+    seg = doc.segments[1].id
+    doc.scenes = [
+        Scene(id="scn_img", segment_id=seg, part=0, parts=5, kind="image", visual=Visual(prompt="A desk."),
+              card=SceneCard(source="Take-Two")),
+        Scene(id="scn_text", segment_id=seg, part=1, parts=5, kind="text", visual=Visual(reuse_of="scn_img"),
+              card=SceneCard(source="Take-Two")),
+        Scene(id="scn_empty", segment_id=seg, part=2, parts=5, kind="image", visual=Visual(prompt="A shelf."),
+              card=SceneCard(highlight=1)),
+        Scene(id="scn_news", segment_id=seg, part=3, parts=5, kind="image", visual=Visual(
+            prompt="A desk.", media=MediaRef(kind="news", outlet="IGN Brasil")), card=SceneCard(source="IGN Brasil")),
+        Scene(id="scn_locked", segment_id=seg, part=4, parts=5, kind="image", locked=True,
+              visual=Visual(prompt="A car."), card=SceneCard(source="Take-Two")),
+    ]
+    beats = [storyboard_check.Beat(key=f"{seg}:{i}", segment_id=seg, part=i, parts=5, index=1, role="body",
+                                   words=GTA[1].split(), seconds=2.0) for i in range(5)]
+    issues = storyboard_check.fix_lone_sources(doc, beats)
+    assert [(i.code, i.scene_id) for i in issues] == [("fonte_solta", "scn_img")]  # o cartão vazio sai sem aviso
+    assert doc.scene("scn_img").card is None and doc.scene("scn_empty").card is None
+    # a fala em destaque, o cartão de notícia e a cena travada ficam com a fonte
+    assert [doc.scene(s).card.source for s in ("scn_text", "scn_news", "scn_locked")] == ["Take-Two", "IGN Brasil",
+                                                                                         "Take-Two"]
+
+
+def _same_image_doc(seconds: list[float], *, locked: bool = False) -> tuple[ProjectDoc, list]:
+    """Cena 1 com imagem nova, as seguintes reaproveitando (em cadeia, com um cartão no meio) e a última com outra."""
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    n = len(seconds)
+    doc = ProjectDoc(id="prj_s", title="t", topic="t", style_id=GAMES, seed=1,
+                     segments=[Segment(id="seg_a", role="body", text={"pt-BR": " ".join(["palavra"] * (2 * n))})])
+    scenes = [Scene(id="scn_0", segment_id="seg_a", part=0, parts=n, span=2, visual=Visual(prompt="A desk."))]
+    for k in range(1, n - 1):
+        kind = "stat" if k == 2 else "image"
+        scenes.append(Scene(id=f"scn_{k}", segment_id="seg_a", part=k, parts=n, span=2, kind=kind,
+                            visual=Visual(reuse_of=f"scn_{k - 1}"),
+                            card=SceneCard(value={"pt-BR": "2"}) if kind == "stat" else None))
+    scenes.append(Scene(id=f"scn_{n - 1}", segment_id="seg_a", part=n - 1, parts=n, span=2,
+                        visual=Visual(prompt="A car.")))
+    for scene in scenes:
+        scene.locked = locked
+    doc.scenes = scenes
+    beats = [] if locked else [
+        storyboard_check.Beat(key=f"seg_a:{k}", segment_id="seg_a", part=k, parts=n, index=0, role="body",
+                              words=["palavra", "palavra"], seconds=s) for k, s in enumerate(seconds)]
+    return doc, beats
+
+
+def test_same_image_on_too_many_scenes_in_a_row_is_a_warning():
+    style = get_style(GAMES)
+    # 4 cenas seguidas na mesma imagem (a raiz da cadeia de reaproveitamento, contando o cartão sobre ela)
+    doc, beats = _same_image_doc([2.0, 2.0, 2.0, 2.0, 2.0])
+    issues = storyboard_check._check_same_image(doc, style, beats)
+    assert [(i.code, i.severity, i.scene_id) for i in issues] == [("imagem_seguida", "aviso", "scn_3")]
+    assert issues[0].message == ("A mesma imagem fica em 4 cenas seguidas (cenas 1 a 4, ~8,0 s; o limite é 3): alterne "
+                                 "com imagem nova ou mídia real.")
+    # 3 cenas, mas mais de 8 s na mesma imagem: a 3ª passa do limite
+    doc, beats = _same_image_doc([3.5, 3.0, 2.5, 2.0])
+    issues = storyboard_check._check_same_image(doc, style, beats)
+    assert [(i.scene_id, i.scene_key) for i in issues] == [("scn_2", "seg_a:2")]
+    assert issues[0].message == ("A mesma imagem fica ~9,0 s na tela, em 3 cenas seguidas (cenas 1 a 3; o limite é 8 s): "
+                                 "alterne com imagem nova ou mídia real.")
+    # até 3 cenas e 8 s: vale (a imagem nova seguinte não conta)
+    doc, beats = _same_image_doc([3.0, 2.5, 2.5, 4.0])
+    assert storyboard_check._check_same_image(doc, style, beats) == []
+    # só cenas travadas: ficam como o usuário deixou
+    doc, beats = _same_image_doc([2.0] * 6, locked=True)
+    assert storyboard_check._check_same_image(doc, style, beats) == []
+    # vídeo longo (batidas de 4 a 7 s): uma imagem e o cartão sobre ela não passam do limite; 4 cenas passam
+    long_style = get_style("documentario-sombrio")
+    assert storyboard_check.same_image_seconds(long_style) == 21.0
+    doc, beats = _same_image_doc([5.5, 5.5, 6.0, 4.0])
+    assert storyboard_check._check_same_image(doc, long_style, beats) == []
+    doc, beats = _same_image_doc([5.0, 5.0, 5.0, 5.0, 4.0])
+    assert [i.code for i in storyboard_check._check_same_image(doc, long_style, beats)] == ["imagem_seguida"]
+
+
+def test_cta_from_another_style_is_a_warning():
+    doc = gta_doc()  # roteiro escrito no estilo de mistério, projeto agora no de games
+    games = get_style(GAMES)
+    issues = storyboard_check._check_cta(doc, games)
+    assert [(i.code, i.severity) for i in issues] == [("cta_outro_estilo", "aviso")]
+    assert issues[0].message == (
+        'A chamada final "Siga para descobrir o próximo mistério." é do estilo Mistérios Sombrios: Short. A do estilo '
+        'atual, Games e Cultura Pop (Short), é "Siga para mais novidades de games.": ajuste o fim do roteiro.')
+    assert storyboard_check._check_cta(doc, get_style("misterios-short")) == []
+    doc.segments[-1].text["pt-BR"] = "E aí, vai jogar? Siga para mais novidades de games!"
+    assert storyboard_check._check_cta(doc, games) == []
+    # estilo do usuário sem chamada fixa: o aviso diz só de onde veio a chamada
+    doc = gta_doc()
+    mine = games.model_copy(deep=True)
+    mine.id, mine.name, mine.script.cta = "meu-estilo", "Meu estilo", None
+    message = storyboard_check._check_cta(doc, mine)[0].message
+    assert message.endswith("Mistérios Sombrios: Short. O estilo atual, Meu estilo, não tem essa chamada: ajuste o fim "
+                            "do roteiro.")
+
+
+def test_script_prompt_has_today_and_the_date_rule(monkeypatch):
+    answer = {"title": "GTA 6", "sources": [], "segments": [
+        {"role": "hook", "speaker": "narrator", "chapter": None, "number": None, "text": "GTA 6 chega quinta."}]}
+    fake = FakeLLM(answer)
+    monkeypatch.setattr(authoring, "_llm", fake)
+    new_doc, _ = authoring.generate_script(gta_doc(), get_style(GAMES), today=date(2026, 11, 15))
+    assert new_doc.segments[0].text == {"pt-BR": "GTA 6 chega quinta."}
+    call = fake.calls[0]
+    assert call["task"] == "script" and call["prompt"].startswith("Data de hoje: 2026-11-15\n")
+    system = " ".join(call["system"].split())
+    assert "Se o tema tem data marcada (lançamento, estreia, evento) perto de hoje, diga a data e quanto falta" in system
+    assert "Evite afirmação que vence em poucos dias" in system
+    # sem a data injetada, vale a de hoje
+    authoring.generate_script(gta_doc(), get_style(GAMES))
+    assert fake.calls[1]["prompt"].startswith(f"Data de hoje: {date.today().isoformat()}\n")

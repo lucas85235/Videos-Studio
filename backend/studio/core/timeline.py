@@ -19,11 +19,14 @@ from typing import Any
 
 from studio.core.hashing import hash_obj, seed_from
 from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
-from studio.core.project.document import ProjectDoc, Scene
+from studio.core.project.document import MediaRef, ProjectDoc, Scene
+from studio.core.project.media_edit import scene_label
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
 from studio.core.text import normalize_token, span_ranges, split_word_indices
+from studio.media.link_preview import _SEPARATORS as _HEADLINE_SEPARATORS
+from studio.media.link_preview import clean_headline, site_label
 from studio.providers.base import Word
 
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
@@ -59,6 +62,9 @@ REVEAL_POP_S = 0.3
 PERSON_SHOTS = frozenset({"medium", "close", "low_angle", "over_shoulder"})
 # Câmera da foto real sem movimento escolhido: só movimentos suaves (a foto não é feita para pan nem soco de zoom).
 REAL_MOTIONS = ("ken_burns_in", "ken_burns_out", "drift")
+# Tempo para ler a manchete do cartão de notícia: por palavra, mais a entrada do cartão (abaixo disso, aviso no build).
+NEWS_READ_WORD_S = 0.3
+NEWS_READ_BASE_S = 0.6
 # Meses abreviados da data do cartão de notícia (idioma sem lista usa o inglês).
 NEWS_MONTHS: dict[str, tuple[str, ...]] = {
     "pt": ("jan.", "fev.", "mar.", "abr.", "mai.", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez."),
@@ -150,6 +156,10 @@ CAPTION_MIN_S = 0.6
 CAPTION_MERGE_S = 0.5
 # Linha curta (em maiúsculas) pode ter uma palavra a mais que `max_words_per_line`: "EM MAIO DE 2025,".
 CAPTION_EXTRA_CHARS = 18
+# Na rede de segurança, a linha que piscaria pode juntar com a vizinha da mesma frase até este tamanho.
+CAPTION_FLASH_CHARS = 24
+# Pontuação que o renderer tira do fim da linha (karaokê): não conta no tamanho.
+_TRAILING_PUNCT = ".,;:!?…\"“”"
 # Pesos da divisão (custo de cada linha; vence a divisão de menor custo total).
 _LINE_COST = 1.0
 _FUNCTION_END = 5.0
@@ -174,11 +184,13 @@ def _number_breaks(texts: list[str], lang: str) -> set[int]:
     return out
 
 
-def _line_fits(texts: list[str], max_words: int) -> bool:
-    """Cabe numa linha: até `max_words` palavras, ou uma a mais quando a linha inteira é curta."""
+def _line_fits(texts: list[str], max_words: int, max_chars: int = CAPTION_EXTRA_CHARS) -> bool:
+    """Cabe numa linha: até `max_words` palavras, ou uma a mais quando a linha inteira é curta (até `max_chars`
+    caracteres em maiúsculas, sem a pontuação do fim, que o renderer tira: "DE TODOS OS TEMPOS?" conta 18)."""
     if len(texts) <= max(1, max_words):
         return True
-    return len(texts) == max(1, max_words) + 1 and len(" ".join(texts).upper()) <= CAPTION_EXTRA_CHARS
+    chars = len(" ".join(texts).upper().rstrip(_TRAILING_PUNCT))
+    return len(texts) == max(1, max_words) + 1 and chars <= max_chars
 
 
 def _ends_phrase(text: str) -> bool:
@@ -242,32 +254,65 @@ def _split_sentence(sentence: list[Word], max_words: int, lang: str, end: float 
     return [sentence[a:b] for a, b in reversed(cuts)]
 
 
-def _merge_flashes(lines: list[list[Word]], max_words: int, end: float = math.inf) -> list[list[Word]]:
-    """Rede de segurança: linha que ainda fica menos de CAPTION_MERGE_S na tela entra na vizinha menor que
-    couber (de preferência da mesma frase). Só dentro da cena: as linhas são montadas por cena, e a última fica
-    até o fim da cena (`end`), se vier antes."""
+def _shown(line: list[Word], nxt: list[Word] | None, end: float) -> float:
+    """Quanto a linha fica na tela: até a próxima começar; a última, até 0,25 s depois da última palavra (sem
+    passar do fim da cena, `end`)."""
+    return (nxt[0].start if nxt else min(line[-1].end + 0.25, end)) - line[0].start
+
+
+def _merge_flashes(lines: list[list[Word]], max_words: int, end: float = math.inf,
+                   lang: str = "pt-BR") -> list[list[Word]]:
+    """Rede de segurança: linha que ainda fica menos de CAPTION_MERGE_S na tela some. Em ordem de preferência:
+
+    1. junta com a vizinha da mesma frase: no tamanho normal ou, para não piscar, com a palavra a mais até
+       CAPTION_FLASH_CHARS caracteres ("FOI AINDA | MAIS VISTO." → "FOI AINDA MAIS VISTO."); de preferência a menor;
+    2. pega uma palavra da vizinha da mesma frase ("A PRIMEIRA PROTAGONISTA | MULHER" → "A PRIMEIRA | PROTAGONISTA
+       MULHER"), sem a linha da frente terminar em palavra funcional nem partir número, e sem nenhuma das duas piscar;
+    3. por último, junta com a vizinha de outra frase, no tamanho normal (o fim da frase fica no meio da linha).
+
+    Só dentro da cena: as linhas são montadas por cena, e a última fica até o fim da cena (`end`), se vier antes."""
     out = [list(line) for line in lines if line]
+    fn = _function_words(lang)
     i = 0
     while i < len(out) and len(out) > 1:
-        nxt = out[i + 1][0].start if i + 1 < len(out) else min(out[i][-1].end + 0.25, end)
-        if nxt - out[i][0].start >= CAPTION_MERGE_S:
+        if _shown(out[i], out[i + 1] if i + 1 < len(out) else None, end) >= CAPTION_MERGE_S:
             i += 1
             continue
-        options = []
+        options: list[tuple[int, int, int, list[list[Word]]]] = []  # (preferência, tamanho da vizinha, índice, linhas)
         for k in (i - 1, i + 1):
             if not 0 <= k < len(out):
                 continue
-            left, right = (out[k], out[i]) if k < i else (out[i], out[k])
-            merged = left + right
-            if _line_fits([w.text for w in merged], max_words):
-                crosses = left[-1].text.rstrip(_CLOSERS).endswith(SENTENCE_END)
-                options.append((crosses, len(out[k]), k, merged))
+            low = min(i, k)
+            left, right = out[low], out[low + 1]
+            pair = left + right
+            texts = [w.text for w in pair]
+            if left[-1].text.rstrip(_CLOSERS).endswith(SENTENCE_END):
+                if _line_fits(texts, max_words):
+                    options.append((3, len(out[k]), k, [pair]))
+                continue
+            if _line_fits(texts, max_words):
+                options.append((0, len(out[k]), k, [pair]))
+            elif _line_fits(texts, max_words, CAPTION_FLASH_CHARS):
+                options.append((1, len(out[k]), k, [pair]))
+            if len(out[k]) < 2:
+                continue
+            cut = len(left) + 1 if k > i else len(left) - 1  # a palavra da vizinha passa para a linha que pisca
+            head, tail = pair[:cut], pair[cut:]
+            follow = out[low + 2] if low + 2 < len(out) else None
+            if (
+                _line_fits([w.text for w in (head if k > i else tail)], max_words, CAPTION_FLASH_CHARS)
+                and normalize_token(head[-1].text) not in fn
+                and cut not in _number_breaks(texts, lang)
+                and _shown(head, tail, end) >= CAPTION_MERGE_S
+                and _shown(tail, follow, end) >= CAPTION_MERGE_S
+            ):
+                options.append((2, len(out[k]), k, [head, tail]))
         if not options:
             i += 1
             continue
-        _, _, k, merged = min(options, key=lambda o: (o[0], o[1], o[2]))
+        _, _, k, replacement = min(options, key=lambda o: (o[0], o[1], o[2]))
         low = min(i, k)
-        out[low : low + 2] = [merged]
+        out[low : low + 2] = replacement
         i = low
     return out
 
@@ -291,7 +336,7 @@ def _caption_lines(words: list[Word], max_words: int, mode: str, lang: str = "pt
     lines: list[list[Word]] = []
     for sentence in sentences:
         lines.extend(_split_sentence(sentence, max_words, lang, end))
-    return _merge_flashes(lines, max_words, end)
+    return _merge_flashes(lines, max_words, end, lang)
 
 
 def digit_captions(doc: ProjectDoc) -> bool:
@@ -511,7 +556,7 @@ def build_timeline(
     total_frames = max(frame(total), scenes_out[-1]["from"] + scenes_out[-1]["durationInFrames"])
     scenes_out[-1]["durationInFrames"] = total_frames - scenes_out[-1]["from"]
 
-    return {
+    out: dict[str, Any] = {
         "version": 1,
         "lang": lang,
         "fps": fps,
@@ -528,6 +573,29 @@ def build_timeline(
         "sfx": sfx,
         "chapters": chapters,
     }
+    # Avisos para o usuário (o build junta aos do job e tira da timeline); só quando há.
+    warnings = news_reading_warnings(doc, lang, scenes_out, fps)
+    if warnings:
+        out["warnings"] = warnings
+    return out
+
+
+def news_reading_warnings(doc: ProjectDoc, lang: str, scenes: list[dict[str, Any]], fps: int) -> list[str]:
+    """Cenas com cartão de notícia que somem antes de dar para ler a manchete (NEWS_READ_WORD_S por palavra mais
+    NEWS_READ_BASE_S), com o tamanho que caberia no tempo da cena."""
+    tag = f" ({lang})" if len(doc.languages) > 1 else ""
+    out: list[str] = []
+    for scene in scenes:
+        n = len(((scene.get("news") or {}).get("headline") or "").split())
+        shown = scene["durationInFrames"] / fps
+        if not n or shown >= NEWS_READ_BASE_S + NEWS_READ_WORD_S * n - 1e-9:
+            continue
+        limit = int((shown - NEWS_READ_BASE_S) / NEWS_READ_WORD_S + 1e-9)
+        tip = f"encurte para até {limit} palavras" if limit >= 2 else "deixe a cena mais longa"
+        words = f"{n} palavra{'s' if n > 1 else ''}"
+        seconds = f"{shown:.1f}".replace(".", ",")
+        out.append(f"{scene_label(doc, scene['id'])}{tag}: a manchete da notícia ({words}) fica {seconds} s na tela; {tip}.")
+    return out
 
 
 def real_motion_pool(style: StyleSpec) -> dict[str, float]:
@@ -557,6 +625,28 @@ def news_date(published: str, lang: str) -> str:
     return f"{int(day)} {name} {year}"
 
 
+def _fold_headline(text: str) -> str:
+    return " ".join(text.split()).strip(' "“”«»').casefold()
+
+
+def verbatim_headline(media: MediaRef, headline: str) -> bool:
+    """A manchete mostrada é a do veículo, palavra por palavra? Compara (sem diferença de espaços e maiúsculas) com o
+    título da página, cru e limpo como na importação (`clean_headline`, sem o nome do site). Só então o cartão põe
+    aspas: a tradução ou a manchete reescrita pelo usuário não é citação."""
+    title = " ".join(media.title.split())
+    shown = _fold_headline(headline)
+    if not title or not shown:
+        return False
+    # O nome do site saiu na importação pelo og:site_name ou pelo host; o veículo pode ter sido editado depois
+    # ("IGN Brasil" → "IGN"). Vale também o título sem a primeira ou a última parte separada por " | ", " - " etc.
+    options = [title, clean_headline(title, media.outlet), clean_headline(title, site_label(media.page_url))]
+    for sep in _HEADLINE_SEPARATORS:
+        head, found, tail = title.rpartition(sep)
+        if found:
+            options += [head, title.partition(sep)[2]]
+    return shown in {_fold_headline(clean_headline(o)) for o in options if o.strip()} | {_fold_headline(title)}
+
+
 def _real_media_keys(doc: ProjectDoc, scene: Scene, lang: str, out: dict[str, Any]) -> None:
     """Crédito na tela (texto pronto) e cartão de notícia, só quando a cena mostra mídia real."""
     media = doc.shown_media(scene)
@@ -569,7 +659,8 @@ def _real_media_keys(doc: ProjectDoc, scene: Scene, lang: str, out: dict[str, An
         outlet = own.outlet.strip()
         headline = own.headline_for(lang, doc.primary_language).strip(' "“”«»')
         if outlet or headline:
-            news: dict[str, Any] = {"outlet": outlet, "headline": headline}
+            news: dict[str, Any] = {"outlet": outlet, "headline": headline,
+                                    "quoted": verbatim_headline(own, headline)}
             date = news_date(own.published, lang)
             if date:
                 news["date"] = date

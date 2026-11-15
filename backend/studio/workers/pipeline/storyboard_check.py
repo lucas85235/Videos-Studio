@@ -5,8 +5,10 @@
   prompt, número inventado no cartão, imagens novas quase todas na mesma hora do dia, imagem reaproveitada para
   outra data ou outro evento quando ainda há vaga para imagem nova);
 - corrigido: o código já arrumou no documento (plano repetido, gancho sem imagem nova, cartão sem fundo, carimbo
-  "INÉDITO", faixa que só repete a fala, fonte do cartão que não traz o número, personagem de ficção sem rosto);
-- aviso: o usuário vê, nada muda (motivo repetido, cartões seguidos ou demais, comparação de medidas diferentes).
+  "INÉDITO", faixa que só repete a fala, fonte do cartão que não traz o número ou que ficou sozinha, personagem de
+  ficção sem rosto);
+- aviso: o usuário vê, nada muda (motivo repetido, cartões seguidos ou demais, comparação de medidas diferentes, a
+  mesma imagem em cenas seguidas demais, chamada final de outro estilo).
 
 As correções mudam o `doc` recebido. Nada aqui chama serviço externo.
 """
@@ -29,7 +31,7 @@ from studio.core.styles.visual import (
     SHOTS,
     compositions_for_caption,
 )
-from studio.core.text import normalize_token, span_ranges
+from studio.core.text import estimate_seconds, normalize_token, span_ranges
 from studio.core.text import words as split_words
 from studio.workers.pipeline import lighting
 from studio.workers.pipeline.build import scene_needs_image
@@ -46,6 +48,19 @@ MAX_CARD_SHARE = 0.45
 MOTIF_SHARE = 0.30
 # Imagens novas no mesmo momento do dia (pôr do sol, noite...): acima disso o vídeo vira um papel de parede só.
 LIGHT_SHARE = 0.40
+# A mesma imagem (em tela cheia ou de fundo dos cartões) em cenas seguidas: acima disso o vídeo parece parado.
+MAX_SAME_IMAGE_SCENES = 3
+MAX_SAME_IMAGE_SECONDS = 8.0
+"""Teto de tempo na mesma imagem no short; no vídeo longo, com batidas de 4 a 7 s, vale 3 batidas longas
+(ver `same_image_seconds`)."""
+
+
+def same_image_seconds(style: StyleSpec) -> float:
+    """Tempo máximo na mesma imagem (cartões sobre ela contam): 8 s no short; no longo, 3 batidas do tamanho máximo
+    de plano do estilo, senão uma imagem com um cartão já passaria do limite."""
+    if style.format.type == "short":
+        return MAX_SAME_IMAGE_SECONDS
+    return max(MAX_SAME_IMAGE_SECONDS, MAX_SAME_IMAGE_SCENES * style.edit.shot_seconds.max)
 
 # Estilo e técnica no prompt: o app já acrescenta a linguagem visual e o tratamento. Palavras comuns ("canvas",
 # "palette", "style", "4K") só contam na forma técnica: "a canvas tent", "a retro style diner" e "a 4K TV" passam.
@@ -469,6 +484,39 @@ def fix_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     return issues
 
 
+def _echoes(short: str, text: str) -> bool:
+    """Todas as palavras de `short` (fora as de ligação) estão em `text`, número igual a número ("2013" não ecoa
+    "2023")."""
+    split = r"[\s·•|/—–:,.!?]+"
+    have = {normalize_token(t) for t in re.split(split, text or "")} - {""}
+    want = [n for t in re.split(split, short or "") if (n := normalize_token(t)) and n not in _FUNCTION_WORDS]
+    return bool(want) and all(n in have for n in want)
+
+
+def fix_echo_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Carimbo que só repete o texto grande da própria cena sai ("RECORDE" sobre o título "RECORDE NO YOUTUBE"): a
+    mesma palavra duas vezes na tela não acrescenta nada."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None:
+            continue
+        stamp = (scene.card.stamp.get(lang) or "").strip()
+        if not stamp:
+            continue
+        others = [scene.overlay_text.get(lang) or "", scene.card.headline.get(lang) or "",
+                  scene.card.label.get(lang) or ""]
+        echoed = next((t.strip() for t in others if t.strip() and _echoes(stamp, t)), None)
+        if echoed is None:
+            continue
+        scene.card.stamp = {}
+        scene.card = scene.card if scene.card.resolved(lang) else None
+        issues.append(Issue("carimbo_repetido", CORRIGIDO, f'O carimbo "{stamp}" só repetia "{echoed}" na mesma cena: saiu.',
+                            beat.key, scene.id))
+    return issues
+
+
 def _other_digits(scene: Scene, lang: str) -> bool:
     """A cena mostra algum número além da faixa (contador, cartão, itens, carimbo ou sobreposição)."""
     if scene.number is not None:
@@ -527,6 +575,42 @@ def fix_repeated_headlines(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         scene.card = scene.card if scene.card.resolved(lang) else None
         issues.append(Issue("faixa_repetida", CORRIGIDO, f'A faixa "{headline}" só repetia a fala da batida: saiu.',
                             beat.key, scene.id))
+    return issues
+
+
+# Cartões que mostram em destaque o texto da própria cena (o título, a citação, a fala, o contador).
+_TEXT_KINDS = ("title", "count", "quote", "text", "document")
+
+
+def _backs_scene_text(scene: Scene, lang: str) -> bool:
+    """A fonte apoia algo da própria cena fora do cartão (a mesma conta do renderer): o texto em destaque (título,
+    citação, contador, a fala em tipografia) ou o cartão de notícia da mídia real."""
+    if scene.kind in _TEXT_KINDS and ((scene.overlay_text.get(lang) or "").strip() or scene.kind == "text"
+                                      or (scene.kind == "count" and scene.number is not None)):
+        return True
+    media = scene.visual.media
+    return (scene.kind == "image" and media is not None and media.kind == "news"
+            and bool(media.outlet.strip() or media.headline_for(lang).strip()))
+
+
+def fix_lone_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Cartão que ficou só com a fonte sai, e a fonte com ele: sem número, faixa, carimbo nem texto da cena que ela
+    apoie, o "Fonte: X" solto sobre a imagem parece crédito da imagem. Acontece quando outra correção tira a faixa ou o
+    carimbo (`SceneCard.resolved` conta a fonte, então o cartão ficava). Cartão vazio sai sem aviso: não mostrava nada."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None:
+            continue
+        shown = scene.card.resolved(lang)
+        source = shown.pop("source", "")
+        if shown or (source and _backs_scene_text(scene, lang)):
+            continue
+        scene.card = None
+        if source:
+            issues.append(Issue("fonte_solta", CORRIGIDO, f'A fonte "{source}" ficava sozinha na cena, sem número, faixa '
+                                                          "nem texto que ela apoiasse: saiu.", beat.key, scene.id))
     return issues
 
 
@@ -1010,6 +1094,67 @@ def _check_reuse(doc: ProjectDoc, beats: list[Beat], budget: int | None) -> list
     return issues
 
 
+def _image_of(doc: ProjectDoc, scene: Scene) -> str | None:
+    """A imagem que a cena mostra (em tela cheia ou de fundo do cartão): a mídia real, a imagem fixada ou a da cena dona
+    da imagem. None: fundo animado."""
+    media = doc.shown_media(scene)
+    if media is not None and (media.asset or media.url):
+        return f"media:{media.asset or media.url}"
+    if scene.visual.asset:
+        return f"asset:{scene.visual.asset}"
+    root = doc.reuse_root(scene)
+    if root is None or root.visual.type == "none":
+        return None
+    return f"asset:{root.visual.asset}" if root.visual.asset else f"scene:{root.id}"
+
+
+def _check_same_image(doc: ProjectDoc, style: StyleSpec, beats: list[Beat]) -> list[Issue]:
+    """A mesma imagem em cenas seguidas demais (mais de `MAX_SAME_IMAGE_SCENES` cenas ou mais de
+    `MAX_SAME_IMAGE_SECONDS` de narração estimada, contando os cartões sobre ela): o vídeo parece parado. Aviso, sem
+    pedir correção (trocar por imagem nova gasta cota). Sequência só de cenas travadas fica como o usuário deixou."""
+    lang = doc.primary_language
+    wpm = style.script.words_per_minute.get(lang, 150)
+    by_scene = {scene.id: beat for beat in beats if (scene := scene_for(doc, beat)) is not None}
+    runs: list[list[tuple[int, Scene, float]]] = []
+    last: str | None = None
+    for position, scene in enumerate(doc.ordered_scenes(), 1):
+        image = _image_of(doc, scene)
+        beat = by_scene.get(scene.id)
+        seconds = beat.seconds if beat is not None else estimate_seconds(
+            " ".join(_scene_words(doc, scene, by_scene)), wpm, style.voice.speed)
+        if image is not None and image == last:
+            runs[-1].append((position, scene, seconds))
+        else:
+            runs.append([(position, scene, seconds)])
+        last = image
+    limit = same_image_seconds(style)
+    issues: list[Issue] = []
+    for run in runs:
+        total = sum(seconds for _p, _s, seconds in run)
+        if len(run) < 2 or (len(run) <= MAX_SAME_IMAGE_SCENES and total <= limit):
+            continue
+        if not any(scene.id in by_scene for _p, scene, _s in run):
+            continue
+        # A cena em que a sequência passa do limite (a que pede outra imagem).
+        acc, at = 0.0, run[-1][1]
+        for count, (_p, scene, seconds) in enumerate(run, 1):
+            acc += seconds
+            if count > MAX_SAME_IMAGE_SCENES or acc > limit:
+                at = scene
+                break
+        beat = by_scene.get(at.id)
+        shown = f"{total:.1f}".replace(".", ",")
+        where = f"cenas {run[0][0]} a {run[-1][0]}"
+        if len(run) > MAX_SAME_IMAGE_SCENES:
+            message = (f"A mesma imagem fica em {len(run)} cenas seguidas ({where}, ~{shown} s; o limite é "
+                       f"{MAX_SAME_IMAGE_SCENES}): alterne com imagem nova ou mídia real.")
+        else:
+            message = (f"A mesma imagem fica ~{shown} s na tela, em {len(run)} cenas seguidas ({where}; o limite é "
+                       f"{limit:.0f} s): alterne com imagem nova ou mídia real.")
+        issues.append(Issue("imagem_seguida", AVISO, message, beat.key if beat is not None else None, at.id))
+    return issues
+
+
 def _check_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     """A fonte do cartão precisa sustentar o número dele: o número está na fonte citada (título e nota) ou, se não
     está em fonte nenhuma, na narração. Se outra fonte (uma só) traz o número, o cartão passa a citar essa; se a fonte
@@ -1029,15 +1174,19 @@ def _check_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         if not values:
             continue
         cited = (card.source or "").strip()
-        ref = next((i for i, s in enumerate(sources) if cited.lower() in (labels[i].lower(), s.title.strip().lower())),
-                   None)
+        # Duas fontes podem ter o mesmo nome curto (dois posts do Rockstar Newswire): vale a que traz o número.
+        matches = [i for i, s in enumerate(sources) if cited.lower() in (labels[i].lower(), s.title.strip().lower())]
+        ref = next((i for i in matches if all(_known_number(v, backed[i]) for _t, v in values)),
+                   matches[0] if matches else None)
         missing = [(text, value) for text, value in values if ref is None or not _known_number(value, backed[ref])]
         if not missing:
             continue
-        others = [i for i in range(len(sources)) if i != ref and all(_known_number(v, backed[i]) for _t, v in values)]
+        others = [i for i in range(len(sources))
+                  if i not in matches and all(_known_number(v, backed[i]) for _t, v in values)]
+        other_labels = list(dict.fromkeys(labels[i] for i in others))
         text = missing[0][0]
-        if len(others) == 1:
-            card.source = labels[others[0]]
+        if len(other_labels) == 1:
+            card.source = other_labels[0]
             issues.append(Issue("fonte_trocada", CORRIGIDO, f'O número "{text}" está na fonte "{card.source}", não em '
                                                             f'"{cited}": o cartão passou a citar essa fonte.',
                                 beat.key, scene.id))
@@ -1077,6 +1226,34 @@ def _check_compare_units(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     return issues
 
 
+def _phrase(text: str) -> str:
+    """Texto para comparar frases: minúsculas, sem acento nem pontuação, uma palavra por espaço, com espaço nas
+    pontas (procurar " siga para " não acha "persiga para")."""
+    return " " + " ".join(t for t in (normalize_token(w) for w in split_words(text or "")) if t) + " "
+
+
+def _check_cta(doc: ProjectDoc, style: StyleSpec) -> list[Issue]:
+    """A chamada final do roteiro é a de outro estilo ("Siga para descobrir o próximo mistério." num vídeo de games): o
+    roteiro foi escrito com um estilo e o projeto trocou de estilo depois. Aviso: a narração é a do roteiro aprovado."""
+    from studio.core.styles.library import load_presets
+
+    if not doc.segments:
+        return []
+    closing = _phrase(doc.segments[-1].text_for(doc.primary_language))
+    own = (style.script.cta or "").strip()
+    if own and _phrase(own) in closing:
+        return []
+    for preset in load_presets().values():
+        cta = (preset.script.cta or "").strip()
+        if preset.id == style.id or not cta or _phrase(cta) == _phrase(own) or _phrase(cta) not in closing:
+            continue
+        now = (f'A do estilo atual, {style.name}, é "{own}"' if own
+               else f"O estilo atual, {style.name}, não tem essa chamada")
+        return [Issue("cta_outro_estilo", AVISO, f'A chamada final "{cta}" é do estilo {preset.name}. {now}: ajuste o '
+                                                 "fim do roteiro.")]
+    return []
+
+
 def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | None = None) -> list[Issue]:
     """Revisa as cenas das batidas: corrige o que dá (no próprio `doc`) e devolve os problemas.
 
@@ -1088,13 +1265,17 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     issues += fix_repeated_shots(doc, beats)
     issues += fix_flat_cards(doc, beats)
     issues += fix_stamps(doc, beats)
+    issues += fix_echo_stamps(doc, beats)
     issues += fix_repeated_headlines(doc, beats)
     issues += _check_sources(doc, beats)
+    issues += fix_lone_sources(doc, beats)
     issues += _check_numbers(doc, beats)
     issues += _check_prompts(doc, beats)
     issues += _check_lighting(doc, beats)
     issues += _check_reuse(doc, beats, budget)
+    issues += _check_same_image(doc, style, beats)
     issues += _check_motifs(doc, beats)
     issues += _check_cards(doc, beats)
     issues += _check_compare_units(doc, beats)
+    issues += _check_cta(doc, style)
     return issues

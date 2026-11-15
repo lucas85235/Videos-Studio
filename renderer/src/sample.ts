@@ -190,6 +190,7 @@ export const sampleProps: TimelineProps = {
         outlet: 'Jornal do Litoral',
         headline: 'Farol abandonado volta a acender sozinho depois de 40 anos apagado',
         date: '14 nov. 2026',
+        quoted: true,
       },
     },
   ],

@@ -242,7 +242,9 @@ def _texts(lines: list[list[Word]]) -> list[str]:
 
 
 def _fits(line: list[Word], max_words: int) -> bool:
-    return len(line) <= max_words or (len(line) == max_words + 1 and len(" ".join(w.text for w in line)) <= 18)
+    # A mesma regra do `_line_fits`: a pontuação do fim, que o renderer tira, não conta.
+    return len(line) <= max_words or (len(line) == max_words + 1
+                                      and len(" ".join(w.text for w in line).rstrip(".,;:!?…\"“”")) <= 18)
 
 
 def test_caption_lines_do_not_end_on_function_words():
@@ -272,6 +274,65 @@ def test_caption_lines_do_not_flash():
         for line, nxt in zip(lines, lines[1:], strict=False):
             assert nxt[0].start - line[0].start >= CAPTION_MERGE_S, _texts(lines)
         assert all(_fits(line, 3) for line in lines)
+
+
+def _timed(*spec: tuple[str, float, float]) -> list[Word]:
+    return [Word(text, start, end) for text, start, end in spec]
+
+
+def _shown(lines: list[list[Word]], end: float) -> list[float]:
+    """Quanto cada linha fica na tela (como no `_merge_flashes`): até a próxima, a última até o fim da cena."""
+    return [round((nxt[0].start if nxt else min(line[-1].end + 0.25, end)) - line[0].start, 3)
+            for line, nxt in zip(lines, [*lines[1:], None], strict=True)]
+
+
+def test_caption_flash_merges_with_one_more_word_when_needed():
+    # Cena que começa no meio da frase (corte por span): "MULHER" ficava 0,30 s e "FOI AINDA" 0,47 s, porque
+    # "MULHER DA ERA MODERNA" (21) e "FOI AINDA MAIS VISTO" (20) passavam das 18 letras da palavra a mais.
+    mulher = _timed(("mulher", 0.00, 0.26), ("da", 0.30, 0.40), ("era", 0.42, 0.60), ("moderna", 0.62, 1.05))
+    lines = _caption_lines(mulher, 3, "karaoke", "pt-BR", 1.10)
+    assert _texts(lines) == ["mulher da era moderna"]
+    foi = _timed(("O", 0.00, 0.08), ("segundo", 0.10, 0.52), ("trailer", 0.55, 0.95), ("foi", 0.98, 1.15),
+                 ("ainda", 1.17, 1.42), ("mais", 1.45, 1.68), ("visto.", 1.70, 2.08))
+    lines = _caption_lines(foi, 3, "karaoke", "pt-BR", 2.13)
+    assert _texts(lines) == ["O segundo trailer", "foi ainda mais visto."]
+    assert min(_shown(lines, 2.13)) >= CAPTION_MERGE_S
+    # o limite maior é só para não piscar: com tempo, a linha continua com no máximo 18 letras
+    slow = [Word(w.text, w.start * 2, w.end * 2) for w in foi]
+    assert _texts(_caption_lines(slow, 3, "karaoke", "pt-BR", 4.26)) == ["O segundo trailer", "foi ainda",
+                                                                         "mais visto."]
+
+
+def test_caption_width_ignores_the_trailing_punctuation():
+    # O renderer tira o "?" do fim: "DE TODOS OS TEMPOS" tem 18 letras e cabe com a palavra a mais. Antes contava 19:
+    # "DE TODOS" ficava 0,43 s (piscava) ou 0,55 s (curta, mas fora da rede de segurança).
+    flash = _timed(("de", 0.00, 0.10), ("todos", 0.12, 0.40), ("os", 0.43, 0.52), ("tempos?", 0.54, 1.00))
+    short = _timed(("de", 0.00, 0.12), ("todos", 0.14, 0.50), ("os", 0.55, 0.64), ("tempos?", 0.66, 1.10))
+    for words_ in (flash, short):
+        assert _texts(_caption_lines(words_, 3, "karaoke", "pt-BR", 1.30)) == ["de todos os tempos?"]
+
+
+def test_caption_flash_takes_a_word_from_its_own_sentence():
+    # A cena acaba logo depois de "mulher" (a frase segue na próxima): sozinha, ficava 0,30 s. Não cabe com a linha
+    # de antes ("A PRIMEIRA PROTAGONISTA MULHER"); pega a palavra "protagonista" dela.
+    words_ = _timed(("Com", 0.00, 0.18), ("Lucia,", 0.20, 0.62), ("a", 0.85, 0.90), ("primeira", 0.92, 1.32),
+                    ("protagonista", 1.40, 2.05), ("mulher", 2.08, 2.36))
+    lines = _caption_lines(words_, 3, "karaoke", "pt-BR", 2.38)
+    assert _texts(lines) == ["Com Lucia,", "a primeira", "protagonista mulher"]
+    assert min(_shown(lines, 2.38)) >= CAPTION_MERGE_S
+
+
+def test_caption_flash_stays_in_its_sentence():
+    # "A VOLTA" piscava e entrava na linha de outra frase ("LEONIDA. A VOLTA", que quebrava como "LEONIDA. A /
+    # VOLTA"); com a palavra a mais, fica na própria frase.
+    words_ = _timed(("Leonida.", 0.00, 0.55), ("A", 0.85, 0.92), ("volta", 0.94, 1.25), ("da", 1.29, 1.38),
+                    ("franquia.", 1.40, 1.90))
+    lines = _caption_lines(words_, 3, "karaoke", "pt-BR", 2.0)
+    assert _texts(lines) == ["Leonida.", "A volta da franquia."]
+    assert min(_shown(lines, 2.0)) >= CAPTION_MERGE_S
+    # sem opção na mesma frase, a linha que pisca ainda junta com a outra frase (no tamanho normal)
+    lone = _timed(("maio.", 0.00, 0.40), ("Mas", 0.70, 0.85))
+    assert _texts(_caption_lines(lone, 3, "karaoke", "pt-BR", 0.95)) == ["maio. Mas"]
 
 
 def test_caption_lines_keep_numbers_and_follow_the_language():

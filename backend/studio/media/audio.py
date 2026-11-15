@@ -469,6 +469,8 @@ _DUCK = "sidechaincompress=threshold=0.1:ratio=3:attack=15:release=250:makeup=1"
 MUSIC_FADES = {"short": (0.4, 0.3), "long": (2.0, 3.0)}
 """(entrada, saída) da trilha em s, contra o início e o fim reais do vídeo. No short a trilha já está alta no gancho
 e só some no último instante, então a emenda do loop não fica muda."""
+END_FADE_S = (0.15, 0.05)
+"""(fade, silêncio) no fim do master, depois do limitador: o mix nunca termina num corte seco."""
 TRUE_PEAK_DB = -1.0
 """Teto de pico real do mix final (dBTP)."""
 _LIMIT = 10 ** (-1.5 / 20)  # teto do limitador sobreamostrado; a folga até -1 dBTP cobre o AAC
@@ -510,10 +512,31 @@ def _gain_to(target: float, measured: float) -> float:
     return target - measured if math.isfinite(measured) and measured > _SILENT_LUFS else 0.0
 
 
+def _music_chain(highpass: float) -> str:
+    """Filtros da trilha antes do ganho, iguais na medida e no mix: mono (o mix é mono até o master; a trilha da
+    biblioteca vem em estéreo) e o passa-altas. O downmix é explícito (média dos dois canais): o automático do FFmpeg
+    muda de coeficiente conforme os filtros que vêm depois, e a medida e o mix chegavam a diferir 3 dB. Trilha mono
+    passa igual (vira estéreo com os dois canais iguais e volta)."""
+    return f"aformat=channel_layouts=stereo,pan=mono|c0=0.5*c0+0.5*c1,highpass=f={highpass:g}"
+
+
+def _music_gain(music: Path, music_db: float, highpass: float, total: float | None = None) -> float:
+    """Ganho (dB) que leva a trilha, já em mono e com o passa-altas, a `VOICE_LUFS + music_db + 10` LUFS.
+
+    O arquivo vem em -16 LUFS na banda toda, mas o passa-altas tira o bumbo e o baixo, e com eles uns 5 LU nos climas
+    animados. Medida depois do mesmo corte, a trilha fica onde `volume_db` diz em qualquer clima: com -16, 6 LU abaixo
+    da voz (antes do ducking). Com `total`, mede só o trecho que toca (o arquivo passa do fim do vídeo e termina em
+    fade).
+    """
+    head = ["-t", f"{total:.3f}"] if total else []
+    measured = _ebur128([*head, "-i", str(music), "-af", f"{_music_chain(highpass)},{_EBUR128}"])["lufs"]
+    return _gain_to(VOICE_LUFS + music_db + 10.0, measured)
+
+
 def _premix(
     voice: Path,
     music: Path | None,
-    music_db: float,
+    music_gain: float,
     ducking: bool,
     sfx: Path | None,
     total: float,
@@ -521,16 +544,23 @@ def _premix(
     highpass: float = MUSIC_HIGHPASS_HZ,
     voice_gain: float = 0.0,
 ) -> tuple[list[str], list[str]]:
-    """Entradas e grafo do FFmpeg até [mx]: voz (com `voice_gain` dB) + trilha (com ducking) + SFX, sem o master."""
+    """Entradas e grafo do FFmpeg até [mx]: voz (com `voice_gain` dB) + trilha (passa-altas, `music_gain` dB e
+    ducking) + SFX, sem o master.
+
+    Toda entrada segue em silêncio depois do fim (apad) e só o atrim depois do amix encerra o grafo: [mx] tem
+    exatamente `total` s. Sem isso, o sidechaincompress acabava junto com a voz (o sidechain) e jogava fora a trilha
+    que ainda estava no buffer, um pedaço diferente a cada execução (o FFmpeg decodifica as entradas em threads): o
+    fim do vídeo saía num corte seco, às vezes logo depois da narração.
+    """
     inputs = ["-i", str(voice)]
-    graph: list[str] = [f"[0:a]volume={voice_gain:.2f}dB[vn]"]
+    graph: list[str] = [f"[0:a]volume={voice_gain:.2f}dB,apad[vn]"]
     mix_inputs = ["[vout]"]
     if music is not None:
         inputs += ["-i", str(music)]
         fade_in, fade_out = (min(d, total / 4) for d in MUSIC_FADES["short" if short else "long"])
         graph.append(
-            f"[1:a]highpass=f={highpass:g},volume={music_db + 10.0:.1f}dB,afade=t=in:d={fade_in:.2f},"
-            f"afade=t=out:st={total - fade_out:.3f}:d={fade_out:.2f}[m]"
+            f"[1:a]{_music_chain(highpass)},volume={music_gain:.2f}dB,afade=t=in:d={fade_in:.2f},"
+            f"afade=t=out:st={total - fade_out:.3f}:d={fade_out:.2f},apad[m]"
         )
         if ducking:
             graph.append("[vn]asplit=2[vout][vsc]")
@@ -544,8 +574,11 @@ def _premix(
     if sfx is not None:
         idx = 1 + (1 if music is not None else 0)
         inputs += ["-i", str(sfx)]
-        mix_inputs.append(f"[{idx}:a]")
-    graph.append(f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:normalize=0:duration=first[mx]")
+        graph.append(f"[{idx}:a]apad[sx]")
+        mix_inputs.append("[sx]")
+    graph.append(
+        f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:normalize=0,atrim=end_sample={round(total * SAMPLE_RATE)}[mx]"
+    )
     return inputs, graph
 
 
@@ -564,9 +597,10 @@ def mix_tracks(
 ) -> Path:
     """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo.
 
-    A trilha (em -16 LUFS) entra com `music_db + 10` dB, depois do passa-altas `music_highpass` (ver
-    `music_highpass(clima)`) e antes do ducking. `total` é a duração do vídeo (padrão: a da voz posicionada); a trilha
-    sai em fade contra ele. `short` usa os fades curtos de `MUSIC_FADES`.
+    A trilha passa pelo passa-altas `music_highpass` (ver `music_highpass(clima)`) e, medida depois dele, vai a
+    `VOICE_LUFS + music_db + 10` LUFS antes do ducking (com -16, 6 LU abaixo da voz). `total` é a duração do vídeo
+    (padrão: a da voz posicionada): o arquivo dura exatamente isso, a trilha sai em fade contra ele e o master termina
+    com o fade curto de `END_FADE_S`. `short` usa os fades curtos de `MUSIC_FADES`.
 
     Só ganhos medidos (o loudnorm dinâmico de antes ficava ~1 LU abaixo do alvo): a voz vai a `VOICE_LUFS`, a
     referência da trilha e dos SFX; o mix é medido e o master aplica o ganho exato até `loudness`, com um limitador
@@ -574,14 +608,20 @@ def mix_tracks(
     """
     total = wav_duration(voice) if total is None else total
     voice_gain = _gain_to(VOICE_LUFS, _ebur128(["-i", str(voice), "-af", _EBUR128])["lufs"])
-    inputs, graph = _premix(voice, music, music_db, ducking, sfx, total, short, music_highpass, voice_gain)
+    music_gain = _music_gain(music, music_db, music_highpass, total) if music is not None else 0.0
+    inputs, graph = _premix(voice, music, music_gain, ducking, sfx, total, short, music_highpass, voice_gain)
     # Mede e limita já em estéreo (o mono vira dois canais a -3 dB): é o que o arquivo final tem.
     stereo = "[mx]aformat=channel_layouts=stereo"
+    # Depois do limitador e da volta a 48 kHz: duração exata de novo e um fade curto que acaba em silêncio antes do fim.
+    fade, silence = END_FADE_S
+    end = (f"apad,atrim=end_sample={round(total * SAMPLE_RATE)},"
+           f"afade=t=out:st={max(0.0, total - fade - silence):.3f}:d={fade:.3f}")
 
     def master(gain: float, out: str) -> str:
         return ";".join([*graph, (
             f"{stereo},volume={gain:.2f}dB,aresample={SAMPLE_RATE * 4},"
-            f"alimiter=limit={_LIMIT:.4f}:attack=5:release=50:level=false:latency=true,aresample={SAMPLE_RATE}{out}"
+            f"alimiter=limit={_LIMIT:.4f}:attack=5:release=50:level=false:latency=true,aresample={SAMPLE_RATE},"
+            f"{end}{out}"
         )])
 
     measured = _ebur128([*inputs, "-filter_complex", ";".join([*graph, f"{stereo},{_EBUR128}[lu]"]), "-map", "[lu]"])["lufs"]

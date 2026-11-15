@@ -32,13 +32,18 @@ const CHIP_LINE = 1.2;
 /** Meia altura do chip em fração da altura da tela (o painel e a legenda desviam dele). */
 export const creditChipHalf = (width: number, height: number) => (chipFont(width, height) * (CHIP_LINE + CHIP_PAD_Y * 2)) / 2 / height;
 
+/** Faixa de cima do vertical que o TikTok/Reels cobrem com a própria interface (e onde ficam logos da arte). */
+const TOP_UI = 0.13;
+
 /**
  * Lugar do chip: no horizontal, canto de baixo à direita (do lado oposto à fonte, que fica à esquerda); no vertical,
- * canto de cima à esquerda, logo abaixo da faixa do topo (`headBottom`, fração da altura) ou a 7% sem ela: longe da
- * coluna de botões da direita e dos 20% de baixo (nome do canal e descrição).
+ * canto de cima à esquerda, logo abaixo da faixa do topo (`headBottom`, fração da altura) e sempre abaixo dos 13% de
+ * cima (`TOP_UI`): longe da coluna de botões da direita e dos 20% de baixo (nome do canal e descrição).
  */
 export const creditChipPlace = (width: number, height: number, headBottom?: number): { corner: CreditCorner; y: number } =>
-  width > height ? { corner: 'bottom_right', y: 0.925 } : { corner: 'top_left', y: headBottom !== undefined ? headBottom + 0.035 : 0.07 };
+  width > height
+    ? { corner: 'bottom_right', y: 0.925 }
+    : { corner: 'top_left', y: Math.max(TOP_UI + creditChipHalf(width, height) + 0.01, headBottom !== undefined ? headBottom + 0.035 : 0) };
 
 /** Até quantas letras o fim do crédito (origem e licença) fica sempre inteiro. */
 const CREDIT_TAIL_MAX = 40;
@@ -144,7 +149,8 @@ const headlineLines = (text: string, size: number, maxWidth: number) =>
 
 /**
  * Cartão de notícia desenhado pelo app (nunca captura de tela): papel claro com barra na cor de destaque, veículo e
- * data, miniatura da imagem da notícia (quando há) e a manchete entre aspas. Fica no meio da faixa livre (`band`,
+ * data, miniatura da imagem da notícia (quando há) e a manchete — entre aspas só quando é a do veículo, literal
+ * (`quoted`); traduzida ou editada, sem aspas. Fica no meio da faixa livre (`band`,
  * entre a faixa do topo e a legenda) e encolhe se não couber. Sem veículo nem manchete, não desenha nada.
  */
 export const NewsCard: React.FC<{
@@ -172,9 +178,9 @@ export const NewsCard: React.FC<{
   const inner = panelW - pad * 2 - barW;
   const gap = pad * 0.55;
   const metaSize = u * (portrait ? 0.03 : 0.025);
-  const quoted = headline ? `“${headline}”` : '';
-  const headSize = headlineSize(quoted, inner, u * (portrait ? 0.064 : 0.05), u * (portrait ? 0.04 : 0.032), HEAD_LINES);
-  const headH = quoted ? headlineLines(quoted, headSize, inner) * headSize * HEAD_LINE_HEIGHT : 0;
+  const headText = headline && news.quoted === true ? `“${headline}”` : headline;
+  const headSize = headlineSize(headText, inner, u * (portrait ? 0.064 : 0.05), u * (portrait ? 0.04 : 0.032), HEAD_LINES);
+  const headH = headText ? headlineLines(headText, headSize, inner) * headSize * HEAD_LINE_HEIGHT : 0;
   const metaH = outlet || date ? metaSize * 1.25 : 0;
   const blocks = [metaH, headH].filter(Boolean).length + (image ? 1 : 0);
   const fixedH = pad * 2 + metaH + headH + gap * Math.max(0, blocks - 1);
@@ -239,7 +245,7 @@ export const NewsCard: React.FC<{
             />
           </div>
         ) : null}
-        {quoted ? (
+        {headText ? (
           <div
             style={{
               fontWeight: 700,
@@ -252,7 +258,7 @@ export const NewsCard: React.FC<{
               overflow: 'hidden',
             }}
           >
-            {quoted}
+            {headText}
           </div>
         ) : null}
       </div>

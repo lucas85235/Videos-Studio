@@ -113,6 +113,30 @@ def _download(url: str, dst: Path, timeout: float = 120) -> Path:
 # --------------------------------------------------------------------------------------------
 
 
+_CODEX_QUOTA = ("usage_limit_reached", "usage limit", "rate limit", " 429")
+_CODEX_RETRY_RE = re.compile(r"try again (?:at|in) ([^.\"}]{1,40})", re.IGNORECASE)
+
+
+def _codex_quota(lowered: str) -> bool:
+    """A saída do Codex diz que a cota do plano acabou ("You've hit your usage limit", `usage_limit_reached`)."""
+    return any(key in lowered for key in _CODEX_QUOTA)
+
+
+def _codex_quota_message(output: str) -> str:
+    """Mensagem da cota esgotada, com a hora em que o Codex diz que volta ("tente de novo: 3:43 PM")."""
+    found = _CODEX_RETRY_RE.search(output)
+    when = f" (o Codex libera de novo: {found.group(1).strip()})" if found else ""
+    return f"cota de imagens do Codex esgotada{when}"
+
+
+def _codex_tail(output: str, limit: int = 600) -> str:
+    """O fim da saída do Codex, numa linha só, para o log: as mensagens de erro (JSON "error"/"message") primeiro."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    errors = [line for line in lines if '"error"' in line or '"type":"turn.failed"' in line or "error:" in line.lower()]
+    text = " | ".join((errors or lines)[-4:])
+    return text[-limit:]
+
+
 class CodexCLIImage(ImageProvider):
     info = ProviderInfo(
         id="codex_cli",
@@ -161,12 +185,14 @@ class CodexCLIImage(ImageProvider):
                 raise TransientError("o Codex demorou demais para gerar a imagem") from exc
         output = (proc.stdout or "") + (proc.stderr or "")
         lowered = output.lower()
-        if "usage_limit_reached" in lowered or "rate limit" in lowered or " 429" in lowered:
-            raise QuotaExceeded("cota de imagens do Codex esgotada")
+        if _codex_quota(lowered):
+            raise QuotaExceeded(_codex_quota_message(output))
         new_files = codex_new_images(images_dir, before, started, proc.stdout or "")
         if not new_files:
             if "refus" in lowered or "can't help" in lowered or "não posso" in lowered:
                 raise Refused("o Codex recusou o pedido de imagem")
+            # A saída vai para o log: sem ela, "código 1" não diz se foi login, cota, versão ou recusa.
+            log.warning("o Codex terminou sem gerar imagem (código %s): %s", proc.returncode, _codex_tail(output))
             raise TransientError(f"o Codex terminou sem gerar imagem (código {proc.returncode})")
         newest = max(new_files, key=lambda p: p.stat().st_mtime)
         final = fit_image(newest, out_dir / "image.jpg", width, height)

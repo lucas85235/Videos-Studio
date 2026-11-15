@@ -714,7 +714,8 @@ class Builder:
         sfx_events = timeline.get("sfx", [])
         short = self.style.format.type == "short"
         music_hp = audio_mod.music_highpass(music[1].get("mood")) if music else None
-        # v2: trilha com passa-altas e ducking leve, fades contra o fim real, SFX normalizados e master com ganho medido.
+        # v3: trilha medida em mono depois do passa-altas; o mix dura exatamente o vídeo e termina num fade curto (v2:
+        # passa-altas e ducking leve, fades contra o fim real, SFX normalizados e master com ganho medido).
         inputs = {
             "voice": [(tts_hashes[n["segment_id"]], n["start"]) for n in timeline["narration"]],
             "music": (music[0], music[1]["volume_db"], self.style.audio.music.ducking, music_hp) if music else None,
@@ -723,7 +724,7 @@ class Builder:
             "loudness": self.style.audio.loudness_lufs,
             "total": total,
             "short": short,
-            "v": 2,
+            "v": 3,
         }
         h = hash_obj(inputs)
         cached = self.store.lookup("mix", h)
@@ -945,6 +946,7 @@ class Builder:
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
             timeline = build_timeline(doc, self.style, lang, clips, images)
+            self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")
             out_dir = self.outputs_dir(lang)

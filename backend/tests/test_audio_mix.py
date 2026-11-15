@@ -114,15 +114,20 @@ def test_generate_music_has_no_long_fade_in(tmp_path):
     assert _rms_db(x[int(0.1 * SR):int(0.6 * SR)]) > _rms_db(x[4 * SR:8 * SR]) - 6
 
 
-def _music_stem(tmp_path: Path, voice: Path, music: Path, music_db: float, ducking: bool, total: float) -> Path:
+def _music_stem(tmp_path: Path, voice: Path, music: Path, music_db: float, ducking: bool, total: float,
+                mood: str = "upbeat") -> Path:
     """A trilha depois do ducking, exatamente como entra no mix (o grafo de `_premix` sem o amix)."""
     voice_gain = audio._gain_to(audio.VOICE_LUFS, audio.measure_loudness(voice)["lufs"])
-    inputs, graph = audio._premix(voice, music, music_db, ducking, None, total, True, audio.music_highpass("upbeat"),
-                                  voice_gain)
+    highpass = audio.music_highpass(mood)
+    inputs, graph = audio._premix(voice, music, audio._music_gain(music, music_db, highpass), ducking, None, total, True,
+                                  highpass, voice_gain)
     label = "[md]" if ducking else "[m]"
-    body = ";".join([*graph[:-1], "[vout]anullsink"]).replace(label, "[stem]")
+    # Os ramos seguem em silêncio sem fim (apad): o atrim do amix vai para os dois, senão o FFmpeg não termina.
+    trim = f"atrim=end_sample={round(total * SR)}"
+    body = ";".join([*graph[:-1], f"[vout]{trim},anullsink", f"[st]{trim}[stem]"])
     out = tmp_path / f"stem_{int(ducking)}.wav"
-    run_ffmpeg([*inputs, "-filter_complex", body, "-map", "[stem]", "-ar", str(SR), "-c:a", "pcm_s16le", str(out)])
+    run_ffmpeg([*inputs, "-filter_complex", body.replace(label, "[st]"), "-map", "[stem]", "-ar", str(SR),
+                "-c:a", "pcm_s16le", str(out)])
     return out
 
 
@@ -132,9 +137,54 @@ def test_music_bed_stays_audible_under_voice(tmp_path):
     music = audio.generate_music("upbeat", 15.0, 7, tmp_path / "music.wav")
     ducked = _ebur128(_music_stem(tmp_path, voice, music, -16, True, total))["lufs"]
     plain = _ebur128(_music_stem(tmp_path, voice, music, -16, False, total))["lufs"]
-    # Antes: ~25 LU abaixo da voz (ducking de ~17 dB); agora a trilha fica audível e o ducking é leve.
-    assert 9 <= audio.VOICE_LUFS - ducked <= 18
+    # Antes: ~25 LU abaixo da voz (ducking de ~17 dB); depois, ~15 LU (o passa-altas comia ~5 LU da trilha). Agora
+    # a trilha fica ~6 LU abaixo da voz, como `volume_db` -16 diz, e o ducking é leve.
+    assert 5 <= audio.VOICE_LUFS - plain <= 7.5
+    assert 8 <= audio.VOICE_LUFS - ducked <= 13
     assert 1.5 <= plain - ducked <= 7
+
+
+@pytest.mark.parametrize(("mood", "music_db"), [("upbeat", -16.0), ("lofi", -22.0), ("drone", -19.0)])
+def test_music_bed_level_counts_the_highpass(tmp_path, mood, music_db):
+    """A trilha, já sem os graves, fica em VOICE_LUFS + volume_db + 10 (antes ficava ~5 LU abaixo nos climas animados)."""
+    total = 12.0
+    voice = _speech_like(tmp_path / "voice.wav", total)
+    music = audio.generate_music(mood, 15.0, 7, tmp_path / "music.wav")
+    bed = _ebur128(_music_stem(tmp_path, voice, music, music_db, False, total, mood), "atrim=1:11")["lufs"]
+    assert bed == pytest.approx(audio.VOICE_LUFS + music_db + 10, abs=0.5)
+
+
+def test_wide_stereo_bed_lands_on_target(tmp_path):
+    """Trilha da biblioteca vem em estéreo e o mix é mono: o downmix de um estéreo largo custa uns 3 LU. Medida em mono,
+    como toca, ela fica no alvo."""
+    total = 10.0
+    voice = _speech_like(tmp_path / "voice.wav", total)
+    music = tmp_path / "wide.wav"
+    run_ffmpeg(["-f", "lavfi", "-i", "anoisesrc=c=pink:seed=1:d=13:a=0.2", "-f", "lavfi", "-i",
+                "anoisesrc=c=pink:seed=2:d=13:a=0.2", "-filter_complex", "[0:a][1:a]amerge=inputs=2[s]", "-map", "[s]",
+                "-ar", str(SR), "-c:a", "pcm_s16le", str(music)])
+    bed = _ebur128(_music_stem(tmp_path, voice, music, -16, False, total), "atrim=1:9")["lufs"]
+    assert bed == pytest.approx(audio.VOICE_LUFS - 16 + 10, abs=0.5)
+
+
+def test_mix_tracks_applies_the_measured_music_gain(tmp_path, monkeypatch):
+    """O `mix_tracks` usa o ganho medido da trilha (mono, passa-altas do clima, só o trecho que toca), não o fixo de
+    antes (`music_db + 10`)."""
+    total = 6.0
+    voice = _speech_like(tmp_path / "voice.wav", total)
+    music = audio.generate_music("upbeat", 9.0, 7, tmp_path / "music.wav")
+    seen: dict[str, float] = {}
+    original = audio._premix
+
+    def spy(voice_, music_, music_gain, *args, **kwargs):
+        seen["gain"] = music_gain
+        return original(voice_, music_, music_gain, *args, **kwargs)
+
+    monkeypatch.setattr(audio, "_premix", spy)
+    audio.mix_tracks(voice, tmp_path / "mix.m4a", music=music, music_db=-16, total=total, short=True,
+                     music_highpass=100)
+    assert seen["gain"] == pytest.approx(audio._music_gain(music, -16, 100, total), abs=0.01)
+    assert seen["gain"] > -16 + 10 + 2  # o passa-altas de 100 Hz tira uns 5 LU da trilha animada, e o ganho devolve
 
 
 @pytest.mark.parametrize("short", [True, False])
@@ -154,6 +204,43 @@ def test_music_fades_follow_the_real_end(tmp_path, short):
         assert _rms_db(x[-int(0.6 * SR):-int(0.35 * SR)]) > mid - 4  # e a emenda do loop não fica muda
     else:
         assert start < mid - 8  # entrada lenta no vídeo longo
+
+
+def _tone_bed(path: Path, duration: float) -> Path:
+    """Trilha sintética do FFmpeg: acorde contínuo com grave, sem pausas (qualquer corte aparece no nível)."""
+    expr = "0.3*sin(2*PI*55*t)+0.12*sin(2*PI*220*t)+0.1*sin(2*PI*330*t)+0.08*sin(2*PI*440*t)"
+    run_ffmpeg(["-f", "lavfi", "-i", f"aevalsrc=exprs='{expr}':s={SR}:d={duration:.2f}", "-ac", "1", "-c:a", "pcm_s16le",
+                str(path)])
+    return path
+
+
+@pytest.mark.parametrize("voice_s", [None, 5.0])
+def test_mix_lasts_the_video_and_fades_out_the_same_way_every_time(tmp_path, voice_s):
+    """O fim do mix não depende de qual entrada o FFmpeg leu primeiro: dura `total`, com um fade curto e não um corte.
+
+    Antes, com ducking, o sidechaincompress acabava junto com a voz e descartava a trilha que estava no buffer: o mix
+    caía a seco em silêncio um pedaço antes do fim, diferente a cada execução. Com a voz mais curta que o vídeo, o
+    amix (duration=first) terminava o arquivo antes.
+    """
+    total = 7.37  # não fecha em quadros de AAC (1024 amostras)
+    voice = _speech_like(tmp_path / "voice.wav", voice_s or total)  # a voz posicionada tem o tamanho do vídeo
+    music = _tone_bed(tmp_path / "music.wav", total + 3)  # o balde da trilha passa do fim do vídeo
+    runs = [
+        decode_mono(audio.mix_tracks(voice, tmp_path / f"mix{i}.m4a", music=music, music_db=-16, total=total, short=True),
+                    SR)
+        for i in range(3)
+    ]
+    for x in runs:
+        assert abs(x.size - round(total * SR)) <= 1024  # um quadro de AAC
+        assert np.array_equal(x, runs[0])
+    x = runs[0]
+    win = int(0.025 * SR)
+    end = x.size - int(audio.END_FADE_S[1] * SR)
+    fade = [_rms_db(x[a:a + win]) for a in range(end - 6 * win, end, win)]  # 25 ms a 25 ms nos 150 ms do fade
+    assert fade[0] > -35  # a trilha ainda toca quando o fade começa
+    assert np.all(np.diff(fade) < 0)  # desce aos poucos...
+    assert fade[-1] > -70  # ...até o fim do fade, sem cair em silêncio antes
+    assert 20 * np.log10(np.abs(x[end:]).max() + 1e-9) < -50  # os últimos 50 ms ficam quietos
 
 
 # --- master ----------------------------------------------------------------------------------

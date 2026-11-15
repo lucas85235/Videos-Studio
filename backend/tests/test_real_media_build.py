@@ -185,3 +185,19 @@ def test_preview_with_media_has_credit_and_content_id_warning(no_ai_images, isol
     assert first["src"].startswith("cache/media/") and second["src"] == first["src"]
     assert first["credit"] == second["credit"] == "Imagem: Rockstar Games"
     assert "image" not in no_ai_images
+
+
+def test_news_headline_too_long_for_its_scene_warns_in_the_result(no_ai_images, isolated_settings):
+    # O aviso da linha do tempo chega ao resultado do job e não fica gravado no timeline.json.
+    pid = project({})
+    headline = "Rockstar confirma que GTA 6 chega em maio de 2026 com o maior mapa da série"
+    attach(pid, "scn_a", photo(pid, kind="news", source="link", editorial=True, outlet="IGN Brasil",
+                               title=headline, headline={"pt-BR": headline}, credit="IGN Brasil"))
+    attach(pid, "scn_c", photo(pid))  # sem imagem de IA no teste
+    job = get_runner().submit("preview", {}, pid, run_inline=True)
+    final = get_job(job["id"])
+    assert final and final["status"] == "done", final and final["error"]
+    result = final["result"]
+    assert any(w.startswith("Cena 1: a manchete da notícia (") for w in result["warnings"]), result["warnings"]
+    timeline = json.loads((isolated_settings.data_dir / result["langs"]["pt-BR"]["timeline"]).read_text(encoding="utf-8"))
+    assert "warnings" not in timeline

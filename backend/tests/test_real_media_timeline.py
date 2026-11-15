@@ -21,6 +21,7 @@ from studio.core.timeline import (
     news_date,
     resolve_scene,
 )
+from studio.media.link_preview import clean_headline
 from studio.providers.base import Word
 
 LEGACY_SCENE_KEYS = {"id", "kind", "motion", "transition", "seed", "look", "text", "number", "from", "durationInFrames",
@@ -87,8 +88,8 @@ def test_media_scene_has_the_credit_in_the_video_language():
 def test_news_card_only_on_its_own_image_scene():
     doc = _doc(media={"scn_2": NEWS})
     pt, en = _scenes(doc), _scenes(doc, "en-US")
-    assert pt["scn_2"]["news"] == {"outlet": "IGN Brasil", "headline": "GTA 6 bate recorde", "date": "14 nov. 2026",
-                                   "image": NEWS.asset}
+    assert pt["scn_2"]["news"] == {"outlet": "IGN Brasil", "headline": "GTA 6 bate recorde", "quoted": False,
+                                   "date": "14 nov. 2026", "image": NEWS.asset}
     assert en["scn_2"]["news"]["date"] == "Nov 14, 2026" and en["scn_2"]["news"]["headline"] == "GTA 6 breaks a record"
     assert pt["scn_2"]["credit"] == "Imagem: IGN Brasil"
     assert "news" not in pt["scn_4"] and pt["scn_4"]["credit"] == "Imagem: IGN Brasil"  # reaproveita: só o crédito
@@ -97,9 +98,57 @@ def test_news_card_only_on_its_own_image_scene():
     assert "news" not in stat and stat["credit"] == "Imagem: IGN Brasil"  # em cartão, só fundo e crédito
     no_image = _doc(media={"scn_2": NEWS.model_copy(update={"asset": None, "published": ""})})
     scene = _scenes(no_image)["scn_2"]
-    assert scene["news"] == {"outlet": "IGN Brasil", "headline": "GTA 6 bate recorde"} and "credit" not in scene
+    assert scene["news"] == {"outlet": "IGN Brasil", "headline": "GTA 6 bate recorde", "quoted": False}
+    assert "credit" not in scene
     empty = _doc(media={"scn_2": MediaRef(kind="news")})
     assert "news" not in _scenes(empty)["scn_2"]
+
+
+def test_news_card_quotes_only_the_outlet_headline():
+    # Aspas só na manchete do veículo, palavra por palavra (o título da página, limpo como na importação); a tradução
+    # e a manchete reescrita pelo usuário não são citação.
+    title = "GTA 6 bate recorde | IGN Brasil"
+    news = NEWS.model_copy(update={"title": title})
+    assert _scenes(_doc(media={"scn_2": news}))["scn_2"]["news"]["quoted"] is True
+    assert _scenes(_doc(media={"scn_2": news}), "en-US")["scn_2"]["news"]["quoted"] is False  # tradução
+
+    def quoted(headline: dict[str, str], lang: str = "pt-BR", **update) -> bool:
+        media = news.model_copy(update={"headline": headline, **update})
+        return _scenes(_doc(media={"scn_2": media}), lang)["scn_2"]["news"]["quoted"]
+
+    assert quoted({"pt-BR": "gta 6  BATE   recorde"})  # espaços e maiúsculas não contam
+    assert quoted({"pt-BR": title})  # o título cru também é a manchete do veículo
+    assert quoted({})  # sem manchete escrita, o cartão mostra o título
+    assert quoted({"pt-BR": "GTA 6 bate recorde"}, "en-US")  # vídeo em inglês com a manchete original
+    long_title = " ".join(f"palavra{i}" for i in range(20))
+    assert quoted({"pt-BR": clean_headline(long_title, "IGN Brasil")}, title=long_title)  # cortada com "…"
+    assert not quoted({"pt-BR": "GTA 6 quebra recorde"})  # reescrita pelo usuário
+    assert not quoted({"pt-BR": "GTA 6 bate recorde"}, title="")  # sem título (arquivo enviado): não dá para conferir
+    # veículo editado depois da importação ("IGN Brasil" → "IGN"): a manchete continua sendo a do veículo
+    assert quoted({"pt-BR": "GTA 6 bate recorde"}, outlet="IGN")
+    assert quoted({"pt-BR": "GTA 6 bate recorde"}, outlet="IGN", title="IGN Brasil - GTA 6 bate recorde")
+
+
+LONG_HEADLINE = "Rockstar confirma que GTA 6 chega em maio de 2026 com o maior mapa"
+
+
+def test_news_card_too_short_to_read_warns():
+    # Cena de 2 s; 14 palavras pedem 0,3 s cada mais 0,6 s (4,8 s): o aviso diz quanto cabe.
+    long = NEWS.model_copy(update={"headline": {"pt-BR": LONG_HEADLINE, "en-US": "Record for GTA 6"}})
+    timeline = _timeline(_doc(media={"scn_2": long}))
+    assert timeline["warnings"] == [
+        "Cena 3: a manchete da notícia (14 palavras) fica 2,0 s na tela; encurte para até 4 palavras."
+    ]
+    assert "warnings" not in _timeline(_doc(media={"scn_2": NEWS}))  # 4 palavras cabem (1,8 s)
+    assert "warnings" not in _timeline(_doc(media={"scn_2": long}), "en-US")
+    # com mais de um idioma, o aviso diz de qual manchete é
+    both = _doc(media={"scn_2": long.model_copy(update={"headline": {"pt-BR": "GTA 6 bate recorde",
+                                                                     "en-US": LONG_HEADLINE}})},
+                languages=["pt-BR", "en-US"])
+    assert "warnings" not in _timeline(both)
+    assert _timeline(both, "en-US")["warnings"] == [
+        "Cena 3 (en-US): a manchete da notícia (14 palavras) fica 2,0 s na tela; encurte para até 4 palavras."
+    ]
 
 
 def test_media_camera_is_smooth_and_follows_the_focus():
