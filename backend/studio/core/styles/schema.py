@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from studio.core.styles.visual import VISUAL_LANGUAGES, validate_languages
+
 
 class Family(StrEnum):
     still_cinema = "still_cinema"
@@ -61,6 +63,7 @@ CAMERA_MOVES = (
     "punch_zoom",
     "drift",
     "static",
+    "zoom_to",  # aproxima do foco da cena (Scene.focus); feito para imagem reaproveitada
 )
 TRANSITIONS = ("cut", "flash", "fade_black", "glitch", "light_leak", "zoom_blur", "film_burn", "static_burst")
 EFFECTS = (
@@ -92,7 +95,7 @@ GRADE_PRESETS = (
     "blood-red",
     "night-green",
 )
-SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video")
+SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare")
 
 
 class StrictModel(BaseModel):
@@ -217,6 +220,20 @@ class ArtSpec(StrictModel):
     sources_mix: dict[str, float] = {"ai_image": 1.0}
     photoreal: bool = False
     """Arte fotorrealista exige rótulo de conteúdo sintético nas plataformas."""
+    languages: list[str] = []
+    """Linguagens visuais preferidas (ids de `visual.VISUAL_LANGUAGES`), a primeira dominante. Vazio: livre."""
+
+    @field_validator("languages")
+    @classmethod
+    def _languages(cls, value: list[str]) -> list[str]:
+        return validate_languages(value)
+
+    @model_validator(mode="after")
+    def _photoreal_languages(self) -> ArtSpec:
+        # Sem fotorrealismo, as linguagens fotorrealistas são ignoradas (não derruba estilo com ajuste antigo).
+        if not self.photoreal:
+            self.languages = [x for x in self.languages if not VISUAL_LANGUAGES[x].photoreal]
+        return self
 
 
 class EffectSpec(StrictModel):
@@ -267,6 +284,9 @@ class TextCardSpec(StrictModel):
 
 class EditSpec(StrictModel):
     shot_seconds: Range = Range(min=2.0, max=3.5)
+    """Duração de cada cena (batida) em segundos: o storyboard corta a narração por frase nessa faixa."""
+    new_image_ratio: float = Field(default=0.5, ge=0.1, le=1.0)
+    """Fração das cenas que ganha imagem nova de IA (mínimo 3 por vídeo); o resto reaproveita ou é cartão."""
     camera: dict[str, float] = {"ken_burns_in": 3, "ken_burns_out": 2, "pan_left": 1, "pan_right": 1}
     transitions: dict[str, float] = {"cut": 6, "flash": 1}
     transition_seconds: float = Field(default=0.35, ge=0.05, le=2)

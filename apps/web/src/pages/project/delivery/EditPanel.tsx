@@ -5,6 +5,7 @@ import React from "react";
 import {
   api,
   type EditProposal,
+  type EditResult,
   JOB_LABELS,
   type ProjectDetail,
 } from "../../../api";
@@ -21,7 +22,7 @@ import {
   useToast,
 } from "../../../ui";
 import { createKeyedStore, useKeyedStore } from "../core/drafts";
-import { humanizeVersionMessage } from "../core/model";
+import { awaitingScenes, humanizeVersionMessage } from "../core/model";
 import type { ProjectTab } from "../types";
 import { describeOp } from "./editOps";
 import { guardUnload, isActive, trackName } from "./shared";
@@ -129,14 +130,16 @@ export const EditPanel: React.FC<{
     // Grava no rascunho do projeto: a proposta (paga) não se perde se o painel sair da tela no meio.
     onSuccess: (data) => patchDraft(projectId, { proposal: data }),
   });
+  // Cenas esperando a conferência: a edição fica salva, mas a prévia (que gera as imagens) espera a aprovação.
+  const scenesPending = awaitingScenes(detail);
   const apply = useMutation({
-    mutationFn: (p: EditProposal) =>
-      api.post(`/api/projects/${projectId}/edit/apply`, {
-        ops: p.ops,
-        summary: p.summary || instruction,
-        rebuild: true,
+    mutationFn: (vars: { proposal: EditProposal; rebuild: boolean }) =>
+      api.post<EditResult>(`/api/projects/${projectId}/edit/apply`, {
+        ops: vars.proposal.ops,
+        summary: vars.proposal.summary || instruction,
+        rebuild: vars.rebuild,
       }),
-    onSuccess: () =>
+    onSuccess: (result) =>
       client
         .invalidateQueries({ queryKey: ["project", projectId] })
         .then(() => {
@@ -145,10 +148,13 @@ export const EditPanel: React.FC<{
             instruction: "",
             onlyCurrent: false,
           });
+          // O servidor diz por que não atualizou a prévia (cenas por aprovar, estilo trocado).
           toast({
             tone: "good",
             title: "Edição aplicada",
-            description: "A prévia está sendo atualizada com a mudança.",
+            description: result.job
+              ? "A prévia está sendo atualizada com a mudança."
+              : (result.notice ?? "A mudança foi salva numa versão nova."),
           });
           // O botão "Aplicar" sumiu com a proposta: o foco volta para a instrução.
           window.requestAnimationFrame(() =>
@@ -178,9 +184,13 @@ export const EditPanel: React.FC<{
 
   const ctx = { doc, sceneIndex, trackName };
   const est = proposal?.estimate;
+  // Troca de estilo em cenas dirigidas: a direção de arte some e as imagens só saem depois de refazer as cenas.
+  const lostDirection = (est?.direction_missing?.length ?? 0) > 0;
+  const rebuild = !scenesPending && !lostDirection;
   // A narração da prévia sai da voz local: só a voz de API gasta cota.
   const spendsQuota = Boolean(
-    est &&
+    rebuild &&
+      est &&
       (est.images_missing.length > 0 || (est.tts_chars > 0 && !est.tts_local)),
   );
 
@@ -353,6 +363,9 @@ export const EditPanel: React.FC<{
 
           {est ? (
             <div className="flex flex-wrap gap-1.5" aria-label="Estimativa">
+              {lostDirection ? (
+                <Badge tone="warn">estilo novo: refaça as cenas</Badge>
+              ) : null}
               {est.images_missing.length ? (
                 <Badge>
                   {est.images_missing.length}{" "}
@@ -400,9 +413,9 @@ export const EditPanel: React.FC<{
                 icon={Check}
                 disabled={!proposal.ops.length || Boolean(applyBlock)}
                 busy={apply.isPending}
-                onClick={() => apply.mutate(proposal)}
+                onClick={() => apply.mutate({ proposal, rebuild })}
               >
-                Aplicar e atualizar prévia
+                {rebuild ? "Aplicar e atualizar prévia" : "Aplicar"}
               </Button>
               <Button
                 variant="ghost"
@@ -418,11 +431,15 @@ export const EditPanel: React.FC<{
             </div>
             <p className="text-xs text-subtle">
               {applyBlock ??
-                (spendsQuota
-                  ? est?.tts_local || !est?.tts_chars
-                    ? "Aplicar gera as imagens que faltam (gasta cota do provedor de imagem) e atualiza a prévia."
-                    : "Aplicar gera a narração e as imagens que faltam: gasta cota dos provedores de voz e imagem."
-                  : "Aplicar cria uma versão nova e atualiza a prévia.")}
+                (lostDirection
+                  ? "Aplicar troca o estilo e não gera imagens. Depois, refaça as cenas na aba Cenas: as imagens saem com a direção de arte nova."
+                  : scenesPending
+                    ? "Aplicar salva a mudança numa versão nova. As imagens e a prévia só são feitas quando você aprovar as cenas (aba Cenas)."
+                    : spendsQuota
+                      ? est?.tts_local || !est?.tts_chars
+                        ? "Aplicar gera as imagens que faltam (gasta cota do provedor de imagem) e atualiza a prévia."
+                        : "Aplicar gera a narração e as imagens que faltam: gasta cota dos provedores de voz e imagem."
+                      : "Aplicar cria uma versão nova e atualiza a prévia.")}
             </p>
           </div>
         </section>

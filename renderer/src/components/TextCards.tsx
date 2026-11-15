@@ -3,8 +3,9 @@ import { AbsoluteFill, Img, interpolate, random, spring, useCurrentFrame, useVid
 import { fontStack } from '../fonts';
 import type { CaptionWord, TextCardStyle, TimelineScene } from '../types';
 
-const useEntrance = (animation: TextCardStyle['animation'], seed: number) => {
-  const frame = useCurrentFrame();
+/** Entrada dos cartões conforme a animação do estilo (`delay` em quadros). */
+export const useEntrance = (animation: TextCardStyle['animation'], seed: number, delay = 0) => {
+  const frame = useCurrentFrame() - delay;
   const { fps } = useVideoConfig();
   const s = spring({ frame, fps, config: { damping: 15, stiffness: 140, mass: 0.7 } });
   switch (animation) {

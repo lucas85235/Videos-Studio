@@ -23,7 +23,7 @@ Onde ficam os arquivos: `%USERPROFILE%\VideosStudioData` (banco, cache, vídeos 
 ## 3. Primeiro vídeo (5 passos)
 
 1. **Novo projeto**: escreva um tema específico, escolha o estilo do seu nicho (o sugerido é *Curiosidades e Explicativo (Short)*; veja a lista na seção 7) e os idiomas, e deixe marcado "Gerar o roteiro agora".
-2. **Roteiro** (aba 1): leia, edite o que quiser, trave os segmentos que estão perfeitos e clique em **Aprovar roteiro e continuar**. O app gera o storyboard e a prévia.
+2. **Roteiro** (aba 1): leia, edite o que quiser, trave os segmentos que estão perfeitos e clique em **Aprovar e criar as cenas**. O app cria as cenas e para para você conferir na aba Cenas, antes de gastar a cota de imagens: a direção de arte do vídeo, quantas imagens são novas e quantas reaproveitam outra, os cartões de número e os avisos da revisão. Clique em **Aprovar cenas e gerar imagens** para gerar as imagens e a prévia. Para seguir direto, desmarque *Parar para eu conferir as cenas* no menu Automação (projetos criados antes dessa parada já seguem direto).
 3. **Prévia e edição** (aba 3): assista no player. A prévia é narrada pela **voz local grátis**, só para você conferir o conteúdo. Para mudar algo, escreva no chat, por exemplo "deixa a cena 5 mais clara" ou "legenda maior". Veja o que o agente propõe e quanto custa, e clique em **Aplicar**. Só o que mudou é refeito.
 4. **Renderizar vídeo** (botão no topo ou aba 4): grava a narração com a **voz do vídeo final** (a de API que você escolheu), gera o MP4 em blocos, a thumbnail e as legendas SRT.
 5. **Publicar** (aba 4): envie ao YouTube pela API oficial, ou prepare o pacote manual para TikTok, Instagram e outras redes.

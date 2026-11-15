@@ -42,6 +42,8 @@ const STATUS_META: Record<string, StatusMeta> = {
   draft: { label: 'Rascunho', tone: 'neutral', step: stepIndex('script'), next: 'Gerar o roteiro', waiting: false },
   script_review: { label: 'Roteiro para revisar', tone: 'warn', step: stepIndex('script'), next: 'Revisar e aprovar o roteiro', waiting: true },
   storyboard: { label: 'Cenas prontas', tone: 'info', step: stepIndex('preview'), next: 'Conferir as cenas e gerar a prévia', waiting: false },
+  // Parado na conferência das cenas (a parada vem ligada nos projetos novos): nada anda até o usuário aprovar.
+  storyboard_review: { label: 'Cenas para conferir', tone: 'warn', step: stepIndex('scenes'), next: 'Conferir e aprovar as cenas', waiting: true },
   preview_ready: { label: 'Prévia para aprovar', tone: 'warn', step: stepIndex('preview'), next: 'Assistir à prévia e aprovar o vídeo', waiting: true },
   rendered: { label: 'Vídeo pronto', tone: 'good', step: stepIndex('publish'), next: 'Vídeo pronto: baixar, publicar ou agendar', waiting: false },
 };

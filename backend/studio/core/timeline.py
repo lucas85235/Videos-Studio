@@ -16,13 +16,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from studio.core.hashing import hash_obj, seed_from
+from studio.core.numbers import merge_number_words
 from studio.core.project.document import ProjectDoc, Scene
 from studio.core.styles.library import pick_weighted
-from studio.core.styles.schema import StyleSpec
-from studio.core.text import split_word_indices
+from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
+from studio.core.styles.visual import FOCUS_POINTS, pick
+from studio.core.text import span_ranges, split_word_indices
 from studio.providers.base import Word
 
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
+# Cartões que entram com o som de impacto (quando a cena não escolheu outro).
+IMPACT_KINDS = ("title", "count", "stat", "compare")
+# Teto da gradação trocada pela direção de arte (a do estilo pode ser mais forte, a da direção não).
+ART_GRADE_MAX = 0.45
 SFX_FOR_TRANSITION = {
     "flash": "whoosh",
     "zoom_blur": "whoosh",
@@ -100,6 +106,24 @@ def _caption_lines(words: list[Word], max_words: int, mode: str) -> list[list[Wo
     return lines
 
 
+def digit_captions(doc: ProjectDoc) -> bool:
+    """Legenda e texto cinético com algarismos ('dois mil e treze' → '2013')?
+
+    Só nos documentos do storyboard novo (com direção de arte ou cortes por `span`): os antigos continuam
+    com a legenda de antes, e os blocos já renderizados não mudam.
+    """
+    return doc.art is not None or any(s.span is not None for s in doc.scenes)
+
+
+def scene_word_ranges(scenes: list[Scene], words: list[Word]) -> list[tuple[int, int]]:
+    """Faixas [início, fim) das palavras de cada cena: pelos spans do storyboard quando todas as cenas têm
+    (proporcionais se a contagem não bate, ex.: tradução), senão a divisão equilibrada antiga."""
+    spans = [s.span for s in scenes]
+    if spans and all(span is not None for span in spans):
+        return span_ranges([int(span) for span in spans], len(words))  # type: ignore[arg-type]
+    return split_word_indices(len(words), len(scenes), [w.text for w in words])
+
+
 def build_timeline(
     doc: ProjectDoc,
     style: StyleSpec,
@@ -129,6 +153,7 @@ def build_timeline(
     sfx: list[dict[str, Any]] = []
     chapters: list[dict[str, Any]] = []
     caption_style = style.edit.captions
+    digits = digit_captions(doc)
     for index, (seg, start, clip) in enumerate(placements):
         scenes = doc.scenes_of(seg.id)
         if not scenes:
@@ -141,7 +166,7 @@ def build_timeline(
         seg_end = placements[index + 1][1] if index + 1 < len(placements) else total
         n_scenes = len(scenes)
         min_step = 1.5 / fps
-        ranges = split_word_indices(len(abs_words), n_scenes, [w.text for w in abs_words])
+        ranges = scene_word_ranges(scenes, abs_words)
         bounds: list[float] = [seg_begin]
         for k in range(1, n_scenes):
             a = ranges[k][0] if k < len(ranges) else len(abs_words)
@@ -157,6 +182,8 @@ def build_timeline(
             s0, s1 = bounds[k], bounds[k + 1]
             f0, f1 = frame(s0), max(frame(s0) + 1, frame(s1))
             scene_words = [w for w in abs_words if s0 <= w.start < s1]
+            if digits:
+                scene_words = merge_number_words(scene_words, lang)
             scene_lines = []
             if caption_style.style != "none":
                 for part in _caption_lines(scene_words, caption_style.max_words_per_line, caption_style.style):
@@ -188,7 +215,7 @@ def build_timeline(
             scenes_out.append(resolved)
             if style.audio.sfx.auto and not (index == 0 and k == 0):
                 kind = scene.sfx or SFX_FOR_TRANSITION.get(resolved["transition"])
-                if scene.kind in ("title", "count") and not scene.sfx:
+                if scene.kind in IMPACT_KINDS and not scene.sfx:
                     kind = "impact"
                 if kind:
                     sfx.append({"type": kind, "start": round(max(0.0, s0 - 0.12), 3), "scene_id": scene.id})
@@ -232,7 +259,7 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     else:
         transition = scene.transition_in or pick_weighted(style.edit.transitions, seed_from(doc.seed, scene.id, "transition"))
     text = scene.overlay_text.get(lang) or scene.overlay_text.get(doc.primary_language) or ""
-    return {
+    out: dict[str, Any] = {
         "id": scene.id,
         "kind": scene.kind,
         "motion": motion,
@@ -242,6 +269,28 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
         "text": text,
         "number": scene.number,
     }
+    # Chaves novas só quando preenchidas: a cena antiga gera o mesmo dict (e o mesmo hash de bloco) de antes.
+    card = scene.card.resolved(lang, doc.primary_language) if scene.card is not None else {}
+    if card:
+        out["card"] = card
+    focus = pick(scene.focus, FOCUS_POINTS)
+    if focus:
+        out["focus"] = focus
+    return out
+
+
+def render_effects(style: StyleSpec, doc: ProjectDoc | None = None) -> list[dict[str, Any]]:
+    """Efeitos do estilo; a gradação da direção de arte (`doc.art.grade`) troca o preset do efeito `grade`
+    do estilo, com intensidade até `ART_GRADE_MAX`. Estilo sem efeito de cor continua sem."""
+    effects = [e.model_dump() for e in style.edit.effects]
+    grade = doc.art.grade if doc is not None and doc.art is not None else None
+    if grade in GRADE_PRESETS:
+        for effect in effects:
+            if effect["type"] == "grade":
+                effect["preset"] = grade
+                effect["amount"] = min(effect["amount"], ART_GRADE_MAX)
+                break
+    return effects
 
 
 def render_style(style: StyleSpec, doc: ProjectDoc | None = None) -> dict[str, Any]:
@@ -249,7 +298,7 @@ def render_style(style: StyleSpec, doc: ProjectDoc | None = None) -> dict[str, A
     return {
         "family": style.family.value,
         "families": [f.value for f in style.all_families()],
-        "effects": [e.model_dump() for e in style.edit.effects],
+        "effects": render_effects(style, doc),
         "captions": style.edit.captions.model_dump(),
         "textCards": style.edit.text_cards.model_dump(),
         "zoomStrength": style.edit.zoom_strength,

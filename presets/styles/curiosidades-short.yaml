@@ -36,6 +36,7 @@ voice:
 art:
   bible: "ilustração digital colorida e limpa, estilo editorial moderno, cores vivas e equilibradas, luz natural clara, fundo simples, um sujeito em destaque por cena"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo"]
+  languages: [editorial, flat_vector, render_3d, key_art]
   image_chain: [codex_cli]
 
 edit:

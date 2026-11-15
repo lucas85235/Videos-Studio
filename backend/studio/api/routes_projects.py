@@ -20,7 +20,7 @@ from studio.db import session_scope
 from studio.models import Channel
 from studio.providers.registry import ChainFailed
 from studio.workers.jobs import get_runner, list_jobs
-from studio.workers.pipeline.build import plan
+from studio.workers.pipeline.build import DIRECTION_MISSING, plan, scenes_without_direction
 from studio.workers.publish.package import build_package, list_publications
 
 router = APIRouter(prefix="/api/projects", tags=["projetos"])
@@ -94,6 +94,28 @@ class PackageRequest(BaseModel):
 
 def _not_found(exc: Exception) -> HTTPException:
     return HTTPException(status_code=404, detail=str(exc))
+
+
+def _preview_blocker(project_id: str, doc: ProjectDoc) -> str | None:
+    """Por que a edição não deve atualizar a prévia sozinha (None: pode atualizar).
+
+    A prévia gera as imagens que faltam: com as cenas esperando a conferência, ou sem direção de arte depois de
+    trocar o estilo, ela gastaria cota com imagens que ainda podem mudar.
+    """
+    if scenes_without_direction(doc):
+        return DIRECTION_MISSING
+    gates = service.get_project_row(project_id)["settings"].get("gates", {})
+    if gates.get("storyboard", False) and doc.scenes and not doc.storyboard_approved:
+        return "Edição salva. Aprove as cenas para gerar as imagens e atualizar a prévia."
+    return None
+
+
+def _rebuild(project_id: str, doc: ProjectDoc, rebuild: bool) -> dict[str, Any]:
+    """Job da prévia depois de uma edição, ou o aviso de por que ela não foi atualizada."""
+    if not rebuild:
+        return {"job": None, "notice": None}
+    notice = _preview_blocker(project_id, doc)
+    return {"job": None if notice else get_runner().submit("preview", {}, project_id), "notice": notice}
 
 
 def _outputs(project_id: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -185,8 +207,7 @@ def apply_operations(project_id: str, body: OpsRequest) -> dict[str, Any]:
     except (OpError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     version = service.commit(project_id, new_doc, body.message)
-    job = get_runner().submit("preview", {}, project_id) if body.rebuild else None
-    return {"version": version, "job": job}
+    return {"version": version, **_rebuild(project_id, new_doc, body.rebuild)}
 
 
 @router.get("/{project_id}/versions")
@@ -207,7 +228,14 @@ def patch_settings(project_id: str, body: SettingsPatch) -> dict[str, Any]:
     row = service.get_project_row(project_id)
     patch: dict[str, Any] = {}
     if body.gates is not None:
-        patch["gates"] = {**row["settings"].get("gates", {}), **body.gates}
+        old_gates = row["settings"].get("gates", {})
+        patch["gates"] = {**old_gates, **body.gates}
+        if body.gates.get("storyboard") and not old_gates.get("storyboard", False):
+            # Ligar a parada num projeto que já tem prévia não faz as cenas dele voltarem para a conferência.
+            doc = service.get_doc(project_id)
+            if doc.scenes and not doc.storyboard_approved and row["settings"].get("last_preview"):
+                doc.storyboard_approved = True
+                service.commit(project_id, doc, "Cenas aprovadas")
     return service.update_settings(project_id, patch)
 
 
@@ -220,12 +248,22 @@ def approve(project_id: str, body: ApproveRequest) -> dict[str, Any]:
         doc.script_approved = True
         version = service.commit(project_id, doc, "Roteiro aprovado")
         job = get_runner().submit("autopilot", {"skip_script": True}, project_id) if body.continue_pipeline else None
+    elif body.stage == "storyboard":
+        if not doc.scenes:
+            raise HTTPException(status_code=400, detail="não há cenas para aprovar")
+        doc.storyboard_approved = True
+        version = service.commit(project_id, doc, "Cenas aprovadas")
+        service.set_status(project_id, "storyboard")
+        # As cenas existem e estão aprovadas: o piloto segue para a tradução (se faltar) e a prévia.
+        job = get_runner().submit("autopilot", {}, project_id) if body.continue_pipeline else None
     elif body.stage == "preview":
         doc.preview_approved = True
+        # Aprovar a prévia aprova as cenas que estão nela (senão o projeto voltaria para a conferência das cenas).
+        doc.storyboard_approved = doc.storyboard_approved or bool(doc.scenes)
         version = service.commit(project_id, doc, "Prévia aprovada")
         job = get_runner().submit("render", {}, project_id) if body.continue_pipeline else None
     else:
-        raise HTTPException(status_code=400, detail="etapa inválida (use script ou preview)")
+        raise HTTPException(status_code=400, detail="etapa inválida (use script, storyboard ou preview)")
     return {"version": version, "job": job}
 
 
@@ -270,8 +308,7 @@ def apply_edit(project_id: str, body: ApplyEditRequest) -> dict[str, Any]:
         version = editor.apply_edit(project_id, body.ops, message=body.summary or "Edição por instrução")
     except (OpError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    job = get_runner().submit("preview", {}, project_id) if body.rebuild else None
-    return {"version": version, "job": job}
+    return {"version": version, **_rebuild(project_id, service.get_doc(project_id), body.rebuild)}
 
 
 @router.post("/{project_id}/publish/package")

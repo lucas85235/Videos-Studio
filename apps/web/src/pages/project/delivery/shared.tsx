@@ -438,6 +438,7 @@ export const METADATA_EDIT_MESSAGE = "Título e descrição editados";
 export const NON_VISUAL_VERSION_MESSAGES = new Set([
   "Prévia aprovada",
   "Roteiro aprovado",
+  "Cenas aprovadas",
   "Metadados (título, descrição, tags)",
   METADATA_EDIT_MESSAGE,
 ]);

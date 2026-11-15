@@ -104,7 +104,11 @@ export const useBackendEvents = () => {
         if (key === '__jobs') client.invalidateQueries({ queryKey: JOBS_QUERY_KEY });
         else if (key === '__projects') client.invalidateQueries({ queryKey: ['projects'] });
         else if (key === '__agenda') client.invalidateQueries({ queryKey: ['agenda'] });
-        else client.invalidateQueries({ queryKey: ['project', key] });
+        else {
+          client.invalidateQueries({ queryKey: ['project', key] });
+          // A conta da próxima prévia (imagens que faltam) muda quando um job grava imagens, sem versão nova.
+          client.invalidateQueries({ queryKey: ['plan', key] });
+        }
       }
       pending.clear();
       flushTimer = undefined;

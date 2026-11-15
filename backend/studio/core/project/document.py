@@ -13,8 +13,11 @@ from pydantic import BaseModel, Field, model_validator
 from studio.core.styles.schema import SCENE_KINDS
 from studio.ids import new_id
 
-SceneKind = Literal["image", "text", "title", "count", "document", "quote", "video"]
+SceneKind = Literal["image", "text", "title", "count", "document", "quote", "video", "stat", "compare"]
 assert set(SceneKind.__args__) == set(SCENE_KINDS)  # type: ignore[attr-defined]
+
+# Cenas sem imagem própria em tela cheia (cartões desenhados pelo renderer).
+CARD_KINDS = frozenset({"text", "title", "count", "document", "quote", "stat", "compare"})
 
 
 class Segment(BaseModel):
@@ -39,9 +42,86 @@ class Visual(BaseModel):
     prompt: str = ""
     query: str | None = None
     asset: str | None = None
-    """Caminho relativo (dentro de VS_DATA_DIR) de um asset fixo: upload ou variação escolhida."""
+    """Caminho relativo (dentro de VS_DATA_DIR) de um asset fixo (upload ou imagem fixada); vale para qualquer tipo."""
     seed: int = 0
     variation: int = 0
+    language: str | None = None
+    """Id de `styles.visual.VISUAL_LANGUAGES`. None: cena antiga, prompt composto como antes (cache intacto)."""
+    shot: str | None = None
+    """Id de `styles.visual.SHOTS` (plano)."""
+    composition: str | None = None
+    """Id de `styles.visual.COMPOSITIONS`."""
+    entities: list[str] = []
+    """Ids de `ArtDirection.entities` que aparecem na imagem (a aparência fixa entra no prompt)."""
+    reuse_of: str | None = None
+    """Id da cena cuja imagem esta usa (nenhuma imagem nova). Ver `ProjectDoc.reuse_root`."""
+
+
+def _pick_text(texts: dict[str, str], lang: str, fallback: str | None) -> str:
+    value = (texts.get(lang) or "").strip()
+    if not value and fallback:
+        value = (texts.get(fallback) or "").strip()
+    return value
+
+
+class CardItem(BaseModel):
+    """Linha de um cartão de comparação."""
+
+    label: dict[str, str] = {}
+    value: dict[str, str] = {}
+
+
+class SceneCard(BaseModel):
+    """Dados de cartão e sobreposições da cena, por idioma (números com algarismos: "475 MI", "2013")."""
+
+    value: dict[str, str] = {}
+    """Número grande do cartão `stat`."""
+    label: dict[str, str] = {}
+    """Rótulo curto embaixo do número (até 6 palavras)."""
+    items: list[CardItem] = []
+    """Itens do cartão `compare` (2 ou 3)."""
+    highlight: int | None = None
+    """Índice (base 0) do item em destaque em `items`."""
+    headline: dict[str, str] = {}
+    """Faixa no topo (qualquer tipo de cena, até 5 palavras)."""
+    stamp: dict[str, str] = {}
+    """Carimbo (até 2 palavras, ex.: "RECORDE")."""
+    source: str | None = None
+    """Fonte curta do dado (não é traduzida)."""
+
+    def resolved(self, lang: str, fallback: str | None = None) -> dict[str, Any]:
+        """Cartão no idioma `lang` (reserva: `fallback`), só com as chaves preenchidas (vai para a timeline)."""
+        out: dict[str, Any] = {}
+        for key in ("value", "label"):
+            text = _pick_text(getattr(self, key), lang, fallback)
+            if text:
+                out[key] = text
+        items = []
+        for item in self.items:
+            label = _pick_text(item.label, lang, fallback)
+            value = _pick_text(item.value, lang, fallback)
+            if label or value:
+                items.append({"label": label, "value": value})
+        if items:
+            out["items"] = items
+            if self.highlight is not None and 0 <= self.highlight < len(items):
+                out["highlight"] = self.highlight
+        for key in ("headline", "stamp"):
+            text = _pick_text(getattr(self, key), lang, fallback)
+            if text:
+                out[key] = text
+        if self.source and self.source.strip():
+            out["source"] = self.source.strip()
+        return out
+
+    def texts(self) -> list[str]:
+        """Todos os textos do cartão em todos os idiomas (para a revisão procurar números)."""
+        out = [*self.value.values(), *self.label.values(), *self.headline.values(), *self.stamp.values()]
+        for item in self.items:
+            out += [*item.label.values(), *item.value.values()]
+        if self.source:
+            out.append(self.source)
+        return [t.strip() for t in out if t and t.strip()]
 
 
 class SceneLook(BaseModel):
@@ -70,6 +150,50 @@ class Scene(BaseModel):
     sfx: str | None = None
     locked: bool = False
     notes: str = ""
+    span: int | None = Field(default=None, ge=0)
+    """Nº de palavras do segmento (idioma principal, `core.text.words`) que a cena cobre. None: divisão antiga."""
+    card: SceneCard | None = None
+    focus: str | None = None
+    """Id de `styles.visual.FOCUS_POINTS`: para onde a câmera olha (reaproveitamento e `zoom_to`)."""
+
+
+class Entity(BaseModel):
+    """Personagem, lugar ou objeto que volta em mais de uma cena, com aparência fixa."""
+
+    id: str
+    name: str = ""
+    look: str = ""
+    """Aparência em inglês (entra no prompt das cenas que citam a entidade)."""
+
+
+class ArtDirection(BaseModel):
+    """Direção de arte do vídeo, decidida pelo assunto (o estilo é só referência)."""
+
+    genre: str = ""
+    """Id de `styles.visual.GENRES` (ou vazio)."""
+    approach: Literal["literal", "misto", "alegorico"] = "literal"
+    world: str = ""
+    """O mundo concreto das imagens (em inglês)."""
+    treatment: str = ""
+    """Luz, contraste e textura (em inglês, sem objetos)."""
+    palette: list[str] = []
+    languages: list[str] = []
+    """Ids de `styles.visual.VISUAL_LANGUAGES`, o primeiro dominante."""
+    entities: list[Entity] = []
+    avoid: list[str] = []
+    """Objetos e clichês que não pertencem ao assunto (em inglês)."""
+    grade: str | None = None
+    """Id de `GRADE_PRESETS` para trocar a gradação do estilo; None mantém a do estilo."""
+    style_fit: Literal["ok", "fraco", "errado"] = "ok"
+    style_note: str = ""
+    suggested_style: str | None = None
+    hook: str = ""
+    """O que o primeiro quadro mostra."""
+    source: Literal["ai", "user"] = "ai"
+    """Com "user" (definida pelo usuário), o storyboard não muda a direção."""
+
+    def entity(self, entity_id: str) -> Entity | None:
+        return next((e for e in self.entities if e.id == entity_id), None)
 
 
 class MusicCue(BaseModel):
@@ -121,6 +245,10 @@ class ProjectDoc(BaseModel):
     sources: list[Source] = []
     script_approved: bool = False
     preview_approved: bool = False
+    art: ArtDirection | None = None
+    """Direção de arte do vídeo (vem do storyboard). None: projeto antigo, imagens compostas como antes."""
+    storyboard_approved: bool = False
+    """Cenas aprovadas no portão `gates.storyboard` (volta a False quando o storyboard roda de novo)."""
 
     @model_validator(mode="after")
     def _check(self) -> ProjectDoc:
@@ -154,6 +282,25 @@ class ProjectDoc(BaseModel):
     def scenes_of(self, segment_id: str) -> list[Scene]:
         return sorted((s for s in self.scenes if s.segment_id == segment_id), key=lambda s: s.part)
 
+    def reuse_root(self, scene: Scene, max_depth: int = 3) -> Scene | None:
+        """A cena dona da imagem que `scene` mostra: ela mesma, ou o fim da cadeia de `reuse_of`.
+
+        None quando a referência está solta (cena apagada), em ciclo ou com mais de `max_depth` saltos:
+        a cena fica sem imagem e o renderer usa o fundo animado.
+        """
+        current = scene
+        seen = {scene.id}
+        for _ in range(max_depth + 1):
+            target = current.visual.reuse_of
+            if not target:
+                return current
+            nxt = next((s for s in self.scenes if s.id == target), None)
+            if nxt is None or nxt.id in seen:
+                return None
+            seen.add(nxt.id)
+            current = nxt
+        return None
+
     def ordered_scenes(self) -> list[Scene]:
         order = {seg.id: i for i, seg in enumerate(self.segments)}
         return sorted(self.scenes, key=lambda s: (order.get(s.segment_id, 10**9), s.part))
@@ -171,8 +318,13 @@ class ProjectDoc(BaseModel):
             lock = " [travado]" if seg.locked else ""
             lines.append(f"S{i} {seg.id} ({seg.role}){lock}: {text[:max_chars]}")
             for scene in self.scenes_of(seg.id):
-                desc = scene.visual.prompt or scene.overlay_text.get(lang, "")
+                card = scene.card.resolved(lang, self.primary_language) if scene.card else {}
+                desc = scene.visual.prompt or scene.overlay_text.get(lang, "") or " · ".join(
+                    str(card[k]) for k in ("value", "label", "headline") if k in card
+                )
                 extra = []
+                if scene.visual.reuse_of:
+                    extra.append(f"reaproveita={scene.visual.reuse_of}")
                 if scene.motion:
                     extra.append(f"câmera={scene.motion}")
                 if scene.transition_in:

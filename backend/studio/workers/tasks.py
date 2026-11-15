@@ -13,12 +13,24 @@ from studio.workers.pipeline import authoring
 from studio.workers.pipeline.build import Builder
 
 
-def _channel_persona(channel_id: str | None) -> str:
+def _channel_info(channel_id: str | None) -> dict[str, Any]:
+    """Nome, nicho, persona e identidade visual do canal (vazio sem canal)."""
     if not channel_id:
-        return ""
+        return {}
     with session_scope() as s:
         row = s.get(Channel, channel_id)
-        return row.persona if row else ""
+        if row is None:
+            return {}
+        return {"name": row.name or "", "niche": row.niche or "", "persona": row.persona or "",
+                "style_bible": dict(row.style_bible or {})}
+
+
+def _gates(project_id: str) -> dict[str, Any]:
+    return service.get_project_row(project_id)["settings"].get("gates", {})
+
+
+# Status do projeto parado na conferência das cenas (a lista de projetos mostra "Cenas para conferir").
+SCENES_REVIEW_STATUS = "storyboard_review"
 
 
 @job("script")
@@ -29,7 +41,7 @@ def run_script(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     doc = service.get_doc(project_id)
     style = get_style(doc.style_id, doc.style_overrides)
     new_doc, provider = authoring.generate_script(doc, style, project_id=project_id, job_id=ctx.job_id,
-                                                  persona=_channel_persona(doc.channel_id))
+                                                  persona=_channel_info(doc.channel_id).get("persona", ""))
     version = service.commit(project_id, new_doc, f"Roteiro gerado ({provider})", author="ai")
     service.set_status(project_id, "script_review")
     ctx.progress(1.0, "Roteiro pronto para revisão")
@@ -43,11 +55,19 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     ctx.progress(0.1, "Planejando as cenas")
     doc = service.get_doc(project_id)
     style = get_style(doc.style_id, doc.style_overrides)
-    new_doc, provider = authoring.storyboard(doc, style, project_id=project_id, job_id=ctx.job_id)
-    version = service.commit(project_id, new_doc, f"Storyboard gerado ({provider})", author="ai")
-    service.set_status(project_id, "storyboard")
-    ctx.progress(1.0, "Storyboard pronto")
-    return {"version": version, "provider": provider, "scenes": len(new_doc.scenes)}
+    new_doc, provider, review = authoring.storyboard(
+        doc, style, project_id=project_id, job_id=ctx.job_id,
+        channel=_channel_info(doc.channel_id), styles=authoring.style_catalog(style),
+    )
+    counts = review["counts"]
+    message = f"Cenas planejadas ({provider}): {counts['scenes']} cenas, {counts['new_images']} imagens novas"
+    version = service.commit(project_id, new_doc, message, author="ai")
+    service.update_settings(project_id, {"storyboard_review": {**review, "provider": provider, "version": version}})
+    # Com a parada das cenas ligada, as cenas novas esperam a conferência (storyboard() zera a aprovação).
+    service.set_status(project_id, SCENES_REVIEW_STATUS if _gates(project_id).get("storyboard", False) else "storyboard")
+    ctx.progress(1.0, "Cenas prontas para revisão")
+    return {"version": version, "provider": provider, "scenes": counts["scenes"], "new_images": counts["new_images"],
+            "reused": counts["reused"], "cards": counts["cards"]}
 
 
 @job("translate")
@@ -55,14 +75,17 @@ def run_translate(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     project_id = ctx.project_id
     assert project_id
     targets: list[str] = payload.get("langs") or []
+    # Só os textos de tela que faltam (cartões e sobreposições criados depois da tradução): a narração fica.
+    screen_only = bool(payload.get("screen_only"))
     doc = service.get_doc(project_id)
     targets = targets or [lang for lang in doc.languages if lang != doc.primary_language]
     done = []
     for index, lang in enumerate(targets):
         ctx.progress(index / max(1, len(targets)), f"Traduzindo para {authoring.lang_name(lang)}")
-        doc, _provider = authoring.translate(doc, lang, project_id=project_id, job_id=ctx.job_id)
+        doc, _provider = authoring.translate(doc, lang, screen_only=screen_only, project_id=project_id, job_id=ctx.job_id)
         done.append(lang)
-    version = service.commit(project_id, doc, f"Tradução: {', '.join(done)}", author="ai") if done else None
+    message = f"{'Tradução dos textos de tela' if screen_only else 'Tradução'}: {', '.join(done)}"
+    version = service.commit(project_id, doc, message, author="ai") if done else None
     return {"version": version, "langs": done}
 
 
@@ -103,10 +126,13 @@ def run_render(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
 
 @job("autopilot")
 def run_autopilot(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
-    """Roteiro → storyboard → prévia (→ render), parando nos portões de aprovação ativos."""
+    """Roteiro → cenas → prévia (→ render), parando nos portões de aprovação ativos.
+
+    O portão das cenas (`gates.storyboard`) só existe nos projetos novos: sem a chave, segue direto.
+    """
     project_id = ctx.project_id
     assert project_id
-    gates = service.get_project_row(project_id)["settings"].get("gates", {})
+    gates = _gates(project_id)
     steps: list[str] = []
     doc = service.get_doc(project_id)
     if not doc.segments or payload.get("rewrite"):
@@ -118,10 +144,21 @@ def run_autopilot(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     if not doc.scenes:
         run_storyboard(ctx, payload)
         steps.append("storyboard")
+        doc = service.get_doc(project_id)
+    if gates.get("storyboard", False) and not doc.storyboard_approved and not payload.get("skip_gates"):
+        service.set_status(project_id, SCENES_REVIEW_STATUS)
+        return {"steps": steps, "stopped_at": "storyboard", "message": "Cenas aguardando sua aprovação"}
     other_langs = [lang for lang in doc.languages if lang != doc.primary_language]
     doc = service.get_doc(project_id)
-    if other_langs and any(not seg.text_for(lang).strip() for seg in doc.segments for lang in other_langs):
-        run_translate(ctx, {"langs": other_langs})
+    # Narração que falta: tradução completa. Só textos de tela (cartões de cenas refeitas depois da tradução):
+    # traduz só eles, sem refazer a narração nem a voz.
+    full = [lang for lang in other_langs if any(not seg.text_for(lang).strip() for seg in doc.segments)]
+    screen = [lang for lang in other_langs if lang not in full and authoring.needs_translation(doc, lang)]
+    if full:
+        run_translate(ctx, {"langs": full})
+    if screen:
+        run_translate(ctx, {"langs": screen, "screen_only": True})
+    if full or screen:
         steps.append("translate")
     result = run_preview(ctx, payload)
     steps.append("preview")

@@ -54,6 +54,7 @@ import {
 } from './project/core/drafts';
 import { useDismissedFailures } from './project/core/dismissedFailures';
 import {
+  awaitingScenes,
   defaultTab,
   DOC_BUSY_REASON,
   docJobRunning,
@@ -94,8 +95,9 @@ export const useStartJob = (projectId: string) => {
 export const useJobStarting = (projectId: string) => useIsMutating({ mutationKey: startJobKey(projectId) }) > 0;
 
 /** Chave das aprovações (banner e abas usam a mesma, para não aprovar duas vezes). */
-export const approveKey = (projectId: string, stage: 'script' | 'preview') => ['approve', projectId, stage];
-export const useApproving = (projectId: string, stage: 'script' | 'preview') => useIsMutating({ mutationKey: approveKey(projectId, stage) }) > 0;
+export type ApproveStage = 'script' | 'storyboard' | 'preview';
+export const approveKey = (projectId: string, stage: ApproveStage) => ['approve', projectId, stage];
+export const useApproving = (projectId: string, stage: ApproveStage) => useIsMutating({ mutationKey: approveKey(projectId, stage) }) > 0;
 
 const TAB_BY_SLUG = Object.fromEntries(Object.entries(PROJECT_TAB_SLUGS).map(([tab, slug]) => [slug, tab as ProjectTab])) as Record<string, ProjectTab>;
 
@@ -335,8 +337,15 @@ export const ProjectPage: React.FC = () => {
   const restoreActive = Boolean(restoreNotice && restoreNotice.at > lastPreviewAt);
   const g = row.settings.gates ?? {};
   const pendingGates = gates.isPending ? (gates.variables ?? {}) : {};
-  const gateValues = { script: pendingGates.script ?? g.script ?? true, preview: pendingGates.preview ?? g.preview ?? true };
+  const gateValues = {
+    script: pendingGates.script ?? g.script ?? true,
+    // Projeto sem a chave: a parada das cenas fica desligada (projetos antigos seguem direto).
+    storyboard: pendingGates.storyboard ?? g.storyboard ?? false,
+    preview: pendingGates.preview ?? g.preview ?? true,
+  };
   const failure = latestFailure(data);
+  // Cenas esperando a conferência: os atalhos do menu ainda geram a prévia, mas avisam que pulam a conferência.
+  const scenesPending = awaitingScenes(data);
   const showFailure = failure && !dismissed.includes(failure.id) ? failure : null;
 
   const tab: ProjectTab = urlTab ?? (pinnedTab?.id === projectId ? pinnedTab.tab : defaultTab(data));
@@ -490,7 +499,7 @@ export const ProjectPage: React.FC = () => {
               <PopoverItem
                 icon={MonitorPlay}
                 label={data.outputs.preview ? 'Gerar a prévia de novo' : 'Gerar prévia'}
-                hint="Usa a cota de voz e de imagens no que mudou."
+                hint={`${scenesPending ? 'Sem passar pela conferência das cenas. ' : ''}Usa a cota de voz e de imagens no que mudou.`}
                 disabled={busy || starting || !doc.scenes.length}
                 disabledReason={busy || starting ? 'Aguarde o trabalho em andamento terminar.' : 'Crie as cenas primeiro.'}
                 onClick={() => {
@@ -501,7 +510,7 @@ export const ProjectPage: React.FC = () => {
               <PopoverItem
                 icon={Film}
                 label={data.outputs.final ? 'Renderizar de novo' : 'Renderizar vídeo final'}
-                hint={`${previewApprovedFresh ? '' : 'Sem passar pela aprovação da prévia. '}Pode usar a cota de voz e de imagens.`}
+                hint={`${scenesPending ? 'Sem passar pela conferência das cenas. ' : previewApprovedFresh ? '' : 'Sem passar pela aprovação da prévia. '}Pode usar a cota de voz e de imagens.`}
                 disabled={busy || starting || !doc.scenes.length}
                 disabledReason={busy || starting ? 'Aguarde o trabalho em andamento terminar.' : 'Crie as cenas primeiro.'}
                 onClick={() => {

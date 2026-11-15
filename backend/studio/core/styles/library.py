@@ -26,6 +26,7 @@ DEFAULT_STYLE_ID = "curiosidades-short"
 PRESET_ORDER = (
     "curiosidades-short",
     "tecnologia-ia",
+    "games-cultura-pop-short",
     "estoico-short",
     "misterios-short",
     "terror-analog",

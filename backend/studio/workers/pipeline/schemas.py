@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS
+from studio.core.styles.visual import VISUAL_LANGUAGES
 from studio.media.audio import MOODS
 
 
@@ -42,19 +43,59 @@ SCRIPT_SCHEMA = _obj(
     }
 )
 
+# Tipos de cena que o storyboard pode escolher ("count" só no Top 10; "video" e "document" ficam de fora).
+STORYBOARD_KINDS = ["image", "stat", "compare", "title", "text", "quote", "count"]
+assert set(STORYBOARD_KINDS) <= set(SCENE_KINDS)
+STORYBOARD_SOURCES = ["new", "reuse", "none"]
+
+# Storyboard v2: direção de arte do vídeo + uma cena por batida. Os ids de catálogo (linguagem, plano,
+# composição, foco, câmera, gradação) vão como string anulável e são validados no Python: enum que aceita
+# null pode falhar no --json-schema do Claude.
 STORYBOARD_SCHEMA = _obj(
     {
+        "direction": _obj(
+            {
+                "genre": S,
+                "approach": {"type": "string", "enum": ["literal", "misto", "alegorico"]},
+                "world": S,
+                "treatment": S,
+                "palette": {"type": "array", "items": S},
+                "languages": {"type": "array", "items": S},
+                "grade": NS,
+                "entities": {"type": "array", "items": _obj({"id": S, "name": S, "look": S})},
+                "avoid": {"type": "array", "items": S},
+                "style_fit": {"type": "string", "enum": ["ok", "fraco", "errado"]},
+                "style_note": S,
+                "suggested_style": NS,
+                "hook": S,
+            }
+        ),
         "scenes": {
             "type": "array",
             "items": _obj(
                 {
                     "key": S,
-                    "kind": {"type": "string", "enum": list(SCENE_KINDS)},
-                    "prompt": S,
+                    "kind": {"type": "string", "enum": STORYBOARD_KINDS},
+                    "source": {"type": "string", "enum": STORYBOARD_SOURCES},
+                    "reuse_key": NS,
+                    "prompt": NS,
+                    "language": NS,
+                    "shot": NS,
+                    "composition": NS,
+                    "focus": NS,
+                    "motion": NS,
+                    "entities": NSA,
                     "overlay_text": NS,
+                    "value": NS,
+                    "label": NS,
+                    "items": {"type": ["array", "null"], "items": _obj({"label": S, "value": S})},
+                    "highlight": NI,
+                    "headline": NS,
+                    "stamp": NS,
+                    "source_note": NS,
                 }
             ),
-        }
+        },
     }
 )
 
@@ -91,6 +132,7 @@ EDIT_OPS = [
     "split_scene",
     "merge_scene_with_next",
     "set_style",
+    "set_style_id",
     "set_music",
     "set_lock",
     "set_title",
@@ -123,6 +165,7 @@ FLAT_OP_FIELDS: dict[str, Any] = {
     "grade": NS,
     "path": NS,
     "value_json": NS,
+    "style_id": NS,
     "mood": NS,
     "volume_db": NN,
     "enabled": NB,
@@ -153,8 +196,12 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
 - format.duration.target_s / min_s / max_s (segundos)
 - script.tone (texto), script.structure (lista de etapas), script.cta, script.hook_max_s
 - voice.voice (voz do Gemini, ex.: Charon, Algenib, Orus, Puck, Kore), voice.style_prompt, voice.speed (0.5–2), voice.gap_s
-- art.bible (descrição do estilo de arte), art.banned (lista), art.photoreal (bool)
-- edit.shot_seconds.min / max
+- art.bible (tratamento de referência: luz, cor e textura), art.banned (lista), art.photoreal (bool)
+- art.languages: linguagens visuais preferidas, a primeira dominante (vazio = livre); ids: {", ".join(VISUAL_LANGUAGES)}
+  (photo só com art.photoreal)
+- edit.shot_seconds.min / max (duração de cada cena; o storyboard corta a narração por frase nessa faixa)
+- edit.new_image_ratio (0.1–1): fração das cenas com imagem nova de IA (mínimo 3 por vídeo); o resto reaproveita
+  imagem ou vira cartão
 - edit.camera: pesos por movimento ({", ".join(CAMERA_MOVES)})
 - edit.transitions: pesos por transição ({", ".join(TRANSITIONS)})
 - edit.transition_seconds, edit.zoom_strength (0–0.6)

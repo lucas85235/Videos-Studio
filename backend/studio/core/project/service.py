@@ -49,7 +49,8 @@ def create_project(
         seed=secrets.randbelow(2**31),
         style_overrides=overrides,
     )
-    default_settings = {"gates": {"script": True, "preview": True, "publish": True}}
+    # Projeto novo para nas cenas antes de gastar imagens; projeto antigo, sem a chave "storyboard", segue direto.
+    default_settings = {"gates": {"script": True, "storyboard": True, "preview": True, "publish": True}}
     with session_scope() as s:
         s.add(
             Project(
@@ -119,6 +120,7 @@ def commit(project_id: str, doc: ProjectDoc, message: str, author: str = "user")
         )
         row.current_version = number
         row.title = doc.title
+        row.style_id = doc.style_id  # a op set_style_id troca o estilo pelo documento
         return number
 
 

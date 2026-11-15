@@ -35,10 +35,12 @@ voice:
 art:
   bible: "ilustração vetorial flat, formas geométricas simples e contornos limpos, paleta pastel viva sobre fundo claro (creme ou azul-claro), personagens simplificados sem rosto detalhado, ícones e objetos estilizados, visual de vídeo explicativo"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo", "texturas sujas"]
+  languages: [flat_vector, isometric, editorial]
   image_chain: [codex_cli]
 
 edit:
   shot_seconds: { min: 3.0, max: 5.0 }
+  new_image_ratio: 0.4
   camera: { drift: 3, ken_burns_in: 2, static: 2, pan_left: 1, pan_right: 1 }
   transitions: { cut: 6, zoom_blur: 1, flash: 1 }
   transition_seconds: 0.3

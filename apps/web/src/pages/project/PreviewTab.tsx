@@ -36,7 +36,7 @@ import {
   tabPanelProps,
   useToast,
 } from "../../ui";
-import { formatDuration, isShort, nextStep } from "./core/model";
+import { awaitingScenes, formatDuration, isShort, nextStep } from "./core/model";
 import { tabOwnsAction } from "./core/NextStep";
 import { MusicPanel, VoicePanel } from "./delivery/AudioPanels";
 import { type CurrentScene, EditPanel } from "./delivery/EditPanel";
@@ -81,6 +81,7 @@ type SideTab = "editar" | "voz" | "trilha";
 const SIDE_PREFIX = "previa-lateral";
 /** Id do botão "Ir para Vídeo e publicação" (recebe o foco depois de aprovar). */
 const GO_OUTPUT_ID = "previa-ir-saida";
+const SCENES_PENDING = "Aprove as cenas primeiro (aba Cenas): é a aprovação que gera as imagens novas.";
 /** Aba "Vídeo e publicação" do projeto: reserva de foco quando a faixa é dona da navegação. */
 const OUTPUT_TAB_ID = "projeto-aba-output";
 const sideTabDomId = (id: SideTab) => `${SIDE_PREFIX}-aba-${id}`;
@@ -265,6 +266,8 @@ export const PreviewTab: React.FC<
       }),
   });
   const refresh = () => startJob.mutate({ kind: "preview" });
+  // Cenas esperando a conferência: quem gera as imagens é a aprovação delas (aba Cenas), não a prévia.
+  const scenesPending = awaitingScenes(detail);
 
   // Sem timeline ainda, a orientação vem do formato do estilo (o layout não pula quando os dados chegam).
   const vertical = t ? t.height > t.width : isShort(detail.style);
@@ -353,7 +356,8 @@ export const PreviewTab: React.FC<
                     variant="ghost"
                     icon={RotateCw}
                     className="w-full sm:w-auto"
-                    disabled={busy || !doc.scenes.length}
+                    disabled={busy || !doc.scenes.length || scenesPending}
+                    title={scenesPending ? SCENES_PENDING : undefined}
                     busy={startJob.isPending}
                     onClick={refresh}
                   >
@@ -378,7 +382,8 @@ export const PreviewTab: React.FC<
                       variant="ghost"
                       icon={RotateCw}
                       className="w-full sm:w-auto"
-                      disabled={busy || !doc.scenes.length}
+                      disabled={busy || !doc.scenes.length || scenesPending}
+                      title={scenesPending ? SCENES_PENDING : undefined}
                       busy={startJob.isPending}
                       onClick={refresh}
                     >
@@ -438,20 +443,30 @@ export const PreviewTab: React.FC<
           tone="warn"
           title={`Há mudanças desde esta prévia (versão ${t.version} → ${currentVersion})`}
           actions={
-            <Button
-              variant="primary"
-              icon={RotateCw}
-              disabled={busy || !doc.scenes.length}
-              busy={startJob.isPending}
-              onClick={refresh}
-            >
-              Atualizar prévia
-            </Button>
+            scenesPending ? (
+              goTo ? (
+                <Button icon={LayoutGrid} onClick={() => goTo("scenes")}>
+                  Conferir as cenas
+                </Button>
+              ) : null
+            ) : (
+              <Button
+                variant="primary"
+                icon={RotateCw}
+                disabled={busy || !doc.scenes.length}
+                busy={startJob.isPending}
+                onClick={refresh}
+              >
+                Atualizar prévia
+              </Button>
+            )
           }
         >
           {busy && otherJob
             ? `Aguarde: ${JOB_LABELS[otherJob.kind] ?? "uma tarefa"} em andamento.`
-            : "Atualize para ver o resultado antes de aprovar. Só o que mudou é refeito; voz e imagens novas gastam cota."}
+            : scenesPending
+              ? "As cenas mudaram e esperam a sua conferência. Ao aprovar as cenas (aba Cenas), o app gera as imagens novas e atualiza a prévia."
+              : "Atualize para ver o resultado antes de aprovar. Só o que mudou é refeito; voz e imagens novas gastam cota."}
         </Notice>
       ) : otherJob && t ? (
         <Notice tone="info">
@@ -583,7 +598,7 @@ export const PreviewTab: React.FC<
               icon={MonitorPlay}
               title="Ainda não há prévia"
               action={
-                previewJob ? null : !doc.scenes.length ? (
+                previewJob ? null : !doc.scenes.length || scenesPending ? (
                   goTo ? (
                     <Button icon={LayoutGrid} onClick={() => goTo("scenes")}>
                       Ir para Cenas
@@ -609,6 +624,8 @@ export const PreviewTab: React.FC<
                 />
               ) : !doc.scenes.length ? (
                 "Crie as cenas primeiro: a prévia monta o vídeo a partir delas."
+              ) : scenesPending ? (
+                "Confira e aprove as cenas primeiro (aba Cenas): ao aprovar, o app gera as imagens e a prévia."
               ) : (
                 "A prévia monta o vídeo aqui no navegador, sem renderizar o MP4. Na primeira vez ela gera a narração e as imagens, o que gasta cota dos provedores."
               )}
@@ -624,7 +641,8 @@ export const PreviewTab: React.FC<
                 <div className="flex flex-col items-start gap-1">
                   <Button
                     icon={RotateCw}
-                    disabled={busy}
+                    disabled={busy || scenesPending}
+                    title={scenesPending ? SCENES_PENDING : undefined}
                     busy={startJob.isPending}
                     onClick={refresh}
                   >

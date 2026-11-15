@@ -46,7 +46,17 @@ import {
   useKeyedStore,
   type Draft,
 } from './core/drafts';
-import { checkDuration, DOC_BUSY_REASON, docJobRunning, estimateSeconds, formatDuration, isActive, STYLE_MISSING_REASON } from './core/model';
+import {
+  checkDuration,
+  DOC_BUSY_REASON,
+  docJobRunning,
+  estimateSeconds,
+  formatDuration,
+  gatesOf,
+  isActive,
+  screenTextsMissing,
+  STYLE_MISSING_REASON,
+} from './core/model';
 import type { TabNavigation } from './types';
 
 const BUSY_REASON = 'Aguarde o trabalho em andamento terminar.';
@@ -538,6 +548,8 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   const builtIsFinal = Boolean(builtFinal?.duration);
 
   const missing = lang !== doc.primary_language ? doc.segments.length - translatedCount(lang) : 0;
+  // Narração traduzida, mas cartões e sobreposições de cenas criadas depois ainda só no idioma principal.
+  const screenMissing = lang !== doc.primary_language && !missing ? screenTextsMissing(doc, lang) : 0;
   const conflicts = Object.entries(liveDrafts).filter(([key, d]) => {
     const { lang: l, segmentId } = parseScriptDraftKey(key);
     const seg = doc.segments.find((s) => s.id === segmentId);
@@ -545,6 +557,15 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   }).length;
   const otherLangDrafts = draftKeys.filter((k) => parseScriptDraftKey(k).lang !== lang).length;
   const toFinal = detail.project.settings.gates?.preview === false;
+  // Com a parada das cenas, aprovar o roteiro só cria as cenas e espera a conferência (sem cota de voz e de imagens).
+  // Sem cenas, as que o piloto criar chegam sem aprovação (um "Gerar outro roteiro" apaga as cenas aprovadas).
+  const stopAtScenes = gatesOf(detail).storyboard && (!doc.scenes.length || !doc.storyboard_approved);
+  const afterApprove = stopAtScenes
+    ? 'cria as cenas e para para você conferir antes de gerar as imagens'
+    : toFinal
+      ? 'cria as cenas, narra, monta a prévia e renderiza o vídeo'
+      : 'cria as cenas, narra e monta a prévia';
+  const approveCost = stopAtScenes ? 'Usa o Claude.' : 'Usa o Claude e a cota de voz e de imagens.';
   const saveBlocked = writing ? WRITING_BLOCKED : docBusy ? SAVE_BLOCKED : null;
   const lockBlocked = !style ? STYLE_MISSING_REASON : docBusy ? DOC_BUSY_REASON : lock.isPending ? 'Aguarde: salvando a trava de outro trecho.' : null;
 
@@ -572,8 +593,7 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
           Salvar e aprovar
         </Button>
         <p className="text-[13px] leading-snug text-subtle">
-          Salve as alterações para aprovar. Ao aprovar, o app {toFinal ? 'cria as cenas, narra, monta a prévia e renderiza o vídeo' : 'cria as cenas, narra e monta a prévia'}. Usa o
-          Claude e a cota de voz e de imagens.
+          Salve as alterações para aprovar. Ao aprovar, o app {afterApprove}. {approveCost}
         </p>
       </div>
     );
@@ -590,11 +610,15 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
             if (!approving) approve.mutate();
           }}
         >
-          {toFinal ? 'Aprovar e gerar o vídeo' : 'Aprovar e gerar a prévia'}
+          {stopAtScenes ? 'Aprovar e criar as cenas' : toFinal ? 'Aprovar e gerar o vídeo' : 'Aprovar e gerar a prévia'}
         </Button>
         <p className="text-[13px] leading-snug text-subtle">
-          {toFinal ? 'Cria as cenas, narra, monta a prévia e renderiza o vídeo final.' : 'Cria as cenas, narra e monta a prévia.'} Usa o Claude e a cota de voz e de
-          imagens.
+          {stopAtScenes
+            ? 'Cria as cenas e para para você conferir antes de gerar as imagens.'
+            : toFinal
+              ? 'Cria as cenas, narra, monta a prévia e renderiza o vídeo final.'
+              : 'Cria as cenas, narra e monta a prévia.'}{' '}
+          {approveCost}
         </p>
       </div>
     );
@@ -635,6 +659,33 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
                     onClick={() => void translate([lang], 'strip')}
                   >
                     Traduzir agora
+                  </Button>
+                </>
+              ) : null}
+            </div>
+            <ErrorBox error={jobError('strip')} title="Não foi possível traduzir" />
+          </div>
+        ) : screenMissing > 0 ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-line-strong bg-card px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Languages size={16} aria-hidden="true" className="shrink-0 text-muted" />
+              <span className="min-w-0 flex-1 text-muted">
+                {translating
+                  ? 'Traduzindo…'
+                  : `Os textos de tela de ${screenMissing === 1 ? '1 cena' : `${screenMissing} cenas`} ainda não estão em ${langLabel(lang)}: sem traduzir, o vídeo nesse idioma mostra esses textos em ${langLabel(doc.primary_language)}. A narração não muda.`}
+              </span>
+              {!translating ? (
+                <>
+                  <span className="text-[13px] text-subtle">Usa o Claude.</span>
+                  <Button
+                    size="sm"
+                    icon={Languages}
+                    busy={jobBusy('translate', 'strip')}
+                    disabled={jobsBlocked && !jobBusy('translate', 'strip')}
+                    title={busy ? BUSY_REASON : undefined}
+                    onClick={() => startKind('translate', 'strip', { langs: [lang], screen_only: true })}
+                  >
+                    Traduzir os textos de tela
                   </Button>
                 </>
               ) : null}

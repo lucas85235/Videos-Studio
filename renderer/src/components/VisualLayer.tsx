@@ -1,7 +1,8 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { hasEffect, imageFilter } from '../look';
-import type { EffectSpec, TimelineScene } from '../types';
+import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type TextCardStyle, type TimelineScene } from '../types';
+import { MotionBackground } from './DataCards';
 
 type Props = {
   scene: TimelineScene;
@@ -9,62 +10,105 @@ type Props = {
   zoomStrength: number;
   transitionFrames: number;
   url: string | null;
-  fallbackColor: string;
+  /** Cores do estilo para o fundo animado quando a cena não tem imagem. */
+  cards: TextCardStyle;
   dim?: number;
+  /** Desfoque em px (referência 1080 no menor lado), ex.: fundo dos cartões de dado. */
+  blur?: number;
 };
 
-/** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift) e gradação de cor. */
-export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, fallbackColor, dim = 0 }) => {
+const focusOrigin = (focus: string | undefined) =>
+  focus && Object.prototype.hasOwnProperty.call(FOCUS_ORIGIN, focus) ? FOCUS_ORIGIN[focus as FocusPoint] : FOCUS_ORIGIN.center;
+
+/** Caminho de um movimento de câmera: escala e deslocamento (% do quadro) em função do progresso q (0..1). */
+type CameraPath = { scale: (q: number) => number; dx: (q: number) => number; dy: (q: number) => number };
+
+const flat = () => 0;
+
+/** Espaço (em % do quadro) que a escala deixa para deslocar a imagem sem mostrar a borda. */
+const roomOf = (scale: number) => (Math.max(1, scale) - 1) / Math.max(1, scale) * 100;
+
+/**
+ * Fração (0..1) da amplitude do movimento que cabe em todo o caminho, dado o foco (origem da escala). Com o foco fora
+ * do centro, o lado mais curto limita: o movimento fica menor, mas anda até o fim em vez de travar na borda.
+ */
+const fitAmplitude = (samples: { scale: number; dx: number; dy: number }[], ox: number, oy: number) => {
+  let k = 1;
+  for (const { scale, dx, dy } of samples) {
+    const room = roomOf(scale);
+    if (Math.abs(dx) > 1e-9) k = Math.min(k, ((dx > 0 ? ox : 1 - ox) * room) / Math.abs(dx));
+    if (Math.abs(dy) > 1e-9) k = Math.min(k, ((dy > 0 ? oy : 1 - oy) * room) / Math.abs(dy));
+  }
+  return Math.max(0, k);
+};
+
+/** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco) e gradação de cor. */
+export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, cards, dim = 0, blur = 0 }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
   const dur = Math.max(1, scene.durationInFrames - 1);
   const p = interpolate(frame, [0, dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.quad) });
   const z = zoomStrength;
-  let scale = 1 + z * 0.5;
-  let tx = 0;
-  let ty = 0;
   const side = (r: number) => (random(`${scene.seed}-${r}`) > 0.5 ? 1 : -1);
+  const t = frame / fps;
+  // O foco é a origem da escala (centro quando não vem).
+  const origin = focusOrigin(scene.focus);
+  const [ox, oy] = origin.split(' ').map((v) => parseFloat(v) / 100);
+  const blurPx = blur > 0 ? (blur * Math.min(width, height)) / 1080 : 0;
+  const bump = blurPx ? 1 + (5 * blurPx) / Math.min(width, height) : 1; // a borda desfocada fica fora do quadro
+  const lerp = (a: number, b: number) => (q: number) => interpolate(q, [0, 1], [a, b]);
+
+  let path: CameraPath;
+  // Drift: deslocamento pelo tempo (seno), não pelo progresso; a conferência usa os extremos.
+  let drift: { ax: number; ay: number } | null = null;
   switch (scene.motion) {
     case 'ken_burns_in':
-      scale = interpolate(p, [0, 1], [1 + z * 0.15, 1 + z]);
-      tx = side(1) * interpolate(p, [0, 1], [0, z * 12]);
+      path = { scale: lerp(1 + z * 0.15, 1 + z), dx: (q) => side(1) * lerp(0, z * 12)(q), dy: flat };
       break;
     case 'ken_burns_out':
-      scale = interpolate(p, [0, 1], [1 + z, 1 + z * 0.15]);
-      ty = side(2) * interpolate(p, [0, 1], [z * 10, 0]);
+      path = { scale: lerp(1 + z, 1 + z * 0.15), dx: flat, dy: (q) => side(2) * lerp(z * 10, 0)(q) };
       break;
     case 'pan_left':
-      scale = 1 + z;
-      tx = interpolate(p, [0, 1], [z * 30, -z * 30]);
+      path = { scale: () => 1 + z, dx: lerp(z * 30, -z * 30), dy: flat };
       break;
     case 'pan_right':
-      scale = 1 + z;
-      tx = interpolate(p, [0, 1], [-z * 30, z * 30]);
+      path = { scale: () => 1 + z, dx: lerp(-z * 30, z * 30), dy: flat };
       break;
     case 'pan_up':
-      scale = 1 + z;
-      ty = interpolate(p, [0, 1], [z * 30, -z * 30]);
+      path = { scale: () => 1 + z, dx: flat, dy: lerp(z * 30, -z * 30) };
       break;
     case 'pan_down':
-      scale = 1 + z;
-      ty = interpolate(p, [0, 1], [-z * 30, z * 30]);
+      path = { scale: () => 1 + z, dx: flat, dy: lerp(-z * 30, z * 30) };
       break;
     case 'punch_zoom': {
       const punch = spring({ frame, fps, config: { damping: 14, stiffness: 160, mass: 0.6 } });
-      scale = 1 + z * 0.1 + punch * z * 0.55 + p * z * 0.2;
+      const s = 1 + z * 0.1 + punch * z * 0.55 + p * z * 0.2;
+      path = { scale: () => s, dx: flat, dy: flat };
       break;
     }
-    case 'drift': {
-      const t = frame / fps;
-      scale = 1 + z * 0.55;
-      tx = Math.sin(t * 0.45 + scene.seed) * z * 14;
-      ty = Math.cos(t * 0.37 + scene.seed * 0.5) * z * 10;
+    case 'drift':
+      drift = { ax: z * 14, ay: z * 10 };
+      path = {
+        scale: () => 1 + z * 0.55,
+        dx: () => Math.sin(t * 0.45 + scene.seed) * z * 14,
+        dy: () => Math.cos(t * 0.37 + scene.seed * 0.5) * z * 10,
+      };
       break;
-    }
+    case 'zoom_to':
+      // Zoom no detalhe: aproxima do ponto de foco (transformOrigin).
+      path = { scale: lerp(1 + z * 0.2, 1 + Math.min(0.35, 2.5 * z)), dx: flat, dy: flat };
+      break;
     case 'static':
     default:
-      scale = 1 + z * 0.1;
+      path = { scale: () => 1 + z * 0.1, dx: flat, dy: flat };
   }
+  const samples = drift
+    ? [-1, 1].flatMap((sx) => [-1, 1].map((sy) => ({ scale: path.scale(0) * bump, dx: sx * drift!.ax, dy: sy * drift!.ay })))
+    : Array.from({ length: 21 }, (_, i) => i / 20).map((q) => ({ scale: path.scale(q) * bump, dx: path.dx(q), dy: path.dy(q) }));
+  const k = fitAmplitude(samples, ox, oy);
+  let scale = path.scale(p) * bump;
+  let tx = path.dx(p) * k;
+  let ty = path.dy(p) * k;
 
   // Transições de entrada que mexem na imagem
   const tf = Math.max(1, transitionFrames);
@@ -83,21 +127,25 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
     jitter += (random(`${scene.seed}-v-${frame}`) - 0.5) * 6 * vhs.amount;
   }
 
-  const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}`.trim();
-  const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
-  const chroma = hasEffect(effects, 'chromatic');
-
   if (!url) {
+    // Sem imagem (cartão ou referência solta): fundo animado nas cores do estilo.
+    const bgFilter = `${imageFilter(effects, { ...scene.look, blur: 0 })}${dim ? ` brightness(${1 - dim * 0.35})` : ''}`.trim();
     return (
-      <AbsoluteFill
-        style={{
-          background: `radial-gradient(ellipse at ${30 + 40 * random(`${scene.seed}-bg`)}% 40%, ${fallbackColor}cc 0%, #000 75%)`,
-          filter,
-        }}
-      />
+      <AbsoluteFill style={{ filter: bgFilter || undefined }}>
+        <MotionBackground style={cards} seed={scene.seed} />
+      </AbsoluteFill>
     );
   }
-  const imgStyle: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', transform, filter };
+
+  // Rede de segurança: o deslocamento já cabe (fitAmplitude); a borda da imagem nunca aparece.
+  const room = roomOf(scale);
+  tx = Math.max(-(1 - ox) * room, Math.min(ox * room, tx));
+  ty = Math.max(-(1 - oy) * room, Math.min(oy * room, ty));
+
+  const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
+  const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
+  const chroma = hasEffect(effects, 'chromatic');
+  const imgStyle: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', transform, transformOrigin: origin, filter };
   return (
     <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>
       <Img src={url} style={imgStyle} />

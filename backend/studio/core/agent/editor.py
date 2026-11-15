@@ -15,7 +15,7 @@ from studio.core.project import ops as ops_mod
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc
 from studio.core.project.ops import OpError, apply_ops, parse_ops
-from studio.core.styles.library import deep_merge, get_style, set_path
+from studio.core.styles.library import deep_merge, get_style, list_styles, set_path
 from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
 from studio.media.audio import MOODS
 from studio.providers import registry
@@ -39,6 +39,8 @@ operações pequenas sobre o documento do projeto, e o app regenera só o que mu
 - Câmera: set_scene_motion. Transição de entrada: set_scene_transition. Tipo de cena: set_scene_kind.
 - Mudança de texto narrado: update_segment_text (texto completo do segmento, no idioma indicado).
 - Ajustes globais do estilo (legendas, efeitos, ritmo, trilha): set_style com path e value_json (JSON válido).
+- Trocar o estilo do vídeo por outro estilo da lista: set_style_id (style_id exato), sozinha, só quando pedido. A direção de
+  arte é refeita quando as cenas forem refeitas; até lá, as imagens novas esperam (diga isso no summary).
 - Música: set_music (mood, volume_db, enabled). Travar/destravar: set_lock.
 - Respeite itens [travado]/travada: não proponha operações neles.
 - Quando o usuário citar "cena N" ou "segmento N", use a numeração do resumo (C1, C2... e S1, S2...).
@@ -46,7 +48,7 @@ operações pequenas sobre o documento do projeto, e o app regenera só o que mu
 - 'summary' descreve em português, em uma ou duas frases, o que será feito.
 
 Valores válidos: movimentos de câmera ken_burns_in, ken_burns_out, pan_left, pan_right, pan_up, pan_down, punch_zoom, drift,
-static; transições cut, flash, fade_black, glitch, light_leak, zoom_blur, film_burn, static_burst; tipos de cena image,
+static, zoom_to (aproxima do foco da cena); transições cut, flash, fade_black, glitch, light_leak, zoom_blur, film_burn, static_burst; tipos de cena image,
 text, title, count, document, quote; grade (set_scene_look.grade) """ + ", ".join(GRADE_PRESETS) + """;
 climas da música (set_music.mood) """ + ", ".join(MOODS) + """.
 """ + STYLE_FIELDS_HELP
@@ -71,9 +73,14 @@ def numbered_outline(doc: ProjectDoc, lang: str, max_chars: int = 110) -> tuple[
             look = {k: v for k, v in scene.look.model_dump().items() if v}
             if look:
                 extras.append(f"look={json.dumps(look, ensure_ascii=False)}")
+            if scene.visual.reuse_of:
+                extras.append(f"reaproveita a imagem de {scene.visual.reuse_of}")
             if scene.locked:
                 extras.append("travada")
-            desc = scene.visual.prompt or scene.overlay_text.get(lang, "")
+            card = scene.card.resolved(lang, doc.primary_language) if scene.card else {}
+            desc = scene.visual.prompt or scene.overlay_text.get(lang, "") or " · ".join(
+                str(card[k]) for k in ("value", "label", "headline") if k in card
+            )
             lines.append(f"   C{len(scene_ids)} id={scene.id} [{', '.join(extras)}]: {desc[:max_chars]}")
     return "\n".join(lines), scene_ids, segment_ids
 
@@ -116,6 +123,11 @@ def _llm(task: str, system: str, prompt: str, schema: dict[str, Any], context: d
     return result, provider.info.id
 
 
+def _style_choices() -> str:
+    """Estilos que a op set_style_id aceita (id: nome)."""
+    return "; ".join(f"{item['style']['id']}: {item['style']['name']}" for item in list_styles())
+
+
 def propose_edit(project_id: str, instruction: str, *, scope_scene_ids: list[str] | None = None, lang: str | None = None) -> dict[str, Any]:
     from studio.workers.pipeline.build import plan
 
@@ -132,6 +144,7 @@ def propose_edit(project_id: str, instruction: str, *, scope_scene_ids: list[str
 
 Estilo atual (resumo): legendas {style.edit.captions.style} tamanho {style.edit.captions.size} cor {style.edit.captions.color};
 efeitos {", ".join(e.type for e in style.edit.effects)}; música '{style.audio.music.mood}' a {style.audio.music.volume_db} dB.
+Estilos disponíveis (set_style_id): {_style_choices()}
 Idioma da instrução e dos textos: {lang}
 Escopo selecionado: {scope_text}
 

@@ -24,6 +24,7 @@ export const CAMERA_LABELS: LabelMap = {
   punch_zoom: 'Zoom de impacto',
   drift: 'Deriva suave',
   static: 'Parada',
+  zoom_to: 'Zoom no detalhe',
 };
 
 export const TRANSITION_LABELS: LabelMap = {
@@ -45,6 +46,90 @@ export const SCENE_KIND_LABELS: LabelMap = {
   document: 'Documento',
   quote: 'Citação',
   video: 'Vídeo',
+  stat: 'Número',
+  compare: 'Comparação',
+};
+
+/* Curadoria visual: os mesmos ids de backend/studio/core/styles/visual.py. */
+
+export const GENRE_LABELS: LabelMap = {
+  noticia: 'Notícia',
+  games: 'Games',
+  tecnologia: 'Tecnologia',
+  curiosidades: 'Curiosidades',
+  explicador: 'Explicativo',
+  lista: 'Lista e ranking',
+  historia: 'História',
+  biografia: 'Biografia',
+  financas: 'Finanças',
+  misterio: 'Mistério',
+  terror: 'Terror',
+  true_crime: 'True crime',
+  narrativa: 'Narrativa',
+  motivacional: 'Motivacional',
+};
+
+export const VISUAL_LANGUAGE_LABELS: LabelMap = {
+  key_art: 'Pôster ilustrado',
+  editorial: 'Ilustração editorial',
+  render_3d: 'Render 3D',
+  flat_vector: 'Vetor plano',
+  isometric: 'Isométrico',
+  ui_mockup: 'Maquete de interface',
+  painting: 'Pintura',
+  archival: 'Arquivo antigo',
+  collage: 'Colagem',
+  photo: 'Foto realista',
+};
+
+export const SHOT_LABELS: LabelMap = {
+  wide: 'Plano aberto',
+  medium: 'Plano médio',
+  close: 'Close',
+  detail: 'Detalhe',
+  aerial: 'Aéreo',
+  low_angle: 'De baixo para cima',
+  over_shoulder: 'Por cima do ombro',
+  pov: 'Ponto de vista',
+  top_down: 'De cima',
+};
+
+export const COMPOSITION_LABELS: LabelMap = {
+  center: 'Centro',
+  left_third: 'Terço esquerdo',
+  right_third: 'Terço direito',
+  upper_half: 'Metade de cima',
+  lower_half: 'Metade de baixo',
+};
+
+export const FOCUS_LABELS: LabelMap = {
+  center: 'Centro',
+  top: 'Em cima',
+  bottom: 'Embaixo',
+  left: 'Esquerda',
+  right: 'Direita',
+  top_left: 'Em cima à esquerda',
+  top_right: 'Em cima à direita',
+  bottom_left: 'Embaixo à esquerda',
+  bottom_right: 'Embaixo à direita',
+};
+
+export const APPROACH_LABELS: LabelMap = {
+  literal: 'Literal',
+  misto: 'Misto',
+  alegorico: 'Alegórico',
+};
+
+export const STYLE_FIT_LABELS: LabelMap = {
+  ok: 'Combina',
+  fraco: 'Combina pouco',
+  errado: 'Não combina',
+};
+
+export const REVIEW_SEVERITY_LABELS: LabelMap = {
+  grave: 'Precisa de atenção',
+  aviso: 'Aviso',
+  corrigido: 'Corrigido automaticamente',
 };
 
 export const EFFECT_LABELS: LabelMap = {

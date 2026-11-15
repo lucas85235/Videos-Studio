@@ -25,9 +25,10 @@ from studio.config import get_settings
 from studio.core.graph.store import ArtifactStore
 from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import service
-from studio.core.project.document import ProjectDoc, Scene
+from studio.core.project.document import ArtDirection, ProjectDoc, Scene, Visual
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
+from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
 from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
 from studio.media import audio as audio_mod
 from studio.media import music_library
@@ -90,6 +91,38 @@ def compose_image_prompt(style: StyleSpec, prompt: str) -> str:
     )
 
 
+ORIGINAL_ONLY = "Original designs only: no logos, no brand typography, no official characters, no game interface"
+
+
+def directed_variant(art: ArtDirection, visual: Visual) -> tuple[str | None, str | None, str | None]:
+    """Plano, composição e linguagem da imagem dirigida: "Outra imagem" (variation) gira os três."""
+    return rotate_variant(visual.shot, visual.composition, visual.language, art.languages, visual.variation)
+
+
+def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual) -> str:
+    """Prompt em camadas da cena dirigida: enquadramento, linguagem, sujeito, entidades e o mundo do vídeo.
+
+    A bible do estilo não entra (a direção já adaptou o tratamento ao assunto) e o "sem texto" vai no
+    envelope do gerador de imagem.
+    """
+    shot, composition, language = directed_variant(art, visual)
+    framing = ", ".join(t for t in (shot_text(shot), composition_text(composition)) if t)
+    looks = [e.look.strip() for e in (art.entity(i) for i in visual.entities) if e and e.look.strip()]
+    avoid = list(dict.fromkeys(x.strip() for x in (*style.art.banned, *art.avoid) if x and x.strip()))
+    parts = [
+        framing[:1].upper() + framing[1:],
+        language_prefix(language),
+        visual.prompt.strip(),
+        "; ".join(looks),
+        f"World: {art.world.strip()}" if art.world.strip() else "",
+        f"Palette: {', '.join(c.strip() for c in art.palette if c.strip())}" if any(c.strip() for c in art.palette) else "",
+        f"Treatment: {art.treatment.strip()}" if art.treatment.strip() else "",
+        ORIGINAL_ONLY,
+        f"Avoid: {', '.join(avoid)}" if avoid else "",
+    ]
+    return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip().rstrip(".")) + "."
+
+
 # Cadeias de imagem de versões anteriores. A chave do cache das imagens incluía a cadeia de provedores, e trocar
 # a cadeia (ex.: tirar os provedores pagos) escondia imagens já geradas, que eram geradas de novo gastando cota.
 # A chave nova não depende da cadeia; estas só servem para achar o que foi guardado com a chave antiga.
@@ -104,12 +137,29 @@ def image_key(inputs: dict[str, Any]) -> str:
 
 
 def scene_needs_image(scene: Scene) -> bool:
+    """A cena gera imagem própria? (cena que reaproveita a imagem de outra não gera; ver `ProjectDoc.reuse_root`)."""
     visual = scene.visual
+    if visual.reuse_of:
+        return False
     if visual.type in ("none", "upload"):
         return False
     if scene.kind == "text" and not visual.prompt:
         return False
     return bool(visual.prompt or visual.query)
+
+
+def scenes_without_direction(doc: ProjectDoc) -> list[str]:
+    """Cenas dirigidas que perderam a direção de arte (o estilo foi trocado e as cenas não foram refeitas).
+
+    Gerar essas imagens agora usaria o prompt antigo e jogaria a cota fora: elas seriam refeitas com as cenas.
+    """
+    if doc.art is not None:
+        return []
+    return [s.id for s in doc.ordered_scenes()
+            if s.visual.language and scene_needs_image(s) and not s.visual.asset and s.visual.type != "stock"]
+
+
+DIRECTION_MISSING = "O estilo do projeto mudou e as cenas ficaram sem direção de arte: refaça as cenas antes de gerar as imagens."
 
 
 class Builder:
@@ -421,7 +471,11 @@ class Builder:
             prompt = visual.query or visual.prompt
         else:
             chain = registry.resolve_chain("image", self.style.art.image_chain)
-            prompt = compose_image_prompt(self.style, visual.prompt)
+            if visual.language and self.doc.art is not None:
+                prompt = compose_directed_prompt(self.style, self.doc.art, visual)
+            else:
+                # Cena antiga (sem linguagem ou sem direção): o prompt de sempre, com a mesma chave de cache.
+                prompt = compose_image_prompt(self.style, visual.prompt)
         return {
             "prompt": prompt,
             "width": self.style.format.width,
@@ -445,8 +499,8 @@ class Builder:
         return h, found
 
     def image(self, scene: Scene) -> str | None:
-        if scene.visual.type == "upload" and scene.visual.asset:
-            return scene.visual.asset
+        if scene.visual.asset:
+            return scene.visual.asset  # upload ou imagem fixada (qualquer tipo): nada a gerar
         inputs = self.image_inputs(scene)
         if inputs is None:
             return None
@@ -693,6 +747,8 @@ class Builder:
         orphan = [s.id for s in doc.segments if s.id not in seg_with_scenes]
         if orphan:
             raise BuildError(f"{len(orphan)} segmento(s) sem cenas; rode o storyboard de novo")
+        if scenes_without_direction(doc):
+            raise BuildError(DIRECTION_MISSING)
 
     def run(self) -> dict[str, Any]:
         self.validate()
@@ -747,6 +803,7 @@ class Builder:
             lines = [f"{message} ({items[0]}{f' e mais {len(items) - 1}' if len(items) > 1 else ''})"
                      for message, items in errors.items()]
             raise BuildError("falhas na geração:\n- " + "\n- ".join(lines[:20]))
+        resolve_reused_images(doc, images)
 
         results: dict[str, Any] = {}
         for lang in self.langs:
@@ -805,6 +862,15 @@ class Builder:
         }
 
 
+def resolve_reused_images(doc: ProjectDoc, images: dict[str, str | None]) -> None:
+    """Cena que reaproveita mostra a imagem da raiz da cadeia; referência solta ou ciclo fica sem imagem (o
+    renderer usa o fundo animado). Imagem fixada na própria cena vale mais que a da raiz."""
+    for scene in doc.scenes:
+        if scene.visual.reuse_of and not scene.visual.asset:
+            root = doc.reuse_root(scene)
+            images[scene.id] = images.get(root.id) if root else None
+
+
 def _srt_time(seconds: float) -> str:
     ms = int(round(seconds * 1000))
     h, ms = divmod(ms, 3_600_000)
@@ -847,7 +913,12 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     missing_tts = [{"segment_id": seg_id, "lang": lang, "chars": chars}
                    for seg_id, lang, chars in builder.narrations_to_record()]
     missing_images = []
+    # Cenas dirigidas sem direção (estilo trocado): o build recusa até as cenas serem refeitas, então não entram.
+    lost_ids = scenes_without_direction(builder.doc)
+    lost = set(lost_ids)
     for scene in builder.doc.ordered_scenes():
+        if scene.visual.asset or scene.id in lost:
+            continue  # imagem fixada (ou upload): nada a gerar
         inputs = builder.image_inputs(scene)
         if inputs is None:
             continue
@@ -873,6 +944,7 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
         "tts_chars": sum(m["chars"] for m in missing_tts),
         "tts_local": local,
         "images_missing": missing_images,
+        "direction_missing": lost_ids,
         "tts_provider": tts_provider,
         "tts_voice": builder.style.voice.voice,
         "image_provider": img_provider,

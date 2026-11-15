@@ -11,7 +11,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from studio.core.hashing import seed_from
 from studio.core.project.document import (
+    CARD_KINDS,
     Metadata,
     MusicCue,
     ProjectDoc,
@@ -20,8 +22,10 @@ from studio.core.project.document import (
     Visual,
     renumber_parts,
 )
-from studio.core.styles.library import set_path
+from studio.core.styles.library import StyleNotFound, get_style, set_path
 from studio.core.styles.schema import CAMERA_MOVES, SCENE_KINDS, TRANSITIONS, StyleSpec
+from studio.core.styles.visual import FOCUS_ROTATION, rotate_variant
+from studio.core.text import span_ranges, split_word_indices, words
 
 
 class OpError(ValueError):
@@ -127,6 +131,12 @@ class SetStyle(_Op):
     value: Any
 
 
+class SetStyleId(_Op):
+    op: Literal["set_style_id"] = "set_style_id"
+    style_id: str
+    """Troca o estilo do projeto (os ajustes ficam; a direção de arte é refeita no próximo storyboard)."""
+
+
 class SetMusic(_Op):
     op: Literal["set_music"] = "set_music"
     cue_id: str | None = None
@@ -180,6 +190,7 @@ Operation = Annotated[
     | SplitScene
     | MergeSceneWithNext
     | SetStyle
+    | SetStyleId
     | SetMusic
     | SetLock
     | SetTitle
@@ -228,6 +239,111 @@ def _insert_index(doc: ProjectDoc, after_segment_id: str | None) -> int:
     raise OpError(f"segmento não encontrado: {after_segment_id}")
 
 
+def _next_focus(focus: str | None) -> str:
+    """Próximo foco do rodízio (outro enquadramento da mesma imagem)."""
+    index = FOCUS_ROTATION.index(focus) if focus in FOCUS_ROTATION else 0
+    return FOCUS_ROTATION[(index + 1) % len(FOCUS_ROTATION)]
+
+
+def _reuse_chain(doc: ProjectDoc, scene: Scene) -> list[str]:
+    """Ids da cadeia de `reuse_of` a partir de `scene` (só chamar quando `doc.reuse_root(scene)` existe)."""
+    ids: list[str] = []
+    current = scene
+    while current.visual.reuse_of:
+        ids.append(current.visual.reuse_of)
+        current = doc.scene(current.visual.reuse_of)
+    return ids
+
+
+def _remove_scenes(doc: ProjectDoc, removed: set[str]) -> None:
+    """Tira cenas sem perder a imagem que outras reaproveitavam: a primeira cena (na ordem do vídeo) que mostrava
+    a imagem de uma cena removida herda o Visual dela, que tem a mesma chave de cache (nenhuma imagem nova), e as
+    outras passam a apontar para a herdeira."""
+    heirs: dict[str, str] = {}  # id da raiz removida → cena que herdou o Visual
+    for scene in doc.ordered_scenes():
+        if scene.id in removed or not scene.visual.reuse_of:
+            continue
+        root = doc.reuse_root(scene)
+        if root is None or not removed.intersection(_reuse_chain(doc, scene)):
+            continue  # referência solta continua sem imagem; cadeia sem cena removida não muda
+        if root.id not in removed:
+            scene.visual.reuse_of = root.id
+        elif root.id in heirs:
+            scene.visual.reuse_of = heirs[root.id]
+        else:
+            scene.visual = root.visual.model_copy(deep=True)
+            heirs[root.id] = scene.id
+    doc.scenes = [s for s in doc.scenes if s.id not in removed]
+
+
+def _own_visual(doc: ProjectDoc, scene: Scene) -> Visual:
+    """Visual próprio para uma cena que reaproveitava outra (ganha imagem nova): copia o da raiz, inclusive a
+    linguagem da cena dirigida, sem `reuse_of` nem imagem fixada. A semente é da própria cena: "Outra imagem"
+    nela e depois na raiz não dá a mesma imagem nas duas."""
+    root = doc.reuse_root(scene)
+    if root is None or root.id == scene.id:
+        return scene.visual.model_copy(update={"reuse_of": None})
+    return root.visual.model_copy(deep=True, update={"reuse_of": None, "asset": None,
+                                                     "seed": seed_from(root.visual.seed, scene.id)})
+
+
+def _scene_text(doc: ProjectDoc, scene: Scene) -> str:
+    """As palavras da narração que a cena cobre (idioma principal), pelos spans ou pela divisão antiga."""
+    try:
+        text = doc.segment(scene.segment_id).text_for(doc.primary_language)
+    except KeyError:
+        return ""
+    tokens = words(text)
+    siblings = doc.scenes_of(scene.segment_id)
+    index = next((i for i, s in enumerate(siblings) if s.id == scene.id), 0)
+    if siblings and all(s.span is not None for s in siblings):
+        ranges = span_ranges([s.span or 0 for s in siblings], len(tokens))
+    else:
+        ranges = split_word_indices(len(tokens), len(siblings) or 1)
+    start, end = ranges[index] if index < len(ranges) else (0, len(tokens))
+    return " ".join(tokens[start:end]) or text
+
+
+def _image_from_card(doc: ProjectDoc, scene: Scene) -> Visual:
+    """Visual de imagem nova para um cartão sem fundo (`type="none"`) que virou imagem: o prompt começa pela fala
+    da cena e, com direção de arte, a cena fica dirigida."""
+    art = doc.art
+    return Visual(prompt=scene.visual.prompt or _scene_text(doc, scene), seed=seed_from(doc.seed, scene.id),
+                  language=art.languages[0] if art and art.languages else None)
+
+
+def _split_visual(doc: ProjectDoc, scene: Scene, prompt: str) -> Visual:
+    """Visual da segunda parte de uma cena dividida: reaproveita a imagem (custo zero) ou, com `prompt`, pede
+    uma imagem nova (a cena dirigida continua dirigida, com outro plano)."""
+    visual = scene.visual
+    if prompt.strip():
+        shot, composition = visual.shot, visual.composition
+        if visual.language:
+            shot, composition, _ = rotate_variant(shot, composition, visual.language, [], 1)
+        return Visual(prompt=prompt.strip(), seed=visual.seed + 7919, language=visual.language, shot=shot,
+                      composition=composition, entities=list(visual.entities))
+    if not (visual.reuse_of or visual.asset or visual.prompt or visual.query):
+        return Visual(type=visual.type, seed=visual.seed + 7919)  # cena sem imagem (cartão): nada a reaproveitar
+    root = doc.reuse_root(scene)
+    return Visual(reuse_of=root.id if root else visual.reuse_of)
+
+
+def _set_style_id(doc: ProjectDoc, style_id: str) -> None:
+    style_id = style_id.strip()
+    if style_id == doc.style_id:
+        return
+    try:
+        get_style(style_id, doc.style_overrides)
+    except StyleNotFound as exc:
+        raise OpError(f"estilo não encontrado: {style_id}") from exc
+    except Exception as exc:  # noqa: BLE001 - mensagem vai para o usuário
+        raise OpError(f"os ajustes do projeto não valem no estilo {style_id}: {str(exc)[:400]}") from exc
+    doc.style_id = style_id
+    # A direção de arte foi decidida para o estilo antigo e as cenas precisam ser conferidas de novo.
+    doc.art = None
+    doc.storyboard_approved = False
+
+
 def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> None:
     """Aplica uma operação no documento (in place). Lança OpError se for inválida."""
     match op:
@@ -245,18 +361,27 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             seg = _segment(doc, op.segment_id)
             if any(s.locked for s in doc.scenes_of(seg.id)):
                 raise OpError("o segmento tem cenas travadas")
+            _remove_scenes(doc, {s.id for s in doc.scenes if s.segment_id == seg.id})
             doc.segments = [s for s in doc.segments if s.id != seg.id]
-            doc.scenes = [s for s in doc.scenes if s.segment_id != seg.id]
         case MoveSegment():
             seg = _segment(doc, op.segment_id)
             doc.segments = [s for s in doc.segments if s.id != seg.id]
             doc.segments.insert(_insert_index(doc, op.after_segment_id), seg)
         case UpdateScenePrompt():
             scene = _scene(doc, op.scene_id)
+            if scene.visual.reuse_of:
+                scene.visual = _own_visual(doc, scene)  # prompt novo: a cena ganha imagem própria
+            elif scene.visual.type == "none":
+                scene.visual = _image_from_card(doc, scene)  # cartão sem fundo: o prompt pede imagem
             scene.visual.prompt = op.prompt.strip()
             scene.visual.asset = None
         case RegenerateScene():
             scene = _scene(doc, op.scene_id)
+            if scene.visual.reuse_of:
+                # "Outra imagem" numa cena que reaproveita: uma variação da imagem da raiz, só nesta cena.
+                if doc.reuse_root(scene) is None:
+                    raise OpError(f"a cena {scene.id} não tem imagem para variar")
+                scene.visual = _own_visual(doc, scene)
             scene.visual.variation += 1
             scene.visual.asset = None
         case SetSceneMotion():
@@ -276,6 +401,11 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             scene.kind = op.kind  # type: ignore[assignment]
             if op.number is not None:
                 scene.number = op.number
+            if op.kind not in CARD_KINDS and scene.visual.type == "none":
+                # Cartão sem fundo virou imagem: sem isso a cena ficaria sem prompt, sem "Outra imagem" e sem imagem.
+                scene.visual = _image_from_card(doc, scene)
+                if scene.motion == "static":
+                    scene.motion = None
         case SetSceneText():
             scene = _scene(doc, op.scene_id)
             scene.overlay_text[op.lang] = op.text
@@ -289,12 +419,21 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             scene.look = type(scene.look).model_validate(data)
         case SplitScene():
             scene = _scene(doc, op.scene_id)
+            visual = _split_visual(doc, scene, op.prompt)
+            kind = scene.kind
+            if kind in ("stat", "compare"):
+                # Os dados ficam na primeira parte; a segunda mostra a imagem de fundo ou, sem ela, a fala.
+                kind = "image" if visual.reuse_of or visual.prompt else "text"
             new_scene = Scene(
                 segment_id=scene.segment_id,
                 part=scene.part + 1,
-                kind=scene.kind,
-                visual=Visual(prompt=op.prompt or scene.visual.prompt, seed=scene.visual.seed + 7919),
+                kind=kind,
+                visual=visual,
+                focus=_next_focus(scene.focus) if visual.reuse_of else None,
             )
+            if scene.span is not None:
+                new_scene.span = scene.span // 2
+                scene.span -= new_scene.span
             for other in doc.scenes_of(scene.segment_id):
                 if other.part > scene.part:
                     other.part += 1
@@ -308,7 +447,8 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
                 raise OpError("não há cena seguinte no mesmo segmento para juntar")
             if later[0].locked:
                 raise OpError("a cena seguinte está travada")
-            doc.scenes = [s for s in doc.scenes if s.id != later[0].id]
+            scene.span = scene.span + later[0].span if scene.span is not None and later[0].span is not None else None
+            _remove_scenes(doc, {later[0].id})
             renumber_parts(doc, scene.segment_id)
         case SetStyle():
             new_overrides = set_path(doc.style_overrides, op.path, op.value)
@@ -320,6 +460,8 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
                 except Exception as exc:  # noqa: BLE001 - mensagem vai para o usuário
                     raise OpError(f"ajuste de estilo inválido em '{op.path}': {exc}") from exc
             doc.style_overrides = new_overrides
+        case SetStyleId():
+            _set_style_id(doc, op.style_id)
         case SetMusic():
             cue = None
             if op.cue_id:

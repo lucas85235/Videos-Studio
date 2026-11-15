@@ -11,6 +11,13 @@ const fontUrl = (file: string, base: string | null | undefined) =>
 
 export const fontStack = (family: string) => `"${family}", "Noto Sans", "Segoe UI", Arial, sans-serif`;
 
+/** Peso pedido limitado ao que a fonte tem (fonte de um peso só fica em 400, sem negrito falso). */
+export const fontWeight = (family: string, wanted: number) => {
+  const info = FONTS[family];
+  if (!info) return wanted;
+  return Math.min(info.weights[1], Math.max(info.weights[0], wanted));
+};
+
 /** Carrega as fontes locais (OFL) antes do primeiro quadro. Funciona no render e no Player. */
 export const ensureFonts = (families: string[], base?: string | null) => {
   if (typeof document === 'undefined' || typeof FontFace === 'undefined') {

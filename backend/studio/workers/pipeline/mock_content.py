@@ -74,18 +74,67 @@ def mock_script(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"title": f"O que pouca gente sabe: {topic}", "segments": segments, "sources": []}
 
 
+_MOCK_SHOTS = ["wide", "close", "low_angle", "medium", "detail", "aerial"]
+
+
+def _mock_scene(key: str, kind: str = "image", source: str = "new", **fields: Any) -> dict[str, Any]:
+    from studio.workers.pipeline.schemas import STORYBOARD_SCHEMA
+
+    props = STORYBOARD_SCHEMA["properties"]["scenes"]["items"]["properties"]
+    base: dict[str, Any] = {k: None for k in props}
+    base.update({"key": key, "kind": kind, "source": source})
+    base.update(fields)
+    return base
+
+
 def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
-    bible = ctx.get("bible") or ""
-    scenes = []
-    for item in ctx.get("scenes", []):
+    """Storyboard v2 por regras: gancho com imagem nova e headline, número vira `stat` (dois ou mais, `compare`)
+    sobre imagem reaproveitada, o resto alterna imagem nova e reaproveitada e a chamada final reaproveita o gancho."""
+    beats: list[dict[str, Any]] = ctx.get("scenes", [])
+    topic = ctx.get("topic") or "o tema"
+    direction = {
+        "genre": "curiosidades", "approach": "literal", "world": f"everyday places and objects related to {topic}",
+        "treatment": "soft daylight, clean contrast", "palette": ["teal", "warm orange", "off white"],
+        "languages": ["editorial"], "grade": None, "entities": [], "avoid": [], "style_fit": "ok", "style_note": "",
+        "suggested_style": None, "hook": " ".join((beats[0].get("text", "") if beats else topic).split()[:12]),
+    }  # fmt: skip
+    scenes: list[dict[str, Any]] = []
+    hook_key: str | None = None
+    last_new: str | None = None
+    alternate = False
+    shots = 0
+    for index, item in enumerate(beats):
+        key = item["key"]
         text = item.get("text", "")
         focus = " ".join(text.split()[:12])
-        kind = item.get("kind_hint") or "image"
-        overlay = None
-        if kind in ("title", "count", "text"):
+        hint = item.get("kind_hint") or "image"
+        image = {"prompt": f"Cena: {focus}", "language": "editorial", "shot": _MOCK_SHOTS[shots % len(_MOCK_SHOTS)]}
+        if index == 0:
+            headline = item.get("value") if item.get("has_number") else " ".join(text.split()[:3]).upper()
+            scenes.append(_mock_scene(key, headline=headline.strip(" ?!.,") or None, motion="punch_zoom", **image))
+            hook_key = last_new = key
+            shots += 1
+        elif hint in ("title", "count"):
             overlay = item.get("overlay_hint") or focus
-        scenes.append({"key": item["key"], "kind": kind, "prompt": f"{bible}. Cena: {focus}", "overlay_text": overlay})
-    return {"scenes": scenes}
+            scenes.append(_mock_scene(key, hint, "reuse" if last_new else "none", reuse_key=last_new, overlay_text=overlay))
+        elif len(values := item.get("values") or []) >= 2:
+            items = [{"label": f"Número {i + 1}", "value": v} for i, v in enumerate(values[:3])]
+            scenes.append(_mock_scene(key, "compare", "reuse" if last_new else "none", reuse_key=last_new,
+                                      items=items, highlight=len(items) - 1, label=" ".join(text.split()[:4])))
+        elif item.get("has_number") and item.get("value"):
+            scenes.append(_mock_scene(key, "stat", "reuse" if last_new else "none", reuse_key=last_new,
+                                      value=item["value"], label=" ".join(text.split()[:4])))
+        elif item.get("role") == "cta" and hook_key:
+            scenes.append(_mock_scene(key, "image", "reuse", reuse_key=hook_key, focus="center"))
+        elif alternate and last_new:
+            scenes.append(_mock_scene(key, "image", "reuse", reuse_key=last_new, motion="zoom_to"))
+            alternate = False
+        else:
+            scenes.append(_mock_scene(key, **image))
+            last_new = key
+            alternate = True
+            shots += 1
+    return {"direction": direction, "scenes": scenes}
 
 
 def mock_translate(ctx: dict[str, Any]) -> dict[str, Any]:

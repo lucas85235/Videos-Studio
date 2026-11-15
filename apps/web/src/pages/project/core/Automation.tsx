@@ -2,10 +2,12 @@ import { ArrowRight, Pause, SlidersHorizontal, Wand2 } from 'lucide-react';
 import React from 'react';
 import type { ProjectDetail } from '../../../api';
 import { Button, Checkbox, ErrorBox, Spinner } from '../../../ui';
-import { nextStep, type StepId } from './model';
+import { gatesOf, nextStep, type StepId } from './model';
 import { Popover } from './Popover';
 
-type Gates = { script: boolean; preview: boolean };
+/** `storyboard` ausente: vale o salvo no projeto (projeto sem a chave: desligada). */
+type Gates = { script: boolean; storyboard?: boolean; preview: boolean };
+type Gate = 'script' | 'storyboard' | 'preview';
 
 /** Motivo para o piloto automático não poder rodar agora (ou null). Segue o próximo passo do projeto. */
 export const autopilotBlock = (detail: ProjectDetail, gates: Gates, busy: boolean): string | null => {
@@ -15,17 +17,24 @@ export const autopilotBlock = (detail: ProjectDetail, gates: Gates, busy: boolea
   const { doc } = detail;
   const scriptPending = doc.segments.length > 0 && !doc.script_approved && !doc.scenes.length && gates.script;
   if (scriptPending) return 'Aprove o roteiro primeiro: o piloto automático não pula a sua revisão.';
+  // O servidor para nas cenas enquanto elas não forem aprovadas (vale o salvo, não o marcado agora).
+  if (action.kind === 'approve_scenes')
+    return 'Aprove as cenas primeiro (aba Cenas): o piloto automático não pula a sua conferência antes das imagens.';
   if (action.kind === 'approve_preview' && gates.preview)
     return 'A prévia está pronta: aprove a prévia primeiro (aba Prévia). O piloto automático não pula a sua revisão.';
   return null;
 };
 
 /** O que o botão do piloto faz agora, a partir do próximo passo do projeto. */
-const autopilotLabel = (detail: ProjectDetail, gates: Gates) => {
+const autopilotLabel = (detail: ProjectDetail, gates: Required<Gates>) => {
   const { action } = nextStep(detail);
+  const afterScript = gates.storyboard ? 'Continuar até as cenas' : gates.preview ? 'Continuar até a prévia' : 'Continuar até o vídeo final';
   switch (action.kind) {
     case 'generate_script':
-      return gates.script ? 'Gerar o roteiro e parar para revisão' : gates.preview ? 'Continuar até a prévia' : 'Continuar até o vídeo final';
+      return gates.script ? 'Gerar o roteiro e parar para revisão' : afterScript;
+    case 'approve_script':
+    case 'continue':
+      return gates.storyboard ? 'Criar as cenas e parar para conferir' : afterScript;
     case 'approve_preview':
     case 'render':
     case 'publish':
@@ -62,12 +71,13 @@ export const AutomationMenu: React.FC<{
   detail: ProjectDetail;
   gates: Gates;
   busy: boolean;
-  onGate: (gate: 'script' | 'preview', value: boolean) => void;
+  onGate: (gate: Gate, value: boolean) => void;
   gatePending: boolean;
   gateError: unknown;
   onAutopilot: () => void;
   autopilotBusy: boolean;
-}> = ({ detail, gates, busy, onGate, gatePending, gateError, onAutopilot, autopilotBusy }) => {
+}> = ({ detail, gates: given, busy, onGate, gatePending, gateError, onAutopilot, autopilotBusy }) => {
+  const gates = { ...given, storyboard: given.storyboard ?? gatesOf(detail).storyboard };
   const block = autopilotBlock(detail, gates, busy);
   const current: StepId = nextStep(detail).current;
   const isCurrent = (...ids: StepId[]) => ids.includes(current);
@@ -98,6 +108,13 @@ export const AutomationMenu: React.FC<{
               onChange={(v) => onGate('script', v)}
             />
             <Checkbox
+              label="Parar para eu conferir as cenas"
+              description="Antes de gerar as imagens: direção de arte, cartões e avisos da curadoria."
+              checked={gates.storyboard}
+              disabled={gatePending}
+              onChange={(v) => onGate('storyboard', v)}
+            />
+            <Checkbox
               label="Parar para eu revisar a prévia"
               description="Antes de renderizar o vídeo final."
               checked={gates.preview}
@@ -118,6 +135,11 @@ export const AutomationMenu: React.FC<{
             <Next>
               <PathChip current={isCurrent('scenes')}>Cenas</PathChip>
             </Next>
+            {gates.storyboard ? (
+              <Next>
+                <PathChip pause>conferência</PathChip>
+              </Next>
+            ) : null}
             <Next>
               <PathChip current={isCurrent('preview')}>Prévia</PathChip>
             </Next>

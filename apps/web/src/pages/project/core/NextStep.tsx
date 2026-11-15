@@ -7,9 +7,11 @@ import { readinessOf, useProviders } from '../../../shell/data';
 import { Button, buttonClass, ErrorBox, formatRelative, ProgressBar, Stepper } from '../../../ui';
 import type { ProjectTab } from '../types';
 import {
+  awaitingScenes,
   errorFirstLine,
   failureHint,
   failureTitle,
+  gatesOf,
   isActive,
   JOB_TEXT,
   jobCost,
@@ -20,6 +22,7 @@ import {
   type NextAction,
   type StepId,
 } from './model';
+import { usePreviewPlan } from './usePreviewPlan';
 
 type StartJob = (kind: string) => void;
 
@@ -57,7 +60,7 @@ const JobProgress: React.FC<{ job: Job }> = ({ job }) => {
  * A aba aberta é a dona desta ação (mostra o botão principal com o contexto dela)? Então a faixa "Próximo passo"
  * omite o botão: uma ação, um lugar, um primário. Regra única, usada pela faixa e pelas abas.
  *  - Roteiro: gerar e aprovar o roteiro;
- *  - Cenas: gerar a prévia;
+ *  - Cenas: aprovar as cenas (painel da curadoria) e gerar a prévia;
  *  - Prévia: gerar e aprovar a prévia;
  *  - Vídeo e publicação: ir para a publicação.
  */
@@ -66,7 +69,7 @@ export const tabOwnsAction = (action: NextAction, tab: ProjectTab): boolean => {
     case 'script':
       return action.kind === 'generate_script' || action.kind === 'approve_script';
     case 'scenes':
-      return action.kind === 'preview';
+      return action.kind === 'preview' || action.kind === 'approve_scenes';
     case 'preview':
       return action.kind === 'preview' || action.kind === 'approve_preview';
     case 'output':
@@ -202,10 +205,14 @@ export const NextStepBanner: React.FC<{
   retryBusy,
   onDismissFailure,
 }) => {
-  const step = nextStep(detail, { showFailure: Boolean(failure) });
+  // Cenas esperando a conferência: o título diz quantas imagens a aprovação gera de fato (com o cache).
+  const plan = usePreviewPlan(detail, awaitingScenes(detail));
+  const step = nextStep(detail, { showFailure: Boolean(failure), plannedImages: plan.data?.images_missing.length });
   const active = detail.jobs.filter(isActive);
   const { action } = step;
   const toFinal = detail.project.settings.gates?.preview === false;
+  // Com a parada das cenas, aprovar o roteiro ou continuar só cria as cenas (as imagens esperam a conferência).
+  const stopAtScenes = gatesOf(detail).storyboard;
   const owned = tabOwnsAction(action, tab);
   const main = tabHasOtherPrimary(tab, scriptDrafts, restoreNotice) ? 'secondary' : 'primary';
   const showFailure = failure && !active.length ? failure : null;
@@ -229,7 +236,7 @@ export const NextStepBanner: React.FC<{
       const blocked = scriptDrafts > 0;
       primary = (
         <Button variant={main} icon={Check} busy={approveScriptBusy} disabled={blocked} onClick={approveScript}>
-          {toFinal ? 'Aprovar e gerar o vídeo' : 'Aprovar e gerar a prévia'}
+          {stopAtScenes ? 'Aprovar e criar as cenas' : toFinal ? 'Aprovar e gerar o vídeo' : 'Aprovar e gerar a prévia'}
         </Button>
       );
       if (tab !== 'script') {
@@ -240,16 +247,24 @@ export const NextStepBanner: React.FC<{
         );
       }
       if (blocked) note = 'Salve ou descarte as alterações do roteiro primeiro.';
-      usesMedia = true;
+      usesMedia = !stopAtScenes;
       break;
     }
     case 'continue':
       primary = (
         <Button variant={main} icon={Play} busy={startBusy} onClick={() => startJob('autopilot')}>
-          {toFinal ? 'Continuar: cenas, prévia e vídeo' : 'Continuar: cenas e prévia'}
+          {stopAtScenes ? 'Continuar: criar as cenas' : toFinal ? 'Continuar: cenas, prévia e vídeo' : 'Continuar: cenas e prévia'}
         </Button>
       );
-      usesMedia = true;
+      usesMedia = !stopAtScenes;
+      break;
+    case 'approve_scenes':
+      // Fora da aba Cenas, só leva até lá: aprovar sem ver as cenas desfaria o sentido da parada.
+      primary = (
+        <Button variant={main} icon={LayoutGrid} onClick={() => goTo('scenes')}>
+          Conferir as cenas
+        </Button>
+      );
       break;
     case 'preview':
       primary = (

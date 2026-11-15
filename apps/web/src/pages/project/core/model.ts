@@ -1,6 +1,16 @@
 // Regras puras da página do projeto: etapa atual, próxima ação, aba inicial, estimativas e textos.
 
-import { JOB_LABELS, type Job, type ProjectDetail, type StyleSpec } from '../../../api';
+import {
+  JOB_LABELS,
+  type Job,
+  type LocalizedText,
+  type ProjectDetail,
+  type ProjectDoc,
+  type Scene,
+  type SceneCard,
+  type StoryboardReview,
+  type StyleSpec,
+} from '../../../api';
 import { langLabel } from '../../../labels';
 import type { StepState } from '../../../ui';
 import type { ProjectTab } from '../types';
@@ -142,6 +152,7 @@ export type NextAction =
   | { kind: 'generate_script' }
   | { kind: 'approve_script' }
   | { kind: 'continue' }
+  | { kind: 'approve_scenes' }
   | { kind: 'preview' }
   | { kind: 'approve_preview' }
   | { kind: 'render' }
@@ -158,10 +169,34 @@ export type NextStep = {
   cost?: string;
 };
 
-const gatesOf = (detail: ProjectDetail) => {
+/**
+ * Paradas do piloto automático. Projeto sem a chave: roteiro e prévia valem true; as cenas valem false
+ * (a parada das cenas é nova e só vem ligada nos projetos criados depois dela).
+ */
+export const gatesOf = (detail: ProjectDetail) => {
   const g = detail.project.settings.gates ?? {};
-  return { script: g.script ?? true, preview: g.preview ?? true };
+  return { script: g.script ?? true, storyboard: g.storyboard ?? false, preview: g.preview ?? true };
 };
+
+/**
+ * As cenas esperam a conferência do usuário antes das imagens: há cenas, a parada está ligada e elas não foram
+ * aprovadas. Vale também com uma prévia antiga (cenas refeitas ou estilo trocado depois dela): o piloto automático
+ * para nas cenas do mesmo jeito.
+ */
+export const awaitingScenes = (detail: ProjectDetail) =>
+  detail.doc.scenes.length > 0 && gatesOf(detail).storyboard && !detail.doc.storyboard_approved;
+
+/**
+ * Cenas dirigidas que perderam a direção de arte (o estilo foi trocado e as cenas não foram refeitas): o build recusa
+ * gerar essas imagens com o prompt antigo (`scenes_without_direction` no build).
+ */
+export const directionMissing = (doc: ProjectDoc): number =>
+  doc.art
+    ? 0
+    : doc.scenes.filter((s) => Boolean(s.visual.language) && sceneNeedsImage(s) && !s.visual.asset && s.visual.type !== 'stock').length;
+
+/** Aviso (visível) quando as cenas dirigidas ficaram sem direção de arte. */
+export const DIRECTION_MISSING_REASON = 'O estilo mudou: refaça as cenas antes de aprovar. Nenhuma imagem é gerada com a direção antiga.';
 
 /** Falha que ainda é "a última coisa que aconteceu" no projeto (o job mais recente falhou). */
 export const latestFailure = (detail: ProjectDetail): Job | null => {
@@ -173,20 +208,30 @@ export const latestFailure = (detail: ProjectDetail): Job | null => {
  * Próximo passo do projeto, calculado só a partir dos dados.
  * `showFailure: false` tira a marca de erro da trilha (a falha foi dispensada pelo usuário).
  */
-export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } = {}): NextStep => {
+export const nextStep = (
+  detail: ProjectDetail,
+  opts: {
+    showFailure?: boolean;
+    /** Imagens que a próxima prévia gera de fato (com o cache, GET /plan); sem ela, o título diz "até N". */
+    plannedImages?: number;
+  } = {},
+): NextStep => {
   const { doc, outputs, publications } = detail;
   const gates = gatesOf(detail);
   const hasScript = doc.segments.length > 0;
   const hasScenes = doc.scenes.length > 0;
   const preview = hasScenes && Boolean(outputs.preview);
   const { finalFresh, previewApprovedFresh } = freshness(detail);
+  const sceneCheck = awaitingScenes(detail);
+  // Cenas esperando conferência: as etapas seguintes voltam a ficar por fazer (a prévia e o vídeo vão mudar).
+  const scenesOk = hasScenes && !sceneCheck;
 
   const done: Record<StepId, boolean> = {
     script: hasScript && (doc.script_approved || hasScenes || !gates.script),
-    scenes: hasScenes,
-    preview: preview && (previewApprovedFresh || finalFresh),
-    video: finalFresh,
-    publish: finalFresh && publications.length > 0,
+    scenes: scenesOk,
+    preview: scenesOk && preview && (previewApprovedFresh || finalFresh),
+    video: scenesOk && finalFresh,
+    publish: scenesOk && finalFresh && publications.length > 0,
   };
   const current = STEP_ORDER.find((id) => !done[id]) ?? 'publish';
 
@@ -200,14 +245,22 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
   }));
 
   const toFinal = !gates.preview;
-  const pipelineNote = toFinal ? 'Cria as cenas, narra, monta a prévia e renderiza o vídeo final.' : 'Cria as cenas, narra e monta a prévia.';
+  // Com a parada das cenas, o piloto só cria as cenas e espera a conferência (não gasta imagens).
+  const stopAtScenes = gates.storyboard;
+  const pipelineNote = stopAtScenes
+    ? 'Cria as cenas e para para você conferir antes de gerar as imagens.'
+    : toFinal
+      ? 'Cria as cenas, narra, monta a prévia e renderiza o vídeo final.'
+      : 'Cria as cenas, narra e monta a prévia.';
   // A prévia narra com a voz local (grátis); a voz do vídeo final só é gravada ao renderizar.
   const localPreview = detail.style?.voice.preview?.local ?? true;
-  const pipelineCost = toFinal
-    ? 'Usa o Claude, a cota de imagens e a da voz do vídeo final.'
-    : localPreview
-      ? 'Usa o Claude e a cota de imagens (a narração da prévia é local, grátis).'
-      : 'Usa o Claude e a cota de voz e de imagens.';
+  const pipelineCost = stopAtScenes
+    ? 'Usa o Claude.'
+    : toFinal
+      ? 'Usa o Claude, a cota de imagens e a da voz do vídeo final.'
+      : localPreview
+        ? 'Usa o Claude e a cota de imagens (a narração da prévia é local, grátis).'
+        : 'Usa o Claude e a cota de voz e de imagens.';
   const mediaCost = localPreview ? 'Usa a cota de imagens (a narração da prévia é local, grátis).' : 'Usa a cota de voz e de imagens.';
   const renderCost = 'Usa a cota ou os créditos da voz do vídeo final.';
 
@@ -234,13 +287,30 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
     };
   }
   if (!hasScenes) {
-    const next = toFinal ? 'cenas, prévia e vídeo final' : 'cenas e prévia';
+    const next = stopAtScenes ? 'cenas' : toFinal ? 'cenas, prévia e vídeo final' : 'cenas e prévia';
     return {
       ...base,
       action: { kind: 'continue' },
       title: doc.script_approved ? `Roteiro aprovado. Próximo: ${next}` : `Roteiro pronto. Próximo: ${next}`,
       description: pipelineNote,
       cost: pipelineCost,
+    };
+  }
+  if (sceneCheck) {
+    // Com a conta do build, o número é exato; sem ela, o documento só dá o máximo (não sabe o que já está no cache).
+    const exact = opts.plannedImages !== undefined;
+    const newImages = exact ? opts.plannedImages! : sceneCounts(doc).newImages;
+    const images = newImages === 1 ? '1 imagem nova' : `${newImages} imagens novas`;
+    // Sem `cost`: fora da aba Cenas o botão só leva até lá; a cota já vai no título.
+    return {
+      ...base,
+      action: { kind: 'approve_scenes' },
+      title: newImages
+        ? `Confira as cenas: ${exact ? '' : 'até '}${images}, ~${quotaMinutes(newImages)} min de cota`
+        : 'Confira as cenas: nenhuma imagem nova',
+      description: toFinal
+        ? 'Veja a direção de arte, os cartões e os avisos antes de gastar a cota. Ao aprovar, o app gera as imagens, monta a prévia e renderiza o vídeo final.'
+        : 'Veja a direção de arte, os cartões e os avisos antes de gastar a cota. Ao aprovar, o app gera as imagens e monta a prévia.',
     };
   }
   if (!preview) {
@@ -284,10 +354,177 @@ export const nextStep = (detail: ProjectDetail, opts: { showFailure?: boolean } 
 export const defaultTab = (detail: ProjectDetail): ProjectTab => {
   const { doc, outputs } = detail;
   if (!doc.segments.length || (!doc.script_approved && !doc.scenes.length)) return 'script';
-  if (!doc.scenes.length) return 'scenes';
+  if (!doc.scenes.length || awaitingScenes(detail)) return 'scenes';
   if (freshness(detail).finalFresh) return 'output';
   if (outputs.preview) return 'preview';
   return 'scenes';
+};
+
+/* ------------------------------------------------------------------ */
+/* Cenas: imagem própria, reaproveitamento e cartões                   */
+/* ------------------------------------------------------------------ */
+
+/** Cenas sem imagem própria em tela cheia, desenhadas pelo renderer (CARD_KINDS de core/project/document.py). */
+export const CARD_KINDS = new Set(['text', 'title', 'count', 'document', 'quote', 'stat', 'compare']);
+
+/** Cota estimada de cada imagem nova (Codex), em segundos. */
+export const IMAGE_QUOTA_SECONDS = 35;
+
+/** Minutos de cota de imagens, arredondados para cima. */
+export const quotaMinutes = (images: number) => Math.ceil((images * IMAGE_QUOTA_SECONDS) / 60);
+
+/** A cena pede uma imagem gerada (a mesma regra de `scene_needs_image` no build). */
+export const sceneNeedsImage = (scene: Scene): boolean => {
+  const v = scene.visual;
+  if (v.reuse_of) return false;
+  if (v.type === 'none' || v.type === 'upload') return false;
+  if (scene.kind === 'text' && !v.prompt) return false;
+  return Boolean(v.prompt || v.query);
+};
+
+/**
+ * Cena dona da imagem que `scene` mostra: ela mesma, ou o fim da cadeia de `reuse_of` em até `maxDepth` saltos.
+ * null com referência solta (cena apagada), ciclo ou cadeia longa demais: a cena fica com o fundo animado.
+ */
+export const reuseRoot = (byId: ReadonlyMap<string, Scene>, scene: Scene, maxDepth = 3): Scene | null => {
+  let current = scene;
+  const seen = new Set([scene.id]);
+  for (let i = 0; i <= maxDepth; i += 1) {
+    const target = current.visual.reuse_of;
+    if (!target) return current;
+    const next = byId.get(target);
+    if (!next || seen.has(next.id)) return null;
+    seen.add(next.id);
+    current = next;
+  }
+  return null;
+};
+
+/** Número de exibição de cada cena ("Cena 3"), na ordem da aba Cenas (trechos em ordem, partes em ordem). */
+export const sceneNumbers = (doc: ProjectDoc): Map<string, number> => {
+  const out = new Map<string, number>();
+  let n = 0;
+  for (const seg of doc.segments) {
+    const scenes = doc.scenes.filter((s) => s.segment_id === seg.id).sort((a, b) => a.part - b.part);
+    for (const s of scenes) out.set(s.id, (n += 1));
+  }
+  return out;
+};
+
+export type SceneCounts = { scenes: number; newImages: number; reused: number; cards: number };
+
+const SHOT_ROTATION = ['wide', 'close', 'low_angle', 'medium', 'detail', 'aerial', 'over_shoulder', 'top_down', 'pov'];
+const COMPOSITION_ROTATION = ['center', 'left_third', 'right_third', 'upper_half', 'lower_half'];
+
+const stepIn = (sequence: string[], current: string | null | undefined, steps: number) => {
+  const base = current ? Math.max(0, sequence.indexOf(current)) : 0;
+  return sequence[(base + steps) % sequence.length];
+};
+
+/**
+ * Plano, composição e linguagem que a imagem dirigida usa de fato: "Outra imagem" (variation) gira os três, como
+ * `rotate_variant` em core/styles/visual.py.
+ */
+export const rotateVariant = (
+  shot: string | null | undefined,
+  composition: string | null | undefined,
+  language: string | null | undefined,
+  languages: string[],
+  variation: number,
+): { shot: string | null; composition: string | null; language: string | null } => {
+  if (variation <= 0) return { shot: shot ?? null, composition: composition ?? null, language: language ?? null };
+  let lang = language ?? null;
+  const pool = languages.filter((l, i) => l && languages.indexOf(l) === i);
+  if (variation >= 2 && pool.length > 1) {
+    const base = lang && pool.includes(lang) ? pool.indexOf(lang) : 0;
+    lang = pool[(base + Math.floor(variation / 2)) % pool.length];
+  }
+  return { shot: stepIn(SHOT_ROTATION, shot, variation), composition: stepIn(COMPOSITION_ROTATION, composition, variation), language: lang };
+};
+
+const translatableValue = (text: string) => /\p{L}/u.test(text) || /\d[.,]\d/.test(text);
+
+/**
+ * Cenas com texto de tela (sobreposição ou cartão) no idioma principal que ainda falta em `lang`: o piloto traduz só
+ * esses textos antes da prévia (como `missing_screen_texts` em authoring.py).
+ */
+export const screenTextsMissing = (doc: ProjectDoc, lang: string): number => {
+  const source = doc.primary_language;
+  if (lang === source) return 0;
+  const has = (t: LocalizedText | undefined, l: string) => Boolean((t?.[l] ?? '').trim());
+  const missing = (t: LocalizedText | undefined, value = false) =>
+    has(t, source) && !has(t, lang) && (!value || translatableValue(t![source]));
+  return doc.scenes.filter((s) => {
+    const card = s.card;
+    if (missing(s.overlay_text)) return true;
+    if (!card) return false;
+    return (
+      missing(card.value, true) ||
+      missing(card.label) ||
+      missing(card.headline) ||
+      missing(card.stamp) ||
+      (card.items ?? []).some((item) => missing(item.label) || missing(item.value, true))
+    );
+  }).length;
+};
+
+/** Contagem da curadoria sobre o documento atual (mesmas definições de settings.storyboard_review.counts). */
+export const sceneCounts = (doc: ProjectDoc): SceneCounts => ({
+  scenes: doc.scenes.length,
+  newImages: doc.scenes.filter((s) => sceneNeedsImage(s) && !s.visual.asset).length,
+  reused: doc.scenes.filter((s) => Boolean(s.visual.reuse_of)).length,
+  cards: doc.scenes.filter((s) => CARD_KINDS.has(s.kind)).length,
+});
+
+const pickText = (texts: LocalizedText | undefined, lang: string, fallback: string): string =>
+  (texts?.[lang] ?? '').trim() || (texts?.[fallback] ?? '').trim();
+
+export type ResolvedCard = {
+  value?: string;
+  label?: string;
+  items?: { label: string; value: string }[];
+  highlight?: number;
+  headline?: string;
+  stamp?: string;
+  source?: string;
+};
+
+/** Cartão no idioma `lang` (reserva: `fallback`), só com o que está preenchido (como `SceneCard.resolved`). */
+export const resolveCard = (card: SceneCard | null | undefined, lang: string, fallback: string): ResolvedCard => {
+  if (!card) return {};
+  const out: ResolvedCard = {};
+  const value = pickText(card.value, lang, fallback);
+  if (value) out.value = value;
+  const labelText = pickText(card.label, lang, fallback);
+  if (labelText) out.label = labelText;
+  const items = (card.items ?? [])
+    .map((item) => ({ label: pickText(item.label, lang, fallback), value: pickText(item.value, lang, fallback) }))
+    .filter((item) => item.label || item.value);
+  if (items.length) {
+    out.items = items;
+    if (card.highlight != null && card.highlight >= 0 && card.highlight < items.length) out.highlight = card.highlight;
+  }
+  const headline = pickText(card.headline, lang, fallback);
+  if (headline) out.headline = headline;
+  const stamp = pickText(card.stamp, lang, fallback);
+  if (stamp) out.stamp = stamp;
+  if (card.source?.trim()) out.source = card.source.trim();
+  return out;
+};
+
+/**
+ * Revisão da curadoria gravada pelo job das cenas, ou null (projeto antigo ou formato inesperado).
+ *
+ * A revisão é um retrato das cenas daquele job: os avisos de cenas que não existem mais (versão restaurada, cena
+ * juntada ou apagada) saem. `stale` diz que nenhuma cena da revisão existe mais (as cenas são de outra versão).
+ */
+export const storyboardReviewOf = (detail: ProjectDetail): (StoryboardReview & { stale: boolean }) | null => {
+  const r = detail.project.settings.storyboard_review;
+  if (!r || typeof r !== 'object' || !r.counts || typeof r.counts !== 'object' || !Array.isArray(r.issues)) return null;
+  const ids = new Set(detail.doc.scenes.map((s) => s.id));
+  const withScene = r.issues.filter((i) => i.scene_id);
+  const stale = withScene.length > 0 && !withScene.some((i) => ids.has(i.scene_id!));
+  return { ...r, issues: stale ? [] : r.issues.filter((i) => !i.scene_id || ids.has(i.scene_id)), stale };
 };
 
 /* ------------------------------------------------------------------ */
@@ -370,6 +607,7 @@ export const failureHint = (error: string | null | undefined): string => {
 export const humanizeVersionMessage = (message: string): string => {
   let text = message.replace(/\s*\([a-z0-9_.-]+\)\s*$/i, '');
   text = text
+    .replace(/^Cenas planejadas \([a-z0-9_.-]+\)/i, 'Cenas planejadas')
     .replace(/^Storyboard gerado/, 'Cenas geradas')
     .replace(/^Segmento travado/, 'Trecho travado')
     .replace(/^Segmento destravado/, 'Trecho destravado')
@@ -388,8 +626,9 @@ export type Milestone = { kind: MilestoneKind; tone: 'good' | 'info'; label: str
 export const versionMilestone = (message: string, author?: string): Milestone => {
   if (message.startsWith('Roteiro aprovado')) return { kind: 'approval', tone: 'good', label: 'Aprovação' };
   if (message.startsWith('Prévia aprovada')) return { kind: 'approval', tone: 'good', label: 'Aprovação' };
+  if (message.startsWith('Cenas aprovadas')) return { kind: 'approval', tone: 'good', label: 'Aprovação' };
   if (message.startsWith('Roteiro gerado')) return { kind: 'script', tone: 'info', label: 'Roteiro novo' };
-  if (message.startsWith('Storyboard gerado')) return { kind: 'scenes', tone: 'info', label: 'Cenas novas' };
+  if (message.startsWith('Storyboard gerado') || message.startsWith('Cenas planejadas')) return { kind: 'scenes', tone: 'info', label: 'Cenas novas' };
   if (message.startsWith('Voltou para a versão')) return { kind: 'restore', tone: 'info', label: 'Restauração' };
   if (author === 'ai-edit') return { kind: 'edit', tone: 'info', label: 'Edição' };
   return null;

@@ -36,6 +36,7 @@ voice:
 art:
   bible: "render 3D limpo e moderno, dispositivos, chips, robôs simpáticos e interfaces abstratas sem texto, paleta azul elétrico, ciano e branco, fundo claro com gradiente suave, luz de estúdio"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "marcas reais"]
+  languages: [render_3d, ui_mockup, isometric]
   image_chain: [codex_cli]
 
 edit:

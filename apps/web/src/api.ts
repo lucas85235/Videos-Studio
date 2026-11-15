@@ -11,13 +11,47 @@ export type Segment = {
 
 export type SceneLook = { brightness: number; contrast: number; saturation: number; warmth: number; blur: number; grade: string | null };
 
+/** Texto por idioma ({"pt-BR": "…"}). */
+export type LocalizedText = Record<string, string>;
+
+// Os campos marcados com "?" faltam quando o servidor ainda roda a versão anterior (antes de reiniciar o app).
+export type Visual = {
+  type: string;
+  prompt: string;
+  query: string | null;
+  /** Imagem fixada (upload ou escolhida): vale para qualquer tipo. */
+  asset: string | null;
+  seed: number;
+  variation: number;
+  /** Linguagem visual (id do catálogo). Sem ela, a cena é antiga e o prompt é composto como antes. */
+  language?: string | null;
+  shot?: string | null;
+  composition?: string | null;
+  entities?: string[];
+  /** Id da cena dona da imagem que esta mostra (nenhuma imagem nova). */
+  reuse_of?: string | null;
+};
+
+export type SceneCardItem = { label: LocalizedText; value: LocalizedText };
+
+/** Cartão (número, comparação) e sobreposições (faixa, carimbo, fonte) da cena. */
+export type SceneCard = {
+  value: LocalizedText;
+  label: LocalizedText;
+  items: SceneCardItem[];
+  highlight: number | null;
+  headline: LocalizedText;
+  stamp: LocalizedText;
+  source: string | null;
+};
+
 export type Scene = {
   id: string;
   segment_id: string;
   part: number;
   parts: number;
   kind: string;
-  visual: { type: string; prompt: string; query: string | null; asset: string | null; seed: number; variation: number };
+  visual: Visual;
   overlay_text: Record<string, string>;
   number: number | null;
   motion: string | null;
@@ -25,7 +59,57 @@ export type Scene = {
   look: SceneLook;
   sfx: string | null;
   locked: boolean;
+  /** Palavras do trecho (idioma principal) que a cena cobre. Sem ele, a divisão é a antiga. */
+  span?: number | null;
+  card?: SceneCard | null;
+  /** Para onde a câmera olha (id de foco). */
+  focus?: string | null;
 };
+
+export type ArtEntity = { id: string; name: string; look: string };
+
+/** Direção de arte do vídeo, decidida pelo assunto (o estilo é a referência). Textos livres em inglês. */
+export type ArtDirection = {
+  genre: string;
+  approach: 'literal' | 'misto' | 'alegorico';
+  world: string;
+  treatment: string;
+  palette: string[];
+  languages: string[];
+  entities: ArtEntity[];
+  avoid: string[];
+  grade: string | null;
+  style_fit: 'ok' | 'fraco' | 'errado';
+  style_note: string;
+  suggested_style: string | null;
+  hook: string;
+  source: 'ai' | 'user';
+};
+
+export type StoryboardIssue = {
+  code: string;
+  severity: 'grave' | 'aviso' | 'corrigido';
+  /** "{segmento}:{k}" (para o pedido de correção). */
+  scene_key: string | null;
+  /** Cena do documento a que o aviso se refere (null: vale para o vídeo inteiro). */
+  scene_id: string | null;
+  message: string;
+};
+
+/** Revisão da curadoria gravada pelo job das cenas (settings.storyboard_review). */
+export type StoryboardReview = {
+  counts: { scenes: number; new_images: number; reused: number; cards: number; budget: number; est_seconds: number };
+  issues: StoryboardIssue[];
+  retried: boolean;
+  style_fit: 'ok' | 'fraco' | 'errado';
+  style_note: string;
+  suggested_style: string | null;
+  provider?: string;
+  version?: number;
+};
+
+/** Paradas do piloto automático (projeto sem a chave: script e prévia valem true; storyboard vale false). */
+export type ProjectGates = { script?: boolean; storyboard?: boolean; preview?: boolean; publish?: boolean; [k: string]: boolean | undefined };
 
 export type Metadata = { title: string; description: string; tags: string[]; hashtags: string[] };
 
@@ -47,6 +131,10 @@ export type ProjectDoc = {
   sources: { title: string; url: string; note: string }[];
   script_approved: boolean;
   preview_approved: boolean;
+  /** Direção de arte (vem com as cenas). Projeto antigo: ausente ou null. */
+  art?: ArtDirection | null;
+  /** Cenas aprovadas na parada "conferir as cenas". */
+  storyboard_approved?: boolean;
 };
 
 export type ProjectRow = {
@@ -56,7 +144,13 @@ export type ProjectRow = {
   style_id: string;
   status: string;
   current_version: number;
-  settings: { gates?: Record<string, boolean>; last_preview?: BuildResult; last_final?: BuildResult; [k: string]: unknown };
+  settings: {
+    gates?: ProjectGates;
+    last_preview?: BuildResult;
+    last_final?: BuildResult;
+    storyboard_review?: StoryboardReview;
+    [k: string]: unknown;
+  };
   created_at?: string;
   updated_at: string | null;
 };
@@ -157,9 +251,12 @@ export type StyleSpec = {
   languages: { primary: string; outputs: string[]; delivery: string };
   script: { tone: string; structure: string[]; hook_max_s: number; fact_check: boolean; cta: string | null; banned_phrases: string[] };
   voice: { chain: string[]; voice: string | null; style_prompt: string | null; speed: number; gap_s: number; voice_profile: string | null; preview?: PreviewVoice };
-  art: { bible: string; banned: string[]; image_chain: string[]; thumbnail_chain: string[]; photoreal: boolean };
+  /** `languages`: linguagens visuais preferidas (a primeira dominante; vazio = livre). */
+  art: { bible: string; banned: string[]; image_chain: string[]; thumbnail_chain: string[]; photoreal: boolean; languages?: string[] };
   edit: {
     shot_seconds: { min: number; max: number };
+    /** Fração das batidas que pode ganhar imagem nova (o resto reaproveita ou vira cartão). */
+    new_image_ratio?: number;
     camera: Record<string, number>;
     transitions: Record<string, number>;
     transition_seconds: number;
@@ -206,10 +303,15 @@ export type BuildPlan = {
   tts_provider: string | null;
   tts_voice: string | null;
   images_missing: string[];
+  /** Cenas dirigidas sem direção de arte (o estilo foi trocado): só geram imagem depois de refazer as cenas. */
+  direction_missing?: string[];
   image_provider: string | null;
   estimated_cost_usd: number;
   estimated_seconds: number;
 };
+
+/** Resposta de POST /ops e /edit/apply: `notice` diz por que a prévia não foi atualizada (job null). */
+export type EditResult = { version: number; job: Job | null; notice?: string | null };
 export const LOCAL_VOICE_PROVIDER = 'kokoro_local';
 
 /** Estilo sugerido ao criar um projeto e base do "criar por descrição" (o mesmo `DEFAULT_STYLE_ID` de backend/studio/core/styles/library.py). */
@@ -440,6 +542,7 @@ export const STATUS_LABELS: Record<string, string> = {
   draft: 'Rascunho',
   script_review: 'Roteiro para revisar',
   storyboard: 'Storyboard pronto',
+  storyboard_review: 'Cenas para conferir',
   preview_ready: 'Prévia pronta',
   rendered: 'Vídeo renderizado',
 };

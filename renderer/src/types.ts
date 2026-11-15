@@ -12,7 +12,35 @@ export type SceneLook = {
   grade: string | null;
 };
 
-export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video';
+export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video' | 'stat' | 'compare';
+
+/** Ponto de foco da câmera (origem do zoom). Ausente ou desconhecido vale 'center'. */
+export type FocusPoint = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+
+export const FOCUS_ORIGIN: Record<FocusPoint, string> = {
+  center: '50% 50%',
+  top: '50% 22%',
+  bottom: '50% 78%',
+  left: '22% 50%',
+  right: '78% 50%',
+  top_left: '22% 22%',
+  top_right: '78% 22%',
+  bottom_left: '22% 78%',
+  bottom_right: '78% 78%',
+};
+
+export type TimelineCardItem = { label: string; value: string };
+
+/** Cartão e sobreposições da cena, já no idioma do vídeo (só as chaves preenchidas). */
+export type TimelineCard = {
+  value?: string;
+  label?: string;
+  items?: TimelineCardItem[];
+  highlight?: number;
+  headline?: string;
+  stamp?: string;
+  source?: string;
+};
 
 export type TimelineScene = {
   id: string;
@@ -20,6 +48,7 @@ export type TimelineScene = {
   from: number;
   durationInFrames: number;
   src: string | null;
+  /** Movimento de câmera; inclui 'zoom_to' (zoom no ponto de foco). */
   motion: string;
   transition: string;
   seed: number;
@@ -28,6 +57,8 @@ export type TimelineScene = {
   number: number | null;
   captions: CaptionLine[];
   words: CaptionWord[];
+  card?: TimelineCard;
+  focus?: FocusPoint;
 };
 
 export type EffectSpec = { type: string; amount: number; preset?: string | null; params?: Record<string, unknown> };
