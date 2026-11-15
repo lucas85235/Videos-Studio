@@ -151,9 +151,13 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
     assert scenes[14].kind == "stat" and scenes[14].card.resolved("pt-BR")["stamp"] == "ADIADO"
     assert scenes[16].kind == "text" and scenes[16].visual.reuse_of == scenes[12].id
     assert scenes[13].visual.entities == ["lucia"]
+    # o nome da personagem (tirado da narração) não vai para o gerador: a imagem descreve a aparência
+    assert scenes[13].visual.prompt.startswith("The Latina woman leaning on a convertible")
+    assert "lucia" not in scenes[13].visual.prompt.lower()
 
     assert review["counts"] == {"scenes": 19, "new_images": 9, "reused": 9, "cards": 7, "budget": 10, "est_seconds": 315}
-    assert review["issues"] == [], review["issues"]
+    assert [(i["code"], i["severity"], i["scene_id"]) for i in review["issues"]] == [
+        ("nome_no_prompt", "corrigido", scenes[13].id)], review["issues"]
     assert review["retried"] is False
     assert (review["style_fit"], review["style_note"], review["suggested_style"]) == ("ok", art.style_note, None)
     assert new_doc.storyboard_approved is False
@@ -632,3 +636,190 @@ def test_translate_screen_only_keeps_the_narration(monkeypatch):
     stat = next(s for s in translated.scenes if s.card and s.card.value)
     stat.card.value = {"pt-BR": "3,5%"}
     assert any(p["text"] == "3,5%" for p in authoring.missing_screen_texts(translated, "en-US"))
+
+
+def test_system_prompt_has_no_real_character_example():
+    assert '"lucia"' not in authoring.STORYBOARD_SYSTEM.lower()
+    assert "nunca pelo nome" in authoring.STORYBOARD_SYSTEM
+    assert "no máximo 1 a cada 3 cenas" in authoring.STORYBOARD_SYSTEM
+
+
+def test_entity_reference_and_name_replacement():
+    assert storyboard_check._split_entity_name("Lucia (original heroine)") == ("Lucia", "heroine")
+    assert storyboard_check._split_entity_name("Vice City") == ("Vice City", "")
+    assert storyboard_check.entity_reference("original Latina woman in her 30s, dark curly hair", "") == "the Latina woman"
+    assert storyboard_check.entity_reference("fictional Miami-style seaside city with pastel hotels", "") == (
+        "the Miami-style seaside city")
+    assert storyboard_check.entity_reference("", "heroine") == "the heroine"
+    assert storyboard_check.entity_reference("", "") == "the character"
+    text = "A red car. Lucia's jacket on a chair; lucia waits. Lucian art."
+    assert storyboard_check._replace_name(text, "Lucia", "the woman") == (
+        "A red car. The woman's jacket on a chair; The woman waits. Lucian art.")
+
+
+def test_entity_name_out_of_the_narration_stays(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    for entity in data["direction"]["entities"]:
+        if entity["id"] == "lucia":
+            entity["name"] = "Coastal heroine"
+    scene_data(data, doc, "4:1")["prompt"] = "Coastal heroine leaning on a convertible at sunset."
+    new_doc, _, review, _ = run(monkeypatch, doc, get_style(GAMES), data)
+    assert new_doc.ordered_scenes()[13].visual.prompt == "Coastal heroine leaning on a convertible at sunset."
+    assert "nome_no_prompt" not in codes(review)
+
+
+def test_entity_name_leaves_hook_and_world(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    data["direction"]["hook"] = "Lucia on a rooftop over the neon coastal city at sunset"
+    data["direction"]["world"] = "Vice City in the 2020s, beaches and art deco hotels"
+    new_doc, _, _, _ = run(monkeypatch, doc, get_style(GAMES), data)
+    art = new_doc.art
+    assert art.hook == "The Latina woman on a rooftop over the neon coastal city at sunset"
+    assert art.world == "The sunny neon coastal city in the 2020s, beaches and art deco hotels"
+
+
+def test_v2_trims_headlines_keeping_hook_and_numbers(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    for scene in data["scenes"]:
+        scene["headline"] = scene.get("headline") or "FAIXA EXTRA"
+    new_doc, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
+    scenes = new_doc.ordered_scenes()
+    with_headline = {i for i, s in enumerate(scenes) if s.card and s.card.headline.get("pt-BR")}
+    # gancho, as faixas que são o único número falado da cena (2013, DEZ 2023, MAI 2025), as viradas de assunto
+    # e, para completar 7 (1 a cada 3 de 19), a imagem mais longe das outras faixas
+    assert with_headline == {0, 2, 4, 8, 12, 15, 18}, with_headline
+    assert scenes[0].card.headline == {"pt-BR": "MELHOR JOGO DA HISTÓRIA?"}
+    assert scenes[2].card.headline == {"pt-BR": "GTA V · 2013"}
+    assert scenes[3].kind == "stat" and scenes[3].card.resolved("pt-BR").get("headline") is None
+    trimmed = next(i for i in review["issues"] if i["code"] == "faixas_cortadas")
+    assert trimmed["severity"] == "corrigido"
+    assert trimmed["message"].startswith("12 faixas no topo tiradas: ficam 7 neste vídeo (limite 7)")
+    assert len(fake.calls) == 1
+
+
+def test_v2_headlines_within_the_limit_stay(monkeypatch):
+    doc = gta_doc()
+    new_doc, _, review, _ = run(monkeypatch, doc, get_style(GAMES), load_fixture(doc))
+    assert sum(1 for s in new_doc.scenes if s.card and s.card.headline.get("pt-BR")) == 5
+    assert "faixas_cortadas" not in codes(review)
+
+
+def test_check_motif_ignores_palette_colors(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    for ref in ("0:0", "1:0", "2:0", "2:2", "3:0", "4:0"):
+        scene_data(data, doc, ref)["prompt"] += " Pink and teal neon glow on wet asphalt puddles."
+    _, _, review, _ = run(monkeypatch, doc, get_style(GAMES), data)
+    motifs = [i["message"] for i in review["issues"] if i["code"] == "motivo_repetido"]
+    assert not any(f'"{w}"' in m for m in motifs for w in ("pink", "teal", "neon", "glow")), motifs
+    assert any('"puddle"' in m or '"asphalt"' in m for m in motifs), motifs
+
+
+def test_v2_headline_with_a_name_digit_is_not_protected(monkeypatch):
+    """ "GTA 6" na faixa não é número falado: a faixa entra no limite como as outras."""
+    doc = gta_doc()
+    data = load_fixture(doc)
+    for scene in data["scenes"]:
+        if not any(ch.isdigit() for ch in scene.get("headline") or ""):
+            scene["headline"] = "GTA 6 EM FOCO"
+    new_doc, _, review, _ = run(monkeypatch, doc, get_style(GAMES), data)
+    kept = [s for s in new_doc.ordered_scenes() if s.card and s.card.headline.get("pt-BR")]
+    assert len(kept) == 7
+    assert "faixas_cortadas" in codes(review)
+
+
+def _pick(kind: str, part: int, headline: str, segment: str, words: str = "uma frase qualquer"):
+    from studio.core.project.document import SceneCard
+
+    beat = storyboard_check.Beat(key=f"{segment}:{part}", segment_id=segment, part=part, parts=2, index=0,
+                                 role="item", words=words.split(), seconds=2.0)
+    number = 1 if kind == "count" else None
+    return authoring._Pick(beat, kind, "new", number=number, card=SceneCard(headline={"pt-BR": headline}))
+
+
+def test_trim_headlines_keeps_top10_counter_names():
+    picks = [_pick("image", 0, "GANCHO", "seg_h")]
+    for item in range(5):
+        picks += [_pick("count", 0, f"ITEM {item}", f"seg_{item}"), _pick("image", 1, "DETALHE", f"seg_{item}")]
+    issues = authoring._trim_headlines(picks, "pt-BR", 0)
+    kept = [p.card.headline.get("pt-BR") for p in picks if p.card and p.card.headline.get("pt-BR")]
+    # limite 4 (11 cenas): o gancho e 3 contadores (virada de assunto) espalhados; nenhuma faixa de imagem
+    assert kept == ["GANCHO", "ITEM 2", "ITEM 3", "ITEM 4"], kept
+    assert issues and issues[0].code == "faixas_cortadas"
+
+
+def test_entity_reference_prefers_who_or_what():
+    assert storyboard_check.entity_reference("Dark wavy hair, tan skin, Latina woman", "") == "the Latina woman"
+    assert storyboard_check.entity_reference("Late 20s, Latina, dark hair", "heroine") == "the heroine"
+    assert storyboard_check.entity_reference("Late 20s, dark hair", "") == "the Late 20s"
+
+
+def test_replace_name_absorbs_article_and_accents():
+    replace = storyboard_check._replace_name
+    assert replace("Aerial view of the Vice City skyline. A Vice City street.", "Vice City", "the neon city") == (
+        "Aerial view of the neon city skyline. The neon city street.")
+    assert replace("Lúcia on a rooftop", "Lucia", "the woman") == "The woman on a rooftop"
+    assert replace("a Vice City-style boulevard", "Vice City", "the neon city") == "The neon city-style boulevard"
+    assert replace("near a Vice City-style pier", "Vice City", "the neon city") == "near the neon city-style pier"
+    assert replace("Theatre near the Lucian gate", "Lucia", "the woman") == "Theatre near the Lucian gate"
+
+
+def _names_doc(narration: str, entities: list[dict], prompt: str, *, source: str = "ai") -> tuple:
+    from studio.core.project.document import ArtDirection, Entity, Scene, Visual
+
+    doc = ProjectDoc(id="prj_n", title="t", topic="t", style_id=GAMES, seed=1,
+                     segments=[Segment(id="seg_a", role="hook", text={"pt-BR": narration})])
+    doc.art = ArtDirection(world="the world of the story", hook="", entities=[Entity(**e) for e in entities],
+                           source=source)
+    doc.scenes = [Scene(segment_id="seg_a", part=0, parts=1, kind="image",
+                        visual=Visual(prompt=prompt, language="key_art", shot="wide", composition="upper_half"))]
+    beat = storyboard_check.Beat(key="seg_a:0", segment_id="seg_a", part=0, parts=1, index=0, role="hook",
+                                 words=narration.split(), seconds=3.0)
+    return doc, [beat]
+
+
+def test_real_entities_keep_their_names():
+    doc, beats = _names_doc(
+        "Em 1912, o capitão Edward Smith comandava o Titanic.",
+        [{"id": "smith", "name": "Edward Smith (captain)", "look": "white-bearded sea captain", "real": True},
+         {"id": "titanic", "name": "Titanic", "look": "four-funnel ocean liner", "real": True}],
+        "Edward Smith on the bridge of the Titanic at night, 1912.")
+    assert storyboard_check.fix_entity_names(doc, beats) == []
+    assert doc.scenes[0].visual.prompt == "Edward Smith on the bridge of the Titanic at night, 1912."
+
+
+def test_fictional_names_variants_and_looks_are_scrubbed():
+    doc, beats = _names_doc(
+        "Com Lúcia, a primeira protagonista, e o detetive da cidade.",
+        [{"id": "lucia", "name": "Lucia Caminos - protagonist", "look": "Lucia, Latina woman in her late 20s"},
+         {"id": "detetive", "name": "detective", "look": "tall man in a trench coat"}],
+        "Lucia Caminos and the detective on a rooftop; Lucia's jacket in the wind.")
+    issues = storyboard_check.fix_entity_names(doc, beats)
+    prompt = doc.scenes[0].visual.prompt
+    assert prompt == "The Latina woman and the detective on a rooftop; The Latina woman's jacket in the wind.", prompt
+    assert doc.art.entities[0].look == "Latina woman in her late 20s"
+    assert [i.code for i in issues] == ["nome_no_prompt"]
+
+
+def test_user_direction_is_not_rewritten_only_warned():
+    doc, beats = _names_doc(
+        "A volta de Vice City.",
+        [{"id": "vice", "name": "Vice City", "look": "neon coastal city"}],
+        "A quiet street at dawn.", source="user")
+    doc.art.world = "Vice City in the 2020s"
+    issues = storyboard_check.fix_entity_names(doc, beats)
+    assert doc.art.world == "Vice City in the 2020s"
+    assert [(i.code, i.severity) for i in issues] == [("nome_na_direcao", "aviso")]
+
+
+def test_entity_real_flag_is_parsed_and_required_in_schema(monkeypatch):
+    doc = gta_doc()
+    data = load_fixture(doc)
+    data["direction"]["entities"][0]["real"] = True
+    new_doc, _, _, _ = run(monkeypatch, doc, get_style(GAMES), data)
+    assert new_doc.art.entities[0].real is True and new_doc.art.entities[1].real is False
+    item = STORYBOARD_SCHEMA["properties"]["direction"]["properties"]["entities"]["items"]
+    assert "real" in item["required"] and item["properties"]["real"] == {"type": "boolean"}

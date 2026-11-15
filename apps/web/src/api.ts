@@ -66,7 +66,7 @@ export type Scene = {
   focus?: string | null;
 };
 
-export type ArtEntity = { id: string; name: string; look: string };
+export type ArtEntity = { id: string; name: string; look: string; real?: boolean };
 
 /** Direção de arte do vídeo, decidida pelo assunto (o estilo é a referência). Textos livres em inglês. */
 export type ArtDirection = {

@@ -62,7 +62,7 @@ STORYBOARD_SCHEMA = _obj(
                 "palette": {"type": "array", "items": S},
                 "languages": {"type": "array", "items": S},
                 "grade": NS,
-                "entities": {"type": "array", "items": _obj({"id": S, "name": S, "look": S})},
+                "entities": {"type": "array", "items": _obj({"id": S, "name": S, "look": S, "real": {"type": "boolean"}})},
                 "avoid": {"type": "array", "items": S},
                 "style_fit": {"type": "string", "enum": ["ok", "fraco", "errado"]},
                 "style_note": S,

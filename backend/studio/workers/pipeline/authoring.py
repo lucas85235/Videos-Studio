@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from studio.core.hashing import seed_from
-from studio.core.numbers import number_runs
+from studio.core.numbers import notable_number_runs, number_runs
 from studio.core.project.document import (
     ArtDirection,
     CardItem,
@@ -180,8 +180,12 @@ aparece na tela usando só o que o app sabe produzir.
 - treatment: luz, contraste e textura em até 12 palavras, SEM objetos, em inglês. Use o tratamento do estilo
   como referência e adapte ao assunto (vídeo ensolarado não ganha luz de vela).
 - palette: 3 cores do mundo do assunto. grade: um id de gradação, ou null para manter o do estilo.
-- entities: personagens ou lugares que voltam em mais de uma batida, com id curto ("lucia"), nome e aparência
-  fixa e ORIGINAL em inglês (nunca copie personagem oficial, logotipo ou tipografia de marca).
+- entities: personagens ou lugares que voltam em mais de uma batida, com id curto ("detetive"), nome, real e
+  aparência fixa em inglês; o look começa por quem ou o que é ("tall woman in her 40s, ...", "seaside city with ...").
+  real: true só para figura histórica já falecida ou lugar, monumento, navio ou evento reais (o prompt pode citar
+  pelo nome). Personagem de ficção, marca, produto ou pessoa viva: real false, aparência ORIGINAL (nunca copie
+  personagem oficial, logotipo ou tipografia de marca) e o prompt cita pela aparência ou pelo papel ("the
+  detective"), nunca pelo nome.
 - avoid: objetos, clichês e anacronismos que não pertencem ao assunto, em inglês (inclusive motivos do
   estilo que não servem aqui, como "candles").
 - style_fit: ok | fraco | errado; style_note: o porquê numa frase; suggested_style: id da lista ou null.
@@ -198,7 +202,9 @@ aparece na tela usando só o que o app sabe produzir.
   ritmo da fala (pergunta ou frase de impacto). quote: citação curta (overlay_text).
 - count: só no formato Top 10, na primeira batida de cada item (o app desenha o número do item).
 Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras, ex. "RECORDE"),
-source_note (fonte curta do dado). Campo que não se aplica vai como null.
+source_note (fonte curta do dado). Campo que não se aplica vai como null. A faixa compete com a legenda: use no
+gancho e só onde acrescenta o que a fala não diz (data, nome, virada de assunto), no máximo 1 a cada 3 cenas,
+sem repetir a fala da batida.
 
 Regras:
 1. Mostre o sujeito concreto da batida (pessoa, lugar, objeto, ação, na época real do assunto). Metáfora só
@@ -212,8 +218,10 @@ Regras:
 5. No máximo 2 cartões (stat, compare, title, text, quote) seguidos; não repita o shot em imagens novas seguidas.
 6. prompt (só imagem nova): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. NÃO escreva
    estilo, técnica, paleta, "no text" nem "vertical": o app acrescenta. Nada de logotipo, personagem oficial,
-   tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer. Na imagem nova,
-   preencha também language, shot, composition e entities (ids da direção que aparecem nela).
+   tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer. Nome de
+   personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no world, no hook nem no look:
+   descreva o que se vê (figura histórica, cidade e país reais podem). Na imagem nova, preencha também language,
+   shot, composition e entities (ids da direção que aparecem nela).
 7. composition: deixe livre a faixa da legenda informada no pedido."""
 
 # Faixa da legenda na tela (mesmas alturas do renderer, Captions.tsx).
@@ -446,7 +454,8 @@ def _direction_from(raw: object, style: StyleSpec, *, current_style_id: str, sty
         entity_id = _entity_id(item.get("id")) or _entity_id(item.get("name"))
         if not entity_id or any(e.id == entity_id for e in entities):
             continue
-        entities.append(Entity(id=entity_id, name=_text(item.get("name"), 80), look=_text(item.get("look"), 300)))
+        entities.append(Entity(id=entity_id, name=_text(item.get("name"), 80), look=_text(item.get("look"), 300),
+                               real=item.get("real") is True))
         if len(entities) >= 8:
             break
     grade = _text(data.get("grade"), 40).lower()
@@ -625,6 +634,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
 
     issues = _enforce_budget(picks, budget, hook, positions)
     _resolve_ahead(picks)
+    issues += _trim_headlines(picks, lang, hook)
 
     uses: dict[int, int] = {}
     for i, p in enumerate(picks):
@@ -673,6 +683,65 @@ def _resolve_ahead(picks: list[_Pick]) -> None:
             if target is not None and picks[target].source == "new":
                 p.source, p.root = "reuse", target
                 break
+
+
+# Faixas no topo (headline): no máximo 1 a cada 3 cenas, senão competem com a legenda o vídeo inteiro.
+HEADLINE_SHARE = 1 / 3
+
+
+def _other_digits(p: _Pick, lang: str) -> bool:
+    """A cena mostra algum número além da faixa (contador, cartão, itens, carimbo ou sobreposição)."""
+    if p.number is not None:
+        return True
+    texts = [p.overlay or ""]
+    if p.card:
+        texts += [p.card.value.get(lang, ""), p.card.label.get(lang, ""), p.card.stamp.get(lang, "")]
+        for item in p.card.items:
+            texts += [item.value.get(lang, ""), item.label.get(lang, "")]
+    return any(ch.isdigit() for t in texts for ch in t)
+
+
+def _trim_headlines(picks: list[_Pick], lang: str, hook: int | None) -> list[Issue]:
+    """Tira as faixas acima do limite. Ficam sempre a do gancho e as que mostram o único número que a batida fala
+    (sem elas a revisão acusaria número sem cartão). As vagas que sobram vão, nesta ordem, para a 1ª batida de um
+    trecho (virada de assunto: imagem ou contador do Top 10), as outras imagens e por último os cartões (que já têm
+    texto); dentro de cada grupo, para a faixa mais longe das que já ficaram, para não amontoar no começo."""
+    with_headline = [i for i, p in enumerate(picks) if p.card and p.card.headline.get(lang)]
+    limit = max(2, math.ceil(len(picks) * HEADLINE_SHARE))
+    if len(with_headline) <= limit:
+        return []
+
+    def protected(i: int) -> bool:
+        p = picks[i]
+        headline = p.card.headline[lang]  # type: ignore[union-attr]
+        number_only_here = (p.kind != "text" and any(ch.isdigit() for ch in headline)
+                            and bool(notable_number_runs(p.beat.words, lang)) and not _other_digits(p, lang))
+        return i == hook or number_only_here
+
+    def rank(i: int) -> int:
+        p = picks[i]
+        if p.beat.part == 0 and p.kind in ("image", "count"):
+            return 1
+        return 2 if p.kind == "image" else 3
+
+    keep = {i for i in with_headline if protected(i)}
+    for group in (1, 2, 3):
+        pool = [i for i in with_headline if i not in keep and rank(i) == group]
+        while pool and len(keep) < limit:
+            best = max(pool, key=lambda i: (min((abs(i - k) for k in keep), default=len(picks)), i))
+            keep.add(best)
+            pool.remove(best)
+    removed = [i for i in with_headline if i not in keep]
+    for i in removed:
+        card = picks[i].card
+        assert card is not None
+        card.headline = {}
+        picks[i].card = card if card.resolved(lang) else None
+    if not removed:
+        return []
+    return [Issue("faixas_cortadas", CORRIGIDO,
+                  f"{len(removed)} faixas no topo tiradas: ficam {len(keep)} neste vídeo (limite {limit}), para não "
+                  "competir com a legenda.")]
 
 
 def _enforce_budget(picks: list[_Pick], budget: int, hook: int | None, positions: list[int]) -> list[Issue]:

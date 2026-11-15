@@ -164,6 +164,9 @@ class Entity(BaseModel):
     name: str = ""
     look: str = ""
     """Aparência em inglês (entra no prompt das cenas que citam a entidade)."""
+    real: bool = False
+    """Figura histórica ou lugar real: o prompt pode citar pelo nome. Ficção, marca, produto ou pessoa viva (o padrão):
+    o nome não vai para o gerador de imagem, só a aparência."""
 
 
 class ArtDirection(BaseModel):

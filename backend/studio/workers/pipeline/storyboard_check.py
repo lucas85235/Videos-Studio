@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +70,30 @@ _STOPWORDS = {
     "shows", "looking", "standing", "sitting", "holding", "seen", "made", "full", "large", "small", "big", "huge",
     "dark", "bright", "soft", "warm", "cold", "cool", "night", "day", "time", "early", "late", "evening",
 }  # fmt: skip
+# Cor e brilho vêm da paleta e do tratamento da direção: repetir "pink" ou "glow" não é motivo repetido.
+_COLOR_WORDS = {
+    "pink", "teal", "orange", "purple", "violet", "magenta", "cyan", "turquoise", "gold", "golden", "amber",
+    "crimson", "scarlet", "blue", "green", "yellow", "white", "black", "silver", "pastel", "neon", "glow",
+    "glowing", "colorful", "colourful",
+}  # fmt: skip
+# Palavras do papel da entidade que não descrevem nada ("Lucia (original heroine)" → "heroine").
+_ROLE_FILLER = {"original", "fictional", "fictitious", "generic", "unnamed", "new", "the", "a", "an"}
+# Nome e papel da entidade: "Lucia (original heroine)", "Lucia Caminos - protagonist", "Vice City, the coastal city".
+_NAME_SPLIT_RE = re.compile(r"\s*(?:\(|\s[-–—]\s|[–—,:;])\s*")
+# Ligações minúsculas dentro de nome próprio ("Rio de Janeiro", "Bay of Pigs").
+_NAME_LINKS = {"the", "a", "an", "of", "de", "do", "da", "dos", "das", "del", "la", "el", "and", "e", "y", "von", "van"}
+# Fim da aparência que diz quem ou o que é a entidade (o resto é detalhe: cabelo, roupa, cores).
+_SUBJECT_NOUNS = {
+    "woman", "man", "girl", "boy", "person", "teen", "teenager", "child", "kid", "guy", "lady", "gentleman",
+    "soldier", "officer", "detective", "agent", "driver", "worker", "figure", "hero", "heroine", "villain",
+    "king", "queen", "captain", "sailor", "robot", "android", "creature", "dog", "cat", "horse", "animal", "city",
+    "town", "village", "island", "street", "harbor", "harbour", "port", "beach", "coast", "state", "country",
+    "district", "neighborhood", "building", "house", "mansion", "castle", "tower", "ship", "boat", "car", "truck",
+    "plane", "aircraft", "station", "studio", "office", "store", "shop", "bar", "club", "temple", "church",
+    "palace", "metropolis", "skyline",
+}  # fmt: skip
+# Corte da aparência para citar a entidade no prompt: "Latina woman in her 30s, dark hair" → "Latina woman".
+_LOOK_CUT_RE = re.compile(r",|;|\.|\s(?:in|with|of|wearing|who|that|whose)\s", re.IGNORECASE)
 
 
 @dataclass
@@ -316,6 +341,154 @@ def fix_repeated_shots(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     return issues
 
 
+def _fold(text: str) -> str:
+    """Sem acento e com o mesmo tamanho ("Lúcia" → "Lucia"): os índices valem para o texto original."""
+    return "".join(unicodedata.normalize("NFD", ch)[0] for ch in text or "")
+
+
+def _name_re(name: str, *, article: bool = False) -> re.Pattern[str]:
+    """O nome como palavra inteira, sem acento e sem caixa; `article` engole um artigo antes ("the Vice City")."""
+    head = r"(?:(?:the|a|an)\s+)?" if article else ""
+    return re.compile(rf"(?<![\w-]){head}{re.escape(_fold(name))}(?!\w)", re.IGNORECASE)
+
+
+def _sub_folded(text: str, pattern: re.Pattern[str], replace: Any) -> str:
+    """`pattern.sub` procurando no texto sem acento e trocando no original (mesmos índices)."""
+    out: list[str] = []
+    last = 0
+    for match in pattern.finditer(_fold(text)):
+        out += [text[last : match.start()], replace(text, match)]
+        last = match.end()
+    return "".join(out) + text[last:]
+
+
+def _split_entity_name(name: str) -> tuple[str, str]:
+    """"Lucia (original heroine)" → ("Lucia", "heroine"): o nome e o papel (depois de parêntese, travessão ou
+    vírgula), sem enchimento."""
+    parts = _NAME_SPLIT_RE.split((name or "").strip(), maxsplit=1)
+    role = parts[1].strip(" ()") if len(parts) > 1 else ""
+    role = " ".join(w for w in role.split() if w.lower() not in _ROLE_FILLER)
+    return parts[0].strip(), role
+
+
+def _spoken_as_name(name: str, narration: str) -> bool:
+    """O nome aparece na narração sempre com maiúscula (nome próprio). "o detetive" em minúscula é palavra comum."""
+    found = [narration[m.start() : m.end()] for m in _name_re(name).finditer(_fold(narration))]
+    return bool(found) and all(w[:1].isupper() for f in found for w in f.split() if w.lower() not in _NAME_LINKS)
+
+
+def _aliases(name: str, narration: str) -> list[str]:
+    """Formas do nome a tirar dos prompts: o nome inteiro, quando a narração fala; senão, nome composto todo em
+    maiúscula ("Lucia Caminos") cuja parte a narração fala ("Lucia")."""
+    if len(name) >= 3 and _spoken_as_name(name, narration):
+        return [name]
+    words = [w for w in name.split() if w.lower() not in _NAME_LINKS]
+    if len(words) < 2 or not all(w[:1].isupper() for w in words):
+        return []
+    parts = [w for w in words if len(w) >= 3 and _spoken_as_name(w, narration)]
+    return [name, *parts] if parts else []
+
+
+def _strip_names(text: str, names: list[str]) -> str:
+    """Tira os nomes (com possessivo e a pontuação seguinte): "Lucia, a Latina woman" → "a Latina woman"."""
+    for name in names:
+        pattern = re.compile(rf"(?<![\w-]){re.escape(_fold(name))}(?:['’]s)?(?!\w)\s*[,:;-]?\s*", re.IGNORECASE)
+        text = _sub_folded(text, pattern, lambda _t, _m: "")
+    return text.strip(" ,;:-")
+
+
+def entity_reference(look: str, role: str) -> str:
+    """Como o prompt cita a entidade sem o nome: o começo da aparência que diz quem ou o que é ("the Latina woman",
+    "the seaside city"); senão o papel; senão o começo da aparência ou "the character"."""
+    heads: list[list[str]] = []
+    for part in re.split(r"[,;.]", look or ""):
+        head = _LOOK_CUT_RE.split(part, maxsplit=1)[0]
+        words = [w for w in head.split() if w.lower() not in _ROLE_FILLER][:6]
+        if words:
+            heads.append(words)
+    for words in heads:
+        if _singular(words[-1].lower().strip("'’")) in _SUBJECT_NOUNS:
+            return "the " + " ".join(words)
+    if role:
+        return f"the {role}"
+    return "the " + " ".join(heads[0]) if heads else "the character"
+
+
+def _replace_name(text: str, name: str, reference: str) -> str:
+    """Troca o nome (palavra inteira, com o artigo antes e o possessivo depois) pela referência; maiúscula no
+    começo da frase."""
+
+    def sub(original: str, match: re.Match[str]) -> str:
+        before = original[: match.start()].rstrip()
+        sentence_start = not before or before[-1] in ".!?;:"
+        return reference[:1].upper() + reference[1:] if sentence_start else reference
+
+    return _sub_folded(text, _name_re(name, article=True), sub)
+
+
+def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Nome de entidade de ficção, marca ou produto tirado da narração ("Lucia", "Vice City") não vai para o
+    gerador de imagem: o nome puxa o personagem ou o lugar oficial (a imagem sai cópia ou é recusada). O prompt passa
+    a citar a entidade pela aparência. Ficam: entidade real (figura histórica, lugar real), nome descritivo que a
+    narração não fala ("Neon coastal city") e a direção definida pelo usuário (vira aviso).
+    """
+    art = doc.art
+    if art is None or not art.entities:
+        return []
+    narration = doc.full_text(doc.primary_language)
+    user = art.source == "user"
+    names: list[tuple[str, str]] = []
+    for entity in art.entities:
+        if entity.real:
+            continue
+        name, role = _split_entity_name(entity.name)
+        aliases = _aliases(name, narration)
+        if not aliases:
+            continue
+        look = _strip_names(entity.look, aliases)
+        if not user:
+            entity.look = look
+        reference = entity_reference(look, role)
+        names += [(alias, reference) for alias in aliases]
+    if not names:
+        return []
+    names.sort(key=lambda item: -len(item[0]))  # "Lucia Caminos" antes de "Lucia"
+
+    def scrub(text: str) -> str:
+        for alias, reference in names:
+            text = _replace_name(text, alias, reference)
+        return text
+
+    def cited(text: str) -> str | None:
+        return next((alias for alias, _ in names if _name_re(alias).search(_fold(text))), None)
+
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or not has_own_image(scene):
+            continue
+        name = cited(scene.visual.prompt)
+        if name is None:
+            continue
+        scene.visual.prompt = scrub(scene.visual.prompt)
+        issues.append(Issue("nome_no_prompt", CORRIGIDO,
+                            f'O prompt citava "{name}", nome da narração: a imagem descreve a aparência.',
+                            beat.key, scene.id))
+    if user:
+        name = cited(" ".join([art.hook, art.world, *(e.look for e in art.entities)]))
+        if name:
+            issues.append(Issue("nome_na_direcao", AVISO,
+                                f'A direção definida por você cita "{name}", nome da narração: o gerador de imagem pode '
+                                "copiar o original."))
+    else:
+        art.hook = scrub(art.hook)
+        art.world = scrub(art.world)
+        for entity in art.entities:
+            if not entity.real:
+                entity.look = scrub(entity.look)
+    return issues
+
+
 # --- conferências --------------------------------------------------------------------------------
 
 
@@ -397,9 +570,10 @@ def _check_motifs(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     if len(prompts) < 4:
         return []
     spoken = {_singular(normalize_token(w)) for w in split_words(doc.full_text(doc.primary_language))}
-    skip: set[str] = set()
+    skip: set[str] = set(_COLOR_WORDS)
     if doc.art:
-        skip |= _prompt_words(" ".join([doc.art.world, doc.art.hook, *(f"{e.id} {e.name}" for e in doc.art.entities)]))
+        skip |= _prompt_words(" ".join([doc.art.world, doc.art.hook, doc.art.treatment, *doc.art.palette,
+                                        *(f"{e.id} {e.name} {e.look}" for e in doc.art.entities)]))
     counts: dict[str, int] = {}
     for prompt in prompts:
         for word in _prompt_words(prompt):
@@ -440,6 +614,7 @@ def _check_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat]) -> list[Issue]:
     """Revisa as cenas das batidas: corrige o que dá (no próprio `doc`) e devolve os problemas."""
     issues = fix_hook(doc, style, beats)
+    issues += fix_entity_names(doc, beats)
     issues += fix_repeated_shots(doc, beats)
     issues += _check_numbers(doc, beats)
     issues += _check_prompts(doc, beats)
