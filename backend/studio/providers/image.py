@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
+from studio.core.subproc import run_tree
 from studio.providers import credentials
 from studio.providers.base import (
     ImageProvider,
@@ -33,7 +34,6 @@ from studio.providers.base import (
 )
 
 log = logging.getLogger(__name__)
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def fit_image(src: Path, dst: Path, width: int, height: int) -> Path:
@@ -115,10 +115,7 @@ class CodexCLIImage(ImageProvider):
         started = time.time()
         with tempfile.TemporaryDirectory() as workdir:
             try:
-                proc = subprocess.run(
-                    cmd, cwd=workdir, env=env, capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=self.timeout_s, creationflags=_NO_WINDOW,
-                )
+                proc = run_tree(cmd, cwd=workdir, env=env, timeout=self.timeout_s)
             except subprocess.TimeoutExpired as exc:
                 raise TransientError("o Codex demorou demais para gerar a imagem") from exc
         output = (proc.stdout or "") + (proc.stderr or "")

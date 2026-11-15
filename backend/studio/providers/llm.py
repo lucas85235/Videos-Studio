@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from studio.core.subproc import run_tree
 from studio.providers.base import (
     LLMProvider,
     LLMResult,
@@ -32,7 +33,6 @@ from studio.providers.base import (
 )
 
 log = logging.getLogger(__name__)
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 # --------------------------------------------------------------------------------------------
@@ -97,10 +97,7 @@ class ClaudeCodeLLM(LLMProvider):
             if cached and time.monotonic() - cached[0] < _AUTH_TTL_S:
                 return cached[1], cached[2]
             try:
-                proc = subprocess.run(
-                    [claude, "auth", "status"], env=self._env(), capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=30, creationflags=_NO_WINDOW,
-                )
+                proc = run_tree([claude, "auth", "status"], env=self._env(), timeout=30)
                 data = json.loads(proc.stdout or "{}")
             except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as exc:
                 return False, f"não consegui consultar o login do Claude Code: {exc}"
@@ -153,10 +150,7 @@ class ClaudeCodeLLM(LLMProvider):
                 "--system-prompt-file", str(system_file),
             ]
             try:
-                proc = subprocess.run(
-                    cmd, input=prompt, cwd=workdir, env=self._env(), capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=self.timeout_s, creationflags=_NO_WINDOW,
-                )
+                proc = run_tree(cmd, input=prompt, cwd=workdir, env=self._env(), timeout=self.timeout_s)
             except subprocess.TimeoutExpired as exc:
                 raise TransientError(f"o Claude demorou mais de {self.timeout_s // 60} min na tarefa '{task}'") from exc
             except OSError as exc:

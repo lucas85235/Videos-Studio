@@ -50,7 +50,7 @@ def fake_claude(monkeypatch, online):
         return subprocess.CompletedProcess(cmd, replies["code"], replies["print"], replies["stderr"])
 
     monkeypatch.setattr(llm.shutil, "which", lambda name: "C:/fake/claude.exe" if name == "claude" else None)
-    monkeypatch.setattr(llm.subprocess, "run", fake_run)
+    monkeypatch.setattr(llm, "run_tree", fake_run)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "nao-deve-vazar")
     return calls, replies
 
