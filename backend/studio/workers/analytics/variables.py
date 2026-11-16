@@ -196,7 +196,14 @@ def load_videos(channel_id: str | None = None) -> list[dict[str, Any]]:
             channel = channels.get(chan_id or "")
             when = (parse_when(info.get("published_at")) or (pub.scheduled_at if pub else None)
                     or parse_when(published) or (pub.created_at if pub else None))
-            duration = _final_duration(project, pub.language if pub else None)
+            details = (pub.details or {}) if pub else {}
+            # Publicação de um ramo A/B ("versão B"): duração e estilo são os do vídeo do ramo, gravados na publicação.
+            on_branch = details.get("branch") not in (None, "main")
+            style_id = (details.get("style_id") if on_branch else None) or (project.style_id if project else None)
+            if on_branch:
+                duration = float(details["duration"]) if isinstance(details.get("duration"), int | float) else None
+            else:
+                duration = _final_duration(project, pub.language if pub else None)
             if duration is None and isinstance(info.get("duration_s"), int | float):
                 duration = float(info["duration_s"])
             short_of = (project.settings or {}).get("short_of") if project else None
@@ -204,12 +211,12 @@ def load_videos(channel_id: str | None = None) -> list[dict[str, Any]]:
                 published_at=when,
                 timezone=plan_of(channel.settings if channel else None).timezone,
                 duration_s=duration,
-                style_format=_style_format(project.style_id, formats) if project else None,
+                style_format=_style_format(style_id, formats) if project else None,
                 score=scores.get(project.id) if project else None,
                 short_tipo=(short_of or {}).get("tipo") if isinstance(short_of, dict) else None,
                 parent_id=project.parent_id if project else None,
-                style_id=project.style_id if project else None,
-                versao=((pub.details or {}).get("versao") or None) if pub else None,
+                style_id=style_id,
+                versao=details.get("versao") or None,
             )
             metric = metrics.get(yid)
             out[yid] = {

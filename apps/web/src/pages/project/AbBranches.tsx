@@ -42,6 +42,8 @@ const SEGMENT_STATUS: Record<string, { label: string; tone: 'info' | 'good' | 'b
   igual: { label: 'Igual', tone: 'neutral' },
 };
 
+const PRIVACY_LABEL = { private: 'Privado', unlisted: 'Não listado', public: 'Público' } as const;
+
 const abKey = (projectId: string) => ['ab', projectId];
 
 /** Chave que muda quando um job do projeto termina (a lista de ramos recarrega com a prévia nova). */
@@ -229,13 +231,34 @@ const BranchCard: React.FC<{ detail: ProjectDetail; main: AbBranch; branch: AbBr
     mutationFn: () => api.post(`${base}/${branch.name}/discard`),
     onSuccess: refresh,
   });
+  // Privado não ganha views: o experimento só abre quando A e B estão públicas (ou não listadas) no YouTube.
+  const [privacy, setPrivacy] = useState<'private' | 'unlisted' | 'public'>('private');
   const publish = useMutation({
-    mutationFn: () => api.post(`${base}/${branch.name}/publish/youtube`, { lang, privacy: 'private' }),
+    mutationFn: () =>
+      api.post(`${base}/${branch.name}/publish/youtube`, { lang, privacy, ignore_checks: privacy !== 'private' }),
     onSuccess: async () => {
       await refresh();
-      toast({ tone: 'info', title: `Enviando a versão ${L} ao YouTube (privado)`, description: 'Quando A e B estiverem no YouTube, o experimento abre em Desempenho.' });
+      toast({
+        tone: 'info',
+        title: `Enviando a versão ${L} ao YouTube (${PRIVACY_LABEL[privacy].toLowerCase()})`,
+        description:
+          privacy === 'private'
+            ? `Vídeo privado não ganha views: o experimento abre quando a ${L} ficar pública no YouTube.`
+            : 'Com a A também pública no YouTube, o experimento abre em Desempenho.',
+      });
     },
   });
+  const sendToYouTube = async () => {
+    if (privacy !== 'private') {
+      const ok = await confirm({
+        title: `Publicar a versão ${L} como ${PRIVACY_LABEL[privacy].toLowerCase()}?`,
+        description: `A conferência antes de publicar ainda não roda nas versões A/B. Confirme só se você já assistiu ao vídeo final da ${L} inteiro.`,
+        confirmLabel: 'Já assisti: publicar',
+      });
+      if (!ok) return;
+    }
+    publish.mutate();
+  };
 
   const pState = previewState(branch);
   const mainState = previewState(main);
@@ -303,22 +326,32 @@ const BranchCard: React.FC<{ detail: ProjectDetail; main: AbBranch; branch: AbBr
       <div className="flex flex-col gap-2 border-t border-line pt-3">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-subtle">Publicar as duas e medir</h4>
         <p className="text-[13px] text-muted">
-          Publique a A pela aba Vídeo e publicação e a {L} aqui. Com as duas no YouTube, o Vulto abre um experimento em{' '}
+          Publique a A pela aba Vídeo e publicação e a {L} aqui. Com as duas públicas (ou não listadas) no YouTube, o Vulto abre um
+          experimento em{' '}
           <Link to="/desempenho" className="text-accent underline-offset-2 hover:underline">
             Desempenho
           </Link>{' '}
           com a variável “versão”.
         </p>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label="Como enviar" className="w-40">
+            <Select value={privacy} onChange={(e) => setPrivacy(e.target.value as typeof privacy)}>
+              {(['private', 'unlisted', 'public'] as const).map((p) => (
+                <option key={p} value={p}>
+                  {PRIVACY_LABEL[p]}
+                </option>
+              ))}
+            </Select>
+          </Field>
           <Button
             size="sm"
             icon={Upload}
             busy={publish.isPending}
             disabled={!bFinal || busy || publish.isPending}
             title={bFinal ? disabledTitle : `Renderize a versão ${L} primeiro.`}
-            onClick={() => publish.mutate()}
+            onClick={sendToYouTube}
           >
-            Enviar {L} ao YouTube (privado)
+            Enviar {L} ao YouTube
           </Button>
           <LinkVideo projectId={projectId} branch={branch} />
         </div>
@@ -604,9 +637,17 @@ const ComparePanel: React.FC<{ detail: ProjectDetail; branch: AbBranch; lang: st
             {changed.map((s) => (
               <li key={s.id} className="grid grid-cols-1 gap-2 py-2 md:grid-cols-[auto_1fr_1fr]">
                 <div className="flex flex-col gap-1">
-                  <Checkbox label={`Trecho ${s.index}${s.role === 'hook' ? ' (gancho)' : ''}`} checked={picked.has(s.id)} onChange={(on) => toggle(s.id, on)} />
-                  <Badge tone={SEGMENT_STATUS[s.status].tone} className="w-fit">
-                    {s.status === 'novo' ? `Só na ${L}` : SEGMENT_STATUS[s.status].label}
+                  {s.only_a ? (
+                    <span className="text-[13px] font-medium text-fg">{`Trecho ${s.index}${s.role === 'hook' ? ' (gancho)' : ''}`}</span>
+                  ) : (
+                    <Checkbox label={`Trecho ${s.index}${s.role === 'hook' ? ' (gancho)' : ''}`} checked={picked.has(s.id)} onChange={(on) => toggle(s.id, on)} />
+                  )}
+                  <Badge
+                    tone={s.only_a ? 'neutral' : SEGMENT_STATUS[s.status].tone}
+                    className="w-fit"
+                    title={s.only_a ? `A ${L} não mexeu aqui: a diferença é uma mudança da A feita depois que a ${L} nasceu.` : undefined}
+                  >
+                    {s.only_a ? `Mudou só na A (depois da ${L})` : s.status === 'novo' ? `Só na ${L}` : SEGMENT_STATUS[s.status].label}
                   </Badge>
                 </div>
                 <DiffText side="A" text={s.a} />
@@ -739,6 +780,7 @@ const ReadingLine: React.FC<{ reading: AbReading }> = ({ reading }) => (
     </span>
     {reading.direct ? <Badge tone={reading.direct.young ? 'neutral' : 'info'}>{reading.direct.text}</Badge> : null}
     {reading.experiment?.evaluation ? <span className="text-subtle">Experimento: {reading.experiment.evaluation.text}</span> : null}
+    {reading.notice ? <span className="basis-full text-amber-200">{reading.notice}</span> : null}
     {[...reading.a.videos.map((v) => ['A', v] as const), ...reading.b.videos.map((v) => [reading.letter, v] as const)].map(([side, v]) =>
       v.url ? (
         <a key={v.publication_id} href={v.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent underline-offset-2 hover:underline">

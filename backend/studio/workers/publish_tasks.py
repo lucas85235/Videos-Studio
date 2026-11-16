@@ -196,7 +196,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 warnings.append(str(exc))
     url = f"https://youtu.be/{video_id}"
     try:
-        ab_tag = ab_versions.publication_tag(project_id, branch)
+        ab_tag = ab_versions.publication_tag(project_id, branch, lang)
     except Exception:  # noqa: BLE001 - ramo apagado no meio do envio: publica sem a marca
         ab_tag = {}
     try:  # o vídeo já subiu: uma falha aqui não pode impedir o registro da publicação
@@ -225,8 +225,12 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
             )
         )
     if ab_tag:
-        try:  # A e B publicados: abre o experimento de Desempenho (variável "versao")
+        try:  # A e B públicos no YouTube: abre o experimento de Desempenho (variável "versao")
             ab_versions.sync_experiments(project_id)
+            if on_branch and not branches.get_branch(project_id, branch)["experiment_id"]:
+                reason = ab_versions.missing_reason(ab_versions.published_videos(project_id), ab_tag["versao"])
+                if reason:
+                    warnings.append(f"O experimento A/B ainda não abriu. {reason}")
         except Exception as exc:  # noqa: BLE001 - o vídeo já subiu
             warnings.append(f"Não deu para abrir o experimento A/B: {exc}")
     ctx.progress(1.0, "Agendado no YouTube" if privacy == "scheduled" else "Enviado ao YouTube")

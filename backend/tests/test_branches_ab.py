@@ -261,11 +261,11 @@ def test_youtube_publish_of_both_versions_opens_experiment(isolated_settings, mo
     monkeypatch.setattr(yt, "upload_video", upload_video)
     monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
-    _run("publish_youtube", pid, {"lang": "pt-BR", "privacy": "private"})
+    _run("publish_youtube", pid, {"lang": "pt-BR", "privacy": "public"})
     with TestClient(create_app()) as client:
         blocked = client.post(f"/api/projects/{pid}/ab/b/publish/youtube", json={"privacy": "public"})
         assert blocked.status_code == 409 and "conferência" in blocked.json()["detail"]
-    _run("publish_youtube", pid, {"lang": "pt-BR", "privacy": "private", "branch": "b"})
+    result = _run("publish_youtube", pid, {"lang": "pt-BR", "privacy": "private", "branch": "b"})
 
     assert [body for body, _ in sent] == ["main", "b"]  # cada versão sobe o próprio vídeo
     with session_scope() as s:
@@ -273,8 +273,16 @@ def test_youtube_publish_of_both_versions_opens_experiment(isolated_settings, mo
     assert pubs["vid1"]["versao"] == "A" and pubs["vid2"]["versao"] == "B"
     assert pubs["vid2"]["version"] == br.get_branch(pid, "b")["head"]
 
+    # B privada não ganha views: o experimento não abre e o envio explica o porquê.
+    assert br.get_branch(pid, "b")["experiment_id"] is None
+    assert any("privada" in w for w in result["warnings"])
+    assert "privada" in ab_versions.reading(pid)[0]["notice"]
+
+    # A B ficou pública no YouTube Studio: a coleta traz números e a tela abre o experimento.
+    upsert_metric("vid2", "2026-11-10", views=5, age_hours=10)
+    reading = ab_versions.reading(pid)
     exp_id = br.get_branch(pid, "b")["experiment_id"]
-    assert exp_id
+    assert exp_id and reading[0]["notice"] is None
     with session_scope() as s:
         exp = s.get(Experiment, exp_id)
         assert (exp.variable, exp.variants, exp.project_ids) == ("versao", ["A", "B"], [pid])
@@ -285,12 +293,17 @@ def test_youtube_publish_of_both_versions_opens_experiment(isolated_settings, mo
     assert videos["vid1"]["variables"]["versao"] == "A" and videos["vid2"]["variables"]["versao"] == "B"
 
     upsert_metric("vid1", "2026-11-10", views=100, age_hours=200)
-    upsert_metric("vid2", "2026-11-10", views=180, age_hours=200)
+    upsert_metric("vid2", "2026-11-11", views=180, age_hours=200)
     reading = ab_versions.reading(pid)
     assert reading[0]["direct"]["leader"] == "B" and reading[0]["b"]["views"] == 180
+    assert reading[0]["direct"]["mature"]
+    # 1 vídeo por versão: a regra de 3+ vídeos nunca fecharia; a leitura 1×1 fecha depois da idade mínima.
     with session_scope() as s:
-        result = evaluate(s.get(Experiment, exp_id))
+        exp = s.get(Experiment, exp_id)
+        assert exp.status == "concluido" and "Versão B na frente" in exp.result
+        result = evaluate(exp)
     assert {g["variant"]: g["n"] for g in result["variants"]} == {"A": 1, "B": 1}
+    assert reading[0]["experiment"]["evaluation"]["winner"] == "B"
 
 
 def test_branch_publish_refuses_stale_render(isolated_settings, monkeypatch):
@@ -349,3 +362,170 @@ def test_old_database_gets_branch_column(tmp_path):
     with engine.begin() as conn:
         assert conn.execute(text("SELECT branch FROM project_versions")).scalar() == "main"
     assert "branch" in {c["name"] for c in inspect(engine).get_columns("project_versions")}
+
+
+# --------------------------------------------------------------------------------------------
+# Correções da revisão
+# --------------------------------------------------------------------------------------------
+
+
+def _youtube_pub(pid: str, video_id: str, details: dict, lang: str = "pt-BR") -> None:
+    with session_scope() as s:
+        s.add(Publication(id=f"pub_{video_id}", project_id=pid, platform="youtube", language=lang,
+                          driver="youtube_native", status="uploaded", external_id=video_id,
+                          url=f"https://youtu.be/{video_id}", details=details))
+
+
+def test_main_published_before_branch_counts_as_version_a(isolated_settings):
+    pid = _small_project()
+    _youtube_pub(pid, "vidA", {"privacy": "public"})  # a A saiu antes de existir a B: sem a marca "versao"
+    br.create_branch(pid)
+    _youtube_pub(pid, "vidB", {"privacy": "public", "versao": "B", "branch": "b"})
+    created = ab_versions.sync_experiments(pid)
+    assert len(created) == 1 and br.get_branch(pid, "b")["experiment_id"] == created[0]
+
+
+def test_experiment_waits_for_version_a(isolated_settings):
+    pid = _small_project()
+    br.create_branch(pid)
+    _youtube_pub(pid, "vidB", {"privacy": "public", "versao": "B", "branch": "b"})
+    assert ab_versions.sync_experiments(pid) == []
+    assert "Falta o vídeo da versão A" in ab_versions.reading(pid)[0]["notice"]
+
+
+def test_direct_reading_compares_same_language_and_age_by_format():
+    def video(lang: str, views: int, age: float, min_age: int = 168, public: bool = True) -> dict:
+        return {"language": lang, "views": views, "age_hours": age, "min_age_h": min_age, "public": public}
+
+    a = {"videos": [video("pt-BR", 100, 200), video("en", 900, 200)], "views": 1000}
+    b = {"videos": [video("pt-BR", 120, 200)], "views": 120}
+    direct = ab_versions.direct_reading(a, b, "B")
+    assert direct["langs"] == ["pt-BR"]  # o inglês da A não entra na conta
+    assert (direct["a_views"], direct["b_views"]) == (100, 120)
+    assert direct["leader"] is None and "empate técnico" in direct["text"]  # 1,2x: menos que 1,3x
+
+    young = ab_versions.direct_reading({"videos": [video("pt-BR", 100, 100)], "views": 100},
+                                       {"videos": [video("pt-BR", 300, 100)], "views": 300}, "B")
+    assert young["young"] and not young["mature"]  # longo: 100 h ainda é cedo (mínimo 168 h)
+    private = ab_versions.direct_reading({"videos": [video("pt-BR", 100, 200)], "views": 100},
+                                         {"videos": [video("pt-BR", 0, 200, public=False)], "views": 0}, "B")
+    assert private["leader"] is None and private["langs"] == []
+
+
+def test_compare_marks_changes_made_only_on_main_and_merge_refuses_them(isolated_settings):
+    pid = _small_project()
+    br.create_branch(pid)
+    _set_text(pid, "b", "seg_1", "Gancho B.")
+    doc = service.get_doc(pid)  # a A muda o trecho 2 e o título depois que a B nasceu
+    doc.segment("seg_2").text["pt-BR"] = "Texto 2 revisto na A."
+    doc.metadata["pt-BR"].title = "Farol A2"
+    service.commit(pid, doc, "revisão na A")
+
+    diff = br.compare(pid, "main", "b")
+    by_id = {s["id"]: s for s in diff["segments"]}
+    assert by_id["seg_1"]["status"] == "mudou" and not by_id["seg_1"]["only_a"]
+    assert by_id["seg_2"]["status"] == "mudou" and by_id["seg_2"]["only_a"]
+    parts = {p["key"]: p for p in diff["parts"]}
+    assert parts["titulo"]["only_a"] and not parts["titulo"]["changed"]
+
+    with pytest.raises(ValueError, match="mudou só na A"):
+        br.merge(pid, "b", segment_ids=["seg_2"])
+    with pytest.raises(ValueError, match="mudou só na A"):
+        br.merge(pid, "b", segment_ids=[], parts=["titulo"])
+    br.merge(pid, "b", segment_ids=["seg_1"])
+    main = service.get_doc(pid)
+    assert main.segment("seg_1").text["pt-BR"] == "Gancho B."
+    assert main.segment("seg_2").text["pt-BR"] == "Texto 2 revisto na A."  # a mudança da A ficou
+
+
+def test_promote_moves_branch_outputs_to_main_folder(isolated_settings):
+    from studio.workers.finalcheck.quick import load_context, quick_items
+
+    pid = _small_project()
+    service.update_settings(pid, {"thumbs": {"pt-BR": {"variants": [{"path": "a.jpg"}]}}})
+    br.create_branch(pid)
+    head = _set_text(pid, "b", "seg_1", "Gancho B.")
+    out = isolated_settings.outputs_dir / pid / "ramos" / "b" / "pt-BR"
+    out.mkdir(parents=True)
+    (out / "timeline.json").write_text(json.dumps({"version": head, "scenes": [], "fps": 30}), encoding="utf-8")
+    (out / "legendas.srt").write_text("1\n", encoding="utf-8")
+    (out / "farol.mp4").write_bytes(b"video B")
+    rel = lambda name: (out / name).relative_to(isolated_settings.data_dir).as_posix()  # noqa: E731
+    entry = {"timeline": rel("timeline.json"), "srt": rel("legendas.srt"), "duration": 30.0}
+    br.save_result(pid, "b", "preview", {"langs": {"pt-BR": entry}}, head)
+    br.save_result(pid, "b", "final", {"langs": {"pt-BR": {**entry, "video": rel("farol.mp4")}}}, head)
+
+    v = br.promote(pid, "b")
+    settings = service.get_project_row(pid)["settings"]
+    final = settings["last_final"]["langs"]["pt-BR"]
+    assert final["video"] == f"outputs/{pid}/pt-BR/farol.mp4"
+    assert settings["last_preview"]["langs"]["pt-BR"]["timeline"] == final["timeline"] == f"outputs/{pid}/pt-BR/timeline.json"
+    assert (isolated_settings.data_dir / final["video"]).read_bytes() == b"video B"
+    assert settings["thumbs"] == {}  # as miniaturas eram da A antiga
+    with TestClient(create_app()) as client:
+        assert client.get(f"/api/projects/{pid}/timeline").json()["version"] == v
+    ctx = load_context(pid)
+    assert ctx.version == v
+    codes = {i["code"] for i in quick_items(ctx)}
+    assert "final_version" not in codes and "final_video" not in codes
+
+
+def test_cache_cleanup_keeps_what_open_branches_use(isolated_settings):
+    from datetime import UTC, datetime, timedelta
+
+    from studio.core.graph import gc
+    from studio.models import Artifact
+
+    pid = _small_project()
+    br.create_branch(pid)
+    head = br.get_branch(pid, "b")["head"]
+    br.save_result(pid, "b", "preview", {"langs": {}, "artifacts": ["mix:bmix01"]}, head)
+    old = datetime.now(UTC) - timedelta(days=3)
+    folder = isolated_settings.cache_dir / "mix" / "bm" / "bmix01"
+    folder.mkdir(parents=True)
+    (folder / "mix.wav").write_bytes(b"x" * 100)
+    with session_scope() as s:
+        s.add(Artifact(kind="mix", input_hash="bmix01", status="done",
+                       output={"files": ["cache/mix/bm/bmix01/mix.wav"]}, created_at=old, updated_at=old))
+
+    report = gc.collect(dry_run=True, now=datetime.now(UTC) + timedelta(days=2))
+    assert "mix" not in report.removed and report.kept_in_use >= 1
+    br.discard(pid, "b")
+    assert gc.collect(dry_run=True).removed.get("mix") == 1  # ramo descartado: a mixagem pode sair
+
+
+def test_branch_publication_keeps_its_own_duration_and_style(isolated_settings):
+    pid = _small_project()
+    service.update_settings(pid, {"last_final": {"langs": {"pt-BR": {"duration": 58.0}}}})
+    br.create_branch(pid)
+    _youtube_pub(pid, "vidA", {"privacy": "public", "versao": "A", "branch": "main"})
+    _youtube_pub(pid, "vidB", {"privacy": "public", "versao": "B", "branch": "b", "duration": 31.0,
+                               "style_id": "estilo-da-b"})
+    videos = {v["youtube_id"]: v for v in load_videos()}
+    assert videos["vidA"]["duration_s"] == 58.0
+    assert videos["vidB"]["duration_s"] == 31.0
+    assert videos["vidB"]["variables"]["estilo"] == "estilo-da-b"
+
+
+def test_branch_publication_tag_carries_duration(isolated_settings):
+    pid = _small_project()
+    br.create_branch(pid)
+    head = br.get_branch(pid, "b")["head"]
+    br.save_result(pid, "b", "final", {"langs": {"pt-BR": {"video": "v.mp4", "duration": 42.0}}}, head)
+    tag = ab_versions.publication_tag(pid, "b", "pt-BR")
+    assert tag["duration"] == 42.0 and tag["style_id"] == "misterios-short" and tag["versao"] == "B"
+
+
+def test_build_waits_for_approved_scenes_and_link_needs_open_branch(isolated_settings):
+    pid = _small_project()
+    service.update_settings(pid, {"gates": {"storyboard": True}})
+    br.create_branch(pid)
+    doc = br.branch_doc(pid, "b")
+    doc.storyboard_approved = False
+    service.commit(pid, doc, "cenas mudaram", branch="b")
+    with TestClient(create_app()) as client:
+        blocked = client.post(f"/api/projects/{pid}/ab/build", json={"branches": ["main", "b"], "mode": "preview"})
+        assert blocked.status_code == 409 and "Versão B" in blocked.json()["detail"]
+        br.discard(pid, "b")
+        link = client.post(f"/api/projects/{pid}/ab/link", json={"branch": "b", "video": "https://youtu.be/BBBBBBBBBBB"})
+        assert link.status_code == 409

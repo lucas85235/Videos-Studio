@@ -716,7 +716,11 @@ export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   // Cenas alteradas (nesta sessão) depois do início da última prévia/render concluída.
   const changedIds = new Set(Object.entries(changes).filter(([, t]) => t > lastBuild).map(([id]) => id));
   const changedCount = doc.scenes.filter((s) => changedIds.has(s.id)).length;
-  const serverChanged = changedOnServerSince(detail.versions, lastBuild);
+  // Versões dos ramos A/B não mudam a prévia da principal.
+  const serverChanged = changedOnServerSince(
+    detail.versions.filter((v) => !v.branch || v.branch === 'main'),
+    lastBuild,
+  );
   const timelineMissing = timeline.error instanceof ApiError && timeline.error.status === 404;
   const noPreview = !hasPreview || timelineMissing;
   const timelineError = timeline.error && !timelineMissing ? timeline.error : null;

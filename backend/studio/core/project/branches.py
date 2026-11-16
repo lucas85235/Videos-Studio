@@ -15,10 +15,13 @@ experimento em Desempenho com a variável `versao` (ver `ab_experiment`).
 
 from __future__ import annotations
 
+import json
+import shutil
 import string
 from datetime import UTC, datetime
 from typing import Any
 
+from studio.config import get_settings
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc
 from studio.db import session_scope
@@ -205,11 +208,58 @@ def _dump(model: Any) -> Any:
     return model.model_dump(mode="json") if model is not None else None
 
 
+def _segment_state(doc: ProjectDoc, seg_id: str) -> Any:
+    """Texto e cenas de um trecho (None: o trecho não existe nesta versão), para saber se ele mudou."""
+    if not any(s.id == seg_id for s in doc.segments):
+        return None
+    return {"segment": _dump(doc.segment(seg_id)), "scenes": [_dump(sc) for sc in doc.scenes_of(seg_id)]}
+
+
+def _title_state(doc: ProjectDoc) -> Any:
+    return [doc.title, {k: _dump(v) for k, v in doc.metadata.items()}, _dump(doc.thumbnail)]
+
+
+def _style_state(doc: ProjectDoc) -> Any:
+    return [doc.style_id, doc.style_overrides, [_dump(m) for m in doc.music]]
+
+
+def _base_doc(project_id: str, b_info: dict[str, Any]) -> ProjectDoc | None:
+    """Versão de onde o ramo saiu (None: a principal, ou a versão base não existe mais)."""
+    if b_info["is_main"] or not b_info.get("base"):
+        return None
+    try:
+        return service.get_doc(project_id, b_info["base"])
+    except LookupError:
+        return None
+
+
+def branch_changes(project_id: str, name: str) -> tuple[set[str], set[str]]:
+    """O que o ramo mudou em relação à versão de onde saiu: (ids dos trechos, partes "titulo"/"estilo").
+
+    É o que dá para levar para a principal: um trecho que só a A mudou depois de o ramo nascer não entra (levar a
+    cópia da B desfaria a mudança da A).
+    """
+    info = get_branch(project_id, name)
+    b = service.get_doc(project_id, info["head"])
+    base = _base_doc(project_id, info)
+    if base is None:
+        return {s.id for s in b.segments}, set(GLOBAL_PARTS)
+    ids = {s.id for s in b.segments} | {s.id for s in base.segments}
+    segs = {sid for sid in ids if _segment_state(base, sid) != _segment_state(b, sid)}
+    parts = {p for p, fn in (("titulo", _title_state), ("estilo", _style_state)) if fn(base) != fn(b)}
+    return segs, parts
+
+
 def compare(project_id: str, a_name: str = MAIN, b_name: str = "", lang: str | None = None) -> dict[str, Any]:
-    """Diferenças entre duas versões (cabeças de A e B): trecho a trecho, cenas de cada trecho, título e estilo."""
+    """Diferenças entre duas versões (cabeças de A e B): trecho a trecho, cenas de cada trecho, título e estilo.
+
+    Compara também com a versão de onde a B saiu: o que mudou só na A depois disso vem com `only_a` (não dá para
+    mesclar: a B não mexeu ali).
+    """
     a_info, b_info = get_branch(project_id, a_name), get_branch(project_id, b_name)
     a = service.get_doc(project_id, a_info["head"])
     b = service.get_doc(project_id, b_info["head"])
+    base = _base_doc(project_id, b_info)
     lang = lang or a.primary_language
     a_ids, b_ids = {s.id for s in a.segments}, {s.id for s in b.segments}
     segments = []
@@ -236,6 +286,8 @@ def compare(project_id: str, a_name: str = MAIN, b_name: str = "", lang: str | N
             status = "mudou" if text_changed or scene_changes else "igual"
         else:
             status = "novo" if sb else "saiu"
+        only_a = (status != "igual" and base is not None
+                  and _segment_state(base, seg_id) == _segment_state(b, seg_id))
         if status != "igual":
             changed_count += 1
         ref = sb or sa
@@ -245,6 +297,7 @@ def compare(project_id: str, a_name: str = MAIN, b_name: str = "", lang: str | N
             "index": index,
             "role": ref.role,
             "status": status,
+            "only_a": only_a,
             "a": sa.text_for(lang, a.primary_language) if sa else None,
             "b": sb.text_for(lang, b.primary_language) if sb else None,
             "scenes_a": len(scenes_a),
@@ -252,13 +305,15 @@ def compare(project_id: str, a_name: str = MAIN, b_name: str = "", lang: str | N
             "scene_changes": scene_changes,
         })
     meta_a, meta_b = a.metadata.get(lang), b.metadata.get(lang)
-    title_changed = (a.title != b.title or _dump(meta_a) != _dump(meta_b) or _dump(a.thumbnail) != _dump(b.thumbnail))
-    style_changed = (a.style_id != b.style_id or a.style_overrides != b.style_overrides
-                     or [_dump(m) for m in a.music] != [_dump(m) for m in b.music])
+    title_diff = _title_state(a) != _title_state(b)
+    style_diff = _style_state(a) != _style_state(b)
+    title_only_a = title_diff and base is not None and _title_state(base) == _title_state(b)
+    style_only_a = style_diff and base is not None and _style_state(base) == _style_state(b)
     parts = [
-        {"key": "titulo", "label": "Título, metadados e capa", "changed": title_changed,
+        {"key": "titulo", "label": "Título, metadados e capa", "changed": title_diff and not title_only_a,
+         "only_a": title_only_a,
          "a": (meta_a.title if meta_a and meta_a.title else a.title), "b": (meta_b.title if meta_b and meta_b.title else b.title)},
-        {"key": "estilo", "label": "Estilo e trilha", "changed": style_changed,
+        {"key": "estilo", "label": "Estilo e trilha", "changed": style_diff and not style_only_a, "only_a": style_only_a,
          "a": a.style_id, "b": b.style_id},
     ]
     return {
@@ -327,6 +382,11 @@ def merge(project_id: str, name: str, *, segment_ids: list[str], parts: list[str
         raise ValueError("escolha um ramo para mesclar na principal")
     if info["status"] != OPEN:
         raise service.BranchNotOpen(f"a versão {info['letter']} já foi fechada ({info['status']})")
+    seg_changed, parts_changed = branch_changes(project_id, name)
+    if any(sid not in seg_changed for sid in segment_ids) or any(p not in parts_changed for p in parts):
+        letter = info["letter"]
+        raise ValueError(f"escolha só o que a versão {letter} mudou: o resto mudou só na A depois que a {letter} "
+                         f"nasceu, e levar a cópia da {letter} desfaria essa mudança")
     main = service.get_doc(project_id)
     branch = service.get_doc(project_id, info["head"])
     merged = merge_parts(main, branch, segment_ids, parts)
@@ -353,13 +413,59 @@ def promote(project_id: str, name: str) -> int:
         raise service.BranchNotOpen(f"a versão {info['letter']} já foi fechada ({info['status']})")
     doc = service.get_doc(project_id, info["head"])
     version = service.commit(project_id, doc, f"Versão {info['letter']} virou a principal (era a v{info['head']})")
-    patch: dict[str, Any] = {}
+    # As miniaturas do teste A/B eram da A antiga: a principal nova faz as dela.
+    patch: dict[str, Any] = {"thumbs": {}}
+    copied: dict[str, str] = {}
     for mode in ("preview", "final"):
         result = info[f"last_{mode}"]
         if result and result.get("version") == info["head"]:
-            patch[f"last_{mode}"] = {**result, "version": version}
-    if patch:
-        service.update_settings(project_id, patch)
+            patch[f"last_{mode}"] = _adopt_outputs(project_id, result, info["head"], version, copied)
+    service.update_settings(project_id, patch)
     _close(project_id, name, "promovido")
     return version
+
+
+_ADOPTED_FILES = ("timeline", "srt", "video", "thumbnail")
+
+
+def _adopt_outputs(project_id: str, result: dict[str, Any], old_version: int, version: int,
+                   copied: dict[str, str]) -> dict[str, Any]:
+    """Copia a timeline, as legendas, o vídeo e a thumbnail do ramo para a pasta da principal.
+
+    A rota da timeline, a aba Prévia e a conferência antes de publicar leem `outputs/<projeto>/<idioma>`; a timeline
+    copiada passa a dizer a versão nova da principal. `copied` guarda o que já foi copiado (prévia e vídeo final
+    dividem a mesma timeline). Devolve o resultado com os caminhos novos.
+    """
+    settings = get_settings()
+    data_dir = settings.data_dir
+    langs: dict[str, Any] = {}
+    for lang, entry in (result.get("langs") or {}).items():
+        if not isinstance(entry, dict):
+            langs[lang] = entry
+            continue
+        target_dir = settings.outputs_dir / project_id / lang
+        new_entry = dict(entry)
+        for key in _ADOPTED_FILES:
+            rel = entry.get(key)
+            if not rel:
+                continue
+            if rel in copied:
+                new_entry[key] = copied[rel]
+                continue
+            src = data_dir / rel
+            if not src.is_file():
+                continue
+            target_dir.mkdir(parents=True, exist_ok=True)
+            dst = target_dir / src.name
+            if key == "timeline":
+                data = json.loads(src.read_text(encoding="utf-8"))
+                if data.get("version") in (None, old_version):
+                    data["version"] = version
+                dst.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            else:
+                shutil.copyfile(src, dst)
+            copied[rel] = dst.resolve().relative_to(data_dir.resolve()).as_posix()
+            new_entry[key] = copied[rel]
+        langs[lang] = new_entry
+    return {**result, "langs": langs, "version": version}
 

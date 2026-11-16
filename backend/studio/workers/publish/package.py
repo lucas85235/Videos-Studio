@@ -98,7 +98,7 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
     row = service.get_project_row(project_id)
     doc, last = branch_source(project_id, branch, row)
     on_branch = branch not in (None, branches.MAIN)
-    ab_tag = ab_versions.publication_tag(project_id, branch)
+    ab_tag = ab_versions.publication_tag(project_id, branch, lang)
     style = get_style(doc.style_id, doc.style_overrides)
     entry = (last.get("langs") or {}).get(lang)
     if not entry or not entry.get("video"):

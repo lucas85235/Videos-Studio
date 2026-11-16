@@ -353,7 +353,16 @@ export type AbBranch = {
   closed_at: string | null;
 };
 
-export type AbVideo = { publication_id: string; youtube_id: string; url: string | null; language: string; views?: number | null; age_hours?: number | null };
+export type AbVideo = {
+  publication_id: string;
+  youtube_id: string;
+  url: string | null;
+  language: string;
+  privacy?: string | null;
+  public?: boolean;
+  views?: number | null;
+  age_hours?: number | null;
+};
 
 export type AbReading = {
   branch: string;
@@ -362,7 +371,9 @@ export type AbReading = {
   a: { videos: AbVideo[]; views: number | null };
   b: { videos: AbVideo[]; views: number | null };
   experiment: { id: string; status: string; evaluation?: { text: string; winner: string | null } } | null;
-  direct: { leader: string | null; young: boolean; text: string } | null;
+  direct: { leader: string | null; young: boolean; mature?: boolean; text: string } | null;
+  /** Por que o experimento ainda não abriu (falta o vídeo da A, a B está privada...). */
+  notice?: string | null;
 };
 
 export type AbOverview = { main: AbBranch; branches: AbBranch[]; published: AbReading[] };
@@ -378,13 +389,15 @@ export type AbCompare = {
     index: number;
     role: string;
     status: 'igual' | 'mudou' | 'novo' | 'saiu';
+    /** Mudou só na A depois que a B nasceu (a B não mexeu ali): não dá para mesclar. */
+    only_a?: boolean;
     a: string | null;
     b: string | null;
     scenes_a: number;
     scenes_b: number;
     scene_changes: AbSceneChange[];
   }[];
-  parts: { key: 'titulo' | 'estilo'; label: string; changed: boolean; a: string; b: string }[];
+  parts: { key: 'titulo' | 'estilo'; label: string; changed: boolean; only_a?: boolean; a: string; b: string }[];
   changed: number;
 };
 

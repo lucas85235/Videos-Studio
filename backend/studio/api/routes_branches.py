@@ -217,9 +217,22 @@ def operations(project_id: str, name: str, body: OpsBody) -> dict[str, Any]:
 
 @router.post("/build")
 def build(project_id: str, body: BuildBody) -> dict[str, Any]:
-    """Prévia ou vídeo final das versões pedidas (um job só, uma versão depois da outra)."""
-    for name in body.branches:
-        _open(project_id, name)
+    """Prévia ou vídeo final das versões pedidas (um job só, uma versão depois da outra).
+
+    A prévia gera as imagens que faltam: como na edição da principal, ela espera as cenas aprovadas e a direção de
+    arte de cada versão (senão gastaria cota com imagens que ainda podem mudar).
+    """
+    from studio.api.routes_projects import _preview_blocker
+    from studio.workers.pipeline.build import DIRECTION_MISSING
+
+    infos = [_open(project_id, name) for name in body.branches]
+    if body.mode == "preview":
+        for info in infos:
+            blocker = _preview_blocker(project_id, service.get_doc(project_id, info["head"]))
+            if blocker:
+                reason = (DIRECTION_MISSING if blocker == DIRECTION_MISSING
+                          else "aprove as cenas antes de gerar a prévia")
+                raise HTTPException(status_code=409, detail=f"Versão {info['letter']}: {reason}")
     return get_runner().submit("ab_build", body.model_dump(), project_id)
 
 
@@ -304,8 +317,11 @@ def publish_package(project_id: str, name: str, body: PackageBody) -> dict[str, 
 
 @router.post("/link")
 def link_video(project_id: str, body: LinkBody) -> dict[str, Any]:
-    """Liga um vídeo já publicado no YouTube (à mão ou pelo pacote) a uma versão, para entrar no experimento."""
-    info = _branch(project_id, body.branch)
+    """Liga um vídeo já publicado no YouTube (à mão ou pelo pacote) a uma versão, para entrar no experimento.
+
+    Só versão aberta (ou a principal): ligar um vídeo a uma versão descartada ou já mesclada não abre experimento.
+    """
+    info = _open(project_id, body.branch)
     try:
         video_id = youtube_id(body.video)
     except ValueError as exc:
