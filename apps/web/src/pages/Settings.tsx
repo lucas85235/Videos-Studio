@@ -654,7 +654,14 @@ type CacheReport = {
   limit: number | null;
   total_after: number;
   over_limit: boolean;
-  legacy_projects: string[];
+  /** Categorias que apagam narrações e imagens (refazer gasta cota). */
+  costly_categories: string[];
+  /** Projetos cuja versão atual não deu para ler: nenhuma narração ou imagem sai. */
+  unreadable_projects: string[];
+  /** Publicações de antes do registro do que cada vídeo usa: o que foi criado até `legacy_until` fica. */
+  legacy_publications: string[];
+  legacy_until: string | null;
+  aborted: boolean;
   policy: CachePolicy;
 };
 
@@ -719,6 +726,9 @@ const StorageSection: React.FC = () => {
       return;
     }
     const items = Object.values(fresh.removed).reduce((n, v) => n + v, 0);
+    // Narrações e imagens que saem (pela opção de versões antigas ou pelo limite de espaço): refazer gasta cota.
+    const costly = fresh.costly_categories.reduce((n, k) => n + (fresh.removed[k] ?? 0), 0);
+    const costlyByLimit = fresh.removed.lru_costly ?? 0;
     const ok = await confirm({
       title: `Liberar ${formatBytes(fresh.freed_total)} do cache?`,
       description: (
@@ -742,6 +752,16 @@ const StorageSection: React.FC = () => {
                 );
               })}
           </ul>
+          {costly ? (
+            <p className="flex items-start gap-1.5 text-[13px] text-amber-200">
+              <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+              <span>
+                {costly === 1 ? 'Sai 1 narração ou imagem' : `Saem ${costly} narrações e imagens`} que nenhuma versão atual nem publicação usa
+                {costlyByLimit ? ` (${costlyByLimit} pelo limite de espaço${fresh.old_versions ? '' : ', mesmo com a caixa de versões antigas desmarcada'})` : ''}. Se
+                precisar delas de novo, são geradas outra vez e gastam cota.
+              </span>
+            </p>
+          ) : null}
           <p className="text-[13px] text-subtle">
             {fresh.old_versions || fresh.limit != null
               ? 'Narrações e imagens que as versões atuais e as publicações usam ficam, e os vídeos prontos em “outputs” não são tocados.'
@@ -833,12 +853,21 @@ const StorageSection: React.FC = () => {
             ) : null}
           </>
         ) : null}
-        {data?.legacy_projects.length && (data.old_versions || data.limit != null) ? (
+        {data?.unreadable_projects.length && (data.old_versions || data.limit != null) ? (
           <p className="flex items-start gap-1.5 text-[13px] text-amber-200">
             <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
             <span>
-              Narrações e imagens ficam até você refazer a prévia destes projetos (o último build é de antes do controle do que cada versão usa):{' '}
-              {data.legacy_projects.join(', ')}.
+              Nenhuma narração ou imagem sai enquanto não der para ler a versão atual destes projetos (abra cada um para conferir):{' '}
+              {data.unreadable_projects.join(', ')}.
+            </span>
+          </p>
+        ) : null}
+        {data?.legacy_publications.length && data.legacy_until && (data.old_versions || data.limit != null) ? (
+          <p className="flex items-start gap-1.5 text-[13px] text-subtle">
+            <Info size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <span>
+              Narrações e imagens criadas até {new Date(data.legacy_until).toLocaleDateString('pt-BR')} ficam: estas publicações são de antes do
+              registro do que cada vídeo usa: {data.legacy_publications.join(', ')}.
             </span>
           </p>
         ) : null}
@@ -877,7 +906,8 @@ const CachePolicyForm: React.FC<{ policy: CachePolicy }> = ({ policy }) => {
     setOldVersions(policy.old_versions);
   }, [policy.limit_gb, policy.auto, policy.old_versions]);
   const parsed = limit.trim() === '' ? 0 : Number(limit.replace(',', '.'));
-  const invalid = !Number.isFinite(parsed) || parsed < 0;
+  // O servidor grava com duas casas: um valor positivo abaixo de 0,01 viraria 0 (sem limite) sem aviso.
+  const invalid = !Number.isFinite(parsed) || parsed < 0 || (parsed > 0 && parsed < 0.01);
   const limitGb = invalid ? 0 : parsed;
   const autoOn = auto && limitGb > 0;
   const changed = limitGb !== policy.limit_gb || autoOn !== policy.auto || oldVersions !== policy.old_versions;
@@ -900,7 +930,7 @@ const CachePolicyForm: React.FC<{ policy: CachePolicy }> = ({ policy }) => {
       <Field
         label="Tamanho máximo do cache (GB)"
         hint="Passou disso, a limpeza apaga pelo último uso o que não está protegido: primeiro renders e mixagens, e só depois narrações e imagens. Vazio = sem limite."
-        error={invalid ? 'Use um número maior ou igual a zero.' : undefined}
+        error={invalid ? 'Use 0 (sem limite) ou um número a partir de 0,01.' : undefined}
       >
         <Input inputMode="decimal" placeholder="sem limite" value={limit} invalid={invalid} onChange={(e) => setLimit(e.target.value)} className="max-w-40" />
       </Field>

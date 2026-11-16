@@ -469,9 +469,12 @@ def cache_policy() -> dict[str, Any]:
 def set_cache_policy(body: CachePolicyBody) -> dict[str, Any]:
     from studio.core.graph import gc
 
-    if body.auto and body.limit_gb <= 0:
+    limit_gb = round(body.limit_gb, 2)  # a validação vale para o valor gravado (0,004 vira 0 = sem limite)
+    if body.limit_gb > 0 and limit_gb <= 0:
+        raise HTTPException(status_code=422, detail="o menor limite de espaço é 0,01 GB (ou 0 para sem limite)")
+    if body.auto and limit_gb <= 0:
         raise HTTPException(status_code=422, detail="defina um limite de espaço para a limpeza automática")
-    policy = gc.CachePolicy(limit_gb=round(body.limit_gb, 2), old_versions=body.old_versions, auto=body.auto)
+    policy = gc.CachePolicy(limit_gb=limit_gb, old_versions=body.old_versions, auto=body.auto)
     return gc.set_policy(policy).to_dict()
 
 

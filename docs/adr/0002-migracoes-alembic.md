@@ -14,6 +14,7 @@
 
 ## Consequências
 
-- Atualizar o app nunca exige passo manual: as revisões rodam ao iniciar.
+- Atualizar o app nunca exige passo manual: as revisões rodam ao iniciar, e o `scripts\start.ps1` sincroniza o venv quando o `backend/uv.lock` muda (`uv sync --inexact`, que não remove pacotes). Se o Alembic faltar no venv e só existir a base, o `init_db` avisa e segue; com revisão nova, para com a mensagem de rodar o `setup.ps1`.
+- Banco marcado numa revisão que esta versão do app não conhece (voltou para uma versão anterior, trocou de branch): o `init_db` avisa e pula as migrações em vez de derrubar o app, como era antes com `add_missing_columns`.
 - Revisões precisam ser idempotentes (os helpers ajudam). `downgrade` não roda pelo app.
 - Testes em `backend/tests/test_migrations.py` cobrem banco novo, banco antigo sintético e uma revisão futura que renomeia e apaga coluna em `projects` mantendo as versões.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,10 @@ from studio.models import Artifact
 
 # Gravar o último uso a cada leitura custaria uma escrita por narração/imagem; basta a precisão de minutos.
 TOUCH_EVERY = timedelta(minutes=10)
+
+# Trava entre a limpeza do cache e os builds deste processo: enquanto a limpeza confere e apaga, nenhum build acha
+# (ou grava) um artefato que está saindo. Ver `core/graph/gc.py`.
+CACHE_LOCK = threading.RLock()
 
 
 def _stale(last: datetime | None, now: datetime) -> bool:
@@ -39,8 +44,14 @@ class ArtifactStore:
     def abs(self, rel: str) -> Path:
         return (self.settings.data_dir / rel).resolve()
 
-    def lookup(self, kind: str, input_hash: str) -> dict[str, Any] | None:
+    def peek(self, kind: str, input_hash: str) -> dict[str, Any] | None:
+        """A saída guardada, sem marcar uso nem conferir os arquivos (só para contas, como a da limpeza)."""
         with session_scope() as s:
+            row = s.query(Artifact).filter_by(kind=kind, input_hash=input_hash).one_or_none()
+            return dict(row.output or {}) if row is not None and row.status == "done" else None
+
+    def lookup(self, kind: str, input_hash: str) -> dict[str, Any] | None:
+        with CACHE_LOCK, session_scope() as s:
             row = s.query(Artifact).filter_by(kind=kind, input_hash=input_hash).one_or_none()
             if row is None or row.status != "done":
                 return None
@@ -57,7 +68,7 @@ class ArtifactStore:
         return output
 
     def save(self, kind: str, input_hash: str, output: dict[str, Any], provider: str | None = None, cost: float = 0.0) -> None:
-        with session_scope() as s:
+        with CACHE_LOCK, session_scope() as s:
             row = s.query(Artifact).filter_by(kind=kind, input_hash=input_hash).one_or_none()
             if row is None:
                 row = Artifact(kind=kind, input_hash=input_hash)

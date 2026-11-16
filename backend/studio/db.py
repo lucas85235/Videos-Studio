@@ -110,12 +110,31 @@ def current_revision(engine: Engine) -> str | None:
         return MigrationContext.configure(conn).get_current_revision()
 
 
+def _only_base_revision(script_location: Path | None = None) -> bool:
+    """As migrações desta versão do app são só a base (que não muda nada no banco)?"""
+    versions = (script_location or MIGRATIONS_DIR) / "versions"
+    names = {p.stem for p in versions.glob("*.py") if not p.name.startswith("__")}
+    return names <= {BASE_REVISION}
+
+
 def migrate(engine: Engine, *, fresh: bool = False, script_location: Path | None = None) -> list[str]:
     """Roda `alembic upgrade head`. Banco sem `alembic_version` é marcado antes: na última revisão se é novo
-    (`fresh`), na base se já existia. Retorna as revisões aplicadas agora."""
-    from alembic import command
-    from alembic.runtime.migration import MigrationContext
-    from alembic.script import ScriptDirectory
+    (`fresh`), na base se já existia. Retorna as revisões aplicadas agora.
+
+    Não derruba o app em dois casos: Alembic ainda não instalado no ambiente (app atualizado sem rodar o
+    `scripts\\setup.ps1`) enquanto só existe a base, e banco marcado numa revisão que esta versão do app não conhece
+    (o banco é de uma versão mais nova; voltar de versão sempre funcionou com `add_missing_columns`)."""
+    try:
+        from alembic import command
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+    except ImportError as exc:
+        if _only_base_revision(script_location):
+            log.warning("Alembic não instalado: migrações do banco puladas (rode scripts\\setup.ps1 para atualizar "
+                        "as dependências do app)")
+            return []
+        raise RuntimeError("Falta o Alembic para atualizar o banco desta versão do app. Rode scripts\\setup.ps1 "
+                           "(ou 'uv sync --project backend') e abra o app de novo.") from exc
 
     cfg = _alembic_config(script_location)
     script = ScriptDirectory.from_config(cfg)
@@ -126,6 +145,14 @@ def migrate(engine: Engine, *, fresh: bool = False, script_location: Path | None
             command.stamp(cfg, "head" if fresh else BASE_REVISION)
             conn.commit()
             before = MigrationContext.configure(conn).get_current_revision()
+        try:
+            known = script.get_revision(before) is not None
+        except Exception:  # noqa: BLE001 - revisão desconhecida (ResolutionError/CommandError, conforme a versão)
+            known = False
+        if not known:
+            log.warning("banco de uma versão mais nova do app (revisão %s, desconhecida aqui): migrações puladas. "
+                        "Atualize o app para a versão mais recente.", before)
+            return []
         heads = set(script.get_heads())
         if before in heads:
             return []

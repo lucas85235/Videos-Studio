@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> None:
     clean.add_argument("--versoes-antigas", action="store_true",
                        help="também apaga narrações e imagens que só versões antigas usavam")
     clean.add_argument("--limite-gb", type=float, default=None,
-                       help="apaga pelo último uso até o cache caber neste tamanho (padrão: o salvo em Configurações)")
+                       help="apaga pelo último uso até o cache caber neste tamanho; 0 = sem limite (padrão: o salvo em Configurações)")
     clean.add_argument("--auto", action="store_true",
                        help="rotina agendada: segue a política salva em Configurações e só limpa se passou do limite")
     sub.add_parser("voz-local", help="baixa o modelo da voz local da prévia (Kokoro, ~350 MB, uma vez só)")
@@ -55,17 +55,30 @@ def main(argv: list[str] | None = None) -> None:
             old_versions, limit = policy.old_versions, policy.limit_bytes
         else:
             old_versions = args.versoes_antigas
-            limit = int(args.limite_gb * gc.GB) if args.limite_gb else policy.limit_bytes
-        report = gc.collect(dry_run=args.dry_run, old_versions=old_versions, limit_bytes=limit)
+            if args.limite_gb is None:
+                limit = policy.limit_bytes
+            elif args.limite_gb < 0:
+                parser.error("--limite-gb não pode ser negativo (use 0 para limpar sem limite de espaço)")
+            else:
+                limit = int(args.limite_gb * gc.GB) or None  # 0: sem limite, mesmo com um limite salvo
+        report = gc.collect(dry_run=args.dry_run, old_versions=old_versions, limit_bytes=limit,
+                            abort=gc.busy_jobs if args.auto else None)
+        if report.aborted:
+            print("Uma tarefa começou enquanto a limpeza calculava; nada foi apagado. Fica para a próxima.")
+            return
         mb = 1024 * 1024
         print(f"Cache: {sum(report.sizes.values()) / mb:.1f} MB")
         for category, size in sorted(report.freed.items(), key=lambda kv: -kv[1]):
             print(f"  {gc.CATEGORY_LABELS.get(category, category)}: {report.removed[category]} itens, {size / mb:.1f} MB")
         verb = "seriam liberados" if args.dry_run else "liberados"
         print(f"{sum(report.freed.values()) / mb:.1f} MB {verb}; {report.kept_in_use} artefatos em uso preservados.")
-        if report.legacy_projects and (old_versions or limit is not None):
-            print("Narrações e imagens não foram tocadas: refaça a prévia destes projetos (build antigo, sem "
-                  f"manifesto): {', '.join(report.legacy_projects)}")
+        if old_versions or limit is not None:
+            if report.unreadable_projects:
+                print("Narrações e imagens não foram tocadas: não deu para ler a versão atual destes projetos "
+                      f"(abra-os no app para conferir): {', '.join(report.unreadable_projects)}")
+            if report.legacy_publications and report.legacy_until:
+                print(f"Narrações e imagens criadas até {report.legacy_until:%d/%m/%Y} ficam: estas publicações são de "
+                      "antes do registro do que cada vídeo usa: " + ", ".join(report.legacy_publications))
         if limit is not None and report.total_after > limit:
             print(f"O cache ainda passa do limite ({report.total_after / mb:.0f} MB de {limit / mb:.0f} MB): o resto "
                   "está em uso ou foi criado nas últimas 24 h.")

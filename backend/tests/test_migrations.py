@@ -139,3 +139,44 @@ def test_database_already_at_base_runs_only_new_revision(tmp_path, monkeypatch):
     assert current_revision(get_engine()) == "0099_teste"
     with session_scope() as s:
         assert s.get(Project, "prj_2").title == "Novo"
+
+
+def test_database_from_newer_app_still_opens(tmp_path, caplog):
+    """Voltar para uma versão anterior do app (ou trocar de branch) não derruba o init_db."""
+    _use(tmp_path / "mais-novo")
+    init_db()
+    with get_engine().begin() as conn:
+        conn.exec_driver_sql("UPDATE alembic_version SET version_num='0002_futura'")
+    reset_engine()
+    with caplog.at_level("WARNING", logger="studio.db"):
+        init_db()
+    assert current_revision(get_engine()) == "0002_futura"  # nada muda no banco
+    assert "versão mais nova do app" in caplog.text
+    with session_scope() as s:
+        s.add(Project(id="prj_3", title="Segue", style_id="misterios-short"))
+
+
+def test_missing_alembic_skips_only_while_there_is_just_the_base(tmp_path, monkeypatch, caplog):
+    """App atualizado sem rodar o setup (venv sem Alembic): abre enquanto só existe a base; com migração nova, avisa."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_alembic(name, *args, **kwargs):
+        if name == "alembic" or name.startswith("alembic."):
+            raise ImportError("No module named 'alembic'")
+        return real_import(name, *args, **kwargs)
+
+    _use(tmp_path / "sem-alembic")
+    monkeypatch.setattr(builtins, "__import__", no_alembic)
+    with caplog.at_level("WARNING", logger="studio.db"):
+        init_db()
+    assert "setup.ps1" in caplog.text
+    with session_scope() as s:
+        s.add(Project(id="prj_4", title="Abre", style_id="misterios-short"))
+    folder = tmp_path / "migracoes"
+    shutil.copytree(db.MIGRATIONS_DIR, folder, ignore=shutil.ignore_patterns("__pycache__"))
+    (folder / "versions" / "0099_teste.py").write_text(FUTURE_REVISION.format(down=BASE_REVISION), encoding="utf-8")
+    monkeypatch.setattr(db, "MIGRATIONS_DIR", folder)
+    with pytest.raises(RuntimeError, match="setup.ps1"):
+        init_db()
