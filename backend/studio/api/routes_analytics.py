@@ -55,6 +55,12 @@ def _collect_states(channel_id: str | None) -> list[dict[str, Any]]:
                 "scope": a.get("scope"),
                 "last_run": a.get("last_run"),
                 "error": a.get("error") or "",
+                # Impressões e CTR (Reporting API): ok | esperando | sem_escopo | erro | None (ainda não tentou).
+                "reach": a.get("reach"),
+                "reach_error": a.get("reach_error") or "",
+                # Receita do YouTube (escopo opcional): ok | desligada | sem_escopo | erro | None.
+                "revenue": a.get("revenue"),
+                "revenue_error": a.get("revenue_error") or "",
             })
         return out
 

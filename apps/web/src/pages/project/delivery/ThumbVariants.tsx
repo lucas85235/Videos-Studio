@@ -80,6 +80,16 @@ export const ThumbVariants: React.FC<{ detail: ProjectDetail; lang: string }> = 
               <span className="text-subtle"> (ainda sem impressões de 7 dias dos vídeos longos do canal)</span>
             )}
           </p>
+          {data.ctr ? (
+            <p
+              role="status"
+              className={`rounded-lg border px-3 py-2 text-[13px] ${
+                data.ctr.verdict === 'trocar' ? 'border-amber-500/40 bg-amber-500/10 text-amber-200' : 'border-line bg-canvas text-muted'
+              }`}
+            >
+              {data.ctr.text}
+            </p>
+          ) : null}
           {data.stale ? (
             <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-200">
               As miniaturas são de antes da última mudança na capa ou nas imagens das cenas. Clique em “Gerar de novo”. Até lá, o envio usa a capa do vídeo final.

@@ -3,6 +3,7 @@ import React from 'react';
 import { fileUrl } from '../../api';
 import type { ReferenceVideo } from '../../apiVisual';
 import { formatSeconds } from '../../ui';
+import { ReferenceStyleButton } from './ReferenceStyle';
 
 const num = (v: number | undefined, digits = 1) => (v ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: 0 });
 
@@ -27,6 +28,7 @@ export const ReferenceDetail: React.FC<{ reference: ReferenceVideo }> = ({ refer
           ))}
         </div>
       ) : null}
+      <ReferenceStyleButton reference={ref} />
       {ref.sheets.map((sheet, i) => (
         <a key={sheet} href={fileUrl(sheet)} target="_blank" rel="noreferrer" className="block">
           <img src={fileUrl(sheet)} alt={`Folha de contato ${i + 1} de ${ref.title}`} loading="lazy" className="w-full rounded-md border border-line" />

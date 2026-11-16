@@ -1,7 +1,9 @@
 """Coleta das métricas no YouTube (origem: `rotinas.importar_metricas_gmg` e `gravar_metrica` do canais).
 
 Por canal com token: `videos.list` da Data API (views, likes, comentários, data e duração) e, se o token tiver o
-escopo, o YouTube Analytics (duração média, % assistido, inscritos ganhos). Regras trazidas do canais:
+escopo, o YouTube Analytics (duração média, % assistido, inscritos ganhos). Impressões e CTR da miniatura vêm da
+Reporting API (`reach.py`: o Analytics não tem essas métricas) e a receita do YouTube só com o escopo opcional
+escolhido ao vincular (`yt_revenue.py`). Regras trazidas do canais:
 - privado ou agendado sem views fica fora da conta (entrava com 0 views e derrubava a mediana; lição #205);
 - vídeo sem dado do Analytics fica com retenção VAZIA, nunca 0 (o Analytics atrasa 2 a 3 dias; lição #202);
 - agendado: a idade conta da hora em que foi ao ar, não do upload.
@@ -19,6 +21,7 @@ import httpx
 
 from studio.db import session_scope
 from studio.models import Channel, Project, Publication
+from studio.workers.analytics import reach, yt_revenue
 from studio.workers.analytics.metrics import parse_when, upsert_metric
 from studio.workers.analytics.variables import parse_iso_duration
 from studio.workers.publish import youtube as yt
@@ -246,8 +249,21 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
             log.warning("YouTube Analytics falhou para o canal %s: %s", channel_id, exc)
             error = f"views vieram, mas o YouTube Analytics falhou: {exc}"
 
+    # Impressões/CTR e receita: extras que nunca derrubam a coleta (viram estado próprio na tela).
+    extras: dict[str, Any] = {}
+    reach_data: dict[str, dict[str, Any]] = {}
+    revenue_data: dict[str, dict[str, Any]] = {}
+    if kept and (scope or prev_scope) != "missing":
+        reach_state, reach_data, reach_msg = reach.fetch_reach(channel_id, http, token, now)
+        extras.update(reach=reach_state, reach_error=reach_msg)
+    if kept:
+        rev_state, revenue_data, rev_msg = yt_revenue.collect_revenue(channel_id, http, token, account, list(kept),
+                                                                      start, now)
+        extras.update(revenue=rev_state, revenue_error=rev_msg)
+
     for vid, k in kept.items():
         a = analytics.get(vid) or {}
+        r, money = reach_data.get(vid) or {}, revenue_data.get(vid) or {}
         # Sem views no Analytics, o dado ainda não chegou: retenção vazia, não 0 (lição #202).
         has_analytics = bool(_int(a.get("views")))
         upsert_metric(
@@ -256,6 +272,9 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
             avg_view_s=_float(a.get("averageViewDuration")) if has_analytics else None,
             pct_watched=_float(a.get("averageViewPercentage")) if has_analytics else None,
             subscribers_gained=_int(a.get("subscribersGained")) if has_analytics else None,
+            # Vazio (ainda sem relatório ou sem o escopo) nunca apaga o que foi lançado à mão (COALESCE).
+            impressions=r.get("impressions") or None, ctr=r.get("ctr") if r.get("impressions") else None,
+            revenue_usd=money.get("revenue_usd"), rpm=money.get("rpm"),
         )
     known_scope = scope or prev_scope
     if scope is None and error:
@@ -263,7 +282,7 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
     else:
         state = SEM_ESCOPO if known_scope == "missing" else OK
     extra = {"scope": scope} if scope is not None else {}
-    saved = _save_state(channel_id, state=state, error=error, last_run=now.isoformat(), videos=info, **extra)
+    saved = _save_state(channel_id, state=state, error=error, last_run=now.isoformat(), videos=info, **extra, **extras)
     return {"channel_id": channel_id, **saved, "saved": len(kept), "skipped": skipped}
 
 

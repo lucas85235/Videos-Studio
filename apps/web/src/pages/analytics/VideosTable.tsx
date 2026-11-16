@@ -26,7 +26,7 @@ export const VideosTable: React.FC<{ videos: AnalyticsVideo[] }> = ({ videos }) 
   }
   return (
     <div className="-mx-4 overflow-x-auto">
-      <table className="w-full min-w-[720px] border-collapse text-sm">
+      <table className="w-full min-w-[860px] border-collapse text-sm">
         <thead className="border-b border-line">
           <tr>
             <Th>Vídeo</Th>
@@ -34,6 +34,8 @@ export const VideosTable: React.FC<{ videos: AnalyticsVideo[] }> = ({ videos }) 
             <Th right>Idade</Th>
             <Th right>Views</Th>
             <Th right>Views/dia</Th>
+            <Th right>Impressões</Th>
+            <Th right>CTR</Th>
             <Th right>Retenção</Th>
             <Th right>Likes</Th>
           </tr>
@@ -68,6 +70,8 @@ export const VideosTable: React.FC<{ videos: AnalyticsVideo[] }> = ({ videos }) 
                 <Td right>{fmtAge(m?.age_hours)}</Td>
                 <Td right>{fmtCount(m?.views)}</Td>
                 <Td right>{fmtCount(v.views_per_day)}</Td>
+                <Td right>{fmtCount(m?.impressions)}</Td>
+                <Td right>{fmtPct(m?.ctr)}</Td>
                 <Td right>{fmtPct(m?.pct_watched)}</Td>
                 <Td right>{fmtCount(m?.likes)}</Td>
               </tr>

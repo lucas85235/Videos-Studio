@@ -4,6 +4,8 @@
 - `POST /api/projects/{id}/shorts/suggest`: job `shorts_suggest`.
 - `POST /api/projects/{id}/shorts`: cria o Short (projeto filho).
 - `POST /api/shorts/check`: avisos das regras e título final (com a hashtag do canal).
+- `GET/PUT /api/projects/{id}/shorts/frames`: reenquadramento das imagens 16:9 no Short (foco e modo por cena).
+- `POST /api/projects/{id}/shorts/frames/{scene_id}/vertical`: gera a imagem da cena de novo, em 9:16.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 from studio.core.project import service
 from studio.workers.jobs import get_runner
 from studio.workers.shorts.derive import ShortsError, children_of, derive_short, segments_overview
+from studio.workers.shorts.reframe import frames_overview, update_frames, vertical_image
 from studio.workers.shorts.rules import ShortTooLong, channel_rules, check_short, final_title
 
 router = APIRouter(prefix="/api", tags=["shorts"])
@@ -33,6 +36,24 @@ class CreateShort(BaseModel):
     hook: str = Field(default="", max_length=200)
     tipo: Tipo = "normal"
     lang: str | None = Field(default=None, max_length=20)
+
+
+FrameMode = Literal["crop", "blur"]
+
+
+class FrameEdit(BaseModel):
+    id: str = Field(min_length=1, max_length=40)
+    x: float | None = Field(default=None, ge=0, le=1)
+    y: float | None = Field(default=None, ge=0, le=1)
+    mode: Literal["crop", "blur", "default"] | None = None
+    reset: bool = False
+    restore: bool = False
+    """Desfaz o pedido de imagem vertical (volta à imagem 16:9)."""
+
+
+class FramesBody(BaseModel):
+    default_mode: FrameMode | None = None
+    scenes: list[FrameEdit] = Field(default_factory=list, max_length=200)
 
 
 class CheckBody(BaseModel):
@@ -125,3 +146,27 @@ def check(body: CheckBody) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"warnings": warnings, "final_title": final_title(body.title, hashtag)}
 
+
+
+@router.get("/projects/{project_id}/shorts/frames")
+def short_frames(project_id: str) -> dict[str, Any]:
+    try:
+        return frames_overview(project_id)
+    except ShortsError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/projects/{project_id}/shorts/frames")
+def save_frames(project_id: str, body: FramesBody) -> dict[str, Any]:
+    try:
+        return update_frames(project_id, body.default_mode, [e.model_dump() for e in body.scenes])
+    except ShortsError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/projects/{project_id}/shorts/frames/{scene_id}/vertical")
+def vertical_scene_image(project_id: str, scene_id: str) -> dict[str, Any]:
+    try:
+        return vertical_image(project_id, scene_id)
+    except ShortsError as exc:
+        raise _http(exc) from exc

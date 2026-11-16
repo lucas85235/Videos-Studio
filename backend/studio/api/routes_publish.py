@@ -66,6 +66,7 @@ def youtube_connect() -> dict[str, Any]:
 
 class YouTubeLinkRequest(BaseModel):
     channel_id: str | None = Field(default=None, max_length=32)  # canal do Vulto; vazio cria um canal novo
+    revenue: bool = False  # pede também a receita do YouTube (escopo opcional, canal monetizado)
 
 
 @router.post("/youtube/link")
@@ -76,7 +77,7 @@ def youtube_link(body: YouTubeLinkRequest) -> dict[str, Any]:
             if s.get(Channel, body.channel_id) is None:
                 raise HTTPException(status_code=404, detail="canal não encontrado")
     try:
-        return yt.start_link(_redirect_uri(), body.channel_id)
+        return yt.start_link(_redirect_uri(), body.channel_id, body.revenue)
     except yt.YouTubeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

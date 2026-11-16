@@ -86,6 +86,39 @@ export type ShortCreateResult = { project_id: string; duration_s: number; warnin
 export type ShortCheckInput = { title: string; duration_s: number; tipo: ShortKind; channel_id?: string | null };
 export type ShortCheckResult = { warnings: string[]; final_title: string };
 
+/** Reenquadramento da imagem 16:9 do longo no Short: recorte em volta do foco ou imagem inteira sobre fundo desfocado. */
+export type FrameMode = 'crop' | 'blur';
+
+/** Foco (0 a 1) e modo da cena; `mode` null segue o padrão do Short. */
+export type SceneFrame = {
+  x: number;
+  y: number;
+  mode: FrameMode | null;
+  aspect: number;
+  auto: boolean;
+  /** Imagem pedida de novo em 9:16; `source` é a 16:9 que saiu (para voltar a ela). */
+  vertical?: boolean;
+  source?: string | null;
+};
+
+export type FrameScene = {
+  id: string;
+  index: number;
+  kind: string;
+  /** Imagem fixada (16:9 do longo); com `vertical`, a imagem 9:16 já gerada (null enquanto a prévia não gera). */
+  src: string | null;
+  frame: SceneFrame;
+  /** O usuário pediu a imagem de novo em 9:16 ("Gerar imagem vertical"). */
+  vertical: boolean;
+  /** Cena que reaproveita a imagem de outra pedida em 9:16: segue a raiz (id e posição dela). */
+  follows: string | null;
+  follows_index: number | null;
+};
+
+export type ShortFrames = { default_mode: FrameMode; width: number; height: number; scenes: FrameScene[] };
+
+export type FrameEdit = { id: string; x?: number; y?: number; mode?: FrameMode | 'default'; reset?: boolean; restore?: boolean };
+
 const q = (lang?: string) => (lang ? `?lang=${encodeURIComponent(lang)}` : '');
 
 export const shortsApi = {
@@ -93,4 +126,9 @@ export const shortsApi = {
   suggest: (projectId: string, lang?: string) => api.post<Job>(`/api/projects/${projectId}/shorts/suggest`, lang ? { lang } : {}),
   create: (projectId: string, body: ShortCreateInput) => api.post<ShortCreateResult>(`/api/projects/${projectId}/shorts`, body),
   check: (body: ShortCheckInput) => api.post<ShortCheckResult>('/api/shorts/check', body),
+  frames: (projectId: string) => api.get<ShortFrames>(`/api/projects/${projectId}/shorts/frames`),
+  saveFrames: (projectId: string, body: { default_mode?: FrameMode; scenes?: FrameEdit[] }) =>
+    api.put<ShortFrames>(`/api/projects/${projectId}/shorts/frames`, body),
+  verticalImage: (projectId: string, sceneId: string) =>
+    api.post<ShortFrames>(`/api/projects/${projectId}/shorts/frames/${sceneId}/vertical`),
 };

@@ -52,6 +52,7 @@ import {
   type BadgeTone,
   Button,
   buttonClass,
+  Checkbox,
   Empty,
   ErrorBox,
   errorMessage,
@@ -874,7 +875,7 @@ const LinkSheet: React.FC<{
   target: Channel | null;
   onClose: () => void;
   onManual?: () => void;
-  onLinked: (channelId: string, name: string, created: boolean) => void;
+  onLinked: (channelId: string, name: string, created: boolean, warnings?: string[]) => void;
 }> = ({ target, onClose, onManual, onLinked }) => {
   const loginId = useId();
   const pasteId = useId();
@@ -882,10 +883,20 @@ const LinkSheet: React.FC<{
   const [url, setUrl] = useState('');
   const [tried, setTried] = useState(false);
   const [login, setLogin] = useState<YouTubeLinkStart | null>(null);
+  const [revenue, setRevenue] = useState(false);
   const finished = useRef<string | null>(null);
+  // Canal que já tem a receita ligada começa com a caixa marcada (vincular de novo sem ela desliga a receita).
+  const targetYt = target?.youtube?.channel_id;
+  const hadRevenue = Boolean(targetYt && status.data?.linked?.some((l) => l.channel_id === targetYt && l.revenue));
+  const revenueSynced = useRef(false);
+  useEffect(() => {
+    if (revenueSynced.current || !status.data) return;
+    revenueSynced.current = true;
+    if (hadRevenue) setRevenue(true);
+  }, [status.data, hadRevenue]);
 
   const start = useMutation({
-    mutationFn: () => api.post<YouTubeLinkStart>('/api/youtube/link', { channel_id: target?.id ?? null }),
+    mutationFn: () => api.post<YouTubeLinkStart>('/api/youtube/link', { channel_id: target?.id ?? null, revenue }),
     onSuccess: (data) => {
       setLogin(data);
       window.open(data.auth_url, '_blank', 'noopener');
@@ -902,7 +913,7 @@ const LinkSheet: React.FC<{
   useEffect(() => {
     if (!login || result?.status !== 'done' || !result.vulto_channel_id || finished.current === login.state) return;
     finished.current = login.state;
-    onLinked(result.vulto_channel_id, result.channel_title ?? '', Boolean(result.created));
+    onLinked(result.vulto_channel_id, result.channel_title ?? '', Boolean(result.created), result.warnings);
   }, [login, result, onLinked]);
   const failed = result?.status === 'error' || result?.status === 'unknown';
 
@@ -982,6 +993,16 @@ const LinkSheet: React.FC<{
               <ErrorBox error={new Error(result?.error || 'O pedido de login expirou. Tente de novo.')} title="Não foi possível vincular" />
             ) : null}
             <ErrorBox error={start.error} title="Não foi possível abrir o login" onClose={() => start.reset()} />
+            <Checkbox
+              label="Trazer a receita do YouTube"
+              description={
+                hadRevenue
+                  ? 'Este canal já traz a receita. Deixar desmarcada desliga a receita, que volta a ser lançada à mão em Dinheiro.'
+                  : 'Opcional, para canal monetizado: a receita estimada entra sozinha em Dinheiro. Sem isso, nada muda e a receita segue lançada à mão.'
+              }
+              checked={revenue}
+              onChange={setRevenue}
+            />
             <Button variant="primary" icon={LogIn} className="self-start" busy={start.isPending} onClick={() => start.mutate()}>
               Entrar com o Google
             </Button>
@@ -1157,15 +1178,17 @@ export const ChannelsPage: React.FC = () => {
     applySuggestion(c, s);
   };
 
-  const onLinked =(channelId: string, name: string, created: boolean) => {
+  const onLinked =(channelId: string, name: string, created: boolean, warnings: string[] = []) => {
     setLinking(null);
     client.invalidateQueries({ queryKey: ['channels'] });
     client.invalidateQueries({ queryKey: ['youtube-status'] });
     client.invalidateQueries({ queryKey: ['channel-slots', channelId] });
     toast({
-      tone: 'good',
+      tone: warnings.length ? 'warn' : 'good',
       title: created ? `Canal “${name}” criado com os dados do YouTube` : `Canal “${name}” atualizado com os dados do YouTube`,
-      description: 'Para sugerir nicho, persona e identidade, use “Preencher com IA” no cartão do canal.',
+      description: warnings.length
+        ? warnings.join(' ')
+        : 'Para sugerir nicho, persona e identidade, use “Preencher com IA” no cartão do canal.',
     });
   };
 

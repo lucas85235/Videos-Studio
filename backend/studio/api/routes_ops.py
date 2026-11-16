@@ -122,6 +122,14 @@ def get_routines() -> dict[str, Any]:
     return routines.public_state()
 
 
+@router.get("/ops/scheduled-task")
+def scheduled_task(refresh: bool = False) -> dict[str, Any]:
+    """A tarefa agendada do Windows que roda as rotinas com o Vulto fechado existe? E o comando para instalar."""
+    from studio.workers.ops.offline import scheduled_task as status
+
+    return status(refresh=refresh)
+
+
 @router.put("/ops/routines")
 def put_routines(body: RoutinesBody) -> dict[str, Any]:
     changes = {k: v for k, v in body.model_dump().items() if k in body.model_fields_set and v is not None}

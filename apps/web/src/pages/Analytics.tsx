@@ -7,7 +7,7 @@ import { analyticsApi, type CollectState } from '../apiAnalytics';
 import { isActiveJob, useJobs } from '../shell/data';
 import { Button, ErrorBox, formatRelative, Page, PageHeader, Section, Select, Skeleton, useToast } from '../ui';
 import { NewExperiment, OpenExperiments } from './analytics/Experiments';
-import { ProposedLessons } from './analytics/Lessons';
+import { AppliedLessons, ProposedLessons } from './analytics/Lessons';
 import { ManualMetrics } from './analytics/ManualMetrics';
 import { VideosTable } from './analytics/VideosTable';
 import { Suggestions, WhatWorked } from './analytics/WhatWorked';
@@ -21,6 +21,52 @@ const STATE_TEXT: Record<CollectState['state'], string> = {
   publico: 'ligado só pelo link público',
   erro: 'a última coleta falhou',
   nunca: 'ainda não coletado',
+};
+
+const REACH_TEXT: Record<string, string> = {
+  ok: 'em dia',
+  esperando: 'esperando o primeiro relatório do YouTube (até 2 dias)',
+  sem_escopo: 'falta permissão do Analytics (vincule de novo em Canais)',
+  erro: 'a última leitura falhou',
+};
+
+const REVENUE_TEXT: Record<string, string> = {
+  ok: 'ligada (entra em Dinheiro, loja youtube)',
+  desligada: 'desligada; para ligar, vincule o canal de novo em Canais marcando “Trazer a receita do YouTube”',
+  sem_escopo: 'sem permissão; vincule de novo em Canais marcando a receita e deixe a receita marcada na tela do Google',
+  erro: 'a última leitura falhou',
+};
+
+/** Impressões/CTR e receita do YouTube por canal (só canais que já passaram por uma coleta com acesso). */
+const ExtraStates: React.FC<{ states: CollectState[] }> = ({ states }) => {
+  const shown = states.filter((s) => s.reach || s.revenue);
+  if (!shown.length) return null;
+  return (
+    <div className="mb-4 flex flex-col gap-1 rounded-lg border border-line bg-card p-3 text-[13px] text-muted">
+      {shown.map((s) => (
+        <p key={s.channel_id}>
+          <span className="font-medium text-fg">{s.name}</span>
+          {s.reach ? (
+            <>
+              {' · '}Impressões e CTR: {REACH_TEXT[s.reach] ?? s.reach}
+              {s.reach === 'erro' && s.reach_error ? ` (${s.reach_error.slice(0, 160)})` : ''}
+            </>
+          ) : null}
+          {s.revenue ? (
+            <>
+              {' · '}Receita do YouTube: {REVENUE_TEXT[s.revenue] ?? s.revenue}
+              {s.revenue_error ? ` (${s.revenue_error.slice(0, 160)})` : ''}
+            </>
+          ) : null}
+          .
+        </p>
+      ))}
+      <p className="text-subtle">
+        Impressões, CTR e receita lançados à mão continuam valendo quando a coleta não traz o número. Impressões e CTR coletados contam a partir de 30
+        dias antes de o relatório ser ligado: em vídeo mais antigo que isso, não são o total da vida do vídeo.
+      </p>
+    </div>
+  );
 };
 
 /** Avisos da coleta: escopo do Analytics faltando, canal sem acesso ou erro. */
@@ -121,6 +167,7 @@ export const AnalyticsPage: React.FC = () => {
       />
       <ErrorBox error={collect.error} title="Não deu para atualizar" className="mb-4" onClose={() => collect.reset()} />
       {data ? <CollectNotices states={data.collect} /> : null}
+      {data ? <ExtraStates states={data.collect} /> : null}
       {overview.isLoading ? (
         <div className="flex flex-col gap-3">
           <Skeleton className="h-40" />
@@ -165,6 +212,15 @@ export const AnalyticsPage: React.FC = () => {
           <Section title="Lições propostas" icon={BookOpen} description="O que aprendeu e ainda falta aplicar (ou descartar).">
             <ProposedLessons channelId={channel} channels={channelNames} />
           </Section>
+          <div id="licoes-aplicadas">
+            <Section
+              title="Lições aplicadas"
+              icon={BookOpen}
+              description="Entram sozinhas no pedido do roteiro e dos metadados dos próximos vídeos. Retire a que não ajudou."
+            >
+              <AppliedLessons channelId={channel} channels={channelNames} />
+            </Section>
+          </div>
           <Section title="Vídeos" icon={Table2} description="Última leitura de cada vídeo. Retenção vazia = o YouTube Analytics ainda não mandou.">
             <VideosTable videos={data.videos} />
           </Section>

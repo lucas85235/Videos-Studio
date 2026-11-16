@@ -55,6 +55,31 @@ export type RoutinesState = {
   last_backup_job: string | null;
   last_morning_job: string | null;
   last_morning_lines: string[];
+  /** Última execução do comando `rotinas` (tarefa agendada, com o Vulto fechado). */
+  last_offline_run: string | null;
+  /** 'travada' só em estados antigos: hoje o "não rodou" fica em `last_offline_skipped`. */
+  last_offline_status: 'ok' | 'parcial' | 'travada' | 'falhou' | null;
+  last_offline_message: string;
+  /** Última vez que a tarefa não rodou porque outro processo (o app aberto) já cuidava das rotinas. */
+  last_offline_skipped: string | null;
+  last_offline_skipped_message: string;
+};
+
+/** Tarefa agendada do Windows que roda as rotinas com o Vulto fechado. */
+export type ScheduledTask = {
+  name: string;
+  /** Só existe no Windows. */
+  supported: boolean;
+  installed: boolean;
+  /** Horário (HH:MM) do disparo diário da tarefa instalada, se deu para ler. */
+  installed_time: string | null;
+  /** Horário da manhã da página Hoje (o comando de instalar já vai com ele). */
+  morning_time: string;
+  /** A tarefa instalada dispara em outro horário que não o da manhã: reinstalar. */
+  time_mismatch: boolean;
+  install_command: string;
+  remove_command: string;
+  error: string | null;
 };
 export type RoutinesPatch = { morning_time?: string; backup?: boolean; metrics?: boolean };
 
@@ -109,5 +134,6 @@ export const opsApi = {
   runMorning: () => api.post<Job>('/api/ops/morning'),
   backupNow: () => api.post<Job>('/api/ops/backup'),
   backups: () => api.get<BackupInfo[]>('/api/ops/backups'),
+  scheduledTask: (refresh = false) => api.get<ScheduledTask>(`/api/ops/scheduled-task${refresh ? '?refresh=true' : ''}`),
   velocity: (days = 7) => api.get<Velocity>(`/api/ops/velocity?days=${days}`),
 };

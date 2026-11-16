@@ -25,7 +25,7 @@ from studio.workers.factcheck import verify as verify_mod
 from studio.workers.factcheck.apply import apply_correction, summary
 from studio.workers.factcheck.claims import FactcheckError, run_factcheck, segment_hash
 from studio.workers.factcheck.textify import find_quote, html_to_text, literal_span, normalize, words
-from studio.workers.factcheck.verify import MISSING_NOTE, PDF_NOTE, verify
+from studio.workers.factcheck.verify import MISSING_NOTE, verify
 from studio.workers.jobs import get_runner
 
 PUBLIC_IP = "93.184.216.34"
@@ -163,10 +163,12 @@ def test_verify_without_link_or_quote():
     assert verify(PAGE_URL, "  ") == (None, "sem trecho literal da fonte")
 
 
-def test_verify_pdf_is_checked_by_hand():
+def test_verify_broken_pdf_is_checked_by_hand():
+    # PDF que lê de verdade: tests/test_factcheck_pdf.py
     client = mock_client({PAGE_URL: httpx.Response(200, headers={"content-type": "application/pdf"},
                                                    content=b"%PDF-1.7 ...")})
-    assert verify(PAGE_URL, "o farol foi aceso em 1872", http=client) == (None, PDF_NOTE)
+    found, note = verify(PAGE_URL, "o farol foi aceso em 1872", http=client)
+    assert found is None and note.endswith("confira o trecho à mão")
 
 
 def test_verify_blocked_page_uses_the_page_capture(isolated_settings):

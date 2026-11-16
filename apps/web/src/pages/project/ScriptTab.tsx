@@ -39,6 +39,7 @@ import {
 import { approveKey, useApproving, useJobStarting, useStartJob } from '../ProjectPage';
 import { useFactCheck } from './script/factcheck';
 import { FactCheckPanel } from './script/FactCheckPanel';
+import { LessonsUsedPanel } from './script/LessonsUsedPanel';
 import {
   fieldDrafts,
   isOrphanScriptDraft,
@@ -841,6 +842,8 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
         </Section>
 
         <FactCheckPanel detail={detail} lang={lang} busy={busy} />
+
+        <LessonsUsedPanel detail={detail} />
 
         {doc.sources.length ? (
           <Section title="Fontes">

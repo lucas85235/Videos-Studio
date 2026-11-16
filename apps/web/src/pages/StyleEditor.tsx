@@ -61,6 +61,7 @@ import {
   useToast,
 } from '../ui';
 import { useVoiceCatalog, VoicePicker } from '../voices';
+import { ReferenceOrigins } from './references/ReferenceStyle';
 import {
   CaptionPreview,
   ColorField,
@@ -1201,6 +1202,8 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
           actions={headerActions}
         />
       </div>
+
+      <ReferenceOrigins styleId={styleId} />
 
       {preset ? (
         <div role="note" className="mb-6 flex flex-col gap-3 rounded-xl border border-line bg-card p-4">

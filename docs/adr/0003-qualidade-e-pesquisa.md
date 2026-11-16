@@ -142,7 +142,7 @@ class FactClaim(Base):              # F — origem: itens de roteiro/checagem-<s
     url: str                 Text default ""
     quote: str               Text default ""               (trecho literal da fonte, 5 a 30 palavras)
     quote_found: bool|None   Boolean nullable              (None = não conferido)
-    check_note: str          Text default ""               (por que não conferiu: "página não abriu", "PDF: confira à mão"...)
+    check_note: str          Text default ""               (onde achou ou por que não conferiu: "achado no PDF, página 3", "página não abriu", "PDF sem texto (parece escaneado...)"...)
     correction: str          Text default ""               (texto novo para `excerpt`)
     note: str                Text default ""
     status: str              String(20) default "aberta"   (aberta | aplicada | ignorada)
@@ -496,7 +496,13 @@ Tabela: `FactClaim`; lê `PageCapture` (de I) e escreve `Project.settings["factc
 2. **`verify.py`**: `verify(url, quote, *, http=None) -> (found: bool | None, note: str)`. Sem URL → `(None, "sem link
    da fonte")`; sem trecho → `(None, "sem trecho literal da fonte")`. Trecho fora de 5 a 30 palavras ainda é conferido,
    com a nota "trecho com N palavras (o certo é de 5 a 30)". Baixa com `safe_http.fetch(url, max_bytes=HTML_MAX_BYTES,
-   accept=ACCEPT_HTML, truncate=True, http=http)`; PDF → `(None, "PDF: confira o trecho à mão (o app ainda não lê PDF)")`;
+   accept=ACCEPT_HTML, truncate=True, http=http)`; PDF → lido página por página com o `pypdf` (`pdftext.extract`; baixado de novo inteiro até 15 MB quando o 1º
+   download cortou; o mesmo PDF é lido uma vez só por URL e conteúdo): achado → `(True, "achado no PDF, página N")`
+   (ou "páginas N e N+1" quando atravessa a virada, pulando cabeçalho, rodapé e número de página); não achado →
+   `(False, "o trecho não está no PDF: ...")`; PDF escaneado → `(None, "PDF sem texto (parece escaneado, só imagem):
+   ... confira o trecho à mão")`; PDF que não abriu ou cujas páginas não leram → `(None, "... confira o trecho à mão")`;
+   PDF grande demais → `(None, "PDF grande demais (passa de 15 MB): confira o trecho à mão")`; PDF longo cortado →
+   `(None, "PDF longo: só as primeiras N de M páginas foram lidas ...")`;
    HTML → `html_to_text`; texto → direto. Falha de rede/bloqueio: usa o `text_path` da `PageCapture` mais recente com a
    mesma URL, se houver; senão `(None, "a página não abriu (<motivo>): confira à mão ou capture a página na aba
    Cenas")`. `loose` → `(True, "achado ignorando os espaços (texto de OCR?)")`; `missing` → `(False, "o trecho não está

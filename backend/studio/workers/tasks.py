@@ -11,6 +11,7 @@ from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.models import Channel
 from studio.providers import media_search
+from studio.workers.analytics import lessons as lessons_mod
 from studio.workers.jobs import JobContext, job
 from studio.workers.pipeline import authoring
 from studio.workers.pipeline.build import Builder
@@ -30,6 +31,25 @@ def _channel_info(channel_id: str | None) -> dict[str, Any]:
                 "style_bible": dict(row.style_bible or {})}
 
 
+def _project_lessons(doc: Any, style: Any) -> list[dict[str, Any]]:
+    """Lições aplicadas que valem para o projeto (global, canal, estilo e formato). Nunca derruba o job."""
+    try:
+        return lessons_mod.applied_lessons(doc.channel_id, doc.style_id, style.format.type)
+    except Exception as exc:  # noqa: BLE001 - sem lições o pedido sai como antes
+        log.warning("não consegui ler as lições aplicadas: %s", exc)
+        return []
+
+
+def _record_lessons(project_id: str, stage: str, lessons: list[dict[str, Any]], version: int | None) -> None:
+    """Grava em `settings["lessons_used"][stage]` quais lições entraram no pedido desta etapa.
+    Nunca derruba o job: se a gravação falhar, só o registro se perde."""
+    try:
+        service.update_settings_key(project_id, "lessons_used", stage,
+                                    lessons_mod.usage_record(lessons, version=version))
+    except Exception as exc:  # noqa: BLE001 - o roteiro já foi gravado; o registro é só um extra
+        log.warning("não consegui registrar as lições usadas (%s): %s", stage, exc)
+
+
 def _gates(project_id: str) -> dict[str, Any]:
     return service.get_project_row(project_id)["settings"].get("gates", {})
 
@@ -45,9 +65,12 @@ def run_script(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     ctx.progress(0.1, "Escrevendo o roteiro")
     doc = service.get_doc(project_id)
     style = get_style(doc.style_id, doc.style_overrides)
+    lessons = _project_lessons(doc, style)
     new_doc, provider = authoring.generate_script(doc, style, project_id=project_id, job_id=ctx.job_id,
-                                                  persona=_channel_info(doc.channel_id).get("persona", ""))
+                                                  persona=_channel_info(doc.channel_id).get("persona", ""),
+                                                  lessons=lessons)
     version = service.commit(project_id, new_doc, f"Roteiro gerado ({provider})", author="ai")
+    _record_lessons(project_id, "script", lessons, version)
     service.set_status(project_id, "script_review")
     ctx.progress(1.0, "Roteiro pronto para revisão")
     return {"version": version, "provider": provider, "segments": len(new_doc.segments)}
@@ -121,10 +144,13 @@ def run_metadata(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     style = get_style(doc.style_id, doc.style_overrides)
     langs = payload.get("langs") or doc.languages
     chapters = payload.get("chapters") or []
+    lessons = _project_lessons(doc, style)
     for index, lang in enumerate(langs):
         ctx.progress(index / max(1, len(langs)), f"Metadados em {authoring.lang_name(lang)}")
-        doc, _ = authoring.metadata(doc, style, lang, chapters=chapters, project_id=project_id, job_id=ctx.job_id)
+        doc, _ = authoring.metadata(doc, style, lang, chapters=chapters, project_id=project_id, job_id=ctx.job_id,
+                                    lessons=lessons)
     version = service.commit(project_id, doc, "Metadados (título, descrição, tags)", author="ai")
+    _record_lessons(project_id, "metadata", lessons, version)
     return {"version": version, "langs": langs}
 
 

@@ -95,6 +95,22 @@ No cartão do canal:
 - A página **Agenda** mostra o que está agendado, os pacotes por postar (com atalho para a pasta, a página de upload e a legenda) e o que saiu nas últimas duas semanas.
 - **Fila do YouTube** (na Agenda): marque vários vídeos já renderizados e clique em *Agendar nos próximos horários livres*: cada um vai, na ordem, para o próximo horário livre do seu canal, e o envio roda em segundo plano.
 
+### Rotinas com o Vulto fechado
+
+As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, pendências de estoque, receita e marcos, radar semanal) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\agendar-rotinas.ps1                 # ao entrar no Windows e todo dia às 08:00
+powershell -ExecutionPolicy Bypass -File scripts\agendar-rotinas.ps1 -Horario 07:30  # outro horário
+powershell -ExecutionPolicy Bypass -File scripts\agendar-rotinas.ps1 -Remover        # tira a tarefa
+```
+
+- A tarefa **Vulto Rotinas** chama `scripts\rodar-rotinas.ps1`, que roda `python -m studio rotinas` com o uv do projeto (como o `start.ps1`). Se o computador estiver desligado no horário, ela roda assim que der.
+- Use o mesmo horário da manhã da página **Hoje**: antes dele, só a cópia do banco roda (a manhã fica para a execução seguinte).
+- Nada roda duas vezes no mesmo dia, seja pelo app ou pela tarefa. Com o app aberto, a tarefa não faz nada (uma trava em `<pasta de dados>\rotinas.lock` cuida disso; trava de processo que já morreu ou vencida é ignorada).
+- Em **Hoje → Rotinas** aparece se a tarefa existe, o comando para instalar (já com o horário da manhã) ou tirar e a última execução com o app fechado. Se o horário da manhã mudar depois de instalar, a página avisa e mostra o comando para agendar de novo. A saída de cada execução fica em `<pasta de dados>\logs\rotinas.log`.
+- Para rodar à mão: `uv run --project backend python -m studio rotinas` (ou `videos-studio rotinas`).
+
 ## 6. Editar por instrução
 
 Exemplos que funcionam bem:

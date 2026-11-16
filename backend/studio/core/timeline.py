@@ -703,7 +703,31 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     elif media is not None and media.asset and pick(media.focus, FOCUS_POINTS) not in (None, "center"):
         # O recorte da foto centra no sujeito: a câmera também (ele fica na mesma posição relativa).
         out["focus"] = pick(media.focus, FOCUS_POINTS)
+    frame = scene_frame(doc, style, scene)
+    if frame:
+        out["frame"] = frame
     _real_media_keys(doc, scene, lang, out)
+    return out
+
+
+def scene_frame(doc: ProjectDoc, style: StyleSpec, scene: Scene) -> dict[str, Any] | None:
+    """Reenquadramento da imagem fixada (Short com imagem 16:9 do longo): modo, foco (0 a 1), proporção da imagem e,
+    no modo desfocado, a altura do centro da imagem inteira. None: sem reenquadramento, sem imagem fixada (a gerada
+    já sai na proporção do vídeo), mídia real (o build já enquadra) ou imagem já na proporção do vídeo."""
+    frame = scene.frame
+    if frame is None or frame.vertical or not scene.visual.asset or doc.shown_media(scene) is not None:
+        return None
+    width, height = style.format.width, style.format.height
+    video = width / height
+    if abs(frame.aspect - video) / video < 0.02:
+        return None
+    mode = frame.mode or doc.frame_mode
+    out: dict[str, Any] = {"mode": mode, "x": round(frame.x, 4), "y": round(frame.y, 4),
+                           "aspect": round(frame.aspect, 4)}
+    if mode == "blur":
+        # A mesma altura da mídia real "contain" (`real_media.anchor_for`): longe da legenda no vídeo em pé.
+        top = style.edit.captions.position == "top"
+        out["anchor"] = 0.5 if height <= width else (0.60 if top else 0.40)
     return out
 
 

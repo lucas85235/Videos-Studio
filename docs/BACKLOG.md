@@ -44,7 +44,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
 - [ ] Parallax 2.5D com mapa de profundidade (Depth Anything V2 Small ou DA3, só licenças Apache).
 - [ ] Vídeo IA (image-to-video via fal.ai) em cenas-chave; o tipo de cena `video` existe no esquema, mas não tem gerador.
-- [ ] Estilo a partir de **vídeo de referência** (PySceneDetect/TransNetV2, paleta, ritmo). A base veio na onda 2 (página Referências: planos por corte de cena do FFmpeg, folhas de quadros, ritmo, cortes por minuto e paleta medidos); falta **criar o estilo** a partir dessas medidas (ADR 0003, consequências).
+- [x] Estilo a partir de **vídeo de referência**: "Criar estilo a partir desta referência" na página Referências (`core/styles/from_reference.py`). Parte do preset mais próximo (proporção, ritmo, gradação), troca duração das cenas, transições, gradação, cores dos cartões/legenda/miniatura, proporção e fps pelas medidas, e a IA (se houver) completa só o resto; salva em Meus estilos com o preset como pai e abre no editor mostrando de onde veio cada valor. Falta: medir presença de texto na tela (o código já usa `stats.text_ratio` se existir) e testar com um vídeo real.
 - [ ] **Style Lab**: componentes novos escritos por IA, com portões de teste.
 - [ ] LUTs reais (.cube) e os efeitos nativos do `@remotion/effects`; hoje a gradação é feita com filtros CSS.
 - [ ] Desempenho: a aberração cromática desenha a imagem 3 vezes com a cadeia de filtros (só o preset terror-analog usa); avaliar uma passada única. O grão já usa texturas pré-geradas.
@@ -67,12 +67,13 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 Feito na onda 1 (15/11/2026): métricas, experimentos e lições (página Desempenho); Shorts do longo (painel na aba Vídeo final); campos novos do canal, pendências e resumo do dia (página Hoje), backup diário com 14 cópias, rotinas automáticas, tempo por etapa e retrabalho a partir dos jobs, créditos estimados antes de gerar a voz, voz final padrão do canal no Novo projeto; banco de ideias com nota, ângulo e evidência (página Ideias); ofertas de afiliado, links na descrição com aviso legal e receita por loja e mês (página Dinheiro).
 
 Ficou para depois:
-- [ ] **Lições entrando sozinhas no roteiro**: hoje são registradas e decididas, mas não chegam ao prompt; isso exige mexer em `workers/pipeline/authoring.py` (ADR 0002, consequências). Onda 2.
+- [x] **Lições entrando sozinhas no roteiro**: as lições **aplicadas** do projeto (todos os canais, o canal, o estilo e o formato) entram no pedido do roteiro e dos metadados, as mais recentes primeiro (até 8 e 1.500 caracteres; `workers/analytics/lessons.py`). As usadas ficam em `settings["lessons_used"]` e aparecem no painel "Lições usadas" da aba Roteiro. O storyboard não recebe as lições.
 - [ ] **Importar o histórico do canais** (`C:\Users\lucas\canais\estudio\estudio.db`: ideias, métricas, experimentos, lições, receita) e o `canal.toml` de cada canal. Ficou de fora para não misturar migração de dados com a feature; sem isso os experimentos começam do zero e esperam 3+ vídeos por variante na idade mínima.
-- [ ] **CTR, impressões e receita do YouTube automáticos**: a coleta lê views, likes, comentários, retenção, duração média e inscritos ganhos. Impressões e CTR não saem pela API do Analytics por vídeo, e a receita pede outro escopo (`yt-analytics-monetary.readonly`) e canal monetizado; por ora, lançar à mão em Desempenho.
-- [ ] **Rotinas só rodam com o Vulto aberto** (laço dentro do processo, sem cron externo, ADR 0001). Com o app fechado, a rotina da manhã e o backup rodam na próxima abertura. Avaliar uma tarefa agendada do Windows se fizer falta.
+- [x] **CTR, impressões e receita do YouTube automáticos**: impressões e CTR da miniatura vêm da YouTube **Reporting API** (relatório `channel_reach_basic_a1`, criado sozinho na primeira coleta; os números chegam 2 dias depois e há histórico de 30 dias), porque a lista de métricas do YouTube Analytics (`reports.query`) não tem essas métricas (conferido em 15/11/2026). Mesmo escopo `yt-analytics.readonly` de antes; é preciso ativar a "YouTube Reporting API" no Google Cloud (a tela avisa). Receita: opcional, marcada ao vincular o canal ("Trazer a receita do YouTube", escopo `yt-analytics-monetary.readonly`); grava receita/RPM por vídeo e a receita do mês em Dinheiro (loja `youtube`, US$, substitui ao coletar de novo; mês lançado à mão não é tocado). Miniaturas A/B mostram o CTR coletado e dizem se é hora de trocar. Só testado com o Google simulado.
+- [ ] **CTR em escala incerta**: a documentação da Reporting API não diz se `video_thumbnail_impressions_ctr` vem 0–1 ou 0–100; o Vulto decide por arquivo (algum valor > 1 → 0–100). Conferir no primeiro relatório real.
+- [x] **Rotinas com o Vulto fechado**: comando `videos-studio rotinas` (jobs inline, trava `rotinas.lock` contra o app aberto e outra execução) e tarefa agendada do Windows por `scripts\agendar-rotinas.ps1` (ao entrar e todo dia no horário); a página Hoje mostra se a tarefa existe e o comando para instalar. Ver USO, "Rotinas com o Vulto fechado". Ainda não testado com a tarefa de verdade instalada.
 - [ ] **Tempo de etapas fora do app** (revisão humana, pesquisa): o tempo por etapa sai só dos jobs; uma tabela de execuções à mão fica para quando fizer falta.
-- [ ] **Shorts do longo com imagens 16:9**: no vertical elas aparecem recortadas no centro (há aviso). Reenquadrar ou gerar imagem vertical só para as cenas do Short fica para depois.
+- [x] **Shorts do longo com imagens 16:9**: ponto de foco sugerido por cena (saliência simples), editável com um clique em "Enquadramento vertical" no Short; modo "fundo desfocado" por cena e padrão por Short; "Gerar imagem vertical" pede a imagem de novo em 9:16 (operação "Outra imagem"). O foco vale no recorte e na câmera.
 
 ### Qualidade e pesquisa (ADR 0003, onda 2)
 
@@ -86,9 +87,9 @@ Feito na onda 2 (15/11/2026), 114 testes dos 7 arquivos novos passando e `npm ru
 - [x] **3 miniaturas para o teste A/B** (painel na aba Vídeo final): 3 variações em 3840 × 2160 até 2 MB, conferência em tamanhos pequenos, escolhida usada no envio e no pacote manual, regra do A/B e pendência de trocar em 48 h.
 
 Ficou para depois:
-- [ ] **Criar estilo a partir do vídeo de referência**: só a base (medidas) veio; ver "Estilos e render".
-- [ ] **Lições entrando sozinhas no roteiro**: continua fora (a onda 2 não mexeu em `authoring.py`).
-- [ ] **Checagem de PDF e páginas que só abrem com login**: a conferência literal marca "confira à mão"; sem leitura de PDF.
+- [x] **Criar estilo a partir do vídeo de referência**: feito; ver "Estilos e render".
+- [x] **Lições entrando sozinhas no roteiro**: feito (ver "Gestão de canal", acima).
+- [ ] **Páginas que só abrem com login e PDF escaneado**: a conferência literal marca "confira à mão" (PDF com texto já é lido página por página; PDF só com imagem precisaria de OCR).
 - [ ] **Primeiro uso real** de cada bloco (coleta do radar, checagem com busca web, captura com o Edge, download por link, conferência sobre um render final de verdade): só testado com serviços simulados; ver os itens em "Depende de você".
 
 ## Técnico

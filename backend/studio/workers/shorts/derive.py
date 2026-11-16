@@ -66,7 +66,8 @@ FULL_VIDEO_STAMP = {
 }
 VOICE_WARNING = ("a narração do longo é da voz de teste da prévia: a duração é estimada e o render final do Short vai "
                  "gravar a voz do canal")
-CROP_WARNING = "as imagens do longo são 16:9: no Short vertical aparecem recortadas no centro (confira o enquadramento)"
+FRAME_WARNING = ("as imagens do longo são 16:9: no Short cada uma é recortada em volta do ponto de foco sugerido (confira "
+                 "o enquadramento: dá para mudar o foco, usar o fundo desfocado ou gerar a imagem vertical)")
 
 
 class ShortsError(Exception):
@@ -440,8 +441,12 @@ def derive_short(
     redone = sum(1 for sc in scenes if sc.id in redo and not sc.visual.asset and sc.visual.media is None)
     if redone:
         warnings.append(f"{redone} imagem(ns) de teste do longo não foram reaproveitadas: o Short gera imagem nova")
-    if pinned:
-        warnings.append(CROP_WARNING)
+    # Foco sugerido de cada imagem fixada (o renderer recorta em volta dele ou usa o fundo desfocado).
+    from studio.workers.shorts.reframe import frame_pinned  # import aqui: o reframe usa o ShortsError daqui
+
+    long_format = get_style(parent.style_id, parent.style_overrides).format
+    if pinned and frame_pinned(scenes, long_format.width / long_format.height, 9 / 16):
+        warnings.append(FRAME_WARNING)
     for sc in scenes:
         _fill_scene_lang(sc, lang, fallback)
     if scenes:

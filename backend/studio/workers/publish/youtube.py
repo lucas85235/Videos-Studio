@@ -48,6 +48,8 @@ ANALYTICS_API = "https://youtubeanalytics.googleapis.com/v2/reports"
 SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl "
           f"{ANALYTICS_SCOPE}")
 READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+# Receita do YouTube (opcional, escolhido ao vincular o canal): sem ele nada quebra, a receita segue à mão.
+MONETARY_SCOPE = "https://www.googleapis.com/auth/yt-analytics-monetary.readonly"
 LINK_SCOPES = f"{SCOPES} {READONLY_SCOPE}"
 CHUNK = 8 * 1024 * 1024
 ACCOUNT_KEY = "youtube_account"
@@ -130,7 +132,7 @@ def client_configured() -> bool:
     return bool(credentials.resolve("youtube", "client_id") and credentials.resolve("youtube", "client_secret"))
 
 
-def _start(redirect_uri: str, target: str | None) -> tuple[str, str]:
+def _start(redirect_uri: str, target: str | None, revenue: bool = False) -> tuple[str, str]:
     cid, _ = _client_creds()
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).rstrip(b"=").decode("ascii")
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
@@ -138,12 +140,13 @@ def _start(redirect_uri: str, target: str | None) -> tuple[str, str]:
     now = time.time()
     with _lock:
         _purge(now)
-        _pending[state] = {"verifier": verifier, "redirect_uri": redirect_uri, "created": str(now), "target": target or ""}
+        _pending[state] = {"verifier": verifier, "redirect_uri": redirect_uri, "created": str(now), "target": target or "",
+                           "revenue": "1" if revenue and target else ""}
     params = {
         "client_id": cid,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": LINK_SCOPES if target else SCOPES,
+        "scope": (f"{LINK_SCOPES} {MONETARY_SCOPE}" if revenue else LINK_SCOPES) if target else SCOPES,
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -159,9 +162,10 @@ def start_oauth(redirect_uri: str, channel_target: str | None = None) -> str:
     return _start(redirect_uri, channel_target)[0]
 
 
-def start_link(redirect_uri: str, channel_target: str | None) -> dict[str, str]:
-    """Login para vincular um canal: devolve a URL e o `state`, que a tela usa para saber quando terminou."""
-    url, state = _start(redirect_uri, channel_target or NEW_CHANNEL)
+def start_link(redirect_uri: str, channel_target: str | None, revenue: bool = False) -> dict[str, str]:
+    """Login para vincular um canal: devolve a URL e o `state`, que a tela usa para saber quando terminou.
+    `revenue` pede também o escopo da receita do YouTube (opcional)."""
+    url, state = _start(redirect_uri, channel_target or NEW_CHANNEL, revenue)
     return {"auth_url": url, "state": state}
 
 
@@ -225,7 +229,9 @@ def _finish(code: str, pending: dict[str, str], http: httpx.Client | None) -> di
         if target:
             from studio.workers.publish import youtube_channels
 
-            return youtube_channels.link_from_oauth(client, tokens["access_token"], refresh, target)
+            info = youtube_channels.link_from_oauth(client, tokens["access_token"], refresh, target)
+            _note_revenue_scope(info, str(tokens.get("scope") or ""), pending.get("revenue") == "1")
+            return info
         channel = _get(client, f"{API}/channels", tokens["access_token"], params={"part": "snippet", "mine": "true"})
         items = channel.get("items") or []
         title = items[0]["snippet"]["title"] if items else ""
@@ -264,20 +270,53 @@ def save_channel_token(youtube_id: str, refresh_token: str, title: str) -> None:
     credentials.set_credential(channel_key(youtube_id), {"refresh_token": refresh_token, "channel_title": title, "channel_id": youtube_id})
 
 
+def _note_revenue_scope(info: dict[str, Any], granted: str, asked: bool) -> None:
+    """Guarda no token do canal se a receita do YouTube foi autorizada (o Google devolve os escopos aceitos; na tela de
+    consentimento a pessoa pode desmarcar um). Vincular de novo sem pedir a receita desliga; pedir e o Google não dar
+    fica marcado como negado (Desempenho mostra "sem permissão", não "desligada")."""
+    youtube_id = str(info.get("channel_id") or "")
+    if not youtube_id:
+        return
+    ok = MONETARY_SCOPE in granted.split()
+    set_revenue_scope(youtube_id, ok, denied=asked and not ok)
+    if asked and not ok:
+        info.setdefault("warnings", []).append(
+            "a receita do YouTube não foi autorizada; ela continua sendo lançada à mão em Dinheiro")
+
+
+def set_revenue_scope(youtube_id: str, enabled: bool, *, denied: bool = False) -> None:
+    data = dict(credentials.get_credential(channel_key(youtube_id)))
+    if not data.get("refresh_token"):
+        return
+    data["revenue_scope"] = "1" if enabled else ("negado" if denied else "")
+    credentials.set_credential(channel_key(youtube_id), data)
+
+
+def has_revenue_scope(account_key: str) -> bool:
+    """O token tem o escopo da receita do YouTube (escolhido ao vincular)."""
+    return credentials.get_credential(account_key).get("revenue_scope") == "1"
+
+
+def revenue_scope_denied(account_key: str) -> bool:
+    """A receita foi pedida ao vincular, mas o Google não deu o escopo (a pessoa desmarcou no consentimento)."""
+    return credentials.get_credential(account_key).get("revenue_scope") == "negado"
+
+
 def forget_channel_token(youtube_id: str) -> None:
     credentials.delete_credential(channel_key(youtube_id))
 
 
-def linked_accounts() -> list[dict[str, str]]:
+def linked_accounts() -> list[dict[str, Any]]:
     """Canais do YouTube com token próprio (vinculados em Canais)."""
     prefix = f"{ACCOUNT_KEY}:"
     with session_scope() as s:
         keys = [k for (k,) in s.query(ProviderCredential.provider).all() if k.startswith(prefix)]
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for key in sorted(keys):
         data = credentials.get_credential(key)
         if data.get("refresh_token"):
-            out.append({"channel_id": data.get("channel_id") or key[len(prefix):], "channel_title": data.get("channel_title", "")})
+            out.append({"channel_id": data.get("channel_id") or key[len(prefix):], "channel_title": data.get("channel_title", ""),
+                        "revenue": data.get("revenue_scope") == "1"})
     return out
 
 

@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> None:
     clean = sub.add_parser("clean", help="limpa renders antigos e sobras do cache (narração e imagens ficam)")
     clean.add_argument("--dry-run", action="store_true", help="só mostra o que seria apagado")
     sub.add_parser("voz-local", help="baixa o modelo da voz local da prévia (Kokoro, ~350 MB, uma vez só)")
+    sub.add_parser("rotinas", help="roda as rotinas do dia uma vez, sem abrir o app (para a tarefa agendada)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -53,6 +54,15 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(f"Baixando a voz local ({kokoro.MODEL_MB} MB)…")
             print(f"Pronto: {kokoro.ensure_model()}")
+    elif args.command == "rotinas":
+        from studio.db import init_db
+        from studio.workers.ops.offline import run_once
+
+        init_db()
+        result = run_once()
+        print(f"Rotinas ({result['status']}): {result['message']}")
+        if result["status"] in ("falhou", "parcial"):  # o Agendador mostra o código de saída
+            raise SystemExit(1)
     elif args.command == "check":
         from studio.db import init_db
         from studio.media.ffmpeg import available_encoders

@@ -1,5 +1,5 @@
 /* Cliente do bloco I (ADR 0003): provas na tela (captura com marca-texto), vídeos de referência e miniaturas A/B. */
-import { api, type Job } from './api';
+import { api, type Job, type StyleSpec } from './api';
 
 export type ToolStatus = { ok: boolean; message: string };
 export type VisualCapabilities = { browser: ToolStatus; ytdlp: ToolStatus };
@@ -81,12 +81,41 @@ export type ThumbsState = {
   ab: { eligible: boolean; median_impressions: number | null; n: number };
   /** Texto da regra do A/B para mostrar na tela. */
   rule: string;
+  /** CTR coletado do vídeo deste projeto no YouTube (null sem publicação). */
+  ctr?: {
+    youtube_id: string;
+    ctr: number | null;
+    impressions: number | null;
+    age_hours: number | null;
+    verdict: 'sem_dado' | 'cedo' | 'ab' | 'trocar' | 'manter';
+    swap: number;
+    text: string;
+  } | null;
   is_long: boolean;
   /** Tamanho final ("3840x2160" no longo, "1080x1920" no Short). */
   size: string;
   templates: string[];
   /** Quantas miniaturas o estilo pede (até 3). */
   max: number;
+};
+
+/** De onde veio cada valor do estilo criado a partir da referência. */
+export type RefStyleOrigin = {
+  path: string;
+  value: unknown;
+  source: 'ritmo' | 'paleta' | 'proporcao' | 'texto' | 'preset' | 'llm';
+  detail: string;
+};
+
+/** POST /api/references/{id}/style: o estilo salvo em Meus estilos e a origem de cada valor. */
+export type RefStyleResult = {
+  style: StyleSpec;
+  version: number;
+  base_style_id: string;
+  base_reason: string;
+  origins: RefStyleOrigin[];
+  llm: { used: boolean; provider: string | null; summary: string; message: string };
+  rejected: { path: string; error: string }[];
 };
 
 /** POST /api/references: a referência criada e o job da análise, que começa sozinho. */
@@ -113,6 +142,8 @@ export const visualApi = {
   reference: (id: string) => api.get<ReferenceVideo>(`/api/references/${id}`),
   deleteReference: (id: string) => api.del<{ ok: boolean }>(`/api/references/${id}`),
   analyzeReference: (id: string) => api.post<Job>(`/api/references/${id}/analyze`),
+  styleFromReference: (id: string, body: { use_llm: boolean; name?: string }) =>
+    api.post<RefStyleResult>(`/api/references/${id}/style`, body),
   thumbs: (projectId: string, lang: string) =>
     api.get<ThumbsState>(`/api/projects/${projectId}/thumbs?lang=${encodeURIComponent(lang)}`),
   setThumbSpec: (projectId: string, lang: string, variants: ThumbSpec[]) =>

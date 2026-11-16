@@ -157,7 +157,7 @@ def test_derive_short_reuses_narration_and_images(isolated_settings):
     # O texto das cenas não muda: gancho e fim vão nos campos que o renderer desenha sobre qualquer cena.
     parent_scenes = {sc.id: sc for sc in parent.scenes}
     assert all(sc.overlay_text == parent_scenes[sc.id].overlay_text for sc in child.scenes)
-    assert derive.CROP_WARNING in result["warnings"]
+    assert derive.FRAME_WARNING in result["warnings"]
     meta = child.metadata["pt-BR"]
     assert meta.title == "O segredo do farol #Misterio"
     assert "Vídeo completo no canal: “Longo”" in meta.description

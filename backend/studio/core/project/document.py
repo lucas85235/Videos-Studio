@@ -25,6 +25,8 @@ REAL_KINDS: tuple[str, ...] = ("photo", "news", "official")
 MediaSource = Literal["commons", "openverse", "pexels", "link", "upload"]
 MEDIA_SOURCES: tuple[str, ...] = ("commons", "openverse", "pexels", "link", "upload")
 MediaFit = Literal["cover", "contain"]
+# Enquadramento da imagem deitada no Short em pé: recorte em volta do foco ou imagem inteira sobre ela desfocada.
+FrameMode = Literal["crop", "blur"]
 
 # Prefixo do crédito na tela por idioma (2 letras): (foto, imagem). Idioma sem entrada usa o inglês.
 CREDIT_PREFIX: dict[str, tuple[str, str]] = {
@@ -116,6 +118,27 @@ class RealHint(BaseModel):
     """O que mostrar e onde achar, em português ("arte oficial da Lucia no Newswire da Rockstar")."""
     source_ref: int | None = None
     """Posição (base 1) em `ProjectDoc.sources` da fonte com link que vira o cartão de notícia."""
+
+
+class SceneFrame(BaseModel):
+    """Reenquadramento no vídeo em pé de uma imagem de outra proporção (as 16:9 que o Short reaproveita do longo).
+
+    O renderer recorta a janela vertical em volta do foco (`crop`) ou põe a imagem inteira sobre ela mesma ampliada e
+    desfocada (`blur`); a câmera (Ken Burns, zoom no foco) parte do foco nos dois modos."""
+
+    x: float = Field(default=0.5, ge=0, le=1)
+    y: float = Field(default=0.5, ge=0, le=1)
+    """Ponto de foco na imagem (0 a 1, da esquerda e de cima)."""
+    mode: FrameMode | None = None
+    """None: o padrão do projeto (`ProjectDoc.frame_mode`)."""
+    aspect: float = Field(default=16 / 9, gt=0)
+    """Largura ÷ altura da imagem de origem."""
+    auto: bool = True
+    """Foco sugerido pela imagem (False: escolhido pelo usuário)."""
+    vertical: bool = False
+    """O usuário pediu a imagem de novo já em 9:16 ("Gerar imagem vertical"): a 16:9 saiu e a prévia gera a nova."""
+    source: str | None = None
+    """Com `vertical`: a imagem 16:9 que saiu (para voltar a ela)."""
 
 
 class Segment(BaseModel):
@@ -258,6 +281,8 @@ class Scene(BaseModel):
     """Id de `styles.visual.FOCUS_POINTS`: para onde a câmera olha (reaproveitamento e `zoom_to`)."""
     real: RealHint | None = None
     """Sugestão de mídia real do storyboard (None: nenhuma)."""
+    frame: SceneFrame | None = None
+    """Reenquadramento da imagem fixada no vídeo em pé (Short cortado do longo). None: como antes."""
 
 
 class Entity(BaseModel):
@@ -356,6 +381,8 @@ class ProjectDoc(BaseModel):
     """Direção de arte do vídeo (vem do storyboard). None: projeto antigo, imagens compostas como antes."""
     storyboard_approved: bool = False
     """Cenas aprovadas no portão `gates.storyboard` (volta a False quando o storyboard roda de novo)."""
+    frame_mode: FrameMode = "crop"
+    """Modo padrão do reenquadramento das cenas com `Scene.frame` (o Short escolhe; a cena pode trocar)."""
 
     @model_validator(mode="after")
     def _check(self) -> ProjectDoc:

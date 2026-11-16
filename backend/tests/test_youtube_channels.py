@@ -547,7 +547,7 @@ def test_status_lists_linked_channels(google: FakeGoogle):
         status = client.get("/api/youtube/status").json()
     assert status["client_configured"] is True
     assert status["connected"] is True and status["global_connected"] is False
-    assert status["linked"] == [{"channel_id": YT_ID, "channel_title": "Curiosidades Ocultas"}]
+    assert status["linked"] == [{"channel_id": YT_ID, "channel_title": "Curiosidades Ocultas", "revenue": False}]
     assert status["channel_title"] == "Curiosidades Ocultas"
     providers = {p["id"]: p for p in TestClient(create_app()).get("/api/providers").json()}
     assert providers["youtube"]["available"] is True

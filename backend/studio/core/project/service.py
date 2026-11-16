@@ -164,6 +164,18 @@ def update_settings(project_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         return merged
 
 
+def update_settings_key(project_id: str, key: str, subkey: str, value: Any) -> dict[str, Any]:
+    """Troca só `settings[key][subkey]`, lendo e gravando na mesma transação (jobs em paralelo não se apagam)."""
+    with session_scope() as s:
+        row = s.get(Project, project_id)
+        if row is None:
+            raise ProjectNotFound(project_id)
+        settings = dict(row.settings or {})
+        settings[key] = {**(settings.get(key) or {}), subkey: value}
+        row.settings = settings
+        return settings
+
+
 def list_projects() -> list[dict[str, Any]]:
     with session_scope() as s:
         rows = s.query(Project).order_by(Project.updated_at.desc()).all()

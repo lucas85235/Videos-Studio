@@ -46,6 +46,7 @@ from studio.core.styles.visual import (
 from studio.core.text import estimate_seconds, normalize_token, split_beats
 from studio.providers import registry
 from studio.providers.base import LLMResult
+from studio.workers.analytics.lessons import lessons_block, lessons_key
 from studio.workers.pipeline import storyboard_check
 from studio.workers.pipeline.schemas import (
     METADATA_SCHEMA,
@@ -114,8 +115,10 @@ não saiu", "ninguém jogou") sem dizer a data ("até hoje, <dia> de <mês>").""
 
 
 def generate_script(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = None, job_id: str | None = None,
-                    persona: str = "", today: date | None = None) -> tuple[ProjectDoc, str]:
-    """Roteiro do tema. `today` (padrão: a data de hoje) entra no pedido para o roteiro situar datas próximas."""
+                    persona: str = "", today: date | None = None,
+                    lessons: list[dict[str, Any]] | None = None) -> tuple[ProjectDoc, str]:
+    """Roteiro do tema. `today` (padrão: a data de hoje) entra no pedido para o roteiro situar datas próximas.
+    `lessons` (lições aplicadas do projeto, já filtradas e no orçamento) entram no fim do pedido."""
     today = today or date.today()
     lang = doc.primary_language
     wpm = style.script.words_per_minute.get(lang, 150)
@@ -138,12 +141,16 @@ Proibido usar: {", ".join(style.script.banned_phrases) or "(nada)"}
 {f"Persona do canal: {persona}" if persona else ""}
 Use role 'hook' no primeiro segmento, 'chapter' para aberturas de capítulo, 'cta' no último e 'body' no resto.
 Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
+    if lessons:
+        prompt += "\n" + lessons_block(lessons, stage="roteiro")
     context = {
         "topic": doc.topic or doc.title,
         "structure": structure,
         "target_words": target_words,
         "cta": style.script.cta,
         "structure_kind": style.structure.value,
+        # muda com a lista de lições: o pedido não é o mesmo de antes
+        "lessons_key": lessons_key(lessons or []),
     }
     result, provider_id = _llm("script", SCRIPT_SYSTEM, prompt, SCRIPT_SCHEMA, context, project_id, job_id)
     data = result.data
@@ -1197,7 +1204,8 @@ O texto da thumbnail deve ter no máximo 4 palavras fortes."""
 
 
 def metadata(doc: ProjectDoc, style: StyleSpec, lang: str, *, chapters: list[str] | None = None,
-             project_id: str | None = None, job_id: str | None = None) -> tuple[ProjectDoc, str]:
+             project_id: str | None = None, job_id: str | None = None,
+             lessons: list[dict[str, Any]] | None = None) -> tuple[ProjectDoc, str]:
     text = doc.full_text(lang)
     sources = "\n".join(f"- {s.title} {s.url}".strip() for s in doc.sources)
     prompt = f"""Idioma: {lang_name(lang)}
@@ -1207,7 +1215,10 @@ Capítulos (tempo e nome): {", ".join(chapters or []) or "(nenhum)"}
 Fontes: {sources or "(nenhuma)"}
 Narração completa:
 {text[:6000]}"""
-    context = {"title": doc.title, "topic": doc.topic, "summary": text[:300], "chapters": chapters or []}
+    if lessons:
+        prompt += "\n\n" + lessons_block(lessons, stage="título, descrição e miniatura")
+    context = {"title": doc.title, "topic": doc.topic, "summary": text[:300], "chapters": chapters or [],
+               "lessons_key": lessons_key(lessons or [])}
     result, provider_id = _llm("metadata", METADATA_SYSTEM, prompt, METADATA_SCHEMA, context, project_id, job_id)
     data = result.data
     new_doc = doc.model_copy(deep=True)

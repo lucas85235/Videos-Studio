@@ -47,6 +47,11 @@ DEFAULTS: dict[str, Any] = {
     "last_morning_lines": [],
     "backup_day": None,  # dia (local) em que o laço já submeteu o backup
     "morning_day": None,  # dia (local) em que o laço já submeteu a manhã
+    "last_offline_run": None,  # última execução do comando `rotinas` (Vulto fechado, ops/offline.py)
+    "last_offline_status": None,  # ok | parcial | falhou
+    "last_offline_message": "",
+    "last_offline_skipped": None,  # última vez que o comando não rodou porque outro processo segurava a trava
+    "last_offline_skipped_message": "",
 }
 
 
@@ -88,6 +93,11 @@ def public_state() -> dict[str, Any]:
         "last_backup_job": st["last_backup_job"],
         "last_morning_job": st["last_morning_job"],
         "last_morning_lines": st["last_morning_lines"] or [],
+        "last_offline_run": st["last_offline_run"],
+        "last_offline_status": st["last_offline_status"],
+        "last_offline_message": st["last_offline_message"] or "",
+        "last_offline_skipped": st["last_offline_skipped"],
+        "last_offline_skipped_message": st["last_offline_skipped_message"] or "",
     }
 
 
@@ -142,6 +152,12 @@ def _loop() -> None:
     while not _stop.wait(wait):
         wait = INTERVAL_S
         try:
+            from studio.workers.ops import lock
+
+            other = lock.acquire("app", lock.APP_TTL)  # o comando `rotinas` rodando: esta volta fica para ele
+            if other is not None:
+                log.info("rotinas: volta pulada, %s", lock.describe(other))
+                continue
             tick()
         except Exception:  # noqa: BLE001 - o laço não pode morrer
             log.exception("rotinas: falha numa volta do laço")
@@ -154,6 +170,9 @@ def start_routines() -> None:
         return
     if _thread is not None and _thread.is_alive():
         return
+    from studio.workers.ops import lock
+
+    lock.acquire("app", lock.APP_TTL)  # já na abertura: o comando `rotinas` não roda junto com o app
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="rotinas", daemon=True)
     _thread.start()
@@ -165,6 +184,9 @@ def stop_routines() -> None:
     _stop.set()
     if _thread is not None:
         _thread.join(timeout=5)
+        from studio.workers.ops import lock
+
+        lock.release()
     _thread = None
 
 

@@ -111,6 +111,20 @@ def _fps(text: str) -> float:
         return 0.0
 
 
+def _rotation(stream: dict[str, Any]) -> int:
+    """Rotação do vídeo em graus (0, 90, 180 ou 270): side_data (displaymatrix) ou a tag antiga `rotate`."""
+    values = [sd.get("rotation") for sd in stream.get("side_data_list") or [] if isinstance(sd, dict)]
+    values.append((stream.get("tags") or {}).get("rotate"))
+    for v in values:
+        try:
+            deg = round(float(v)) % 360
+        except (TypeError, ValueError):
+            continue
+        if deg:
+            return deg
+    return 0
+
+
 def probe(path: Path) -> dict[str, Any]:
     """Largura, altura, fps, codec e duração (ffprobe)."""
     data = ff_probe(path)
@@ -118,7 +132,10 @@ def probe(path: Path) -> dict[str, Any]:
     if stream is None:
         raise ReferenceVideoError("O arquivo não tem vídeo.")
     dur = float(data.get("format", {}).get("duration") or stream.get("duration") or 0.0)
-    return {"w": int(stream.get("width") or 0), "h": int(stream.get("height") or 0),
+    w, h = int(stream.get("width") or 0), int(stream.get("height") or 0)
+    if _rotation(stream) in (90, 270):  # vídeo de celular gravado "deitado" com rotação: vale o que se vê
+        w, h = h, w
+    return {"w": w, "h": h,
             "fps": _fps(stream.get("r_frame_rate") or "0/1"), "codec": stream.get("codec_name") or "",
             "dur": round(dur, 3)}
 

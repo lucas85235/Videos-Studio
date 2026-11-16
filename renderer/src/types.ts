@@ -29,6 +29,12 @@ export const FOCUS_ORIGIN: Record<FocusPoint, string> = {
   bottom_right: '78% 78%',
 };
 
+/**
+ * Reenquadramento de imagem de outra proporção no vídeo (imagem 16:9 do longo no Short em pé). `x`/`y`: ponto de foco na
+ * imagem (0 a 1); `aspect`: largura ÷ altura da imagem; `anchor` (só "blur"): altura do centro da imagem inteira.
+ */
+export type TimelineFrame = { mode: 'crop' | 'blur'; x: number; y: number; aspect: number; anchor?: number };
+
 export type TimelineCardItem = { label: string; value: string };
 
 /** Cartão e sobreposições da cena, já no idioma do vídeo (só as chaves preenchidas). */
@@ -80,6 +86,8 @@ export type TimelineScene = {
   words: CaptionWord[];
   card?: TimelineCard;
   focus?: FocusPoint;
+  /** Reenquadramento da imagem fixada (Short): vale mais que `focus` no recorte e na câmera. */
+  frame?: TimelineFrame;
   /** Stat/compare: quadro (relativo à cena) em que o número do cartão é dito; o cartão entra nele. */
   reveal?: number;
   /**

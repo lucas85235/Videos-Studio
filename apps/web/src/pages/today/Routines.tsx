@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { opsApi, type RoutinesPatch, type RoutinesState } from '../../apiOps';
 import { isActiveJob, useJobs } from '../../shell/data';
 import { Badge, Button, Checkbox, ErrorBox, Field, formatBytes, Input, Section, errorMessage, formatRelative, useToast } from '../../ui';
+import { ScheduledTaskBox } from './ScheduledTask';
 import { TODAY_KEY } from './shared';
 
 /** Rotinas automáticas: horário da manhã, ligar/desligar, backup agora e últimas execuções. */
@@ -119,6 +120,9 @@ export const RoutinesSection: React.FC<{ state: RoutinesState }> = ({ state }) =
             </>
           ) : null}
         </dl>
+      </div>
+      <div className="mt-4">
+        <ScheduledTaskBox state={state} />
       </div>
     </Section>
   );

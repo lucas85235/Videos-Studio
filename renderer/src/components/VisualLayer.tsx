@@ -1,5 +1,6 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+import { frameLayout } from '../frame';
 import { hasEffect, imageFilter } from '../look';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type TextCardStyle, type TimelineScene } from '../types';
 import { MotionBackground, withAlpha } from './DataCards';
@@ -53,8 +54,9 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   const z = zoomStrength;
   const side = (r: number) => (random(`${scene.seed}-${r}`) > 0.5 ? 1 : -1);
   const t = frame / fps;
-  // O foco é a origem da escala (centro quando não vem).
-  const origin = focusOrigin(scene.focus);
+  // O foco é a origem da escala (centro quando não vem). Imagem reenquadrada (Short): o foco dela, onde cai na tela.
+  const layout = scene.frame && url ? frameLayout(scene.frame, width, height) : null;
+  const origin = layout ? `${layout.origin[0] * 100}% ${layout.origin[1] * 100}%` : focusOrigin(scene.focus);
   const [ox, oy] = origin.split(' ').map((v) => parseFloat(v) / 100);
   const blurPx = blur > 0 ? (blur * Math.min(width, height)) / 1080 : 0;
   const bump = blurPx ? 1 + (5 * blurPx) / Math.min(width, height) : 1; // a borda desfocada fica fora do quadro
@@ -150,36 +152,72 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
   const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
   const chroma = hasEffect(effects, 'chromatic');
-  const imgStyle: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', transform, transformOrigin: origin, filter };
+  const imgStyle: React.CSSProperties = {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    objectPosition: layout?.position,
+    transform,
+    transformOrigin: origin,
+    filter,
+  };
+  const front = layout?.front;
+  // Modo desfocado: a imagem inteira sobre ela mesma ampliada, escurecida e desfocada; a câmera move as duas juntas.
+  const picture = (pictureStyle: React.CSSProperties) =>
+    front ? (
+      <div style={{ ...pictureStyle, position: 'absolute', inset: 0, overflow: 'hidden' }}>
+        <Img
+          src={url}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            objectPosition: layout?.position,
+            transform: 'scale(1.12)',
+            filter: `blur(${(36 * Math.min(width, height)) / 1080}px) brightness(0.5)`,
+          }}
+        />
+        <Img
+          src={url}
+          style={{
+            position: 'absolute',
+            left: `${front.left * 100}%`,
+            top: `${front.top * 100}%`,
+            width: `${front.width * 100}%`,
+            height: `${front.height * 100}%`,
+            // contain: se a proporção guardada não for a do arquivo, a imagem nunca sai esticada.
+            objectFit: 'contain',
+          }}
+        />
+      </div>
+    ) : (
+      <Img src={url} style={pictureStyle} />
+    );
   return (
     <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>
-      <Img src={url} style={imgStyle} />
+      {picture(imgStyle)}
       {chroma ? (
         <>
-          <Img
-            src={url}
-            style={{
-              ...imgStyle,
-              position: 'absolute',
-              inset: 0,
-              mixBlendMode: 'screen',
-              opacity: 0.32 * chroma.amount,
-              transform: `${transform} translateX(${4 + 6 * chroma.amount}px)`,
-              filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(-40deg)`,
-            }}
-          />
-          <Img
-            src={url}
-            style={{
-              ...imgStyle,
-              position: 'absolute',
-              inset: 0,
-              mixBlendMode: 'screen',
-              opacity: 0.32 * chroma.amount,
-              transform: `${transform} translateX(-${4 + 6 * chroma.amount}px)`,
-              filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(160deg)`,
-            }}
-          />
+          {picture({
+            ...imgStyle,
+            position: 'absolute',
+            inset: 0,
+            mixBlendMode: 'screen',
+            opacity: 0.32 * chroma.amount,
+            transform: `${transform} translateX(${4 + 6 * chroma.amount}px)`,
+            filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(-40deg)`,
+          })}
+          {picture({
+            ...imgStyle,
+            position: 'absolute',
+            inset: 0,
+            mixBlendMode: 'screen',
+            opacity: 0.32 * chroma.amount,
+            transform: `${transform} translateX(-${4 + 6 * chroma.amount}px)`,
+            filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(160deg)`,
+          })}
         </>
       ) : null}
     </AbsoluteFill>

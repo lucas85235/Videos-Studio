@@ -758,7 +758,8 @@ export type YouTubeAccountStatus = {
   channel_title: string;
   channel_id: string;
   global_connected?: boolean;
-  linked?: { channel_id: string; channel_title: string }[];
+  /** `revenue`: o canal tem a receita do YouTube ligada (escolhida ao vincular). */
+  linked?: { channel_id: string; channel_title: string; revenue?: boolean }[];
 };
 
 /** POST /api/youtube/link */

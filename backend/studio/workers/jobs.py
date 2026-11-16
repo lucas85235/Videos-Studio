@@ -82,9 +82,24 @@ class JobRunner:
         self._lock = threading.Lock()
 
     def recover(self) -> None:
-        """Jobs que estavam rodando quando o app fechou são marcados como interrompidos."""
+        """Jobs que estavam rodando quando o app fechou são marcados como interrompidos.
+
+        Os do comando `rotinas` (Vulto fechado) que ainda está rodando ficam: são os criados depois de ele pegar a
+        trava das rotinas."""
+        from studio.workers.ops import lock
+
+        cli = lock.holder()
+        since = None
+        if cli is not None and cli.get("owner") == "cli":
+            try:
+                since = datetime.fromisoformat(str(cli.get("started_at")))
+            except ValueError:
+                since = None
         with session_scope() as s:
-            for row in s.query(Job).filter(Job.status.in_(ACTIVE_STATUSES)).all():
+            query = s.query(Job).filter(Job.status.in_(ACTIVE_STATUSES))
+            if since is not None:
+                query = query.filter(Job.created_at < since)
+            for row in query.all():
                 row.status = "failed"
                 row.error = "interrompido (o app foi fechado durante a execução)"
                 row.finished_at = datetime.now(UTC)

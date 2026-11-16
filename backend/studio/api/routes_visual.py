@@ -4,7 +4,8 @@
 - Provas: `POST /api/projects/{id}/scenes/{scene_id}/proof` (job `page_capture`), `GET /api/projects/{id}/captures`,
   `GET /api/captures/{id}`, `PUT /api/captures/{id}/phrases/{i}/view`.
 - Referências: `GET|POST /api/references`, `POST /api/references/link`, `GET|DELETE /api/references/{id}`,
-  `POST /api/references/{id}/analyze` (job `reference_shots`).
+  `POST /api/references/{id}/analyze` (job `reference_shots`), `POST /api/references/{id}/style` (cria um estilo do
+  usuário a partir das medidas).
 - Miniaturas: `GET /api/projects/{id}/thumbs`, `PUT .../thumbs/spec`, `POST .../thumbs` (job `thumbs_variants`),
   `PUT .../thumbs/chosen`.
 """
@@ -17,6 +18,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from studio.core.project import service
+from studio.core.styles import from_reference
 from studio.media import page_capture, reference_video
 from studio.media.safe_http import BlockedUrl
 from studio.workers.jobs import get_runner
@@ -39,6 +41,11 @@ class ViewBody(BaseModel):
 class LinkBody(BaseModel):
     url: str = Field(min_length=1, max_length=2000)
     title: str | None = Field(default=None, max_length=300)
+
+
+class RefStyleBody(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    use_llm: bool = True
 
 
 class ThumbSpecItem(BaseModel):
@@ -180,6 +187,21 @@ def analyze_reference(ref_id: str) -> dict[str, Any]:
     if references.get_reference(ref_id) is None:
         raise HTTPException(status_code=404, detail="referência não encontrada")
     return get_runner().submit("reference_shots", {"reference_id": ref_id})
+
+
+@router.post("/references/{ref_id}/style")
+def style_from_reference(ref_id: str, body: RefStyleBody | None = None) -> dict[str, Any]:
+    """Cria um estilo do usuário a partir das medidas (preset mais próximo + medidas + IA, se houver)."""
+    body = body or RefStyleBody()
+    ref = references.get_reference(ref_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="referência não encontrada")
+    if ref["status"] != "pronto":
+        raise HTTPException(status_code=409, detail="Analise o vídeo antes de criar o estilo.")
+    try:
+        return from_reference.create_from_reference(ref, use_llm=body.use_llm, name=(body.name or "").strip() or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # --------------------------------------------------------------------------------------------

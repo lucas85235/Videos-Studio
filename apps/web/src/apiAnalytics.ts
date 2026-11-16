@@ -53,6 +53,12 @@ export type CollectState = {
   scope: 'ok' | 'missing' | null;
   last_run: string | null;
   error: string;
+  /** Impressões e CTR (Reporting API); null = ainda não tentou. */
+  reach?: 'ok' | 'esperando' | 'sem_escopo' | 'erro' | null;
+  reach_error?: string;
+  /** Receita do YouTube (escopo opcional escolhido ao vincular); null = ainda não tentou. */
+  revenue?: 'ok' | 'desligada' | 'sem_escopo' | 'erro' | null;
+  revenue_error?: string;
 };
 
 export type AnalyticsResults = {

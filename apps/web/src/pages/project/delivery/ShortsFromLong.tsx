@@ -1,6 +1,7 @@
 // Painel "Shorts deste vídeo" na aba Vídeo final (ADR 0002, bloco B).
 // No longo com prévia ou vídeo: escolhe trechos, confere as regras ao vivo, pede sugestões e cria o Short (projeto
-// filho que reaproveita a narração e as imagens). No Short cortado: faixa "Cortado de <longo>". Short sem pai: nada.
+// filho que reaproveita a narração e as imagens). No Short cortado: faixa "Cortado de <longo>" e o enquadramento
+// vertical das imagens 16:9. Short sem pai: nada.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Scissors } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -9,6 +10,7 @@ import type { Job, ProjectDetail } from '../../../api';
 import { shortsApi, type ShortSuggestion } from '../../../apiShorts';
 import { ErrorBox, Loading, Section, useToast } from '../../../ui';
 import { ChildrenList } from './shorts/ChildrenList';
+import { FrameEditor } from './shorts/FrameEditor';
 import { indexesOf, rangesFrom, shortDuration } from './shorts/model';
 import { ParentBanner } from './shorts/ParentBanner';
 import { SegmentList } from './shorts/SegmentList';
@@ -34,7 +36,12 @@ const ChildPanel: React.FC<{ detail: ProjectDetail }> = ({ detail }) => {
     queryFn: () => shortsApi.list(detail.project.id),
   });
   if (!q.data?.parent) return null;
-  return <ParentBanner data={q.data} />;
+  return (
+    <>
+      <ParentBanner data={q.data} />
+      <FrameEditor projectId={detail.project.id} />
+    </>
+  );
 };
 
 const LongPanel: React.FC<{ detail: ProjectDetail }> = ({ detail }) => {
@@ -134,7 +141,8 @@ const LongPanel: React.FC<{ detail: ProjectDetail }> = ({ detail }) => {
             </p>
           ) : null}
           <p className="text-[13px] text-muted">
-            As imagens do longo são 16:9: no Short vertical aparecem recortadas no centro.
+            As imagens do longo são 16:9: no Short vertical cada uma é recortada em volta de um ponto de foco sugerido. No
+            Short dá para mudar o foco, usar a imagem inteira com fundo desfocado ou gerar a imagem vertical.
           </p>
           <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
             <div className="flex min-w-0 flex-col gap-2">

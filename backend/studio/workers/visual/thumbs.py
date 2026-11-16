@@ -14,7 +14,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from statistics import median
 from typing import Any
 
@@ -24,11 +24,16 @@ from studio.core.project.document import ProjectDoc
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.media import thumb_variants as tv
-from studio.models import Channel, Project, VideoMetric
+from studio.models import Channel, Project, Publication, VideoMetric
+from studio.workers.analytics import reach
 from studio.workers.analytics.variables import video_format
 
 AB_MIN_IMPRESSIONS = 2000
 AB_AGE_HOURS = 168  # 7 dias
+AB_AGE_MAX_HOURS = 240  # linha de 7 dias aceita até 10 dias (depois disso já não é o número de 7 dias)
+CTR_MIN_IMPRESSIONS = 500  # abaixo disso o CTR é ruído: nem troca nem mantém
+CTR_SWAP = 4.0  # CTR (%) abaixo do qual a troca em 48 h vale
+CTR_HOURS = 48
 LABELS = ("Recomendada", "Outra cena", "Outro modelo")
 CARD_KINDS = ("stat", "compare", "title")
 RULE_AB = ("Teste A/B: use o 'Testar e comparar' do YouTube Studio com as 3 (a API não faz o teste).")
@@ -58,6 +63,53 @@ def manual_rule(chosen: int = 1) -> str:
 RULE_MANUAL = manual_rule(1)
 
 
+def _fmt_pct(value: float) -> str:
+    return f"{value:.1f}".replace(".", ",") + "%"
+
+
+def ctr_check(project_id: str, chosen: int = 1, eligible: bool = False) -> dict[str, Any] | None:
+    """CTR coletado (ou lançado à mão) do vídeo do projeto no YouTube e o que fazer com a miniatura.
+
+    `verdict`: sem_dado | cedo (menos de 48 h no ar ou menos de 500 impressões) | ab (o teste do YouTube Studio decide)
+    | trocar (abaixo de 4%) | manter. None quando o projeto não tem vídeo no YouTube."""
+    with session_scope() as s:
+        ids = [pid for (pid,) in s.query(Publication.external_id)
+               .filter(Publication.project_id == project_id, Publication.platform == "youtube",
+                       Publication.external_id.isnot(None)).all() if pid]
+        if not ids:
+            return None
+        rows = (s.query(VideoMetric).filter(VideoMetric.youtube_id.in_(ids))
+                .order_by(VideoMetric.day).all())
+        # Campo a campo, o número não vazio mais recente (como em Desempenho).
+        latest: dict[str, Any] = {"youtube_id": ids[0], "ctr": None, "impressions": None, "age_hours": None}
+        for row in rows:
+            latest["youtube_id"] = row.youtube_id
+            for key in ("ctr", "impressions", "age_hours"):
+                if getattr(row, key) is not None:
+                    latest[key] = getattr(row, key)
+    ctr, impressions, age = latest["ctr"], latest["impressions"], latest["age_hours"]
+    swap = swap_option(chosen)
+    if ctr is None:
+        verdict = "sem_dado"
+        text = ("Ainda sem CTR deste vídeo: a coleta traz em até 2 dias depois de ir ao ar "
+                "(ou lance à mão em Desempenho).")
+    else:
+        seen = f"CTR de {_fmt_pct(float(ctr))}" + (f" em {int(impressions):,} impressões".replace(",", ".")
+                                                   if impressions else "")
+        if eligible:
+            verdict, text = "ab", f"{seen}. O teste A/B do YouTube Studio decide a miniatura."
+        elif age is not None and age < CTR_HOURS:
+            verdict, text = "cedo", f"{seen}. Espere 48 h no ar para decidir a troca."
+        elif impressions is not None and impressions < CTR_MIN_IMPRESSIONS:
+            verdict, text = "cedo", (f"{seen}: ainda há poucas impressões para o CTR valer. "
+                                     f"Espere passar de {CTR_MIN_IMPRESSIONS} para decidir a troca.")
+        elif float(ctr) < CTR_SWAP:
+            verdict, text = "trocar", f"{seen}, abaixo de 4%: troque pela {swap}ª opção."
+        else:
+            verdict, text = "manter", f"{seen}: mantenha a {chosen}ª."
+    return {**latest, "verdict": verdict, "swap": swap, "text": text}
+
+
 def _short_projects(project_ids: set[str]) -> set[str]:
     out: set[str] = set()
     for pid in project_ids:
@@ -70,32 +122,55 @@ def _short_projects(project_ids: set[str]) -> set[str]:
     return out
 
 
-def _durations(channel_id: str) -> dict[str, float]:
-    """Duração de cada vídeo do canal guardada pela coleta (`settings["analytics"]["videos"]`), em segundos."""
+def _channel_videos(channel_id: str) -> tuple[dict[str, float], dict[str, date], dict[str, Any]]:
+    """Da coleta: duração (s) e dia de publicação de cada vídeo (`settings["analytics"]["videos"]`) e os dados de
+    alcance da Reporting API (`settings["analytics_reach"]`)."""
     with session_scope() as s:
         channel = s.get(Channel, channel_id)
-        videos = (((channel.settings or {}).get("analytics") or {}).get("videos") or {}) if channel else {}
-    return {yid: float(info["duration_s"]) for yid, info in videos.items()
-            if isinstance(info, dict) and isinstance(info.get("duration_s"), int | float)}
+        settings = (channel.settings or {}) if channel else {}
+    videos = ((settings.get("analytics") or {}).get("videos") or {})
+    durations: dict[str, float] = {}
+    published: dict[str, date] = {}
+    for yid, info in videos.items():
+        if not isinstance(info, dict):
+            continue
+        if isinstance(info.get("duration_s"), int | float):
+            durations[yid] = float(info["duration_s"])
+        try:
+            published[yid] = datetime.fromisoformat(str(info["published_at"])).astimezone(UTC).date()
+        except (KeyError, TypeError, ValueError):
+            pass
+    return durations, published, dict(settings.get(reach.SETTINGS_KEY) or {})
 
 
 def ab_rule(channel_id: str | None, chosen: int = 1) -> dict[str, Any]:
-    """Mediana das impressões em 7 dias dos longos do canal (por vídeo, a linha com impressões mais perto de 168 h,
-    com `age_hours` >= 168: a coleta diária não traz impressões, que entram à mão). Mediana >= 2.000 → teste A/B do
-    YouTube Studio; senão, troca à mão em 48 h. Short (estilo do projeto ou até 3 min, como em "O que funcionou")
-    fica de fora, também os enviados fora do Vulto."""
+    """Mediana das impressões em 7 dias dos longos do canal. Mediana >= 2.000 → teste A/B do YouTube Studio; senão,
+    troca à mão em 48 h.
+
+    Por vídeo, as impressões de 7 dias vêm, nesta ordem: dos dias da Reporting API (soma do dia da publicação e dos 6
+    seguintes, só quando os 7 estão guardados); ou da linha de `VideoMetric` com impressões e idade entre 168 h e 240 h
+    (lançamento à mão ou coleta perto dos 7 dias), a mais perto de 168 h. A coleta grava o total desde o início do
+    histórico do relatório, não "da vida do vídeo": uma linha de vídeo antigo (idade bem acima de 240 h) somaria semanas
+    e não entra. Short (estilo do projeto ou até 3 min, como em "O que funcionou") fica de fora, também os enviados
+    fora do Vulto."""
     best: dict[str, VideoMetric] = {}
     if channel_id:
+        durations, published, reach_data = _channel_videos(channel_id)
+        week = reach.first_week(reach_data, published)
         with session_scope() as s:
             rows = (s.query(VideoMetric)
                     .filter(VideoMetric.channel_id == channel_id, VideoMetric.age_hours.isnot(None),
-                            VideoMetric.age_hours >= AB_AGE_HOURS, VideoMetric.impressions.isnot(None)).all())
+                            VideoMetric.age_hours >= AB_AGE_HOURS, VideoMetric.age_hours <= AB_AGE_MAX_HOURS,
+                            VideoMetric.impressions.isnot(None)).all())
             for row in rows:
                 cur = best.get(row.youtube_id)
                 if cur is None or (row.age_hours or 0) < (cur.age_hours or 0):
                     best[row.youtube_id] = row
-            picked = [(yid, r.project_id, r.impressions) for yid, r in best.items()]
-        durations = _durations(channel_id)
+            projects = {yid: pid for yid, pid in s.query(VideoMetric.youtube_id, VideoMetric.project_id)
+                        .filter(VideoMetric.channel_id == channel_id, VideoMetric.youtube_id.in_(list(week)),
+                                VideoMetric.project_id.isnot(None)).all()} if week else {}
+            picked = [(yid, r.project_id, r.impressions) for yid, r in best.items() if yid not in week]
+        picked += [(yid, projects.get(yid), imp) for yid, imp in week.items()]
     else:
         picked, durations = [], {}
     shorts = _short_projects({pid for _, pid, _ in picked if pid})
@@ -203,6 +278,8 @@ def get_state(project_id: str, lang: str | None = None) -> dict[str, Any]:
         "made_at": saved.get("made_at"),
         "ab": {k: ab[k] for k in ("eligible", "median_impressions", "n")},
         "rule": ab["rule"],
+        # CTR coletado do vídeo deste projeto no YouTube (None sem publicação): decide a troca em 48 h.
+        "ctr": ctr_check(project_id, chosen, bool(ab["eligible"])),
         "is_long": style.format.type == "long",
         "size": "x".join(map(str, tv.target_size(style.format.type == "long"))),
         "templates": list(tv.TEMPLATES),
