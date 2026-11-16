@@ -358,7 +358,7 @@ class VariationSpec(StrictModel):
 
 class PublishTarget(StrictModel):
     platform: Literal["youtube", "tiktok", "instagram", "facebook", "threads", "x"]
-    driver: Literal["youtube_native", "buffer", "manual_helper", "uploadpost"] = "manual_helper"
+    driver: Literal["youtube_native", "instagram_native", "buffer", "manual_helper", "uploadpost"] = "manual_helper"
     privacy: str | None = None
     schedule: str | None = None
 

@@ -66,9 +66,10 @@ _register(
 
 def _register_publishers() -> None:
     from studio.providers.media_search import WikimediaCommonsSource
+    from studio.workers.publish.instagram import InstagramPublisher
     from studio.workers.publish.youtube import YouTubePublisher
 
-    _register(YouTubePublisher(), WikimediaCommonsSource())
+    _register(YouTubePublisher(), InstagramPublisher(), WikimediaCommonsSource())
 
 
 _register_publishers()

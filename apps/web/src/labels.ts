@@ -311,6 +311,7 @@ export const THUMBNAIL_TEMPLATE_LABELS: LabelMap = {
 
 export const PUBLISH_DRIVER_LABELS: LabelMap = {
   youtube_native: 'YouTube (envio direto)',
+  instagram_native: 'Instagram (envio direto)',
   buffer: 'Buffer',
   manual_helper: 'Assistente manual',
   uploadpost: 'Upload-Post',
