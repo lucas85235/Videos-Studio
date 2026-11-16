@@ -481,6 +481,7 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
 - **A faixa precisa ter praticamente a mesma duração do vídeo**: tradução com orçamento de duração, ajuste de velocidade do TTS e *time-stretch* leve (até ±8–10%); o idioma mais longo define o tempo de cada segmento.
 - Títulos, descrições e legendas por idioma vão pela API (`localizations`, `captions.insert`).
 - Alternativa gratuita: o auto-dubbing do YouTube, que usa a voz do YouTube e não a sua.
+- **Como o app faz (implementado):** o idioma principal define a imagem; cada segmento tem uma *vaga* igual à narração principal, esticada só quando outro idioma não cabe nem acelerado até +10% (`atempo` do FFmpeg, sem mudar o tom; fora disso o app avisa e o vídeo ganha uma pausa no trecho). Cada idioma é mixado sobre a mesma timeline (mesma trilha e SFX) e sai em WAV com a duração do vídeo. O pacote fica em `outputs/<projeto>/faixas-youtube/` (código em `backend/studio/workers/pipeline/dubbing.py`).
 
 ### 7.4 Detalhes técnicos
 - Fontes Noto com fallback por alfabeto; RTL nas legendas.
@@ -878,7 +879,7 @@ Videos-Studio/
 | 1. MVP Shorts | Roteiro → storyboard → narração (com controle de qualidade por Whisper e nova tentativa) → alinhamento → imagens → timeline → trilha (procedural ou da sua biblioteca de músicas)/SFX → render → montagem → thumbnail; regenerar por cena; limpeza do cache | Instalar o Whisper local (`--extra asr`) para ativar o controle de qualidade e legendas mais precisas |
 | 2. Edição por IA + longos | Agente de edição (operações tipadas, escopo, estimativa, travas), versões com desfazer, estilos por texto, cartões de capítulo/contagem/documento/citação, tipografia cinética | Ramos A/B, image-to-video, checagem de fatos com busca web |
 | 3. Publicação | YouTube nativo (OAuth, upload, agendamento, thumbnail, legendas, rótulo de IA, títulos traduzidos); pacote manual por rede com horário planejado; horários de postagem por canal com fuso e sugestão do próximo horário livre; página Agenda | Driver do Buffer (TikTok/Instagram), fila em lote, playlists e medidor de cota |
-| 4. Voz e idiomas | Tradução por segmento e vídeo por idioma (modo A) | Clonagem (Applio/RVC, Qwen3-TTS), modo B (várias faixas no mesmo vídeo) |
+| 4. Voz e idiomas | Tradução por segmento com orçamento de duração; vídeo por idioma (modo A) e faixas de idioma no mesmo vídeo com time-stretch e pacote para o Studio (modo B) | Clonagem (Applio/RVC, Qwen3-TTS) |
 | 5–6 | — | Repurposing, comentários, analytics, outras redes, séries |
 
 Estimativas para **1 desenvolvedor em tempo parcial com ajuda de IA**.

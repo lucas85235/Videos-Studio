@@ -162,7 +162,14 @@ A voz do Gemini recebe **só o texto**: o tom vem da voz escolhida no estilo, e 
 
 ## 8. Vários idiomas
 
-Marque os idiomas no novo projeto (o primeiro é o principal). Depois do roteiro aprovado, o piloto automático traduz por segmento e narra cada idioma. Cada idioma gera o seu próprio vídeo (modo A). O modo de várias faixas de áudio no mesmo vídeo (modo B) está no backlog.
+Marque os idiomas no novo projeto (o primeiro é o principal). Depois do roteiro aprovado, o piloto automático traduz por segmento e narra cada idioma. Por padrão cada idioma gera o seu próprio vídeo (modo A).
+
+**Faixas no mesmo vídeo (modo B, só YouTube).** Na aba Saída, em *Idiomas no YouTube*, escolha **Faixas no mesmo vídeo**. Aí:
+
+- a tradução recebe o tempo de cada trecho (quantas palavras cabem), e uma tradução longa demais ganha uma segunda rodada pedindo uma versão mais curta;
+- o render faz **um vídeo só** (na imagem do idioma principal, sem legenda queimada) e uma **faixa de áudio por idioma** com a mesma duração: a narração que passa do tempo é acelerada até +10% sem mudar o tom; passou disso, o trecho ganha uma pausa no vídeo e o app avisa qual segmento encurtar;
+- o app monta a pasta `outputs\<projeto>\faixas-youtube\` com, por idioma, a faixa WAV, a legenda `.srt`, o título, a descrição e as tags, e um `CHECKLIST.md`;
+- ao publicar pelo app, títulos, descrições e legendas de todos os idiomas vão junto com o vídeo. As **faixas de áudio não têm API**: envie cada uma em YouTube Studio → Idiomas → Adicionar idioma → Dublagem. O canal precisa ter acesso aos recursos avançados.
 
 Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** coloca os títulos dos outros idiomas no mesmo vídeo (o YouTube mostra a versão no idioma de quem assiste). Deixe desmarcada se cada idioma vai ganhar o próprio vídeo ou canal, para os vídeos não competirem entre si.
 
