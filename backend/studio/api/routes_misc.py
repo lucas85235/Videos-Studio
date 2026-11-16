@@ -141,7 +141,7 @@ class ChannelBody(BaseModel):
 
 def _channel_dict(row: Channel) -> dict[str, Any]:
     from studio.workers.publish.schedule import plan_of
-    from studio.workers.publish.youtube_channels import public_info
+    from studio.workers.publish.youtube_channels import default_playlist, public_info
 
     return {
         "id": row.id,
@@ -153,6 +153,7 @@ def _channel_dict(row: Channel) -> dict[str, Any]:
         "style_bible": row.style_bible,
         "posting": plan_of(row.settings).model_dump(),
         "youtube": public_info(row.settings),  # canal do YouTube ligado (None se não houver)
+        "youtube_playlist": default_playlist(row.settings),  # playlist em que os envios entram (None: nenhuma)
     }
 
 
@@ -273,6 +274,26 @@ def channel_youtube_unlink(channel_id: str, forget: bool = False) -> dict[str, A
         youtube_channels.unlink(channel_id, forget=forget)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="canal não encontrado") from exc
+    return {"channel": _channel_or_404(channel_id)}
+
+
+class ChannelPlaylistBody(BaseModel):
+    id: str | None = Field(default=None, max_length=64)  # vazio tira a playlist padrão
+    title: str = Field(default="", max_length=200)
+
+
+@router.put("/channels/{channel_id}/youtube/playlist")
+def channel_youtube_playlist(channel_id: str, body: ChannelPlaylistBody) -> dict[str, Any]:
+    """Playlist padrão do canal: os envios ao YouTube dos projetos dele entram nela."""
+    from studio.workers.publish import youtube as yt
+    from studio.workers.publish import youtube_channels
+
+    try:
+        youtube_channels.set_default_playlist(channel_id, body.id or None, body.title)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="canal não encontrado") from exc
+    except yt.YouTubeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"channel": _channel_or_404(channel_id)}
 
 

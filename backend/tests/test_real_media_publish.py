@@ -155,7 +155,7 @@ def test_youtube_job_sends_the_credits_and_records_them(isolated_settings, monke
         return {"id": "vid123"}
 
     monkeypatch.setattr(yt, "upload_video", upload_video)
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, prefer=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
     job = get_runner().submit("publish_youtube", {"lang": "pt-BR", "privacy": "private"}, pid, run_inline=True)
     final = get_job(job["id"])

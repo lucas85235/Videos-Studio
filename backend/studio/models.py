@@ -189,3 +189,16 @@ class Publication(Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class YouTubeQuotaUsage(Base):
+    """Cota da YouTube Data API gasta por dia (no fuso do Pacífico, como o Google conta) e por método."""
+
+    __tablename__ = "youtube_quota_usage"
+    __table_args__ = (UniqueConstraint("day", "method"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)
+    method: Mapped[str] = mapped_column(String(40))
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+    units: Mapped[int] = mapped_column(Integer, default=0)

@@ -34,6 +34,7 @@ from studio.db import session_scope
 from studio.models import Channel, ProviderCredential
 from studio.providers import credentials
 from studio.providers.base import Provider, ProviderInfo
+from studio.workers.publish import quota
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class YouTubePublisher(Provider):
         return True, "ok"
 
 
-def new_client(timeout: float = 60) -> httpx.Client:
+def new_client(timeout: float | httpx.Timeout = 60) -> httpx.Client:
     """Cliente HTTP das chamadas ao Google (os testes trocam por um cliente com transporte simulado)."""
     return httpx.Client(timeout=timeout)
 
@@ -221,7 +222,8 @@ def _finish(code: str, pending: dict[str, str], http: httpx.Client | None) -> di
             from studio.workers.publish import youtube_channels
 
             return youtube_channels.link_from_oauth(client, tokens["access_token"], refresh, target)
-        channel = _get(client, f"{API}/channels", tokens["access_token"], params={"part": "snippet", "mine": "true"})
+        channel = _get(client, f"{API}/channels", tokens["access_token"], params={"part": "snippet", "mine": "true"},
+                       method="channels.list")
         items = channel.get("items") or []
         title = items[0]["snippet"]["title"] if items else ""
         channel_id = items[0]["id"] if items else ""
@@ -291,15 +293,54 @@ def _channel_link(channel_id: str | None) -> tuple[str, dict[str, Any]]:
         return row.name or "", dict((row.settings or {}).get("youtube") or {})
 
 
-def account_for_channel(channel_id: str | None) -> str:
+def account_by_youtube_id(youtube_id: str | None) -> str | None:
+    """Credencial de um canal do YouTube conectado (token próprio ou a conta global, se for dele)."""
+    if not youtube_id:
+        return None
+    if has_token(youtube_id):
+        return channel_key(youtube_id)
+    glob = credentials.get_credential(ACCOUNT_KEY)
+    if glob.get("refresh_token") and glob.get("channel_id") == youtube_id:
+        return ACCOUNT_KEY
+    return None
+
+
+def accounts() -> list[dict[str, Any]]:
+    """Todas as contas que podem publicar: a global e os canais vinculados, sem repetir o mesmo canal do YouTube."""
+    owners: dict[str, list[str]] = {}
+    with session_scope() as s:
+        for row in s.query(Channel).order_by(Channel.name).all():
+            youtube_id = ((row.settings or {}).get("youtube") or {}).get("channel_id")
+            if youtube_id:
+                owners.setdefault(youtube_id, []).append(row.name)
+    out: dict[str, dict[str, Any]] = {}
+    glob = account()
+    if glob["connected"]:
+        key = glob["channel_id"] or ACCOUNT_KEY
+        out[key] = {"channel_id": glob["channel_id"], "channel_title": glob["channel_title"], "global": True}
+    for item in linked_accounts():
+        entry = out.setdefault(item["channel_id"], {**item, "global": False})
+        entry["channel_title"] = entry["channel_title"] or item["channel_title"]
+    return [{**v, "vulto_channels": owners.get(v["channel_id"], [])} for v in out.values()]
+
+
+def account_for_channel(channel_id: str | None, prefer: str | None = None) -> str:
     """Credencial usada para publicar um projeto do canal `channel_id` do Vulto.
 
     Canal vinculado: o token dele (ou a conta global, se ela for do mesmo canal do YouTube). Nunca cai para outro
-    canal do YouTube. Canal sem vínculo, ou projeto sem canal: a conta global, como antes.
+    canal do YouTube. Canal sem vínculo, ou projeto sem canal: a conta escolhida no envio (`prefer`, id do canal no
+    YouTube) ou a conta global, como antes.
     """
     name, link = _channel_link(channel_id)
     youtube_id = link.get("channel_id")
     glob = credentials.get_credential(ACCOUNT_KEY)
+    if youtube_id and prefer and prefer != youtube_id:
+        raise YouTubeError(f"o canal “{link.get('title') or name}” publica só no canal do YouTube vinculado a ele")
+    if not youtube_id and prefer:
+        key = account_by_youtube_id(prefer)
+        if key is None:
+            raise YouTubeError("a conta do YouTube escolhida não está mais conectada; escolha outra")
+        return key
     if youtube_id:
         if has_token(youtube_id):
             return channel_key(youtube_id)
@@ -319,6 +360,10 @@ def account_for_channel(channel_id: str | None) -> str:
 
 def account_title(account_key: str) -> str:
     return credentials.get_credential(account_key).get("channel_title", "")
+
+
+def account_channel_id(account_key: str) -> str:
+    return credentials.get_credential(account_key).get("channel_id", "")
 
 
 def access_token(http: httpx.Client, account: str | None = None) -> str:
@@ -341,13 +386,36 @@ def access_token(http: httpx.Client, account: str | None = None) -> str:
     return resp.json()["access_token"]
 
 
-def _get(http: httpx.Client, url: str, token: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+def _track(method: str, resp: httpx.Response | None) -> None:
+    """Soma a chamada no medidor de cota e marca o dia como esgotado se o Google disser que a cota acabou."""
+    if resp is None:
+        return
+    quota.spend(method)
+    if resp.status_code in (403, 429) and ("quotaExceeded" in resp.text or "dailyLimitExceeded" in resp.text):
+        quota.mark_exhausted()
+
+
+def _get(http: httpx.Client, url: str, token: str, params: dict[str, str] | None = None, *, method: str) -> dict[str, Any]:
     try:
         resp = http.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
     except httpx.HTTPError as exc:
         raise YouTubeError(f"sem resposta do YouTube: {exc}") from exc
+    _track(method, resp)
     if resp.status_code != 200:
-        raise YouTubeError(f"erro do YouTube ({resp.status_code}): {resp.text[:400]}")
+        raise YouTubeError(f"erro do YouTube: {_explain(resp)}")
+    return resp.json()
+
+
+def _post(http: httpx.Client, url: str, token: str, params: dict[str, str], body: dict[str, Any], *, method: str) -> dict[str, Any]:
+    try:
+        resp = http.post(url, params=params, headers={"Authorization": f"Bearer {token}",
+                                                      "Content-Type": "application/json; charset=UTF-8"},
+                         content=json.dumps(body).encode("utf-8"))
+    except httpx.HTTPError as exc:
+        raise YouTubeError(f"sem resposta do YouTube: {exc}") from exc
+    _track(method, resp)
+    if resp.status_code not in (200, 201):
+        raise YouTubeError(_explain(resp))
     return resp.json()
 
 
@@ -360,7 +428,7 @@ def fetch_channel(http: httpx.Client, token: str, youtube_id: str | None = None)
     """channels.list (1 unidade de cota): o canal da conta escolhida no login, ou o canal `youtube_id`."""
     params = {"part": "snippet,brandingSettings,statistics,contentDetails"}
     params.update({"id": youtube_id} if youtube_id else {"mine": "true"})
-    items = _get(http, f"{API}/channels", token, params=params).get("items") or []
+    items = _get(http, f"{API}/channels", token, params=params, method="channels.list").get("items") or []
     if not items:
         if youtube_id:
             raise YouTubeError("canal não encontrado no YouTube")
@@ -373,7 +441,7 @@ def fetch_recent_uploads(http: httpx.Client, token: str, playlist_id: str, limit
     if not playlist_id:
         return []
     data = _get(http, f"{API}/playlistItems", token,
-                params={"part": "snippet", "playlistId": playlist_id, "maxResults": str(limit)})
+                params={"part": "snippet", "playlistId": playlist_id, "maxResults": str(limit)}, method="playlistItems.list")
     out: list[dict[str, str]] = []
     for item in data.get("items") or []:
         snippet = item.get("snippet") or {}
@@ -499,7 +567,11 @@ def _explain(resp: httpx.Response) -> str:
         reasons, message = "", resp.text[:300]
     hint = ""
     if "quotaExceeded" in reasons or "uploadLimitExceeded" in reasons:
-        hint = " (cota de uploads do dia esgotada; tente amanhã)"
+        hint = " (cota do YouTube do dia esgotada; ela volta à meia-noite do horário do Pacífico)"
+    elif "playlistNotFound" in reasons:
+        hint = " (a playlist não existe mais ou é de outro canal; escolha outra)"
+    elif "playlistContainsMaximumNumberOfVideos" in reasons:
+        hint = " (a playlist chegou ao máximo de vídeos)"
     elif "forbidden" in reasons and "thumbnail" in message.lower():
         hint = " (thumbnail personalizada exige canal verificado por telefone)"
     return f"{resp.status_code} {message}{hint}"
@@ -533,6 +605,7 @@ def upload_video(
         },
         content=json.dumps(body).encode("utf-8"),
     )
+    _track("videos.insert", init)
     if init.status_code != 200 or "location" not in {k.lower() for k in init.headers}:
         raise YouTubeError(f"não foi possível iniciar o upload: {_explain(init)}")
     session_url = init.headers["location"]
@@ -573,6 +646,7 @@ def set_thumbnail(video_id: str, image: Path, http: httpx.Client, account: str |
         headers={"Authorization": f"Bearer {token}", "Content-Type": "image/jpeg"},
         content=image.read_bytes(),
     )
+    _track("thumbnails.set", resp)
     if resp.status_code != 200:
         raise YouTubeError(f"thumbnail não enviada: {_explain(resp)}")
 
@@ -591,5 +665,93 @@ def upload_captions(video_id: str, srt: Path, language: str, http: httpx.Client,
         headers={"Authorization": f"Bearer {token}", "Content-Type": f"multipart/related; boundary={boundary}"},
         content=body,
     )
+    _track("captions.insert", resp)
     if resp.status_code not in (200, 201):
         raise YouTubeError(f"legendas não enviadas: {_explain(resp)}")
+
+
+# --------------------------------------------------------------------------------------------
+# Playlists
+# --------------------------------------------------------------------------------------------
+
+PLAYLIST_PRIVACY = ("public", "unlisted", "private")
+PLAYLIST_PAGES = 4  # até 200 playlists (50 por página, 1 unidade de cota por página)
+PLAYLIST_TITLE_MAX = 150
+
+
+def _playlist(item: dict[str, Any]) -> dict[str, Any]:
+    snippet = item.get("snippet") or {}
+    return {
+        "id": item.get("id") or "",
+        "title": (snippet.get("title") or "").strip(),
+        "privacy": (item.get("status") or {}).get("privacyStatus") or "",
+        "count": _count((item.get("contentDetails") or {}).get("itemCount")),
+    }
+
+
+def _count(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def list_playlists(http: httpx.Client, token: str) -> list[dict[str, Any]]:
+    """Playlists do canal da conta (playlists.list com mine=true; 1 unidade por página de 50)."""
+    out: list[dict[str, Any]] = []
+    page: str | None = None
+    for _ in range(PLAYLIST_PAGES):
+        params = {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": "50"}
+        if page:
+            params["pageToken"] = page
+        data = _get(http, f"{API}/playlists", token, params=params, method="playlists.list")
+        out.extend(p for p in map(_playlist, data.get("items") or []) if p["id"])
+        page = data.get("nextPageToken")
+        if not page:
+            break
+    return sorted(out, key=lambda p: p["title"].lower())
+
+
+def create_playlist(http: httpx.Client, token: str, title: str, privacy: str = "public", description: str = "") -> dict[str, Any]:
+    """Cria uma playlist no canal da conta (playlists.insert: 50 unidades)."""
+    title = " ".join((title or "").split())[:PLAYLIST_TITLE_MAX]
+    if not title:
+        raise YouTubeError("dê um nome à playlist")
+    if privacy not in PLAYLIST_PRIVACY:
+        raise YouTubeError("visibilidade da playlist inválida (use public, unlisted ou private)")
+    body = {"snippet": {"title": title, "description": (description or "")[:5000]}, "status": {"privacyStatus": privacy}}
+    try:
+        data = _post(http, f"{API}/playlists", token, {"part": "snippet,status,contentDetails"}, body, method="playlists.insert")
+    except YouTubeError as exc:
+        raise YouTubeError(f"playlist não criada: {exc}") from exc
+    return _playlist(data)
+
+
+def add_to_playlist(http: httpx.Client, token: str, playlist_id: str, video_id: str) -> str:
+    """Põe o vídeo no fim da playlist (playlistItems.insert: 50 unidades). Devolve o id do item."""
+    body = {"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}
+    try:
+        data = _post(http, f"{API}/playlistItems", token, {"part": "snippet"}, body, method="playlistItems.insert")
+    except YouTubeError as exc:
+        raise YouTubeError(f"vídeo não entrou na playlist: {exc}") from exc
+    return data.get("id") or ""
+
+
+def playlists_for(account_key: str, http: httpx.Client | None = None) -> list[dict[str, Any]]:
+    own = http is None
+    client = http or new_client(timeout=30)
+    try:
+        return list_playlists(client, access_token(client, account_key))
+    finally:
+        if own:
+            client.close()
+
+
+def new_playlist(account_key: str, title: str, privacy: str = "public", http: httpx.Client | None = None) -> dict[str, Any]:
+    own = http is None
+    client = http or new_client(timeout=30)
+    try:
+        return create_playlist(client, access_token(client, account_key), title, privacy)
+    finally:
+        if own:
+            client.close()

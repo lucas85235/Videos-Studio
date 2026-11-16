@@ -15,8 +15,9 @@ from studio.core.styles.schema import Family
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.media.real_media import EDITORIAL_WARNING
-from studio.models import Publication
+from studio.models import Channel, Publication
 from studio.workers.jobs import JobContext, job
+from studio.workers.publish import quota, youtube_channels
 from studio.workers.publish import youtube as yt
 from studio.workers.publish.credits import credit_lines, credits_block, has_editorial
 
@@ -71,6 +72,19 @@ def youtube_localizations(doc, lang: str) -> dict[str, dict[str, str]]:
     return out
 
 
+def _playlist_choice(payload: dict[str, Any], channel_id: str | None) -> dict[str, str] | None:
+    """Playlist do envio: a escolhida (id), nenhuma ("") ou, sem escolha, a playlist padrão do canal."""
+    chosen = payload.get("playlist_id")
+    if chosen:
+        return {"id": str(chosen), "title": str(payload.get("playlist_title") or "")}
+    if chosen == "" or not channel_id:
+        return None
+    with session_scope() as s:
+        row = s.get(Channel, channel_id)
+        settings = dict(row.settings or {}) if row is not None else {}
+    return youtube_channels.default_playlist(settings)
+
+
 @job("publish_youtube")
 def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     """Envia o vídeo final de um idioma ao YouTube (privado, não listado, público ou agendado)."""
@@ -102,8 +116,10 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
         "defaultAudioLanguage": lang,
     }
     localizations = youtube_localizations(doc, lang) if payload.get("localize") else {}
-    # Token do canal do projeto (vinculado em Canais); sem vínculo, a conta global como antes.
-    account = yt.account_for_channel(row.get("channel_id") or doc.channel_id)
+    # Token do canal do projeto (vinculado em Canais); sem vínculo, a conta escolhida no envio ou a global.
+    channel_id = row.get("channel_id") or doc.channel_id
+    account = yt.account_for_channel(channel_id, payload.get("account") or None)
+    playlist = _playlist_choice(payload, channel_id)
     data_dir = get_settings().data_dir
     warnings: list[str] = []
     credits_details: dict[str, Any] = {}
@@ -112,7 +128,14 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
     if has_editorial(doc):
         credits_details["editorial"] = True
         warnings.append(EDITORIAL_WARNING)
-    with httpx.Client(timeout=httpx.Timeout(120, read=900, write=900)) as client:
+    estimate = quota.publish_estimate(thumbnail=bool(entry.get("thumbnail")),
+                                      captions=bool(entry.get("srt") and payload.get("captions", True)),
+                                      playlist=bool(playlist))
+    try:
+        warnings.extend(quota.check_publish(estimate))
+    except quota.QuotaExhausted as exc:
+        raise ValueError(str(exc)) from exc
+    with yt.new_client(timeout=httpx.Timeout(120, read=900, write=900)) as client:
         ctx.progress(0.02, "Enviando vídeo ao YouTube")
         video = yt.upload_video(
             data_dir / entry["video"],
@@ -134,6 +157,13 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 yt.upload_captions(video_id, data_dir / entry["srt"], lang, client, account=account)
             except yt.YouTubeError as exc:
                 warnings.append(str(exc))
+        if playlist:
+            ctx.progress(0.95, "Colocando o vídeo na playlist")
+            try:
+                yt.add_to_playlist(client, yt.access_token(client, account), playlist["id"], video_id)
+            except yt.YouTubeError as exc:
+                warnings.append(str(exc))
+                playlist = {**playlist, "error": str(exc)}
     url = f"https://youtu.be/{video_id}"
     with session_scope() as s:
         s.add(
@@ -149,7 +179,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,
                          "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
-                         "youtube_channel": yt.account_title(account), **credits_details},
+                         "youtube_channel": yt.account_title(account), "playlist": playlist, **credits_details},
             )
         )
     ctx.progress(1.0, "Agendado no YouTube" if privacy == "scheduled" else "Enviado ao YouTube")
