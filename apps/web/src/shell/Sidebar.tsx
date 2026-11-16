@@ -4,6 +4,7 @@ import {
   Clapperboard,
   Film,
   Lightbulb,
+  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Palette,
@@ -37,6 +38,7 @@ const PRODUCTION: NavDef[] = [
 const MANAGEMENT: NavDef[] = [
   { to: '/radar', label: 'Radar', icon: Radar, match: (p) => p.startsWith('/radar') },
   { to: '/desempenho', label: 'Desempenho', icon: BarChart3, match: (p) => p.startsWith('/desempenho') },
+  { to: '/comentarios', label: 'Comentários', icon: MessagesSquare, match: (p) => p.startsWith('/comentarios') },
   { to: '/dinheiro', label: 'Dinheiro', icon: Wallet, match: (p) => p.startsWith('/dinheiro') },
 ];
 const LIBRARY: NavDef[] = [

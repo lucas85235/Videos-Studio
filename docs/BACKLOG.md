@@ -59,7 +59,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [x] Repurposing: **Shorts cortados do longo** como projeto derivado que reaproveita a narração e as imagens do longo (onda 1, 15/11/2026).
 - [x] **Analytics básico**: métricas por vídeo (coleta do YouTube + lançamento à mão), experimentos com a regra calibrada do canais e lições (onda 1, 15/11/2026).
 - [x] Outlier finder: aba "Vídeos fora da curva" do Radar, vídeo vira ideia (onda 2, 15/11/2026).
-- [ ] Caixa de comentários.
+- [x] **Caixa de comentários** (página Comentários, 15/11/2026): `commentThreads.list` com `allThreadsRelatedToChannelId` (1 unidade por página de 100, até 3 páginas; para na página que já chega no que foi lido antes), filtros não respondidos/perguntas/não lidos/por vídeo, resposta sugerida pelo LLM no tom da persona do canal, resposta pelo app só depois de confirmar (`comments.insert`, 50 unidades, escopo `youtube.force-ssl`, que já estava nos escopos do Vulto), marcar como lido (só no Vulto), cota gasta somada no medidor do provedor `youtube`, perguntas sem resposta e falta de permissão em Hoje, leitura na rotina da manhã para canais que já usam a caixa. Só testado com o Google simulado. Ficou de fora: moderar (aprovar/rejeitar comentários retidos, `setModerationStatus`), curtir/fixar (a API não permite) e ler todas as respostas de um fio longo (`comments.list` por `parentId`): em fio com muitas respostas a do canal pode não vir, e o fio aparece como não respondido até marcar como lido.
 - [ ] Séries com piloto automático agendado.
 
 ### Gestão de canal (ADR 0002)

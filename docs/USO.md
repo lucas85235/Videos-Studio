@@ -95,9 +95,22 @@ No cartão do canal:
 - A página **Agenda** mostra o que está agendado, os pacotes por postar (com atalho para a pasta, a página de upload e a legenda) e o que saiu nas últimas duas semanas.
 - **Fila do YouTube** (na Agenda): marque vários vídeos já renderizados e clique em *Agendar nos próximos horários livres*: cada um vai, na ordem, para o próximo horário livre do seu canal, e o envio roda em segundo plano.
 
+### Comentários
+
+A página **Comentários** (grupo Gestão) lê os comentários de todos os vídeos dos canais vinculados com o login do Google (o link público não lê comentários).
+
+- **Ler comentários novos** traz até 300 comentários por canal, os mais novos primeiro (1 unidade de cota a cada 100). Depois da primeira leitura, a rotina da manhã lê sozinha os novos.
+- Filtros: **Não respondidos** (o canal ainda não respondeu), **Perguntas** (tem "?" ou começa com como, qual, onde, por que…), **Não lidos** e **Todos**; dá para filtrar por vídeo.
+- **Sugerir resposta**: o Claude escreve uma resposta curta no tom da persona do canal (Canais › Persona), no idioma do comentário, sem inventar fatos. Você edita à vontade.
+- **Responder no YouTube** pede confirmação e só então publica a resposta em nome do canal (50 unidades de cota). A resposta é pública.
+- **Marcar como lido** fica só no Vulto (o YouTube não tem isso). Perguntas sem resposta e não lidas aparecem em **Hoje › Esperando você**; ler ou responder tira de lá.
+- A linha de cota mostra quanto os comentários gastaram hoje e o total que o Vulto contou (a cota de 10.000 unidades por dia é do projeto do Google Cloud, dividida entre todos os canais).
+- Se aparecer "sem permissão de comentários", vincule o canal de novo em Canais (a permissão `youtube.force-ssl` já vem no login do Vulto; o aviso só aparece se o acesso foi dado sem ela).
+- Em fios com muitas respostas o YouTube devolve só parte delas: se a resposta do canal não vier entre elas, o comentário aparece como não respondido até você marcar como lido.
+
 ### Rotinas com o Vulto fechado
 
-As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, pendências de estoque, receita e marcos, radar semanal) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
+As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, comentários novos, pendências de estoque, receita e marcos, radar semanal) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\agendar-rotinas.ps1                 # ao entrar no Windows e todo dia às 08:00
