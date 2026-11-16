@@ -1,0 +1,81 @@
+id: interface-tela
+name: "Interface de Tela (longo)"
+description: "Tecnologia e internet em 16:9: cada imagem aparece dentro de uma janela, celular ou feed, com cursor apontando o que importa."
+family: screen_ui
+families_mix: [screen_ui, motion_graphics]
+structure: none
+tags: [tecnologia, internet, interface, screenlife, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 420, min_s: 240, max_s: 720 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "direto e atual, como quem navega junto com o espectador: mostra, aponta e explica o que está na tela"
+  structure: [hook, contexto, o_que_aconteceu, como_funciona, impacto, conclusao, cta]
+  hook_max_s: 10
+  fact_check: true
+  cta: "Inscreva-se para entender a tecnologia por trás das notícias."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Kore
+  style_prompt: "Narre de forma clara e atual, ritmo ágil e confiante."
+  speed: 1.0
+  gap_s: 0.3
+
+art:
+  bible: "ilustração digital limpa de tecnologia, cores vivas sobre fundo escuro, objetos e telas genéricas sem texto legível, um sujeito em destaque por cena"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "interface de marca real"]
+  languages: [ui_mockup, editorial, flat_vector]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.0, max: 5.0 }
+  new_image_ratio: 0.45
+  camera: { ken_burns_in: 3, drift: 2, static: 1 }
+  transitions: { cut: 6, zoom_blur: 1, glitch: 1 }
+  transition_seconds: 0.3
+  # A maioria das imagens aparece dentro de uma tela; algumas em tela cheia.
+  treatments: { screen: 3, plain: 1 }
+  effects:
+    - { type: grade, preset: clean-cool, amount: 0.35 }
+  captions:
+    style: line
+    font: IBM Plex Sans
+    weight: 700
+    size: 50
+    color: "#FFFFFF"
+    highlight: "#38BDF8"
+    stroke: 5
+    position: bottom
+    max_words_per_line: 7
+    uppercase: false
+  text_cards:
+    font: IBM Plex Sans
+    color: "#F8FAFC"
+    accent: "#38BDF8"
+    background: "#0B1220"
+    animation: slide
+  progress_bar: false
+  zoom_strength: 0.06
+
+audio:
+  music: { source: procedural, mood: corporate, volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -12 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: Anton, accent: "#38BDF8" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

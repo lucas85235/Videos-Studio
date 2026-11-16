@@ -23,7 +23,7 @@ from studio.core.project.document import (
     Visual,
     renumber_parts,
 )
-from studio.core.styles.library import StyleNotFound, get_style, set_path
+from studio.core.styles.library import StyleNotFound, get_style, set_style_override
 from studio.core.styles.schema import CAMERA_MOVES, SCENE_KINDS, TRANSITIONS, StyleSpec
 from studio.core.styles.visual import FOCUS_ROTATION, rotate_variant
 from studio.core.text import span_ranges, split_word_indices, words
@@ -497,7 +497,7 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             _remove_scenes(doc, {later[0].id})
             renumber_parts(doc, scene.segment_id)
         case SetStyle():
-            new_overrides = set_path(doc.style_overrides, op.path, op.value)
+            new_overrides = set_style_override(doc.style_overrides, op.path, op.value, base_style)
             if base_style is not None:
                 from studio.core.styles.library import deep_merge
 

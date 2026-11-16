@@ -11,7 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from studio.config import get_settings
-from studio.core.styles.schema import StyleSpec
+from studio.core.styles.schema import StyleSpec, treatment_pool
 
 
 class StyleNotFound(LookupError):
@@ -38,20 +38,49 @@ PRESET_ORDER = (
     "financas-negocios",
     "historias-narradas",
     "top10-listas",
+    "whiteboard-explicador",
+    "colagem-artesanal",
+    "interface-tela",
     "documentario-sombrio",
     "true-crime",
 )
 
 
-def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Mescla recursiva: dicionários são mesclados, o resto é substituído."""
+# Mapas do estilo que o ajuste do projeto troca por inteiro (não mescla): `edit.treatments` vazio quer dizer
+# "automático pela família" e `{plain: 1}` quer dizer "só imagem com câmera"; mesclado com os pesos do preset, nenhum
+# dos dois teria efeito. (camera e transitions continuam mesclados: ajustes salvos contam com isso.)
+REPLACED_MAPS = frozenset({"edit.treatments"})
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any], _path: str = "") -> dict[str, Any]:
+    """Mescla recursiva: dicionários são mesclados (menos os de `REPLACED_MAPS`, trocados), o resto é substituído."""
     result = copy.deepcopy(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = deep_merge(result[key], value)
+        path = f"{_path}.{key}" if _path else key
+        if isinstance(value, dict) and isinstance(result.get(key), dict) and path not in REPLACED_MAPS:
+            result[key] = deep_merge(result[key], value, path)
         else:
             result[key] = copy.deepcopy(value)
     return result
+
+
+def get_path(data: dict[str, Any], path: str) -> Any:
+    node: Any = data
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def set_style_override(overrides: dict[str, Any], path: str, value: Any, style: StyleSpec | None) -> dict[str, Any]:
+    """`set_path` nos ajustes do projeto. Um peso solto dentro de um mapa trocado por inteiro
+    (`edit.treatments.whiteboard`) parte dos pesos que o estilo usa hoje, para não apagar os outros."""
+    for prefix in REPLACED_MAPS:
+        if path.startswith(prefix + ".") and not isinstance(get_path(overrides, prefix), dict) and style is not None:
+            current = treatment_pool(style) if prefix == "edit.treatments" else get_path(style.model_dump(mode="json"), prefix)
+            overrides = set_path(overrides, prefix, dict(current or {}))
+    return set_path(overrides, path, value)
 
 
 def set_path(data: dict[str, Any], path: str, value: Any) -> dict[str, Any]:

@@ -106,7 +106,21 @@ export type TimelineScene = {
   credit?: string;
   /** Cartão de notícia (cena de imagem dona da notícia). Ausente: cena sem notícia. */
   news?: TimelineNews;
+  /**
+   * Variação de família da cena de imagem, sorteada pelo estilo (`edit.treatments`): traço de lousa, recorte de
+   * colagem ou dentro de uma tela. Ausente: a imagem com câmera de sempre.
+   */
+  treatment?: SceneTreatment;
+  /** Primeira cena do vídeo na lousa: começa com parte do desenho pronta e desenha rápido (o gancho não fica em branco). */
+  treatment_quick?: boolean;
+  /**
+   * A cena mostra a mesma imagem da anterior com o mesmo tratamento: continua dela (desenho pronto, recorte já na mesa,
+   * aparelho já em cena), com a semente da cena que começou (mesma moldura e posição). Ausente: entra do zero.
+   */
+  treatment_continue?: number;
 };
+
+export type SceneTreatment = 'whiteboard' | 'collage' | 'screen';
 
 export type EffectSpec = { type: string; amount: number; preset?: string | null; params?: Record<string, unknown> };
 

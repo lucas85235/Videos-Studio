@@ -422,6 +422,8 @@ export type StyleSpec = {
     new_image_ratio?: number;
     camera: Record<string, number>;
     transitions: Record<string, number>;
+    /** Pesos do tratamento das cenas de imagem (lousa, colagem, tela). Vazio: automático pela família. */
+    treatments?: Record<string, number>;
     transition_seconds: number;
     effects: { type: string; amount: number; preset?: string | null }[];
     captions: {

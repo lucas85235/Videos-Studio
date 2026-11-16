@@ -38,6 +38,14 @@ export const TRANSITION_LABELS: LabelMap = {
   static_burst: 'Chiado de TV',
 };
 
+/** Variação de família da cena de imagem (edit.treatments). */
+export const TREATMENT_LABELS: LabelMap = {
+  plain: 'Imagem com câmera',
+  whiteboard: 'Lousa (traço sendo desenhado)',
+  collage: 'Colagem de papel',
+  screen: 'Dentro de uma tela',
+};
+
 export const SCENE_KIND_LABELS: LabelMap = {
   image: 'Imagem',
   text: 'Tipografia cinética',
@@ -88,6 +96,7 @@ export const VISUAL_LANGUAGE_LABELS: LabelMap = {
   painting: 'Pintura',
   archival: 'Arquivo antigo',
   collage: 'Colagem',
+  line_art: 'Traço de lousa',
   photo: 'Foto realista',
 };
 

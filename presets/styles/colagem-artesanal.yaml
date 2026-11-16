@@ -1,0 +1,82 @@
+id: colagem-artesanal
+name: "Colagem Artesanal (Short)"
+description: "Histórias e curiosidades em 9:16 com recortes de papel sobre textura, sombra e leve tremor de stop motion."
+family: handmade
+families_mix: [handmade, still_cinema]
+structure: none
+tags: [colagem, artesanal, papel, curiosidades, shorts]
+
+format:
+  type: short
+  aspect: "9:16"
+  resolution: 1080x1920
+  fps: 30
+  duration: { target_s: 50, min_s: 35, max_s: 59 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "curioso e caloroso, como quem monta um álbum de recortes: detalhes concretos, um fato por vez e uma virada no fim"
+  structure: [hook, contexto, detalhe_curioso, virada, cta_loop]
+  hook_max_s: 3
+  fact_check: true
+  cta: "Siga para mais histórias recortadas."
+  banned_phrases: ["neste vídeo", "não esqueça de se inscrever"]
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Sulafat
+  style_prompt: "Narre com calor e curiosidade, como quem mostra um álbum antigo, ritmo médio."
+  speed: 1.0
+  gap_s: 0.2
+
+art:
+  bible: "colagem de papel recortado em camadas, texturas de papel e papelão, cores terrosas com um acento vivo, um sujeito em destaque por cena sobre fundo simples"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo"]
+  languages: [collage, archival, painting]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 2.2, max: 3.5 }
+  camera: { static: 2, drift: 2, ken_burns_in: 1 }
+  transitions: { cut: 5, flash: 1 }
+  transition_seconds: 0.3
+  # A maioria das cenas vira recorte; algumas ficam em tela cheia para respirar.
+  treatments: { collage: 4, plain: 1 }
+  effects:
+    - { type: grade, preset: warm-soft, amount: 0.35 }
+    - { type: grain, amount: 0.2 }
+  captions:
+    style: karaoke
+    font: Oswald
+    weight: 700
+    size: 78
+    color: "#FFFFFF"
+    highlight: "#F4A259"
+    stroke: 7
+    position: center
+    max_words_per_line: 3
+    uppercase: true
+  text_cards:
+    font: Special Elite
+    color: "#2B2118"
+    accent: "#C8553D"
+    background: "#E9DFC9"
+    animation: typewriter
+  progress_bar: false
+  zoom_strength: 0.06
+
+audio:
+  music: { source: procedural, mood: lofi, volume_db: -20, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -10 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 2, per_language: true, font: Anton, accent: "#F4A259" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

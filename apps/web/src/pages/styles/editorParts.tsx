@@ -112,7 +112,9 @@ export const WeightsEditor: React.FC<{
   labels: LabelMap;
   value: Record<string, number>;
   onChange: (value: Record<string, number>) => void;
-}> = ({ legend, hint, options, labels, value, onChange }) => {
+  /** Pode ficar tudo desligado (o texto diz o que vale nesse caso). */
+  allowEmpty?: string;
+}> = ({ legend, hint, options, labels, value, onChange, allowEmpty }) => {
   const errorId = useId();
   const keys = [...options, ...Object.keys(value).filter((k) => !options.includes(k))];
   const weight = (k: string) => (typeof value[k] === 'number' && Number.isFinite(value[k]) ? value[k] : 0);
@@ -121,13 +123,13 @@ export const WeightsEditor: React.FC<{
   const active = keys.filter((k) => weight(k) > 0);
   const set = (k: string, v: number) => {
     // O backend recusa um estilo sem nenhuma opção ligada: a última não pode ser zerada.
-    if (v <= 0 && active.length === 1 && active[0] === k) return;
+    if (!allowEmpty && v <= 0 && active.length === 1 && active[0] === k) return;
     const next = { ...value, [k]: v };
     if (!next[k]) delete next[k];
     onChange(next);
   };
   return (
-    <FieldGroup legend={legend} hint={`${hint} Pelo menos uma opção precisa ficar ligada.`}>
+    <FieldGroup legend={legend} hint={allowEmpty ? hint : `${hint} Pelo menos uma opção precisa ficar ligada.`}>
       <div className="flex flex-col gap-2">
         {active.length ? (
           <div className="flex h-2 w-full gap-px overflow-hidden rounded-full bg-line" aria-hidden="true">
@@ -135,6 +137,8 @@ export const WeightsEditor: React.FC<{
               <span key={k} className={`h-full ${BAR_TONES[i % BAR_TONES.length]}`} style={{ width: `${pct(k)}%` }} title={`${label(labels, k)}: ${pct(k)}%`} />
             ))}
           </div>
+        ) : allowEmpty ? (
+          <p className="text-[13px] leading-snug text-muted">{allowEmpty}</p>
         ) : (
           <p id={errorId} className="flex items-start gap-1.5 text-[13px] leading-snug text-red-300">
             <CircleX size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -145,7 +149,7 @@ export const WeightsEditor: React.FC<{
           {keys.map((k) => {
             const v = weight(k);
             const name = label(labels, k);
-            const locked = v > 0 && active.length === 1;
+            const locked = !allowEmpty && v > 0 && active.length === 1;
             return (
               <li key={k} className="grid grid-cols-[minmax(7rem,1fr)_minmax(5rem,9rem)_4.5rem] items-center gap-2 text-[13px]">
                 <span data-field-label="" className={`truncate ${v > 0 ? 'text-fg' : 'text-subtle'}`} title={name}>
@@ -159,7 +163,7 @@ export const WeightsEditor: React.FC<{
                   value={v}
                   aria-label={`Peso de ${name}`}
                   aria-valuetext={v > 0 ? `${formatNumber(v)}, ${pct(k)}% das cenas${locked ? ', única opção ligada' : ''}` : 'desligado'}
-                  aria-describedby={active.length ? undefined : errorId}
+                  aria-describedby={active.length || allowEmpty ? undefined : errorId}
                   title={locked ? 'Única opção ligada: ligue outra antes de desligar esta.' : undefined}
                   onChange={(e) => set(k, Number(e.target.value))}
                   className="h-5 w-full cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-60"

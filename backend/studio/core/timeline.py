@@ -23,7 +23,7 @@ from studio.core.project.document import MediaRef, ProjectDoc, Scene
 from studio.core.project.media_edit import scene_label
 from studio.core.regions import region_codes, region_name
 from studio.core.styles.library import pick_weighted
-from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
+from studio.core.styles.schema import GRADE_PRESETS, StyleSpec, treatment_pool
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
 from studio.core.text import normalize_token, span_ranges, split_word_indices
 from studio.media.link_preview import _SEPARATORS as _HEADLINE_SEPARATORS
@@ -549,6 +549,8 @@ def build_timeline(
             scenes_out.append(resolved)
             sfx.extend(_scene_sfx(style, scene, resolved, s0, fps, first=(index == 0 and k == 0)))
 
+    mark_treatment_continuations(scenes_out)
+
     # Garante inícios estritamente crescentes (arredondamento) e cenas contínuas: cada uma termina onde a
     # próxima começa. Sem isso, blocos de render poderiam ter quadros a mais e o vídeo sairia deslocado.
     for i in range(1, len(scenes_out)):
@@ -712,6 +714,12 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     if frame:
         out["frame"] = frame
     _real_media_keys(doc, scene, lang, out)
+    treatment = scene_treatment(doc, style, scene, has_news="news" in out)
+    if treatment != "plain":
+        out["treatment"] = treatment
+        if is_first and treatment == "whiteboard":
+            # Primeira cena (o gancho no feed): a lousa já começa com parte do desenho e desenha rápido.
+            out["treatment_quick"] = True
     return out
 
 
@@ -768,6 +776,28 @@ def _data_items(kind: str, card: dict[str, Any], lang: str) -> None:
         card["items"] = out
     else:
         card.pop("items")
+
+
+def mark_treatment_continuations(scenes: list[dict[str, Any]]) -> None:
+    """Cena que mostra a mesma imagem da anterior com o mesmo tratamento (em geral a que a reaproveita logo
+    depois) continua o tratamento: `treatment_continue` leva a semente da cena que começou, e o renderer entra com
+    o desenho pronto, o recorte já na mesa ou o aparelho já em cena (mesma moldura), só com o zoom no foco."""
+    for prev, cur in zip(scenes, scenes[1:], strict=False):
+        treatment = cur.get("treatment")
+        if treatment and treatment == prev.get("treatment") and cur.get("src") and cur.get("src") == prev.get("src"):
+            cur["treatment_continue"] = prev.get("treatment_continue", prev["seed"])
+
+
+def scene_treatment(doc: ProjectDoc, style: StyleSpec, scene: Scene, *, has_news: bool = False) -> str:
+    """Variação de família da cena de imagem (whiteboard, colagem, tela), sorteada pelos pesos do estilo.
+    "plain" (imagem com câmera, sem chave na timeline) para os outros tipos de cena, para a cena com cartão
+    de notícia (o cartão já é o desenho dela) e para os estilos sem variação."""
+    if scene.kind != "image" or has_news:
+        return "plain"
+    pool = treatment_pool(style)
+    if not pool or set(pool) == {"plain"}:
+        return "plain"
+    return pick_weighted(pool, seed_from(doc.seed, scene.id, "treatment"))
 
 
 def image_framing(doc: ProjectDoc, scene: Scene) -> tuple[str | None, str | None]:

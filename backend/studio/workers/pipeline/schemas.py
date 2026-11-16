@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS
+from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS, TREATMENTS
 from studio.core.styles.visual import VISUAL_LANGUAGES
 from studio.media.audio import MOODS
 
@@ -200,7 +200,8 @@ STYLE_PATCH_SCHEMA = _obj(
 STYLE_FIELDS_HELP = f"""
 Campos editáveis do StyleSpec (use caminhos com pontos):
 - name, description
-- family: still_cinema | motion_graphics | analog | ai_video (outras famílias ainda não renderizam)
+- family: still_cinema | motion_graphics | analog | ai_video | illustrated_2d (lousa) | handmade (colagem) | screen_ui
+  (interface de tela) (data_geo e three_d ainda não renderizam)
 - structure: none | top10 | iceberg | tierlist | quiz | timeline | history_in_n | pov | series | would_you_rather
 - format.type: short | long ; format.aspect: "9:16" | "16:9" | "1:1" | "4:5" ; format.resolution: "1080x1920" | "1920x1080"
 - format.duration.target_s / min_s / max_s (segundos)
@@ -215,6 +216,9 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
   imagem ou vira cartão
 - edit.camera: pesos por movimento ({", ".join(CAMERA_MOVES)})
 - edit.transitions: pesos por transição ({", ".join(TRANSITIONS)})
+- edit.treatments: pesos do tratamento das cenas de imagem ({", ".join(TREATMENTS)}); vazio = automático pela família;
+  no projeto o mapa é trocado por inteiro (não mescla com o do estilo): {{}} volta ao automático, {{"plain": 1}} tira as
+  variações; um peso solto (edit.treatments.collage) parte dos pesos atuais
 - edit.transition_seconds, edit.zoom_strength (0–0.6)
 - edit.effects: lista de {{type, amount 0–1, preset?}}; tipos: grain, vignette, grade, scanlines, chromatic, vhs, light_leak,
   film_scratches, halftone, duotone, sepia, blur_edges, flicker, dust; presets de grade: {", ".join(GRADE_PRESETS)}

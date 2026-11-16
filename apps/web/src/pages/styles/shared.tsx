@@ -15,6 +15,7 @@ import {
   TEXT_ANIMATION_LABELS,
   THUMBNAIL_TEMPLATE_LABELS,
   TRANSITION_LABELS,
+  TREATMENT_LABELS,
   label,
   langLabel,
   type LabelMap,
@@ -232,6 +233,7 @@ const FIELD_LABELS: Record<string, string> = {
   'edit.shot_seconds.max': 'Cena máxima',
   'edit.camera': 'Movimentos de câmera',
   'edit.transitions': 'Transições',
+  'edit.treatments': 'Tratamento das cenas de imagem',
   'edit.transition_seconds': 'Duração da transição',
   'edit.effects': 'Efeitos',
   'edit.zoom_strength': 'Força do zoom',
@@ -369,6 +371,7 @@ export const formatValue = (path: string, value: unknown): string => {
     const obj = value as Record<string, unknown>;
     if (path === 'edit.camera') return weightsText(CAMERA_LABELS, obj);
     if (path === 'edit.transitions') return weightsText(TRANSITION_LABELS, obj);
+    if (path === 'edit.treatments') return Object.keys(obj).length ? weightsText(TREATMENT_LABELS, obj) : 'automático pela família';
     if (/^edit\.effects\.\d+$/.test(path)) return effectText(obj as Effect);
     return Object.entries(obj)
       .map(([k, v]) => `${fieldLabel(`${path}.${k}`)}: ${formatValue(`${path}.${k}`, v)}`)
