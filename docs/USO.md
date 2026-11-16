@@ -106,6 +106,25 @@ O Buffer publica no TikTok e no Instagram (Reels) pelo plano grátis. Como ele b
 
 A legenda é a mesma do pacote manual (texto, créditos das imagens e até 5 hashtags) e o rótulo de IA segue o estilo (como no YouTube). Renders com voz ou imagens de teste não podem ir ao Buffer, porque ele publica como público.
 
+### Instagram direto pela API oficial (Reels)
+
+Opcional: sem isso, o Instagram vai pelo pacote manual. Precisa de conta **profissional** (Empresa ou Criador de conteúdo).
+
+1. Em https://developers.facebook.com crie um app do tipo **Empresa** e adicione o produto **Instagram** (API com login do Instagram). Em "Instagram › API setup with Instagram business login", copie o **ID** e o **segredo do app do Instagram** para **Configurações › Publicação › Instagram (API oficial)**.
+2. Conecte a conta em **Configurações › Contas do Instagram**, de um destes jeitos:
+   - **Entrar com o Instagram**: cadastre o endereço de retorno em "Valid OAuth Redirect URIs" do app (o padrão é `http://127.0.0.1:8765/api/instagram/callback`). Se a Meta exigir https, cadastre um endereço seu (ex.: `https://localhost/`), salve-o nas opções e, depois do login, **cole o endereço final** da página no campo que aparece.
+   - **Token do painel**: em "Generate token", entre com a conta e cole o token. Ele vale 60 dias; o app renova sozinho ao publicar (a Meta só renova tokens com mais de 24 h). A validade mostrada é uma estimativa até a primeira renovação, que o app faz no primeiro uso depois de 24 h.
+3. O Instagram **baixa o vídeo de uma URL pública https** (o app roda só neste computador). Suba o MP4 final para um lugar público e cole o **link direto do arquivo** na hora de publicar (link de compartilhamento do Drive/Dropbox abre uma página, não o arquivo; URL pré-assinada de S3/R2 funciona), ou configure o **endereço público dos vídeos**: se você espelha **só a pasta `outputs`** do Vulto num endereço https (ex.: um bucket), cole o endereço que corresponde a ela; o app junta o caminho do vídeo dentro de `outputs` (`<projeto>/<idioma>/…`). A capa (JPEG) vai junto só nesse caso, e fica de fora se não responder.
+   > **Nunca publique a pasta de dados inteira.** Ela guarda `studio.db` (o cofre, com o segredo do app e os tokens do Instagram e do YouTube) e, quando o sistema não tem keyring, `.master.key`, a chave que abre esse cofre. Suba só os MP4/JPG finais ou só a pasta `outputs`.
+4. Na aba 4 do projeto, cartão **Instagram (Reels)**: escolha **API oficial** ou **Pacote manual** (com canal, a escolha fica salva no canal, assim como a conta, quando há mais de uma) e clique em **Publicar Reel**.
+
+O que saber:
+- Publica **na hora, como público**: a API não agenda nem faz post privado. Render com voz ou imagens de teste fica bloqueado.
+- Com o app da Meta em **modo de desenvolvimento**, o post só aparece para quem tem papel no app (teste num navegador deslogado).
+- Limite da Meta: **50 posts por conta a cada 24 h** (o app confere antes de enviar e mostra o uso em Configurações). Vídeo de 3 s a 15 min, até 300 MB; legenda até 2.200 caracteres e 30 hashtags.
+- O app consulta o processamento uma vez por minuto por até 5 min (como pede a Meta). Se passar disso, ou se algo falhar depois do envio (limite, rede, app fechado, cancelamento), a publicação fica **Processando** e **Retomar envio** (no cartão) ou **Tentar publicar de novo** (em Publicações) publica o mesmo envio, com a mesma conta (vale por 24 h). Enquanto ele existe, o app não deixa publicar outro igual.
+- **Rótulo de IA**: vai pela API (`is_ai_generated`) quando o estilo é fotorrealista ou usa vídeo IA. Se a API recusar, o app publica sem ele e avisa para marcar no celular.
+
 ### Agenda e horários de postagem
 
 - Em **Canais**, defina os **horários de postagem** de cada canal (dias da semana, hora e fuso; ex.: seg/qua/sex 18:00, America/Sao_Paulo).

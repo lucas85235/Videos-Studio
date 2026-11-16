@@ -25,6 +25,7 @@ import {
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api, LANGUAGES, type LibraryMusic, MOOD_LABELS, type Provider } from '../api';
+import { InstagramSection } from '../instagram';
 import { CREDENTIAL_FIELD_LABELS, label, PROVIDER_KIND_LABELS } from '../labels';
 import { useProviders } from '../shell/data';
 import {
@@ -148,7 +149,10 @@ const readyState = (providers: Provider[] | undefined, kind: Kind, loading: bool
   if (kind === 'publish') {
     const yt = chain[0];
     const buffer = list.find((p) => p.id === 'buffer');
-    if (yt?.available) return { tone: 'good', value: yt.name, hint: buffer?.available ? 'YouTube e Buffer (TikTok e Instagram) ativos' : 'Envio direto ativo' };
+    const insta = list.find((p) => p.id === 'instagram' && p.available);
+    const extras = [insta ? 'Instagram' : '', buffer?.available ? 'Buffer (TikTok e Instagram)' : ''].filter(Boolean);
+    if (yt?.available) return { tone: 'good', value: yt.name, hint: extras.length ? `Envio direto ativo (YouTube; também ${extras.join(' e ')})` : 'Envio direto ativo' };
+    if (insta) return { tone: 'good', value: insta.name, hint: `Envio direto só no Instagram${buffer?.available ? ' e pelo Buffer' : ''}. ${publishHint(yt)}` };
     if (buffer?.available) return { tone: 'good', value: buffer.name, hint: 'TikTok e Instagram pelo Buffer; YouTube só manual' };
     return { tone: 'warn', value: 'Só postagem manual', hint: publishHint(yt) };
   }
@@ -1095,6 +1099,7 @@ export const SettingsPage: React.FC = () => {
             <React.Fragment key={kind}>
               <ProviderSection kind={kind} providers={providers.data.filter((p) => p.kind === kind)} />
               {kind === 'tts' ? <VoiceSamplesSection /> : null}
+              {kind === 'publish' ? <InstagramSection /> : null}
             </React.Fragment>
           ))
         ) : providers.error ? (

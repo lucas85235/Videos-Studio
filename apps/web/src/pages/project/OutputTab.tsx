@@ -43,6 +43,7 @@ import {
   useYouTubeStatus,
   YouTubeCard,
 } from "./delivery/publishing";
+import { InstagramCard } from "./delivery/instagram";
 import {
   artifactsToken,
   BuildSummary,
@@ -568,6 +569,15 @@ export const OutputTab: React.FC<
               finalStale={finalStale}
               pickedSlot={pickedSlot}
               duration={entry?.duration}
+            />
+            <InstagramCard
+              detail={detail}
+              lang={lang}
+              entry={entry}
+              previewOnly={previewOnly}
+              busy={busy}
+              unsavedMeta={metaDirty}
+              finalStale={finalStale}
             />
           </div>
           <PublicationsList detail={detail} lang={lang} />

@@ -31,7 +31,9 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] **Testar o Buffer com uma conta real**: confirmar se o TikTok está liberado no plano grátis, se o Reel sai sozinho e se a URL `r2.dev` aguenta (a Cloudflare recomenda domínio próprio fora de testes).
 - [ ] Buffer: reabastecer a fila sozinho (hoje cada envio é pedido na tela), capa escolhida (`thumbnailOffset`; hoje vale a padrão do Buffer), MCP do Buffer para agentes e outras redes do Buffer (Threads, Facebook, YouTube Shorts).
 - [ ] Buffer: a conferência dos posts roda só com o app aberto; se o vídeo ficar muito tempo no R2 (app fechado), ele é apagado na próxima vez que o app abrir e conferir.
-- [ ] Driver nativo do Instagram (Standard Access) e teste de visibilidade pública.
+- [x] **Driver nativo do Instagram** (API com login do Instagram, Reels): login OAuth ou token do painel da Meta, token de 60 dias no cofre com renovação automática, envio por URL pública (informada na hora ou montada pelo "endereço público dos vídeos"), espera do processamento com retomada, limite de 50 posts/24 h, rótulo de IA (`is_ai_generated`) e escolha por canal entre API oficial e pacote manual (15/11/2026). Testado só com a API simulada.
+- [ ] **Instagram: teste real** com conta profissional e app da Meta: login com o endereço local (a Meta pode exigir https; aí cola-se o endereço final), primeiro Reel, rótulo de IA aceito ou não e **visibilidade pública** num navegador deslogado (em modo de desenvolvimento o post só aparece para quem tem papel no app). O driver nativo ainda não usa o R2 do Buffer: a URL pública do vídeo é por sua conta (link direto ou "endereço público dos vídeos").
+- [ ] Instagram nativo: subir o vídeo sozinho ao Cloudflare R2 (já usado pelo Buffer) em vez de pedir a URL pública.
 
 ### Voz e idiomas
 - [x] **Whisper local** instalado e no instalador (`--extra asr`): confere cada narração. Roda na CPU porque faltam as DLLs do CUDA 12 (cuBLAS/cuDNN); instalar o CUDA 12 deixaria mais rápido.

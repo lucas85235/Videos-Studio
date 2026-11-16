@@ -211,6 +211,8 @@ export const CREDENTIAL_FIELD_LABELS: LabelMap = {
   api_key: 'Chave de API',
   client_id: 'ID do cliente (OAuth)',
   client_secret: 'Segredo do cliente (OAuth)',
+  app_id: 'ID do app do Instagram',
+  app_secret: 'Segredo do app do Instagram',
   contact: 'Seu contato (site ou e-mail)',
   voice_id: 'ID da voz',
   token: 'Token de acesso',
@@ -315,6 +317,7 @@ export const THUMBNAIL_TEMPLATE_LABELS: LabelMap = {
 
 export const PUBLISH_DRIVER_LABELS: LabelMap = {
   youtube_native: 'YouTube (envio direto)',
+  instagram_native: 'Instagram (envio direto)',
   buffer: 'Buffer',
   manual_helper: 'Assistente manual',
   uploadpost: 'Upload-Post',
@@ -330,4 +333,5 @@ export const JOB_DONE_LABELS: LabelMap = {
   render: 'Vídeo renderizado',
   autopilot: 'Piloto automático concluído',
   publish_youtube: 'Vídeo enviado ao YouTube',
+  publish_instagram: 'Reel publicado no Instagram',
 };

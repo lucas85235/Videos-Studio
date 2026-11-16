@@ -19,6 +19,7 @@ from studio.api import (
     routes_checks,
     routes_factcheck,
     routes_import,
+    routes_instagram,
     routes_media,
     routes_misc,
     routes_ops,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_projects.router)
     app.include_router(routes_misc.router)
     app.include_router(routes_publish.router)
+    app.include_router(routes_instagram.router)
     app.include_router(routes_media.router)
     # Gestão de canal (ADR 0002)
     app.include_router(routes_analytics.router)
