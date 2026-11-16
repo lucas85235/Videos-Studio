@@ -326,4 +326,5 @@ export const JOB_DONE_LABELS: LabelMap = {
   render: 'Vídeo renderizado',
   autopilot: 'Piloto automático concluído',
   publish_youtube: 'Vídeo enviado ao YouTube',
+  ab_build: 'Versões A/B prontas',
 };

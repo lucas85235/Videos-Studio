@@ -333,7 +333,60 @@ export type Job = {
   finished_at: string | null;
 };
 
-export type Version = { number: number; parent: number | null; message: string; author: string; created_at: string | null };
+/** `branch`: "main" (linha principal, versão A) ou o nome de um ramo A/B ("b", "c"...). */
+export type Version = { number: number; parent: number | null; message: string; author: string; branch?: string; created_at: string | null };
+
+/** Ramo A/B de versões (a principal vem no mesmo formato, com `is_main`). */
+export type AbBranch = {
+  name: string;
+  letter: string;
+  label: string;
+  note: string;
+  base: number | null;
+  head: number;
+  status: 'principal' | 'aberto' | 'mesclado' | 'promovido' | 'descartado';
+  is_main: boolean;
+  last_preview: (BuildResult & { version?: number }) | null;
+  last_final: (BuildResult & { version?: number }) | null;
+  experiment_id: string | null;
+  created_at: string | null;
+  closed_at: string | null;
+};
+
+export type AbVideo = { publication_id: string; youtube_id: string; url: string | null; language: string; views?: number | null; age_hours?: number | null };
+
+export type AbReading = {
+  branch: string;
+  letter: string;
+  note: string;
+  a: { videos: AbVideo[]; views: number | null };
+  b: { videos: AbVideo[]; views: number | null };
+  experiment: { id: string; status: string; evaluation?: { text: string; winner: string | null } } | null;
+  direct: { leader: string | null; young: boolean; text: string } | null;
+};
+
+export type AbOverview = { main: AbBranch; branches: AbBranch[]; published: AbReading[] };
+
+export type AbSceneChange = { id: string; status: 'nova' | 'mudou' | 'saiu'; a: string | null; b: string | null };
+
+export type AbCompare = {
+  lang: string;
+  a: AbBranch;
+  b: AbBranch;
+  segments: {
+    id: string;
+    index: number;
+    role: string;
+    status: 'igual' | 'mudou' | 'novo' | 'saiu';
+    a: string | null;
+    b: string | null;
+    scenes_a: number;
+    scenes_b: number;
+    scene_changes: AbSceneChange[];
+  }[];
+  parts: { key: 'titulo' | 'estilo'; label: string; changed: boolean; a: string; b: string }[];
+  changed: number;
+};
 
 export type Publication = {
   id: string;
@@ -717,6 +770,7 @@ export const JOB_LABELS: Record<string, string> = {
   page_capture: 'Captura de página',
   reference_shots: 'Planos do vídeo de referência',
   thumbs_variants: 'Miniaturas para o teste A/B',
+  ab_build: 'Versões A/B',
 };
 
 /* ------------------------------------------------------------------ */

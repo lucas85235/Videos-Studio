@@ -123,6 +123,10 @@ Exemplos que funcionam bem:
 
 Toda mudança vira uma versão (aba Versões). Voltar a uma versão não paga de novo, porque os arquivos ficam no cache.
 
+### Versão B (teste A/B)
+
+Na aba Versões, **Criar versão B** (ou o ícone de ramo numa linha do histórico) cria uma cópia que você edita por instrução sem mexer na principal (a versão A). **Comparar A × B** mostra as duas prévias lado a lado e o que mudou trecho a trecho. **Gerar prévia de A e B** e **Renderizar A e B** fazem as duas num trabalho só (o que é igual é reaproveitado). Para terminar: marque trechos e **Mesclar escolhidos na A**, **B vence: virar a principal** ou **A vence: descartar a B**. Se publicar as duas no YouTube (a B sai como privada pela aba Versões; ou ligue o link de um vídeo já publicado), o Vulto abre um experimento em Desempenho com a variável "versão".
+
 ### Mídia real (fotos, notícias e material oficial)
 
 Ao criar as cenas, o Claude marca algumas batidas em que uma imagem real vale mais que a de IA: pessoa ou lugar real, produto, personagem oficial, notícia. Na aba Cenas, o cartão da cena mostra **Mídia real sugerida** e o que procurar; o painel da curadoria conta as sugestões (o **Ver** leva à primeira). Nada é anexado sozinho. Em qualquer outra cena, o botão **Mídia real** abre as mesmas opções.

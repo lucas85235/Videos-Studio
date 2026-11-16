@@ -1,9 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CircleCheck, FileText, History, LayoutGrid, MonitorPlay, Sparkles, Undo2, X, type LucideIcon } from 'lucide-react';
+import { CircleCheck, FileText, GitBranch, History, LayoutGrid, MonitorPlay, Sparkles, Undo2, X, type LucideIcon } from 'lucide-react';
 import React from 'react';
 import { api, type ProjectDetail, type Version } from '../../api';
 import { Badge, Button, ErrorBox, IconButton, Section, useConfirm } from '../../ui';
 import { useJobStarting, useStartJob } from '../ProjectPage';
+import { AbBranches } from './AbBranches';
 import { isOrphanScriptDraft, restoreNotices, scriptDrafts, useKeyedStore, useKeyedValue, useUnsavedCount } from './core/drafts';
 import { freshness, humanizeVersionMessage, versionMilestone, type MilestoneKind } from './core/model';
 import type { TabNavigation } from './types';
@@ -61,6 +62,8 @@ export const VersionsTab: React.FC<{ detail: ProjectDetail; busy?: boolean } & T
     },
   });
   const current = detail.project.current_version;
+  // Versão de onde nasce o próximo ramo A/B (null: o formulário de criar ramo está fechado).
+  const [branchFrom, setBranchFrom] = React.useState<number | null>(null);
   const closeNotice = () => restoreNotices.set(projectId, 'last', null);
 
   const restore = async (v: Version) => {
@@ -135,6 +138,8 @@ export const VersionsTab: React.FC<{ detail: ProjectDetail; busy?: boolean } & T
         </div>
       ) : null}
 
+      <AbBranches detail={detail} busy={busy} createFrom={branchFrom} onCreated={() => setBranchFrom(null)} />
+
       <Section
         title="Histórico de versões"
         icon={History}
@@ -153,6 +158,7 @@ export const VersionsTab: React.FC<{ detail: ProjectDetail; busy?: boolean } & T
                   const isCurrent = v.number === current;
                   const rowBusy = checkout.isPending && checkout.variables === v.number;
                   const text = humanizeVersionMessage(v.message);
+                  const onBranch = v.branch && v.branch !== 'main' ? v.branch.toUpperCase() : null;
                   return (
                     <li
                       key={v.number}
@@ -172,6 +178,11 @@ export const VersionsTab: React.FC<{ detail: ProjectDetail; busy?: boolean } & T
                             </>
                           ) : null}
                         </span>
+                        {onBranch ? (
+                          <Badge tone="info" icon={GitBranch} title={`Versão do ramo ${onBranch} (não mexe na principal)`}>
+                            {onBranch}
+                          </Badge>
+                        ) : null}
                         <span className={`line-clamp-2 sm:line-clamp-1 ${milestone ? 'font-medium text-fg' : 'text-fg'}`} title={text}>
                           {text}
                         </span>
@@ -186,7 +197,16 @@ export const VersionsTab: React.FC<{ detail: ProjectDetail; busy?: boolean } & T
                           {timeOf(v.created_at)}
                         </time>
                       </span>
-                      <span className="col-start-3 row-span-2 row-start-1 flex shrink-0 justify-end sm:w-24">
+                      <span className="col-start-3 row-span-2 row-start-1 flex shrink-0 items-center justify-end gap-1 sm:w-32">
+                        <IconButton
+                          size="sm"
+                          icon={GitBranch}
+                          label={`Criar uma versão A/B a partir da v${v.number}`}
+                          onClick={() => {
+                            setBranchFrom(v.number);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                        />
                         {isCurrent ? (
                           <Badge tone="good" icon={CircleCheck}>
                             Atual

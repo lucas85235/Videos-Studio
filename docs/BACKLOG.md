@@ -54,7 +54,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Verificador de novidade (impressões digitais visuais dos últimos vídeos).
 
 ### Produto
-- [ ] Ramos A/B de versões ("versão B do gancho").
+- [x] **Ramos A/B de versões** ("versão B do gancho"), 15/11/2026: aba Versões → Versões A/B. Criar ramo de qualquer versão, editar por instrução só no ramo, comparar A × B lado a lado (texto, cenas, título/estilo e as duas prévias), gerar prévia ou vídeo final das duas num job (`ab_build`, saída em `outputs/<projeto>/ramos/<nome>`), mesclar trechos escolhidos, tornar o ramo principal ou descartar. Publicar o ramo no YouTube (privado pela tela) ou pelo pacote manual, ou ligar um vídeo já publicado; com A e B no YouTube abre um experimento em Desempenho com a variável `versao`. Ficou de fora: a conferência antes de publicar (ADR 0003) e o teste A/B de miniaturas ainda olham só a principal (publicar um ramo como não privado exige confirmar "publicar mesmo assim" pela API; a tela envia só privado); a op `create_branch` do agente (o README a cita) não existe: o ramo é criado pela tela; o experimento por projeto costuma ter 1 vídeo por versão, então a leitura de Desempenho fica "cedo" (regra de 3+ vídeos) e a tela mostra a comparação direta de views como indicativa.
 - [x] Checagem de fatos com busca web no roteiro (onda 2, 15/11/2026): painel na aba Roteiro; busca web só pelo Claude Code.
 - [x] Repurposing: **Shorts cortados do longo** como projeto derivado que reaproveita a narração e as imagens do longo (onda 1, 15/11/2026).
 - [x] **Analytics básico**: métricas por vídeo (coleta do YouTube + lançamento à mão), experimentos com a regra calibrada do canais e lições (onda 1, 15/11/2026).

@@ -481,7 +481,7 @@ const isVisualVersion = (v: Version) =>
 const parseTime = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
 
 /** Jobs que regravam o timeline.json da prévia. */
-export const TIMELINE_JOB_KINDS = ["preview", "autopilot", "render"];
+export const TIMELINE_JOB_KINDS = ["preview", "autopilot", "render", "ab_build"];
 
 /** Job concluído mais recente de um dos tipos. */
 export const lastDoneJob = (
