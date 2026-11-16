@@ -6,6 +6,7 @@ import { Captions, captionCenter, captionHalfHeight, captionTop } from './Captio
 import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
 import { assetUrl, CreditChip, creditChipHalf, creditChipPlace, NewsCard } from './RealMedia';
+import { ClipLayer } from './ClipLayer';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
 import { VisualLayer } from './VisualLayer';
@@ -121,6 +122,8 @@ const titleEchoesSpeech = (scene: TimelineScene) => {
 export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticBase, lang = 'pt-BR' }) => {
   const { fps, width, height } = useVideoConfig();
   const url = assetUrl(scene.src, assetBaseUrl);
+  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras.
+  const clipUrl = scene.kind === 'video' ? assetUrl(scene.video, assetBaseUrl) : null;
   const cards = style.textCards;
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
@@ -188,6 +191,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
       {kind === 'document' ? (
         <DocumentCard url={url} scene={scene} style={cards} filter={imageFilter(style.effects, scene.look)} />
+      ) : clipUrl ? (
+        <ClipLayer scene={scene} effects={style.effects} url={clipUrl} />
       ) : (
         <VisualLayer
           scene={scene}

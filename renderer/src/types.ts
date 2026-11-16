@@ -89,6 +89,10 @@ export type TimelineScene = {
   credit?: string;
   /** Cartão de notícia (cena de imagem dona da notícia). Ausente: cena sem notícia. */
   news?: TimelineNews;
+  /** Vídeo IA pronto da cena-chave (caminho relativo do clipe): toca no lugar da imagem. Ausente: a imagem. */
+  video?: string;
+  /** Duração do clipe em segundos (para cobrir a cena: um pouco mais lento e, se faltar, o último quadro). */
+  video_seconds?: number;
 };
 
 export type EffectSpec = { type: string; amount: number; preset?: string | null; params?: Record<string, unknown> };

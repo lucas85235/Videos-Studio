@@ -583,6 +583,14 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
 ### 8.5 Vídeo IA
 - **Local não é viável para produção** em 8 GB/60 W: Wan 2.2 5B a 720p pede 24 GB; HunyuanVideo 1.5 pede 14 GB; o LTX-2.5 é enorme. Experimentos com Wan2GP a 480p levam ~2 min por clipe de 2–3 s, com muitos descartes.
 - **Produção**: fal.ai (Kling, Veo, Seedance) só em cenas-chave + **Ken Burns/parallax** nas imagens.
+- **Como funciona no app** (15/11/2026): na aba Cenas, "Animar com vídeo IA" marca a cena (tipo `video`); o storyboard
+  sugere as batidas com movimento (`video_motion`) e "Marcar as sugeridas" aplica. A imagem da cena é o primeiro quadro.
+  O painel "Vídeo IA nas cenas-chave" mostra o custo do que falta (e o pior caso, se o primeiro modelo falhar) e só gera
+  depois da confirmação; o job para antes de passar do valor confirmado. A prévia e o vídeo final **nunca** geram clipe:
+  usam os que estão no cache (chave: o arquivo da imagem, o movimento e a duração) e, sem clipe, a cena fica com a
+  imagem e o movimento de câmera. Cadeia padrão (`art.video_chain`): Kling 2.5 Turbo Pro (US$ 0,35 por 5 s) → Kling 3
+  Turbo Standard (US$ 0,112/s), pela fila assíncrona do fal.ai, com a chave `FAL_KEY` ou a do cofre. Limite por vídeo
+  (`art.video_scenes`): 2 no Short e 6 no longo. Cena com mídia real não é animada.
 
 ### 8.6 Regras de operação do notebook
 - Jobs pesados **ligado na tomada**, no modo de desempenho da Samsung.

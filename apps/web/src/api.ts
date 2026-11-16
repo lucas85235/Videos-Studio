@@ -181,6 +181,40 @@ export type Scene = {
   focus?: string | null;
   /** Sugestão de mídia real do storyboard (null: nenhuma). */
   real?: RealHint | null;
+  /** Vídeo IA da cena-chave (vale com kind "video"): movimento em inglês e duração pedida. */
+  clip?: ClipSpec | null;
+  /** Sugestão do storyboard: esta cena ganha com vídeo IA (o texto é o movimento). Nada é aplicado sozinho. */
+  video_hint?: string | null;
+};
+
+export type ClipSpec = { prompt: string; seconds: number };
+
+/** Estado do vídeo IA do projeto (GET /api/projects/{id}/video). */
+export type VideoClipItem = {
+  scene_id: string;
+  label: string;
+  seconds: number;
+  prompt: string;
+  hint: string;
+  status: 'ready' | 'missing' | 'blocked';
+  detail: string;
+  clip_seconds?: number;
+  cost_usd?: number;
+  provider?: string | null;
+};
+export type VideoStatus = {
+  max_scenes: number;
+  provider: string | null;
+  provider_name: string | null;
+  available: boolean;
+  reason: string;
+  chain: string[];
+  scenes: VideoClipItem[];
+  missing: number;
+  estimated_cost_usd: number;
+  max_cost_usd: number;
+  suggestions: string[];
+  job: Job | null;
 };
 
 export type ArtEntity = { id: string; name: string; look: string; real?: boolean };
@@ -370,7 +404,7 @@ export type StyleSpec = {
   script: { tone: string; structure: string[]; hook_max_s: number; fact_check: boolean; cta: string | null; banned_phrases: string[] };
   voice: { chain: string[]; voice: string | null; style_prompt: string | null; speed: number; gap_s: number; voice_profile: string | null; preview?: PreviewVoice };
   /** `languages`: linguagens visuais preferidas (a primeira dominante; vazio = livre). */
-  art: { bible: string; banned: string[]; image_chain: string[]; thumbnail_chain: string[]; photoreal: boolean; languages?: string[] };
+  art: { bible: string; banned: string[]; image_chain: string[]; thumbnail_chain: string[]; photoreal: boolean; languages?: string[]; video_chain?: string[]; video_scenes?: number | null };
   edit: {
     shot_seconds: { min: number; max: number };
     /** Fração das batidas que pode ganhar imagem nova (o resto reaproveita ou vira cartão). */

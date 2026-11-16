@@ -34,7 +34,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 ### Estilos e render
 - [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
 - [ ] Parallax 2.5D com mapa de profundidade (Depth Anything V2 Small ou DA3, só licenças Apache).
-- [ ] Vídeo IA (image-to-video via fal.ai) em cenas-chave; o tipo de cena `video` existe no esquema, mas não tem gerador.
+- [x] **Vídeo IA (image-to-video via fal.ai) em cenas-chave** (15/11/2026): Kling 2.5 Turbo Pro → Kling 3 Turbo pela fila assíncrona do fal.ai (chave `FAL_KEY` ou Configurações → Vídeo IA), até 2 cenas no Short e 6 no longo (`art.video_scenes`), sugestão do storyboard (`video_motion`), custo mostrado e confirmado antes de gerar (o job para antes de passar do valor), cache por hash e o renderer tocando o clipe (`OffthreadVideo`). Testado só com a API simulada. Ficou de fora: upload da imagem para o CDN do fal (vai como data URI, que basta para o primeiro quadro em JPEG), o primeiro clipe real (validar qualidade, tempo de fila e cobrança) e escolher o modelo por estilo na tela (hoje só pelo `art.video_chain` do estilo).
 - [ ] Estilo a partir de **vídeo de referência** (PySceneDetect/TransNetV2, paleta, ritmo).
 - [ ] **Style Lab**: componentes novos escritos por IA, com portões de teste.
 - [ ] LUTs reais (.cube) e os efeitos nativos do `@remotion/effects`; hoje a gradação é feita com filtros CSS.
