@@ -41,7 +41,11 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Vozes locais em japonês e chinês: o Kokoro precisa de outro conversor de fonemas (misaki) para esses idiomas; hoje a prévia usa a voz final neles.
 - [ ] Voz do Gemini com estilo: hoje vai só o texto (a instrução vazava). Testar de novo quando o Google atualizar o modelo de TTS (`VS_GEMINI_TTS_STYLE=1`).
 - [ ] Clonagem da sua voz: assistente de gravação, Applio/RVC e Qwen3-TTS local (o adapter `qwen3_tts_local` é só um marcador).
-- [ ] **Modo B multi-idioma** (várias faixas de áudio no mesmo vídeo): tradução com orçamento de duração, time-stretch e pacote para o YouTube Studio.
+- [x] **Modo B multi-idioma** (várias faixas de áudio no mesmo vídeo): tradução com orçamento de duração por segmento (e uma rodada para encurtar o que passa), time-stretch com `atempo` de -8% a +10% com aviso fora disso, rodada de encurtar só os trechos longos para quem passa ao Modo B depois da tradução, mix por idioma sobre o mesmo vídeo, legendas e títulos de todos os idiomas pela API ao publicar e pacote para o YouTube Studio (15/11/2026). Ficou de fora:
+  - envio das faixas de áudio: o YouTube não tem API para isso, o passo no Studio é manual (checklist no pacote);
+  - textos na tela (cartões, sobreposições) continuam no idioma principal em todas as faixas; um modo "sem texto na tela" no storyboard ajudaria;
+  - o orçamento da tradução é estimado pelas palavras por minuto do estilo, não pela duração real da narração já gravada; a velocidade do TTS não é ajustada por idioma (só o `atempo` depois, de -8% a +10%);
+  - não testado com um canal real (o primeiro envio deve ser privado).
 - [ ] Normalização de números e estrangeirismos para TTS local.
 - [ ] Glossário por canal na tradução.
 

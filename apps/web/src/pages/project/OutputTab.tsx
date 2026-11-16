@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   Check,
   Download,
   Film,
@@ -28,6 +29,7 @@ import { ShortsFromLong } from "./delivery/ShortsFromLong";
 import { PreflightPanel } from "./delivery/PreflightPanel";
 import { PreflightBadge } from "./delivery/preflight/state";
 import { ThumbVariants } from "./delivery/ThumbVariants";
+import { MultiTrackPanel } from "./delivery/MultiTrackPanel";
 import { tabOwnsAction } from "./core/NextStep";
 import {
   discardMetaDraft,
@@ -193,10 +195,13 @@ export const OutputTab: React.FC<
   );
   const previewEntry = detail.outputs.preview?.langs?.[lang];
   const { approved: previewApproved } = previewApproval(detail);
-  const finalStale = Boolean(entry?.video) && isFinalStale(detail);
+  // Modo B: este idioma é só a faixa de áudio do vídeo do idioma principal (não tem MP4 próprio, e está pronto).
+  const dubOf = entry?.dub_of && !entry.video ? entry.dub_of : null;
+  const rendered = Boolean(entry?.video) || Boolean(dubOf);
+  const finalStale = rendered && isFinalStale(detail);
 
   // Atalhos para as seções (a trilha de etapas fica só na faixa "Próximo passo").
-  const videoDone = Boolean(entry?.video) && !finalStale;
+  const videoDone = rendered && !finalStale;
   const metaDone = Boolean(meta?.title) && !metaDirty;
   const publishDone = detail.publications.some(
     (p) => p.language === lang && DONE_PUBLICATION.has(p.status),
@@ -220,17 +225,17 @@ export const OutputTab: React.FC<
   const renderDisabled = busy || !doc.scenes.length;
   // Primário só quando está liberado e a faixa não mostra o primário dela.
   const renderEmphasis =
-    !renderDisabled && (finalStale || !entry?.video) && !bannerPrimary;
+    !renderDisabled && (finalStale || !rendered) && !bannerPrimary;
   const renderButton = () => (
     <Button
       variant={renderEmphasis ? "primary" : "secondary"}
-      icon={entry?.video ? RotateCw : Film}
+      icon={rendered ? RotateCw : Film}
       disabled={renderDisabled}
       busy={startKind === "render"}
       title={busy ? "Aguarde a tarefa em andamento terminar." : undefined}
       onClick={() => startJob.mutate({ kind: "render" })}
     >
-      {entry?.video ? "Renderizar de novo" : "Renderizar vídeo final"}
+      {rendered ? "Renderizar de novo" : "Renderizar vídeo final"}
     </Button>
   );
 
@@ -276,7 +281,7 @@ export const OutputTab: React.FC<
           languages={doc.languages}
           value={lang}
           onChange={setLang}
-          ready={(l) => Boolean(final?.langs?.[l]?.video)}
+          ready={(l) => Boolean(final?.langs?.[l]?.video || final?.langs?.[l]?.dub_of)}
           readyLabel="vídeo pronto"
         />
       </div>
@@ -298,7 +303,7 @@ export const OutputTab: React.FC<
                 ? `${formatDuration(entry.duration)}${doc.languages.length > 1 ? ` · ${langLabel(lang)}` : ""} · Renderizar de novo só grava o que mudou.`
                 : "A renderização grava a narração com a voz do vídeo final e monta o MP4 com as imagens da prévia."
             }
-            actions={entry?.video && !finalStale ? renderButton() : undefined}
+            actions={rendered && !finalStale ? renderButton() : undefined}
           >
             {renderJob ? null : (
               <FinalVoiceSummary detail={detail} busy={busy} lang={lang} />
@@ -350,6 +355,15 @@ export const OutputTab: React.FC<
               </Notice>
             ) : null}
 
+            {entry && dubOf ? (
+              <Notice tone="info" icon={AudioLines} title={`Faixa de áudio do vídeo em ${langLabel(dubOf)}`}>
+                <p>
+                  Com as faixas no mesmo vídeo, {langLabel(lang)} não tem vídeo próprio: a faixa abaixo vai no
+                  YouTube Studio (veja Idiomas no YouTube, mais abaixo).
+                </p>
+                <audio controls preload="none" src={withBust(fileUrl(entry.mix), token)} className="mt-2 w-full" />
+              </Notice>
+            ) : null}
             {entry?.video ? (
               <>
                 <video
@@ -425,7 +439,7 @@ export const OutputTab: React.FC<
                 </div>
                 <ThumbVariants detail={detail} lang={lang} />
               </>
-            ) : renderJob ? null : (
+            ) : renderJob || entry?.dub_of ? null : (
               <Empty
                 icon={Film}
                 title="O vídeo final ainda não foi renderizado"
@@ -476,6 +490,7 @@ export const OutputTab: React.FC<
       </div>
 
       <PreflightPanel detail={detail} lang={lang} />
+      <MultiTrackPanel detail={detail} busy={busy} />
 
       {/* 3. Publicar */}
       <div id={STEP_IDS.publish} tabIndex={-1} className="focus:outline-none">
@@ -525,6 +540,23 @@ export const OutputTab: React.FC<
               }
             />
           ) : null}
+          {dubOf ? (
+            <Notice
+              tone="info"
+              icon={AudioLines}
+              title={`Esta faixa vai junto com o vídeo em ${langLabel(dubOf)}`}
+              actions={
+                <Button size="sm" onClick={() => setLang(dubOf)}>
+                  Ir para {langLabel(dubOf)}
+                </Button>
+              }
+            >
+              Publique o idioma principal ({langLabel(dubOf)}) e envie a faixa
+              de {langLabel(lang)} pelo pacote do Studio (Idiomas no YouTube,
+              acima). Título, descrição e legendas deste idioma vão junto ao
+              publicar o vídeo principal pelo app.
+            </Notice>
+          ) : (
           <div className="grid items-start gap-4 @4xl:grid-cols-2">
             <YouTubeCard
               detail={detail}
@@ -580,6 +612,7 @@ export const OutputTab: React.FC<
               finalStale={finalStale}
             />
           </div>
+          )}
           <PublicationsList detail={detail} lang={lang} />
         </Section>
       </div>

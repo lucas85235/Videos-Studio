@@ -370,7 +370,9 @@ export const YouTubeCard: React.FC<{
   // Só a cota de envios de vídeo bloqueia: sem a cota geral o vídeo sobe (capa, legendas e playlist falham).
   const quotaOver = Boolean(quota.data?.uploads_over);
 
-  const block = !entry?.video
+  const block = entry?.dub_of && !entry.video
+    ? `Esta faixa vai junto com o vídeo em ${langLabel(entry.dub_of)}: publique o idioma principal e envie a faixa pelo pacote do Studio.`
+    : !entry?.video
     ? "Renderize o vídeo final deste idioma primeiro."
     : publishJob
       ? null

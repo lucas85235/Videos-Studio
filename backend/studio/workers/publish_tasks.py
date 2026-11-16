@@ -22,6 +22,7 @@ from studio.workers.jobs import JobContext, job
 from studio.workers.ops import pending
 from studio.workers.publish import buffer, buffer_flow, quota, r2, youtube_channels
 from studio.workers.publish import instagram as ig
+from studio.workers.pipeline.dubbing import MULTI_TRACK
 from studio.workers.publish import youtube as yt
 from studio.workers.publish.credits import credit_lines, credits_block, has_editorial
 from studio.workers.publish.package import caption_for
@@ -133,6 +134,14 @@ def _playlist_choice(payload: dict[str, Any], channel_id: str | None) -> dict[st
     return youtube_channels.default_playlist(settings)
 
 
+def dub_track_message(primary: str) -> str:
+    """Idioma que, no Modo B, é só faixa de áudio do vídeo principal (não tem vídeo próprio para enviar)."""
+    from studio.workers.pipeline.authoring import lang_name
+
+    return (f"este idioma é uma faixa de áudio do vídeo em {lang_name(primary)}: publique o idioma principal e envie "
+            "a faixa pelo pacote do Studio (aba Saída)")
+
+
 @job("publish_youtube")
 def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     """Envia o vídeo final de um idioma ao YouTube (privado, não listado, público ou agendado)."""
@@ -145,6 +154,8 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
     privacy = payload.get("privacy", "private")
     last = row["settings"].get("last_final") or {}
     entry = (last.get("langs") or {}).get(lang)
+    if entry and entry.get("dub_of") and not entry.get("video"):
+        raise ValueError(dub_track_message(entry["dub_of"]))
     if not entry or not entry.get("video"):
         raise ValueError("renderize o vídeo final deste idioma antes de publicar")
     preview_only = last.get("preview_only_providers") or []
@@ -164,9 +175,14 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
         "defaultLanguage": lang,
         "defaultAudioLanguage": lang,
     }
-    localizations = youtube_localizations(doc, lang, links) if payload.get("localize") else {}
     # Token do canal do projeto (vinculado em Canais); sem vínculo, a conta escolhida no envio ou a global.
     channel_id = row.get("channel_id") or doc.channel_id
+    # Modo B (faixas de idioma no mesmo vídeo): títulos, descrições e legendas de todos os idiomas vão junto. As
+    # faixas de áudio não têm API: vão à mão pelo pacote (Studio → Idiomas → Dublagem).
+    multi_track = last.get("delivery") == MULTI_TRACK and lang == doc.primary_language
+    localizations = youtube_localizations(doc, lang, links) if payload.get("localize") or multi_track else {}
+    dub_captions = [(other, e["srt"]) for other, e in (last.get("langs") or {}).items()
+                    if multi_track and other != lang and e.get("srt")] if payload.get("captions", True) else []
     account = yt.account_for_channel(channel_id, payload.get("account") or None)
     playlist = _playlist_choice(payload, channel_id)
     data_dir = get_settings().data_dir
@@ -193,6 +209,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
     estimate = quota.publish_estimate(thumbnail=bool(thumb_rel),
                                       captions=bool(entry.get("srt") and payload.get("captions", True)),
                                       playlist=bool(playlist))
+    estimate += len(dub_captions) * quota.cost("captions.insert")  # legendas dos outros idiomas no Modo B
     try:
         warnings.extend(quota.check_publish(estimate))
     except quota.QuotaExhausted as exc:
@@ -221,6 +238,11 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 yt.upload_captions(video_id, data_dir / entry["srt"], lang, client, account=account)
             except yt.YouTubeError as exc:
                 warnings.append(str(exc))
+        for other, srt in dub_captions:
+            try:
+                yt.upload_captions(video_id, data_dir / srt, other, client, account=account)
+            except yt.YouTubeError as exc:
+                warnings.append(f"{other}: {exc}")
         if playlist:
             ctx.progress(0.95, "Colocando o vídeo na playlist")
             try:
@@ -228,6 +250,9 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
             except yt.YouTubeError as exc:
                 warnings.append(str(exc))
                 playlist = {**playlist, "error": str(exc)}
+    if multi_track:
+        warnings.append("Faixas de áudio dos outros idiomas: envie pelo YouTube Studio (Idiomas → Dublagem) com o "
+                        "pacote de faixas da aba Saída; a API do YouTube não aceita faixas extras.")
     url = f"https://youtu.be/{video_id}"
     try:  # o vídeo já subiu: uma falha aqui não pode impedir o registro da publicação
         thumbs_details = _thumbs_followup(project_id, row.get("channel_id") or doc.channel_id, row["settings"], lang,
@@ -250,6 +275,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,
                          "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
+                         **({"caption_langs": sorted(o for o, _ in dub_captions)} if dub_captions else {}),
                          "youtube_channel": yt.account_title(account), "playlist": playlist, **credits_details,
                          **thumbs_details},
             )

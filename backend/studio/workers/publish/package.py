@@ -92,6 +92,10 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
     style = get_style(doc.style_id, doc.style_overrides)
     last = row["settings"].get("last_final") or {}
     entry = (last.get("langs") or {}).get(lang)
+    if entry and entry.get("dub_of") and not entry.get("video"):
+        from studio.workers.publish_tasks import dub_track_message
+
+        raise ValueError(dub_track_message(entry["dub_of"]))
     if not entry or not entry.get("video"):
         raise ValueError("renderize o vídeo final deste idioma antes de gerar o pacote")
     preview_only = last.get("preview_only_providers") or []
@@ -202,3 +206,27 @@ def list_publications(project_id: str) -> list[dict[str, Any]]:
             }
             for r in rows
         ]
+
+
+def build_dub_package(project_id: str) -> dict[str, Any]:
+    """Refaz o pacote de faixas de idioma (Modo B) a partir do último vídeo final: pega os títulos atuais e, se o
+    vídeo já foi enviado pelo app, o link direto dele no Studio."""
+    from studio.workers.pipeline.authoring import lang_name
+    from studio.workers.pipeline.dubbing import MULTI_TRACK, write_package
+
+    settings = get_settings()
+    row = service.get_project_row(project_id)
+    doc = service.get_doc(project_id)
+    last = row["settings"].get("last_final") or {}
+    if last.get("delivery") != MULTI_TRACK:
+        raise ValueError("renderize o vídeo final com as faixas de idioma no mesmo vídeo antes de gerar o pacote")
+    entries = {lang: e for lang, e in (last.get("langs") or {}).items() if e.get("mix") or e.get("srt")}
+    with session_scope() as s:
+        pub = (s.query(Publication).filter_by(project_id=project_id, platform="youtube", language=doc.primary_language)
+               .filter(Publication.external_id.isnot(None)).order_by(Publication.created_at.desc()).first())
+        video_id = pub.external_id if pub else None
+    folder = settings.outputs_dir / project_id / "faixas-youtube"
+    manifest = write_package(folder, doc=doc, entries=entries, data_dir=settings.data_dir, summary=last.get("dub"),
+                             video_id=video_id, warnings=last.get("warnings") or [], label=lang_name)
+    rel = folder.resolve().relative_to(settings.data_dir.resolve()).as_posix()
+    return {"folder": rel, "path": str(folder), "checklist": f"{rel}/CHECKLIST.md", **manifest}

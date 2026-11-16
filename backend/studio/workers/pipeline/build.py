@@ -30,7 +30,7 @@ from studio.core.project.media_edit import scene_label
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
-from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
+from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline, normalize_words
 from studio.media import audio as audio_mod
 from studio.media import audio_check, music_library
 from studio.media.ffmpeg import read_wav
@@ -41,6 +41,7 @@ from studio.media.video import assemble
 from studio.providers import kokoro, registry
 from studio.providers.align import map_to_script, narration_problems, word_error_rate
 from studio.providers.base import Word
+from studio.workers.pipeline import dubbing
 from studio.workers.pipeline.lighting import names_light, strip_light
 
 log = logging.getLogger(__name__)
@@ -247,6 +248,14 @@ class Builder:
         self._done = 0
         self._total = 1
         self._progress_lock = threading.Lock()
+        self.multi_track = dubbing.is_multi_track(self.style, self.doc)
+        if self.multi_track:
+            # Modo B: a imagem é a do idioma principal e serve a todas as faixas. O principal sempre entra (é a
+            # referência do tempo) e nada de legenda queimada: as legendas vão como faixas de closed caption.
+            primary = self.doc.primary_language
+            if primary not in self.langs:
+                self.langs = [primary, *self.langs]
+            self.style.edit.captions.style = "none"
 
     # ---------------------------------------------------------------------------------------
     # utilidades
@@ -815,7 +824,7 @@ class Builder:
         self.store.save("sfx", h, {"path": self.store.rel(path), "files": [self.store.rel(path)]}, "procedural")
         return path
 
-    def mix(self, lang: str, timeline: dict[str, Any], tts_hashes: dict[str, str]) -> str:
+    def mix(self, lang: str, timeline: dict[str, Any], tts_hashes: dict[str, str], *, wav: bool = False) -> str:
         total = timeline["duration"]
         music = self.music(total, timeline)
         beds = music[1].get("beds") if music else None
@@ -863,6 +872,8 @@ class Builder:
         # mix guardado com o som antigo é refeito. Sem esses tipos, a chave fica a de antes (nada é refeito à toa).
         if any(e["type"] in audio_mod.SFX_RETUNED for e in sfx_events):
             inputs["sfx_v"] = audio_mod.SFX_VERSION
+        if wav:
+            inputs["fmt"] = "wav"  # faixa do Modo B para o YouTube Studio (sem perda)
         h = hash_obj(inputs)
         cached = self.store.lookup("mix", h)
         if cached:
@@ -879,7 +890,7 @@ class Builder:
                                               out_dir / "sfx.wav")
         mixed = audio_mod.mix_tracks(
             voice,
-            out_dir / "mix.m4a",
+            out_dir / ("mix.wav" if wav else "mix.m4a"),
             music=self.store.abs(music[1]["path"]) if music else None,
             music_db=music[1]["volume_db"] if music else -22,
             ducking=self.style.audio.music.ducking,
@@ -1074,7 +1085,10 @@ class Builder:
             self.warnings.append(EDITORIAL_WARNING)
 
         results: dict[str, Any] = {}
-        for lang in self.langs:
+        extra: dict[str, Any] = {}
+        if self.multi_track:
+            results, extra = self._run_multi_track(tts_out, images)
+        for lang in [] if self.multi_track else self.langs:
             self._check()
             clips: dict[str, NarrationClip] = {}
             hashes: dict[str, str] = {}
@@ -1088,37 +1102,14 @@ class Builder:
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")
-            out_dir = self.outputs_dir(lang)
-            timeline_doc = {**timeline, "mix": mix_rel, "version": service.get_project_row(self.project_id)["current_version"]}
-            (out_dir / "timeline.json").write_text(json.dumps(timeline_doc, ensure_ascii=False), encoding="utf-8")
-            srt_path = out_dir / "legendas.srt"
-            srt_path.write_text(timeline_to_srt(timeline), encoding="utf-8")
-            entry: dict[str, Any] = {
-                "timeline": self.store.rel(out_dir / "timeline.json"),
-                "mix": mix_rel,
-                "srt": self.store.rel(srt_path),
-                "duration": timeline["duration"],
-                "scenes": len(timeline["scenes"]),
-                "chapters": timeline.get("chapters", []),
-            }
+            entry = self._write_outputs(lang, timeline, mix_rel, timeline_to_srt(timeline))
             self._tick("Prévia pronta")
             if self.mode == "final":
-                chunk_paths = self.render_chunks(lang, timeline, lambda msg: self._tick(msg))
-                final_rel = self.final_video(lang, timeline, chunk_paths, mix_rel)
-                slug = "".join(ch if ch.isalnum() else "-" for ch in doc.title.lower())[:60].strip("-") or "video"
-                target = out_dir / f"{slug}.mp4"
-                shutil.copyfile(self.store.abs(final_rel), target)
-                entry["video"] = self.store.rel(target)
-                self._tick("Vídeo final montado")
-                thumb_rel = self.thumbnail(lang, images)
-                if thumb_rel:
-                    thumb_target = out_dir / "thumbnail.jpg"
-                    shutil.copyfile(self.store.abs(thumb_rel), thumb_target)
-                    entry["thumbnail"] = self.store.rel(thumb_target)
-                self._tick("Thumbnail pronta")
+                self._render_final(lang, timeline, mix_rel, images, entry)
             results[lang] = entry
         self.sink.progress(1.0, "Concluído")
         return {
+            **extra,
             "mode": self.mode,
             "langs": results,
             "generated": self.stats.generated,
@@ -1129,6 +1120,166 @@ class Builder:
             "music": self.music_used,
             "artifacts": sorted(f"{kind}:{h}" for kind, h in self.store.touched),
         }
+
+    def _write_outputs(self, lang: str, timeline: dict[str, Any], mix_rel: str, srt: str) -> dict[str, Any]:
+        """Grava a timeline e as legendas do idioma na pasta de saída e devolve a entrada do resultado.
+
+        `timeline.json` e `legendas.srt` são da última prévia ou render (o player lê a timeline daí). No render final
+        também sai uma cópia própria (`timeline-final.json`, `legendas-final.srt`) e a entrada aponta para ela: uma
+        prévia depois do render (tradução editada, outro modo de entrega) regrava os arquivos comuns, e as legendas
+        enviadas ao YouTube ou postas no pacote precisam bater com o MP4 e as faixas do último render final."""
+        out_dir = self.outputs_dir(lang)
+        timeline_doc = {**timeline, "mix": mix_rel, "version": service.get_project_row(self.project_id)["current_version"]}
+        timeline_text = json.dumps(timeline_doc, ensure_ascii=False)
+        (out_dir / "timeline.json").write_text(timeline_text, encoding="utf-8")
+        srt_path = out_dir / "legendas.srt"
+        srt_path.write_text(srt, encoding="utf-8")
+        timeline_path = out_dir / "timeline.json"
+        if self.mode == "final":
+            timeline_path = out_dir / "timeline-final.json"
+            timeline_path.write_text(timeline_text, encoding="utf-8")
+            srt_path = out_dir / "legendas-final.srt"
+            srt_path.write_text(srt, encoding="utf-8")
+        return {
+            "timeline": self.store.rel(timeline_path),
+            "mix": mix_rel,
+            "srt": self.store.rel(srt_path),
+            "duration": timeline["duration"],
+            "scenes": len(timeline["scenes"]),
+            "chapters": timeline.get("chapters", []),
+        }
+
+    def _render_final(self, lang: str, timeline: dict[str, Any], mix_rel: str, images: dict[str, str | None],
+                      entry: dict[str, Any]) -> None:
+        """Renderiza os blocos, monta o MP4 e a thumbnail do idioma (modo "final")."""
+        out_dir = self.outputs_dir(lang)
+        chunk_paths = self.render_chunks(lang, timeline, lambda msg: self._tick(msg))
+        final_rel = self.final_video(lang, timeline, chunk_paths, mix_rel)
+        slug = "".join(ch if ch.isalnum() else "-" for ch in self.doc.title.lower())[:60].strip("-") or "video"
+        target = out_dir / f"{slug}.mp4"
+        shutil.copyfile(self.store.abs(final_rel), target)
+        entry["video"] = self.store.rel(target)
+        self._tick("Vídeo final montado")
+        thumb_rel = self.thumbnail(lang, images)
+        if thumb_rel:
+            thumb_target = out_dir / "thumbnail.jpg"
+            shutil.copyfile(self.store.abs(thumb_rel), thumb_target)
+            entry["thumbnail"] = self.store.rel(thumb_target)
+        self._tick("Thumbnail pronta")
+
+    # ---------------------------------------------------------------------------------------
+    # Modo B: várias faixas de idioma no mesmo vídeo (README §7.3)
+    # ---------------------------------------------------------------------------------------
+    def stretched(self, tts_hash: str, tts_out: dict[str, Any], tempo: float) -> tuple[str, str]:
+        """Narração acelerada ou desacelerada por `tempo` (FFmpeg atempo), em cache: (caminho relativo, hash). Sem
+        ajuste (`fit_segments` já arredonda para 1.0 o que o FFmpeg não aplicaria), devolve a própria narração."""
+        if abs(tempo - 1.0) < dubbing.TEMPO_STEP:
+            return tts_out["path"], tts_hash
+        inputs = {"tts": tts_hash, "tempo": round(tempo, 3), "v": 1}
+        h = hash_obj(inputs)
+        cached = self.store.lookup("dub", h)
+        if cached and self.store.abs(cached["path"]).is_file():
+            self.stats.hit("dub", True)
+            return cached["path"], h
+        out = dubbing.stretch(self.store.abs(tts_out["path"]), self.store.dir_for("dub", h) / "voice.wav", tempo)
+        rel = self.store.rel(out)
+        self.store.save("dub", h, {"path": rel, "files": [rel], "tempo": round(tempo, 3)}, "ffmpeg")
+        self.stats.hit("dub", False)
+        return rel, h
+
+    def _run_multi_track(self, tts_out: dict[tuple[str, str], tuple[str, dict[str, Any]]],
+                         images: dict[str, str | None]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Uma imagem (a do idioma principal) e uma faixa de áudio por idioma, todas com a mesma duração.
+
+        O tempo de cada segmento é o da narração principal, esticado só quando outro idioma não cabe nem acelerado
+        até `dubbing.MAX_SPEEDUP`. Cada idioma é mixado sobre a mesma timeline (mesma trilha e efeitos). No modo
+        "final", só o idioma principal vira MP4; os outros viram WAV e entram no pacote para o YouTube Studio.
+        """
+        from studio.workers.pipeline.authoring import lang_name
+
+        doc = self.doc
+        primary = doc.primary_language
+        others = [lang for lang in self.langs if lang != primary]
+        seg_ids = [seg.id for seg in doc.segments]
+        durations = {lang: {sid: float(tts_out[(sid, lang)][1]["duration"]) for sid in seg_ids} for lang in self.langs}
+        fits = {f.segment_id: f for f in dubbing.fit_segments(seg_ids, durations, primary)}
+        self.warnings += dubbing.fit_warnings(list(fits.values()), primary, lang_name)
+        if any(s.overlay_text or s.card is not None for s in doc.scenes):
+            self.warnings.append(
+                f"Faixas de idioma no mesmo vídeo: os textos na tela ficam em {lang_name(primary)} em todas as faixas "
+                "(as legendas não são queimadas: vão como legenda de cada idioma)."
+            )
+        gap = self.style.voice.gap_s
+
+        # Idioma principal: a timeline do vídeo, com a vaga de cada segmento (a narração e silêncio no fim).
+        clips: dict[str, NarrationClip] = {}
+        hashes: dict[str, str] = {}
+        for seg in doc.segments:
+            h, out = tts_out[(seg.id, primary)]
+            words = self.alignment(seg.id, primary, h, out)
+            clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=fits[seg.id].slot, words=words)
+            hashes[seg.id] = h
+            self._tick("Alinhamento das palavras")
+        timeline = build_timeline(doc, self.style, primary, clips, images)
+        self.warnings += timeline.pop("warnings", [])
+        starts = {n["segment_id"]: n["start"] for n in timeline["narration"]}
+        placed = [
+            (starts[seg.id], starts[seg.id] + fits[seg.id].slot + gap,
+             normalize_words(clips[seg.id].words, float(tts_out[(seg.id, primary)][1]["duration"])))
+            for seg in doc.segments
+        ]
+        final = self.mode == "final"
+        mix_rel = self.mix(primary, timeline, hashes)
+        self._tick("Áudio mixado")
+        results: dict[str, Any] = {primary: self._write_outputs(primary, timeline, mix_rel, dubbing.narration_srt(placed))}
+        self._tick("Prévia pronta")
+
+        # Outros idiomas: a narração (acelerada quando precisa) nos mesmos inícios de segmento.
+        for lang in others:
+            self._check()
+            narration = []
+            dub_hashes: dict[str, str] = {}
+            placed = []
+            for seg in doc.segments:
+                h, out = tts_out[(seg.id, lang)]
+                fit = fits[seg.id]
+                tempo = fit.tempos.get(lang, 1.0)
+                words = normalize_words(self.alignment(seg.id, lang, h, out), float(out["duration"]))
+                path, dh = self.stretched(h, out, tempo)
+                narration.append({"segment_id": seg.id, "path": path, "start": starts[seg.id],
+                                  "duration": round(float(out["duration"]) / tempo, 3)})
+                dub_hashes[seg.id] = dh
+                placed.append((starts[seg.id], starts[seg.id] + fit.slot + gap, dubbing.scale_words(words, tempo)))
+                self._tick("Alinhamento das palavras")
+            dub_timeline = {**timeline, "lang": lang, "narration": narration}
+            dub_mix = self.mix(lang, dub_timeline, dub_hashes, wav=final)
+            self._tick("Faixa de idioma mixada")
+            entry = self._write_outputs(lang, dub_timeline, dub_mix, dubbing.narration_srt(placed))
+            entry["dub_of"] = primary
+            entry["max_tempo"] = max((fits[sid].tempos.get(lang, 1.0) for sid in seg_ids), default=1.0)
+            entry["min_tempo"] = min((fits[sid].tempos.get(lang, 1.0) for sid in seg_ids), default=1.0)
+            results[lang] = entry
+
+        if final:
+            self._render_final(primary, timeline, mix_rel, images, results[primary])
+        summary = dubbing.fit_summary(list(fits.values()), primary)
+        extra: dict[str, Any] = {"delivery": dubbing.MULTI_TRACK, "dub": summary}
+        if final:
+            folder = self.outputs_dir("faixas-youtube")
+            try:
+                manifest = dubbing.write_package(folder, doc=doc, entries=results, data_dir=self.settings.data_dir,
+                                                 summary=summary, warnings=list(dict.fromkeys(self.warnings)),
+                                                 label=lang_name)
+            except OSError as exc:
+                # O vídeo e as faixas já estão prontos: o pacote é só a cópia para o Studio e pode ser refeito na
+                # aba Saída. Não perde o render por um arquivo aberto no player ou no editor.
+                log.warning("pacote de faixas não gravado: %s", exc)
+                self.warnings.append(f"{dubbing.PACKAGE_BUSY[0].upper()}{dubbing.PACKAGE_BUSY[1:]} (aba Saída).")
+            else:
+                extra["dub_package"] = {"folder": self.store.rel(folder),
+                                        "checklist": self.store.rel(folder / "CHECKLIST.md"),
+                                        "langs": manifest["langs"]}
+        return results, extra
 
 
 def music_ref_s(info: dict[str, Any]) -> float | None:
@@ -1181,6 +1332,9 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     builder.doc = doc or service.get_doc(project_id)
     builder.style = get_style(builder.doc.style_id, builder.doc.style_overrides)
     builder.langs = langs or list(builder.doc.languages)
+    if dubbing.is_multi_track(builder.style, builder.doc) and builder.doc.primary_language not in builder.langs:
+        # Modo B: o build sempre grava o idioma principal (referência do tempo), como em `Builder.__init__`.
+        builder.langs = [builder.doc.primary_language, *builder.langs]
     builder.sink = ProgressSink()
     builder.store = ArtifactStore()
     builder.settings = get_settings()
