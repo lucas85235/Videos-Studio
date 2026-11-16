@@ -32,7 +32,9 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Glossário por canal na tradução.
 
 ### Estilos e render
-- [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
+- [x] **Família dados e geografia** (15/11/2026): cartões `chart` (barra, linha, pizza, rosca, com animação de entrada) e `map` (países do Natural Earth 1:110m e estados dos EUA, com destaque, rótulo e valor; projeção Equal Earth no código), gerados pelo storyboard quando o estilo é da família e a batida traz série de números ou lugares; preset `dados-e-mapas`. O número grande que conta continua sendo o `stat`.
+- [ ] Dados e geografia, o que ficou de fora: **estados/províncias de outros países** (o Natural Earth 1:110m só tem os dos EUA; os do Brasil precisam de uma base simplificada de licença livre, como a do IBGE, conferida antes), globo 3D, corrida de barras, rotas e setas no mapa, países pequenos demais para a escala 1:110m (Singapura, Malta e outros não têm contorno) e edição manual dos itens do gráfico/mapa na aba Cenas (hoje só pelo storyboard ou trocando o tipo).
+- [ ] Famílias de estilo que ainda caem no modo imagens paradas: ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
 - [ ] Parallax 2.5D com mapa de profundidade (Depth Anything V2 Small ou DA3, só licenças Apache).
 - [ ] Vídeo IA (image-to-video via fal.ai) em cenas-chave; o tipo de cena `video` existe no esquema, mas não tem gerador.
 - [ ] Estilo a partir de **vídeo de referência** (PySceneDetect/TransNetV2, paleta, ritmo).

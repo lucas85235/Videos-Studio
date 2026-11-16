@@ -48,6 +48,15 @@ export const SCENE_KIND_LABELS: LabelMap = {
   video: 'Vídeo',
   stat: 'Número',
   compare: 'Comparação',
+  chart: 'Gráfico',
+  map: 'Mapa',
+};
+
+export const CHART_LABELS: LabelMap = {
+  bar: 'Barras',
+  line: 'Linha',
+  pie: 'Pizza',
+  donut: 'Rosca',
 };
 
 /* Curadoria visual: os mesmos ids de backend/studio/core/styles/visual.py. */

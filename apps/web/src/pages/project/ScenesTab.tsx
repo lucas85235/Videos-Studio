@@ -18,6 +18,7 @@ import React, { memo, useCallback, useId, useMemo, useState } from 'react';
 import { api, ApiError, fileUrl, type ProjectDetail, type ProjectDoc, type Scene, type StoryboardIssue, type Version } from '../../api';
 import {
   CAMERA_LABELS,
+  CHART_LABELS,
   COMPOSITION_LABELS,
   FOCUS_LABELS,
   label,
@@ -55,7 +56,7 @@ import type { TabNavigation } from './types';
 
 const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'zoom_to', 'drift', 'static'];
 const TRANSITIONS = ['', 'cut', 'flash', 'fade_black', 'glitch', 'light_leak', 'zoom_blur', 'film_burn', 'static_burst'];
-const KINDS = ['image', 'stat', 'compare', 'text', 'title', 'count', 'document', 'quote'];
+const KINDS = ['image', 'stat', 'compare', 'chart', 'map', 'text', 'title', 'count', 'document', 'quote'];
 const AUTO = 'Automática';
 const BUILD_KINDS = new Set(['preview', 'autopilot', 'render']);
 const BUSY_REASON = 'Aguarde o trabalho em andamento terminar.';
@@ -225,12 +226,14 @@ const CardSummary: React.FC<{ scene: Scene; primaryLang: string }> = ({ scene, p
         </CardLine>
       ) : null}
       {card.label ? <CardLine term="Rótulo">{card.label}</CardLine> : null}
+      {scene.kind === 'chart' ? <CardLine term="Gráfico">{label(CHART_LABELS, card.chart ?? 'bar')}</CardLine> : null}
       {items?.length ? (
         <CardLine term="Itens">
           <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
             {items.map((item, i) => (
               <li key={i} className={i === card.highlight ? 'font-semibold text-accent' : undefined}>
                 {[item.label, item.value].filter(Boolean).join(': ')}
+                {item.region && item.region !== item.label ? <span className="text-subtle"> ({item.region})</span> : null}
                 {i === card.highlight ? <span className="sr-only"> (em destaque)</span> : null}
               </li>
             ))}
@@ -302,9 +305,16 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
     if (ok) promptDrafts.set(projectId, scene.id, null);
   };
 
-  // Número e Comparação só com os dados do cartão (sem eles, o renderer não tem o que desenhar).
+  // Número, Comparação, Gráfico e Mapa só com os dados do cartão (sem eles, o renderer não tem o que desenhar).
   const cardData = resolveCard(scene.card, primaryLang, primaryLang);
-  const offered = KINDS.filter((k) => (k !== 'stat' || Boolean(cardData.value)) && (k !== 'compare' || (cardData.items?.length ?? 0) >= 2));
+  const itemCount = cardData.items?.length ?? 0;
+  const offered = KINDS.filter(
+    (k) =>
+      (k !== 'stat' || Boolean(cardData.value)) &&
+      (k !== 'compare' || itemCount >= 2) &&
+      (k !== 'chart' || itemCount >= 2) &&
+      (k !== 'map' || Boolean(cardData.items?.some((i) => i.region))),
+  );
   const kinds = offered.includes(scene.kind) ? offered : [...offered, scene.kind];
   const selects = (
     <>
