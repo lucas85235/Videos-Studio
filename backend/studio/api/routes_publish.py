@@ -352,3 +352,14 @@ def buffer_cancel(publication_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (buffer.BufferError, r2.R2Error) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/novelty")
+def project_novelty(project_id: str) -> dict[str, Any]:
+    """Conferência de novidade: imagens, miniatura e título parecidos com os últimos vídeos do canal (só aviso)."""
+    from studio.workers import novelty
+
+    try:
+        return novelty.check(project_id)
+    except service.ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="projeto não encontrado") from exc

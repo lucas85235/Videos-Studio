@@ -62,9 +62,10 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] `@remotion/effects` (avaliado na 4.0.543): tem `lut()` e `chromaticAberration()` via `<Img effects>` em WebGL/WebGPU, mas a licença no npm é `UNLICENSED` (não permissiva) e ele só vem como dependência do `@remotion/studio`; não foi adotado. Rever se a licença mudar.
 - [ ] Desempenho: a aberração cromática desenha a imagem uma vez só, com um filtro SVG que separa os canais (antes eram 3 cópias da imagem com a cadeia de filtros; as bordas recebem a imagem sem deslocar e a intensidade foi calibrada perto da antiga). Falta medir o ganho num render real do terror-analog (o filtro SVG por url() pode ser rasterizado em software pelo Chrome) e conferir o quadro visualmente antes de marcar como feito.
 - [x] Várias faixas de música por vídeo, trocando por segmento: uma cama por faixa, com opção "só a batida, em loop no compasso" (onda 2, 15/11/2026). Não testado ainda com a biblioteca real do usuário num render completo.
-- [ ] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal.
+- [x] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal (janela ajustável em Canais, 3 por padrão; sem faixa nova do clima, repete a que tocou há mais tempo e avisa) (15/11/2026). Com várias faixas no vídeo, a janela conta só a faixa de abertura de cada vídeo; as outras camas também evitam as recentes, mas não entram na conta.
 - [ ] Imagens de referência/âncoras para consistência de personagens.
-- [ ] Verificador de novidade (impressões digitais visuais dos últimos vídeos).
+- [x] Verificador de novidade (impressões digitais visuais dos últimos vídeos): dHash das imagens/quadros e da miniatura, títulos parecidos (projetos do canal e títulos recentes do YouTube ligado); só aviso, na seção Publicar, nos avisos do vídeo final e no checklist do pacote (15/11/2026).
+  - Fica de fora: comparar com as **miniaturas** dos vídeos do YouTube que não foram feitos no app (precisaria baixar cada imagem) e semelhança por conteúdo (CLIP), que exigiria baixar um modelo; o hash pega cópias e variações leves, não "o mesmo assunto com outra foto". O verificador ainda não entra numa conferência final única antes de publicar porque ela não existe no repositório (`workers/finalcheck`); quando existir, basta chamar `novelty.safe_warnings()`.
 
 ### Produto
 - [ ] Ramos A/B de versões ("versão B do gancho").

@@ -982,7 +982,7 @@ class Builder:
             # `loop` só puxa a biblioteca quando ela tem faixas: com o estilo procedural e a biblioteca vazia, a
             # faixa segue procedural sem o aviso de "biblioteca vazia" (o usuário não pediu biblioteca)
             if music_spec.source == "library" or cue.track or (cue.loop and has_library):
-                lib = self._library_music(mood, 0.0, cue.track, seed=seed, prepare=False)
+                lib = self._library_music(mood, 0.0, cue.track, seed=seed, prepare=False, prefer_used=i == 0)
             if lib:
                 key, info = lib
                 bed.update({"src": info["src"], "key": key, "source": "library", "track": info["track"],
@@ -1029,15 +1029,26 @@ class Builder:
         return h, {**output, "volume_db": base_volume}
 
     def _library_music(self, mood: str, bucket: float, pinned: str | None, *, seed: int | None = None,
-                       prepare: bool = True) -> tuple[str, dict[str, Any]] | None:
+                       prepare: bool = True, prefer_used: bool = True) -> tuple[str, dict[str, Any]] | None:
         """Trilha da biblioteca do usuário (library/music), ajustada à duração. None = biblioteca vazia.
 
         Com `prepare=False` (camas de várias faixas), só escolhe a faixa: devolve o hash do arquivo e `src` (absoluto)."""
         tracks = music_library.list_tracks()
-        if pinned and not any(t.path == pinned for t in tracks):
+        pinned_found = bool(pinned) and any(t.path == pinned for t in tracks)
+        if pinned and not pinned_found:
             self.warnings.append(f"A faixa fixada '{pinned}' não está mais na biblioteca; escolhi outra.")
         seed = seed_from(self.doc.seed, "music", mood) if seed is None else seed
-        track = music_library.pick_track(tracks, mood, seed, pinned)
+        # Sem repetir a faixa dos últimos vídeos do canal (a fixada vale mais; a que o projeto já usava fica, só na
+        # 1ª cama: nas outras ela não é preferida, para as faixas seguintes não repetirem a de abertura).
+        avoid = [] if pinned_found else music_library.recent_tracks(self.project_id)
+        prefer = (music_library.used_track(service.get_project_row(self.project_id)["settings"])
+                  if avoid and prefer_used else None)
+        track = music_library.pick_track(tracks, mood, seed, pinned, avoid=avoid, prefer=prefer)
+        if track is not None and track.path in avoid:
+            self.warnings.append(
+                f"Todas as faixas do clima '{track.mood}' tocaram nos últimos vídeos do canal; repeti a que tocou há "
+                f"mais tempo ({track.path}). Coloque mais músicas desse clima em {music_library.music_root()}."
+            )
         src = music_library.resolve(track.path) if track else None
         if track is None or src is None:
             self.warnings.append(

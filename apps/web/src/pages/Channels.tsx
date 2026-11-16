@@ -30,6 +30,7 @@ import { Link } from 'react-router-dom';
 import {
   api,
   type Channel,
+  type ChannelNovelty,
   type ChannelSlots,
   type ChannelSuggestion,
   type ChannelTokenStatus,
@@ -85,6 +86,7 @@ type Form = {
   languages: string[];
   default_style_id: string | null;
   posting: PostingPlan;
+  novelty: ChannelNovelty;
   /** Identidade visual: `style_bible.identidade` do canal. */
   identity: string;
   /* Operação do canal (ADR 0002). Números como texto: o campo aceita vírgula e fica vazio para "sem meta". */
@@ -112,6 +114,9 @@ const STOCK_FORMATS: { id: StockFormat; label: string; unit: string }[] = [
 
 const numText = (n: number | undefined) => (n ? String(n).replace('.', ',') : '');
 
+/** Padrões do servidor: a música não repete nos 3 últimos vídeos; a novidade compara os 10 últimos. */
+const NOVELTY_DEFAULT: ChannelNovelty = { music_window: 3, window: 10 };
+
 const blank = (): Form => ({
   name: '',
   niche: '',
@@ -119,6 +124,7 @@ const blank = (): Form => ({
   languages: ['pt-BR'],
   default_style_id: null,
   posting: { timezone: browserZone, slots: [] },
+  novelty: { ...NOVELTY_DEFAULT },
   identity: '',
   audience: '',
   cadence: '',
@@ -142,6 +148,7 @@ const formOf = (c: Channel): Form => ({
   languages: c.languages,
   default_style_id: c.default_style_id,
   posting: c.posting,
+  novelty: c.novelty ?? { ...NOVELTY_DEFAULT },
   identity: identityOf(c),
   audience: c.audience ?? '',
   cadence: c.cadence ?? '',
@@ -201,6 +208,7 @@ const bodyOf = (f: Form, base: Channel | undefined) => {
     languages: f.languages,
     default_style_id: f.default_style_id,
     posting: f.posting,
+    novelty: f.novelty,
     style_bible: bible,
     audience: f.audience.trim(),
     cadence: f.cadence.trim(),
@@ -222,6 +230,45 @@ const voiceDefaultsOf = (f: Form, base: Channel | undefined) => {
   delete rest.final;
   return f.voice_final ? { ...rest, final: { provider: f.voice_final.provider, voice: f.voice_final.voice } } : rest;
 };
+
+/* ------------------------------------------------------------------ */
+/* Novidade: música sem repetir e verificador de vídeos parecidos       */
+/* ------------------------------------------------------------------ */
+
+const MUSIC_WINDOWS = [0, 1, 2, 3, 5, 10, 20];
+const NOVELTY_WINDOWS = [0, 5, 10, 20, 50];
+
+/** Opções da lista, com o valor salvo incluído mesmo se não estiver entre elas. */
+const windowOptions = (values: number[], current: number) => [...new Set([...values, current])].sort((a, b) => a - b);
+
+const NoveltyEditor: React.FC<{ value: ChannelNovelty; onChange: (v: ChannelNovelty) => void }> = ({ value, onChange }) => (
+  <div className="flex flex-col gap-3">
+    <div>
+      <div className="text-sm font-medium text-fg">Novidade</div>
+      <p className="text-[13px] text-muted">Para os vídeos do canal não ficarem repetidos.</p>
+    </div>
+    <div className="grid gap-4 sm:grid-cols-2">
+      <Field label="Música sem repetir" hint="A mesma faixa da sua biblioteca não toca de novo nesses vídeos seguidos do canal.">
+        <Select value={value.music_window} onChange={(e) => onChange({ ...value, music_window: Number(e.target.value) })}>
+          {windowOptions(MUSIC_WINDOWS, value.music_window).map((n) => (
+            <option key={n} value={n}>
+              {n === 0 ? 'Pode repetir' : n === 1 ? 'Diferente do vídeo anterior' : `Diferente dos ${n} últimos vídeos`}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Verificador de novidade" hint="Antes de publicar, avisa se imagens, miniatura ou título parecem demais com esses vídeos.">
+        <Select value={value.window} onChange={(e) => onChange({ ...value, window: Number(e.target.value) })}>
+          {windowOptions(NOVELTY_WINDOWS, value.window).map((n) => (
+            <option key={n} value={n}>
+              {n === 0 ? 'Desligado' : `Comparar com os ${n} últimos vídeos`}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    </div>
+  </div>
+);
 
 /* ------------------------------------------------------------------ */
 /* Dias da semana (0 = segunda … 6 = domingo, como no servidor)        */
@@ -1570,6 +1617,9 @@ export const ChannelsPage: React.FC = () => {
               onChange={(pronunciation) => setForm({ ...form, pronunciation })}
             />
             <GlossaryEditor value={form.glossary} languages={form.languages} onChange={(glossary) => setForm({ ...form, glossary })} />
+          </div>
+          <div className="border-t border-line pt-4">
+            <NoveltyEditor value={form.novelty} onChange={(novelty) => setForm({ ...form, novelty })} />
           </div>
         </Sheet>
       ) : null}
