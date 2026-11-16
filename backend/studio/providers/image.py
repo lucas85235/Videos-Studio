@@ -185,11 +185,16 @@ class CodexCLIImage(ImageProvider):
         )
         env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}
         cmd = [codex, "exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "--ephemeral"]
-        for ref in references:
-            cmd += ["-i", str(ref)]  # `codex exec --image/-i`: anexa a imagem à mensagem (pode repetir)
-        cmd.append(instruction)
         started = time.time()
         with tempfile.TemporaryDirectory() as workdir:
+            # `codex exec --image/-i` aceita vários arquivos e separa por vírgula: o caminho com vírgula
+            # ("C:\Users\Silva, Ana") viraria dois. A cópia com nome simples na pasta do Codex evita isso.
+            for n, ref in enumerate(references, 1):
+                copy = Path(workdir) / f"ref{n}{ref.suffix.lower() or '.jpg'}"
+                shutil.copyfile(ref, copy)
+                cmd += ["-i", str(copy)]
+            # O `-i` engole os valores seguintes (`num_args = 1..`): sem o `--`, a instrução viraria mais uma imagem.
+            cmd += ["--", instruction]
             try:
                 proc = run_tree(cmd, cwd=workdir, env=env, timeout=self.timeout_s)
             except subprocess.TimeoutExpired as exc:

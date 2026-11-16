@@ -20,11 +20,20 @@ from studio.api.app import create_app
 from studio.config import get_settings, set_settings
 from studio.core.project import characters as characters_mod
 from studio.core.project import service
-from studio.core.project.document import ArtDirection, Character, Entity, Scene, Segment, Visual
+from studio.core.project.document import (
+    ArtDirection,
+    Character,
+    Entity,
+    ProjectDoc,
+    Scene,
+    Segment,
+    Visual,
+)
 from studio.core.styles.library import get_style
 from studio.providers import image as image_mod
 from studio.providers import registry
 from studio.providers.base import ImageProvider, ImageResult, ProviderInfo, Usage
+from studio.workers.pipeline import characters as character_scenes
 from studio.workers.pipeline import storyboard_check
 from studio.workers.pipeline.build import Builder, image_key
 
@@ -224,9 +233,37 @@ def test_provider_without_references_gets_only_the_look(monkeypatch):
     assert fake.calls[0]["references"] is None and LOOK in fake.calls[0]["prompt"]
 
 
+def _clap_exec(cmd: list[str]) -> tuple[list[str], str | None]:
+    """Lê o comando como o clap do `codex exec`: `-i/--image` com `num_args = 1..` e `value_delimiter = ','` engole os
+    valores seguintes até a próxima opção ou o `--`; o que sobra é o prompt (posicional)."""
+    images: list[str] = []
+    positional: list[str] = []
+    args = cmd[2:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            positional += args[i + 1 :]
+            break
+        if arg in ("-i", "--image"):
+            i += 1
+            while i < len(args) and not args[i].startswith("-"):
+                images += args[i].split(",")
+                i += 1
+            continue
+        if arg.startswith("-"):
+            i += 2 if arg == "--sandbox" else 1
+            continue
+        positional.append(arg)
+        i += 1
+    return images, (positional[0] if positional else None)
+
+
 def test_codex_attaches_reference_images(monkeypatch, tmp_path):
-    ref = tmp_path / "ref.jpg"
-    Image.new("RGB", (8, 8)).save(ref)
+    folder = tmp_path / "Silva, Ana"  # vírgula no caminho: o `-i` do Codex separa por vírgula
+    folder.mkdir()
+    ref = folder / "ref.jpg"
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(ref)
     codex_home = tmp_path / "codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr(image_mod.shutil, "which", lambda _name: "codex")
@@ -234,6 +271,9 @@ def test_codex_attaches_reference_images(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         seen["cmd"] = cmd
+        images, prompt = _clap_exec(cmd)
+        seen["images"] = [(Path(p).name, Path(p).read_bytes()) for p in images if Path(p).is_file()]
+        seen["parsed"] = (images, prompt)
         out = codex_home / "generated_images" / "sessao"
         out.mkdir(parents=True)
         Image.new("RGB", (64, 64)).save(out / "img.png")
@@ -242,11 +282,15 @@ def test_codex_attaches_reference_images(monkeypatch, tmp_path):
     monkeypatch.setattr(image_mod, "run_tree", fake_run)
     provider = image_mod.CodexCLIImage()
     assert provider.info.accepts_references
-    provider.generate(prompt="a woman", width=64, height=64, seed=1, out_dir=tmp_path / "out",
+    provider.generate(prompt="a woman, red jacket, night", width=64, height=64, seed=1, out_dir=tmp_path / "out",
                       references=[ref, tmp_path / "sumiu.jpg"])
+    images, prompt = seen["parsed"]
+    # a imagem chega inteira (cópia sem vírgula no nome) e a instrução não vira mais uma imagem
+    assert len(images) == 1 and seen["images"] == [("ref1.jpg", ref.read_bytes())]
+    assert prompt is not None and "referência de aparência" in prompt
+    assert prompt.endswith("Descrição: a woman, red jacket, night")
     cmd = seen["cmd"]
-    assert cmd.count("-i") == 1 and cmd[cmd.index("-i") + 1] == str(ref)
-    assert "referência de aparência" in cmd[-1] and cmd[-1].endswith("Descrição: a woman")
+    assert cmd[-2] == "--" and cmd[-1] == prompt
 
 
 # --- rotas ----------------------------------------------------------------------------------------
@@ -286,3 +330,112 @@ def test_project_characters_routes_merge_with_the_channel():
     assert [(c["id"], c["look"]) for c in view["effective"]] == [("heroina", "do projeto"), ("robo", "robot")]
     assert service.get_doc(doc.id).characters[0].look == "do projeto"
     assert client.get("/api/projects/nao_existe/characters").status_code == 404
+
+
+# --- nome composto, outra ordem, cena sem gente -----------------------------------------------
+
+
+def test_full_name_registered_and_first_name_in_the_narration(monkeypatch):
+    doc = gta_doc()
+    doc.characters = [Character(id="heroina", name="Lucia Caminos", look=LOOK)]
+    new_doc, _, review, _ = run(monkeypatch, doc, get_style(GAMES), load_fixture(doc))
+    assert new_doc.art.entity("lucia") is None  # a entidade "Lucia" da IA virou o personagem cadastrado
+    for s in new_doc.scenes:
+        assert "lucia" not in s.visual.prompt.lower()
+        assert "lucia" not in s.visual.entities
+    scene = new_doc.ordered_scenes()[14]
+    assert "heroina" in scene.visual.entities and scene.visual.prompt.startswith("The tall woman")
+    assert "nome_no_prompt" in codes(review)
+
+
+def test_entity_with_the_name_in_another_order_becomes_the_character():
+    sam = Character(id="detetive", name="Detetive Sam", look="old man with a grey beard")
+    art = ArtDirection(entities=[Entity(id="sam_detective", name="Sam (detective)", look="AI look"),
+                                 Entity(id="detetive_rival", name="Rival Detective", look="young man")])
+    out, remap = character_scenes.prepare(art, [sam])
+    assert remap == {"sam_detective": "detetive"}
+    assert out.entity("detetive").look == "old man with a grey beard"
+    # sobrenome da família: a entidade que casa com dois personagens não é trocada
+    a = Character(id="mae", name="Ana Caminos")
+    b = Character(id="filha", name="Lia Caminos")
+    _, remap = character_scenes.prepare(ArtDirection(entities=[Entity(id="caminos", name="Caminos")]), [a, b])
+    assert remap == {}
+
+
+def _narrated_doc(prompts: list[str]):
+    text = "Sam nunca imaginou que o banco fecharia."
+    segments = [Segment(id=f"seg_{i}", text={"pt-BR": text}) for i in range(len(prompts))]
+    scenes = [Scene(id=f"scn_{i}", segment_id=f"seg_{i}", visual=Visual(prompt=p, language="editorial"))
+              for i, p in enumerate(prompts)]
+    doc = ProjectDoc(id="prj_sam", title="Sam", style_id="misterios-short", segments=segments, scenes=scenes,
+                     art=ArtDirection(languages=["editorial"]))
+    beats = [storyboard_check.Beat(key=f"seg_{i}:0", segment_id=f"seg_{i}", part=0, parts=1, index=i, role="body",
+                                   words=text.split(), seconds=3.0) for i in range(len(prompts))]
+    return doc, beats
+
+
+def test_narration_alone_marks_only_scenes_that_show_someone():
+    sam = Character(id="detetive", name="Sam", look="old man with a grey beard")
+    doc, beats = _narrated_doc(["Establishing shot of an old bank facade at dusk",
+                                "A man counts coins at a kitchen table"])
+    issues = character_scenes.finish(doc, beats, [sam], {})
+    bank, kitchen = doc.scenes
+    assert "detetive" not in bank.visual.entities and "detetive" in kitchen.visual.entities
+    found = {(i.scene_id, i.severity) for i in issues if i.code == "personagem_na_cena"}
+    assert found == {("scn_0", storyboard_check.AVISO), ("scn_1", storyboard_check.CORRIGIDO)}
+
+
+# --- build: descrição editada, cache sem as imagens âncora -------------------------------------
+
+
+def _scene_with_reference(characters: list[Character], **update):
+    doc = _directed_project(characters)
+    doc = service.get_doc(doc.id)
+    doc.scenes[0].visual.prompt = "The tall woman enters a bar at night."
+    doc.art.entities = [Entity(id="heroina", name="Lucia", look=LOOK, character=True)]
+    for key, value in update.items():
+        setattr(doc, key, value)
+    service.commit(doc.id, doc, "teste")
+    return doc
+
+
+def test_edited_look_updates_the_prompt_and_makes_the_image_again(generator):
+    doc = _scene_with_reference([heroine()])
+    builder = Builder(doc.id, mode="preview")
+    assert builder.image(builder.doc.scenes[0])
+    assert "The tall woman enters" in generator.calls[0]["prompt"]
+
+    doc = service.get_doc(doc.id)
+    doc.characters = [Character(id="heroina", name="Lucia", look="old man with a grey beard and a brown coat")]
+    service.commit(doc.id, doc, "teste")
+    builder2 = Builder(doc.id, mode="preview")
+    prompt = builder2.image_inputs(builder2.doc.scenes[0])["prompt"]
+    assert "The old man enters" in prompt and "tall woman" not in prompt
+    assert builder2.image(builder2.doc.scenes[0])
+    assert len(generator.calls) == 2  # nem o prompt antigo acha a imagem da descrição velha
+
+
+def test_image_made_without_anchor_images_is_made_again_when_codex_is_back(monkeypatch):
+    set_settings(get_settings().model_copy(update={"offline": False}))
+    codex = FakeImages("codex_cli", references=True)
+    fallback = FakeImages("fal_image", references=False)
+    up = {"ok": False}
+    monkeypatch.setattr(codex, "availability", lambda: (up["ok"], "ok" if up["ok"] else "sem cota"))
+    monkeypatch.setitem(registry._PROVIDERS, "codex_cli", codex)
+    monkeypatch.setitem(registry._PROVIDERS, "fal_image", fallback)
+    rel = _client().post("/api/characters/images", files={"file": ("a.png", _png(), "image/png")}).json()["path"]
+    doc = _scene_with_reference([heroine([rel])],
+                                style_overrides={"art": {"image_chain": ["codex_cli", "fal_image"]}})
+
+    builder = Builder(doc.id, mode="preview")
+    assert builder.image(builder.doc.scenes[0])
+    assert not codex.calls and fallback.calls[0]["references"] is None
+
+    up["ok"] = True
+    builder2 = Builder(doc.id, mode="preview")
+    assert builder2.image(builder2.doc.scenes[0])
+    assert [p.name for p in codex.calls[0]["references"]] == [Path(rel).name]
+
+    builder3 = Builder(doc.id, mode="preview")  # agora com as imagens âncora: fica no cache
+    assert builder3.image(builder3.doc.scenes[0])
+    assert len(codex.calls) == 1
