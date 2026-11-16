@@ -32,6 +32,7 @@ import {
 import {
   ChannelSlotsRow,
   ManualPackageCard,
+  NoveltyCheck,
   type PickedSlot,
   PublicationsList,
   useYouTubeStatus,
@@ -181,9 +182,10 @@ export const OutputTab: React.FC<
         : null;
 
   const previewOnly = final?.preview_only_providers ?? [];
-  const finalWarnings = (final?.warnings ?? []).map((w) =>
-    humanizeWarning(w, doc),
-  );
+  // Os avisos de novidade aparecem na conferência ao vivo (NoveltyCheck), não repetidos aqui.
+  const finalWarnings = (final?.warnings ?? [])
+    .filter((w) => !w.startsWith("Novidade:"))
+    .map((w) => humanizeWarning(w, doc));
   const previewEntry = detail.outputs.preview?.langs?.[lang];
   const { approved: previewApproved } = previewApproval(detail);
   const finalStale = Boolean(entry?.video) && isFinalStale(detail);
@@ -502,6 +504,9 @@ export const OutputTab: React.FC<
                 ))}
               </ul>
             </Notice>
+          ) : null}
+          {entry?.video ? (
+            <NoveltyCheck projectId={detail.project.id} channelId={doc.channel_id} />
           ) : null}
           {entry?.video ? (
             <ChannelSlotsRow

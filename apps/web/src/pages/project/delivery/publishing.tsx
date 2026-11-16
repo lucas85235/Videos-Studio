@@ -5,6 +5,7 @@ import {
   ExternalLink,
   FolderOpen,
   PackageOpen,
+  RefreshCw,
   Send,
   Sparkles,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import {
   type ChannelSlots,
   formatWhen,
   type LangOutput,
+  type NoveltyReport,
   PLATFORM_LABELS,
   type ProjectDetail,
   type Publication,
@@ -77,6 +79,60 @@ export const useYouTubeStatus = (projectId: string) =>
   });
 
 const LINK = "text-fg underline underline-offset-2 hover:text-accent";
+
+/* ------------------------------------------------------------------ */
+/* Conferência de novidade (só aviso)                                   */
+/* ------------------------------------------------------------------ */
+
+const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+/**
+ * Antes de publicar: o vídeo repete demais imagens, a miniatura ou o título dos últimos vídeos do canal?
+ * É só um aviso (não bloqueia o envio). Sem canal ou com o verificador desligado, não aparece.
+ */
+export const NoveltyCheck: React.FC<{ projectId: string; channelId: string | null }> = ({ projectId, channelId }) => {
+  // Sem cache longo: cada vez que a seção abre, confere de novo (as imagens e o título podem ter mudado).
+  const q = useQuery({
+    queryKey: ["novelty", projectId],
+    queryFn: () => api.get<NoveltyReport>(`/api/projects/${projectId}/novelty`),
+    enabled: Boolean(channelId),
+  });
+  if (!channelId) return null;
+  if (q.error) {
+    return <ErrorBox error={q.error} title="Não foi possível conferir a novidade do vídeo" onRetry={() => q.refetch()} />;
+  }
+  const r = q.data;
+  if (!r || !r.enabled) return null;
+  const again = (
+    <Button size="sm" icon={RefreshCw} busy={q.isFetching} onClick={() => q.refetch()}>
+      Conferir de novo
+    </Button>
+  );
+  const compared = r.compared.length;
+  const base = compared
+    ? `Comparado com ${compared} vídeo${compared === 1 ? "" : "s"} recente${compared === 1 ? "" : "s"} do canal.`
+    : "Ainda não há outros vídeos do canal com prévia ou vídeo final para comparar as imagens.";
+  if (!r.warnings.length) {
+    return (
+      <Notice tone="info" icon={Check} title="Novidade: nada repetido demais" actions={again}>
+        {base}
+        {r.images.repeated.length
+          ? ` ${r.images.repeated.length} de ${r.images.total} imagens parecem com as de outros vídeos (${pct(r.images.share)}), dentro do aceitável.`
+          : ""}
+      </Notice>
+    );
+  }
+  return (
+    <Notice tone="warn" title={`Novidade: o vídeo parece com vídeos recentes do canal (${r.warnings.length})`} actions={again}>
+      <ul className="flex flex-col gap-1">
+        {r.warnings.map((w) => (
+          <li key={w}>{w.replace(/^Novidade:\s*/, "")}</li>
+        ))}
+      </ul>
+      <p className="mt-1">{base} É só um aviso: dá para publicar assim mesmo.</p>
+    </Notice>
+  );
+};
 
 /* ------------------------------------------------------------------ */
 /* Horários livres do canal                                             */

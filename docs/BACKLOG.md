@@ -40,9 +40,10 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] LUTs reais (.cube) e os efeitos nativos do `@remotion/effects`; hoje a gradação é feita com filtros CSS.
 - [ ] Desempenho: a aberração cromática desenha a imagem 3 vezes com a cadeia de filtros (só o preset terror-analog usa); avaliar uma passada única. O grão já usa texturas pré-geradas.
 - [ ] Várias faixas de música por vídeo, trocando por segmento (hoje vale a primeira faixa ativa; a biblioteca do usuário já funciona).
-- [ ] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal.
+- [x] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal (janela ajustável em Canais, 3 por padrão; sem faixa nova do clima, repete a que tocou há mais tempo e avisa) (15/11/2026).
 - [ ] Imagens de referência/âncoras para consistência de personagens.
-- [ ] Verificador de novidade (impressões digitais visuais dos últimos vídeos).
+- [x] Verificador de novidade (impressões digitais visuais dos últimos vídeos): dHash das imagens/quadros e da miniatura, títulos parecidos (projetos do canal e títulos recentes do YouTube ligado); só aviso, na seção Publicar, nos avisos do vídeo final e no checklist do pacote (15/11/2026).
+  - Fica de fora: comparar com as **miniaturas** dos vídeos do YouTube que não foram feitos no app (precisaria baixar cada imagem) e semelhança por conteúdo (CLIP), que exigiria baixar um modelo; o hash pega cópias e variações leves, não "o mesmo assunto com outra foto". O verificador ainda não entra numa conferência final única antes de publicar porque ela não existe no repositório (`workers/finalcheck`); quando existir, basta chamar `novelty.safe_warnings()`.
 
 ### Produto
 - [ ] Ramos A/B de versões ("versão B do gancho").

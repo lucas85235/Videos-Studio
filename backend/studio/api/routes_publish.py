@@ -137,3 +137,14 @@ def publish_youtube(project_id: str, body: YouTubePublishRequest) -> dict[str, A
     if body.privacy not in ("private", "unlisted", "public", "scheduled"):
         raise HTTPException(status_code=400, detail="privacidade inválida")
     return get_runner().submit("publish_youtube", body.model_dump(), project_id)
+
+
+@router.get("/projects/{project_id}/novelty")
+def project_novelty(project_id: str) -> dict[str, Any]:
+    """Conferência de novidade: imagens, miniatura e título parecidos com os últimos vídeos do canal (só aviso)."""
+    from studio.workers import novelty
+
+    try:
+        return novelty.check(project_id)
+    except service.ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="projeto não encontrado") from exc

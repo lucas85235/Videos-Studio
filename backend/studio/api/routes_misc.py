@@ -129,6 +129,13 @@ def style_from_text(body: FromTextBody) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------------
 
 
+class ChannelNovelty(BaseModel):
+    """Quantos vídeos recentes do canal entram em cada conferência (0 desliga)."""
+
+    music_window: int = Field(default=3, ge=0, le=50)  # faixas da biblioteca que não se repetem
+    window: int = Field(default=10, ge=0, le=100)  # imagens, miniatura e título parecidos
+
+
 class ChannelBody(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     niche: str = ""
@@ -137,6 +144,14 @@ class ChannelBody(BaseModel):
     default_style_id: str | None = None
     style_bible: dict[str, Any] = {}
     posting: dict[str, Any] | None = None  # {"timezone": ..., "slots": [{"weekdays": [...], "time": "HH:MM"}]}
+    novelty: ChannelNovelty | None = None  # janelas da música sem repetir e do verificador de novidade
+
+
+def _novelty_of(settings: dict[str, Any] | None) -> dict[str, int]:
+    from studio.media.music_library import repeat_window
+    from studio.workers.novelty import window_of
+
+    return {"music_window": repeat_window(settings), "window": window_of(settings)}
 
 
 def _channel_dict(row: Channel) -> dict[str, Any]:
@@ -152,6 +167,7 @@ def _channel_dict(row: Channel) -> dict[str, Any]:
         "default_style_id": row.default_style_id,
         "style_bible": row.style_bible,
         "posting": plan_of(row.settings).model_dump(),
+        "novelty": _novelty_of(row.settings),
         "youtube": public_info(row.settings),  # canal do YouTube ligado (None se não houver)
     }
 
@@ -168,8 +184,10 @@ def _apply_channel(row: Channel, body: ChannelBody, fields: set[str]) -> None:
     from studio.workers.publish.schedule import PostingPlan
 
     data = body.model_dump()
-    for key in fields - {"posting"}:
+    for key in fields - {"posting", "novelty"}:
         setattr(row, key, data[key])
+    if "novelty" in fields and body.novelty is not None:
+        row.settings = {**(row.settings or {}), "novelty": body.novelty.model_dump()}
     if "posting" in fields and body.posting is not None:
         try:
             plan = PostingPlan.model_validate(body.posting)

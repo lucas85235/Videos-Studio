@@ -11,6 +11,7 @@ from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.models import Channel
 from studio.providers import media_search
+from studio.workers import novelty
 from studio.workers.jobs import JobContext, job
 from studio.workers.pipeline import authoring
 from studio.workers.pipeline.build import Builder
@@ -134,6 +135,12 @@ def _build(ctx: JobContext, payload: dict[str, Any], mode: str) -> dict[str, Any
     builder = Builder(project_id, mode=mode, langs=payload.get("langs"), sink=ctx)  # type: ignore[arg-type]
     result = builder.run()
     service.update_settings(project_id, {f"last_{mode}": result})
+    if mode == "final":
+        # Conferência de novidade (só aviso): imagens, miniatura e título parecidos com os últimos vídeos do canal.
+        extra = [w for w in novelty.safe_warnings(project_id) if w not in result["warnings"]]
+        if extra:
+            result["warnings"] = [*result["warnings"], *extra]
+            service.update_settings(project_id, {f"last_{mode}": result})
     service.set_status(project_id, "preview_ready" if mode == "preview" else "rendered")
     return result
 

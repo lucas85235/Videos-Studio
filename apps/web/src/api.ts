@@ -460,6 +460,8 @@ export type Provider = {
 
 export type PostingSlot = { weekdays: number[]; time: string };
 export type PostingPlan = { timezone: string; slots: PostingSlot[] };
+/** Janelas do canal (0 desliga): faixas da biblioteca que não se repetem e vídeos que o verificador de novidade compara. */
+export type ChannelNovelty = { music_window: number; window: number };
 export type Channel = {
   id: string;
   name: string;
@@ -468,12 +470,31 @@ export type Channel = {
   languages: string[];
   default_style_id: string | null;
   posting: PostingPlan;
+  novelty?: ChannelNovelty;
   /** Identidade visual (vai para o storyboard). Chave `identidade`: o texto editado na tela de canais. */
   style_bible?: Record<string, unknown>;
   /** Canal do YouTube ligado (login do Google ou link público). Tipos no bloco "Canais e YouTube", no fim. */
   youtube?: ChannelYouTube | null;
 };
 export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
+
+/** GET /api/projects/{id}/novelty: imagens, miniatura e título parecidos com os últimos vídeos do canal (só aviso). */
+export type NoveltyReport = {
+  enabled: boolean;
+  /** O projeto já tem prévia ou vídeo final (sem isso, só os títulos são comparados). */
+  ready: boolean;
+  window: number;
+  reason?: string;
+  compared: { project_id: string; title: string }[];
+  images: {
+    total: number;
+    share: number;
+    repeated: { scene: string; distance: number; project_id: string; project_title: string }[];
+  };
+  thumbnail: { project_id: string; project_title: string; distance: number } | null;
+  titles: { title: string; similarity: number; source: 'projeto' | 'youtube'; project_id?: string; video_id?: string }[];
+  warnings: string[];
+};
 
 export type AgendaItem = {
   id: string;

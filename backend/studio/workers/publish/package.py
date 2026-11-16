@@ -95,6 +95,9 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
     base = settings.outputs_dir / project_id / lang / "publicar"
     credits = credits_block(doc, lang)  # mídia real: "Créditos das imagens" (vazio sem mídia)
     editorial = has_editorial(doc)
+    from studio.workers import novelty
+
+    novelty_warnings = novelty.safe_warnings(project_id)  # só aviso: imagens/título repetidos do canal
     results = []
     for platform in platforms:
         folder = base / platform
@@ -135,6 +138,8 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
             checklist.append("\n**Atenção:** " + EDITORIAL_WARNING)
         if style.art.photoreal:
             checklist.append("\n**Atenção:** o estilo usa arte fotorrealista: o rótulo de conteúdo sintético é obrigatório.")
+        for warning in novelty_warnings:
+            checklist.append("\n**Atenção:** " + warning)
         if preview_only:
             checklist.append(
                 "\n**BLOQUEADO PARA CANAL MONETIZADO:** este vídeo usou provedores só de prévia "
@@ -149,7 +154,7 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
         results.append({"id": pub_id, "platform": platform, "folder": str(folder), "upload_url": UPLOAD_URLS.get(platform),
                         "caption": caption, "blocked": bool(preview_only)})
     (base / "pacote.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"lang": lang, "items": results, "preview_only_providers": preview_only}
+    return {"lang": lang, "items": results, "preview_only_providers": preview_only, "novelty_warnings": novelty_warnings}
 
 
 def list_publications(project_id: str) -> list[dict[str, Any]]:

@@ -346,7 +346,8 @@ publish:
 ### 5.6 Variação anti-repetição e presets bloqueados
 
 - **Sementes por vídeo e por cena** dentro da identidade do canal, 2–3 famílias por vídeo longo e rotação de vinhetas, cartões de título, **thumbnails e padrões de título**. Os revisores do YouTube olham também metadados e thumbnails.
-- **Verificador de novidade**: compara impressões digitais visuais (imagehash/CLIP) do novo vídeo com as dos últimos e avisa quando está parecido demais.
+- **Verificador de novidade** (feito): guarda a impressão digital de cada vídeo (dHash de 64 bits de cada imagem ou quadro das cenas e da miniatura, feito com Pillow, sem dependência nova) e compara o vídeo novo com os últimos vídeos do mesmo canal (10 por padrão, ajustável em Canais; 0 desliga). Avisa quando pelo menos 2 imagens e 30% delas parecem com as de vídeos recentes, quando a miniatura parece com outra ou quando o título é muito parecido com o de outro projeto ou com os títulos recentes do canal do YouTube ligado. É só aviso: aparece na seção Publicar da aba Vídeo, nos avisos da renderização final e no checklist do pacote manual; nunca bloqueia (`GET /api/projects/{id}/novelty`).
+- **Música sem repetir** (feito): com a trilha da biblioteca, a faixa usada nos últimos vídeos do canal (3 por padrão, ajustável em Canais) fica de fora da escolha; se todas as faixas do clima já tocaram, volta a que tocou há mais tempo e avisa. Faixa fixada no projeto vale mais.
 - Variação visual **não basta**: o YouTube julga **substância**. Roteiro, ângulo e pesquisa precisam variar de vídeo para vídeo.
 - Prefira **IA estilizada** (pintura, gravura, HQ) a fotorrealista: exige menos rótulo e tem menos cara de "conteúdo de IA em massa". O YouTube permite explicitamente "usar IA para visualizar um personagem único".
 - **Presets bloqueados em canais monetizados** (alto risco de desmonetização ou remoção):
