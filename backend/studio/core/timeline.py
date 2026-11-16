@@ -21,6 +21,7 @@ from studio.core.hashing import hash_obj, seed_from
 from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
 from studio.core.project.document import MediaRef, ProjectDoc, Scene
 from studio.core.project.media_edit import scene_label
+from studio.core.regions import region_code, region_name
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
@@ -31,7 +32,7 @@ from studio.providers.base import Word
 
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
 # Cartões que entram com o som de impacto (quando a cena não escolheu outro).
-IMPACT_KINDS = ("title", "count", "stat", "compare")
+IMPACT_KINDS = ("title", "count", "stat", "compare", "chart")
 # Cartões de dado: entram quando o número é dito ("reveal") e já mostram o carimbo e a fonte no painel.
 REVEAL_KINDS = ("stat", "compare")
 # Teto da gradação trocada pela direção de arte (a do estilo pode ser mais forte, a da direção não).
@@ -695,6 +696,8 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
         place = stamp_place(*image_framing(doc, scene))
         if place:
             card["stamp_at"] = place
+    if scene.kind in ("chart", "map") and card.get("items"):
+        _data_items(scene.kind, card, lang)
     if card:
         out["card"] = card
     focus = pick(scene.focus, FOCUS_POINTS)
@@ -705,6 +708,34 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
         out["focus"] = pick(media.focus, FOCUS_POINTS)
     _real_media_keys(doc, scene, lang, out)
     return out
+
+
+def _data_items(kind: str, card: dict[str, Any], lang: str) -> None:
+    """Itens do gráfico e do mapa prontos para o renderer, com `amount` (o número do valor: "1,5 BI" → 1.5e9) quando
+    há número. No mapa, só regiões que o renderer sabe desenhar (código normalizado) e, sem rótulo, o nome da região
+    no idioma do vídeo; o destaque acompanha o item quando outro sai."""
+    out: list[dict[str, Any]] = []
+    highlight = card.pop("highlight", None)
+    for index, item in enumerate(card["items"]):
+        entry = dict(item)
+        if kind == "map":
+            code = region_code(entry.get("region")) or region_code(entry.get("label"))
+            if code is None:
+                continue
+            entry["region"] = code
+            entry["label"] = entry.get("label") or region_name(code, lang)
+        else:
+            entry.pop("region", None)
+        amount = card_number(entry.get("value") or "")
+        if amount is not None:
+            entry["amount"] = amount
+        if index == highlight:
+            card["highlight"] = len(out)
+        out.append(entry)
+    if out:
+        card["items"] = out
+    else:
+        card.pop("items")
 
 
 def image_framing(doc: ProjectDoc, scene: Scene) -> tuple[str | None, str | None]:

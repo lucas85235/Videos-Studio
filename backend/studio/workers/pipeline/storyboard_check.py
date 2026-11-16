@@ -431,7 +431,8 @@ def _shows_own_image(scene: Scene) -> bool:
 
 def fix_flat_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     """Cartão sobre o fundo animado (liso, parece slide) passa a usar de fundo, desfocada, a imagem mais próxima
-    antes dele. Sem custo de cota. O contador do Top 10 fica como é (nunca mostra a imagem do item anterior)."""
+    antes dele. Sem custo de cota. O contador do Top 10 fica como é (nunca mostra a imagem do item anterior) e o mapa
+    também (ocupa a tela inteira)."""
     ordered = doc.ordered_scenes()
     keyed = {scene.id: beat for beat in beats if (scene := scene_for(doc, beat)) is not None}
     uses: dict[str, int] = {}
@@ -442,7 +443,7 @@ def fix_flat_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     for index, scene in enumerate(ordered):
         beat = keyed.get(scene.id)
         visual = scene.visual
-        if beat is None or scene.locked or scene.kind not in CARD_KINDS or scene.kind == "count":
+        if beat is None or scene.locked or scene.kind not in CARD_KINDS or scene.kind in ("count", "map"):
             continue
         if visual.type != "none" or visual.reuse_of or visual.asset or visual.media is not None:
             continue  # a mídia real anexada já é o fundo do cartão

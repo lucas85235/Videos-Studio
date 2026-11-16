@@ -13,11 +13,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from studio.core.styles.schema import SCENE_KINDS
 from studio.ids import new_id
 
-SceneKind = Literal["image", "text", "title", "count", "document", "quote", "video", "stat", "compare"]
+SceneKind = Literal["image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map"]
 assert set(SceneKind.__args__) == set(SCENE_KINDS)  # type: ignore[attr-defined]
 
 # Cenas sem imagem própria em tela cheia (cartões desenhados pelo renderer).
-CARD_KINDS = frozenset({"text", "title", "count", "document", "quote", "stat", "compare"})
+CARD_KINDS = frozenset({"text", "title", "count", "document", "quote", "stat", "compare", "chart", "map"})
+# Cartões de dado que guardam os números em `card.items` (o tipo só funciona com eles).
+DATA_KINDS = frozenset({"stat", "compare", "chart", "map"})
+ChartType = Literal["bar", "line", "pie", "donut"]
 
 # Mídia real: foto de licença livre, cartão de notícia ou material oficial (arte, trailer, foto de imprensa).
 RealKind = Literal["photo", "news", "official"]
@@ -166,10 +169,12 @@ def _pick_text(texts: dict[str, str], lang: str, fallback: str | None) -> str:
 
 
 class CardItem(BaseModel):
-    """Linha de um cartão de comparação."""
+    """Linha de um cartão de comparação, ponto do gráfico ou região do mapa."""
 
     label: dict[str, str] = {}
     value: dict[str, str] = {}
+    region: str | None = None
+    """Mapa: código da região (`core.regions`: "BRA", "US-TX"). Sem rótulo, a timeline usa o nome dela no idioma."""
 
 
 class SceneCard(BaseModel):
@@ -180,9 +185,11 @@ class SceneCard(BaseModel):
     label: dict[str, str] = {}
     """Rótulo curto embaixo do número (até 6 palavras)."""
     items: list[CardItem] = []
-    """Itens do cartão `compare` (2 ou 3)."""
+    """Itens do cartão `compare` (2 ou 3), pontos do `chart` (3 a 8, na ordem do eixo) ou regiões do `map` (1 a 6)."""
     highlight: int | None = None
     """Índice (base 0) do item em destaque em `items`."""
+    chart: ChartType | None = None
+    """Tipo do cartão `chart` (None: barras)."""
     headline: dict[str, str] = {}
     """Faixa no topo (qualquer tipo de cena, até 5 palavras)."""
     stamp: dict[str, str] = {}
@@ -197,12 +204,14 @@ class SceneCard(BaseModel):
             text = _pick_text(getattr(self, key), lang, fallback)
             if text:
                 out[key] = text
-        items = []
+        items: list[dict[str, str]] = []
         for item in self.items:
             label = _pick_text(item.label, lang, fallback)
             value = _pick_text(item.value, lang, fallback)
-            if label or value:
-                items.append({"label": label, "value": value})
+            if label or value or item.region:
+                items.append({"label": label, "value": value, **({"region": item.region} if item.region else {})})
+        if self.chart:
+            out["chart"] = self.chart
         if items:
             out["items"] = items
             if self.highlight is not None and 0 <= self.highlight < len(items):

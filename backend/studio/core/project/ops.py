@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from studio.core.hashing import seed_from
 from studio.core.project.document import (
     CARD_KINDS,
+    DATA_KINDS,
     Metadata,
     MusicCue,
     ProjectDoc,
@@ -458,7 +459,7 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             scene = _scene(doc, op.scene_id)
             visual = _split_visual(doc, scene, op.prompt)
             kind = scene.kind
-            if kind in ("stat", "compare"):
+            if kind in DATA_KINDS:
                 # Os dados ficam na primeira parte; a segunda mostra a imagem de fundo ou, sem ela, a fala.
                 kind = "image" if visual.reuse_of or visual.prompt else "text"
             new_scene = Scene(

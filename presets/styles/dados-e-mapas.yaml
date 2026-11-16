@@ -1,0 +1,82 @@
+id: dados-e-mapas
+name: "Dados e Mapas (longo)"
+description: "Geopolítica, economia e história em números em 16:9: gráficos animados, mapas com países e estados em destaque e números grandes, entre ilustrações limpas."
+family: data_geo
+families_mix: [data_geo, motion_graphics]
+structure: none
+tags: [dados, mapas, geopolitica, economia, explicativo, longo]
+
+format:
+  type: long
+  aspect: "16:9"
+  resolution: 1920x1080
+  fps: 30
+  duration: { target_s: 540, min_s: 360, max_s: 900 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  # Os números viram gráfico e os lugares viram mapa: o roteiro precisa dizê-los com clareza e com a fonte.
+  tone: "analítico e claro: cada afirmação apoiada em um número ou em um lugar, séries no tempo ditas em ordem (ano a ano), comparações entre países e regiões, números arredondados e sempre com a fonte; sem opinião política"
+  structure: [hook, pergunta, contexto_no_mapa, os_numeros, comparacao, virada, conclusao, cta]
+  hook_max_s: 12
+  fact_check: true
+  cta: "Inscreva-se para entender o mundo pelos números."
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Charon
+  style_prompt: "Narre como um analista de telejornal: seguro, claro, ritmo médio, dando peso aos números."
+  speed: 1.0
+  gap_s: 0.35
+
+art:
+  bible: "ilustração editorial limpa em tons de azul-petróleo e areia, cidades, portos, fronteiras, paisagens e objetos do assunto vistos de longe, luz clara, fundo calmo"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "bandeiras com texto", "mapas desenhados pela IA"]
+  languages: [editorial, isometric, flat_vector]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 3.0, max: 5.5 }
+  # Menos imagens novas: gráficos, mapas e números ocupam boa parte das batidas.
+  new_image_ratio: 0.35
+  camera: { drift: 3, ken_burns_in: 2, ken_burns_out: 1, pan_left: 1, pan_right: 1 }
+  transitions: { cut: 6, fade_black: 1, zoom_blur: 1 }
+  transition_seconds: 0.3
+  effects:
+    - { type: grade, preset: clean-cool, amount: 0.25 }
+    - { type: vignette, amount: 0.08 }
+  captions:
+    style: line
+    font: "IBM Plex Sans"
+    weight: 600
+    size: 44
+    color: "#FFFFFF"
+    highlight: "#F4B942"
+    stroke: 4
+    position: bottom
+    max_words_per_line: 8
+    uppercase: false
+  text_cards:
+    font: Oswald
+    color: "#F1F5F9"
+    accent: "#F4B942"
+    background: "#0B2233"
+    animation: slide
+  progress_bar: false
+  zoom_strength: 0.06
+
+audio:
+  music: { source: procedural, mood: pulse, volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -13 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-grande-esquerda, variations: 3, per_language: true, font: Oswald, accent: "#F4B942" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

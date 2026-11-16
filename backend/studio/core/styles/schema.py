@@ -37,7 +37,7 @@ FAMILY_LABELS: dict[Family, str] = {
     Family.ai_video: "Vídeo IA",
 }
 
-FAMILIES_V1 = {Family.still_cinema, Family.motion_graphics, Family.analog, Family.ai_video}
+FAMILIES_V1 = {Family.still_cinema, Family.motion_graphics, Family.analog, Family.ai_video, Family.data_geo}
 
 
 class Structure(StrEnum):
@@ -95,7 +95,9 @@ GRADE_PRESETS = (
     "blood-red",
     "night-green",
 )
-SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare")
+SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map")
+# Tipos do cartão `chart` (família de dados): barras, linha, pizza e rosca.
+CHART_TYPES = ("bar", "line", "pie", "donut")
 
 
 class StrictModel(BaseModel):

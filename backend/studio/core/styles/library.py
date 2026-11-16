@@ -32,6 +32,7 @@ PRESET_ORDER = (
     "terror-analog",
     "curiosidades-longo",
     "explicador-vetorial",
+    "dados-e-mapas",
     "historia-documental",
     "biografias",
     "financas-negocios",

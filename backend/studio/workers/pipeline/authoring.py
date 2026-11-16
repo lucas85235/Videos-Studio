@@ -11,8 +11,9 @@ from datetime import date
 from typing import Any
 
 from studio.core.hashing import seed_from
-from studio.core.numbers import notable_number_runs, number_runs
+from studio.core.numbers import card_number, notable_number_runs, number_runs
 from studio.core.project.document import (
+    DATA_KINDS,
     REAL_KINDS,
     ArtDirection,
     CardItem,
@@ -26,7 +27,8 @@ from studio.core.project.document import (
     Source,
     Visual,
 )
-from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, Structure, StyleSpec
+from studio.core.regions import find_regions, region_code
+from studio.core.styles.schema import CAMERA_MOVES, CHART_TYPES, GRADE_PRESETS, Family, Structure, StyleSpec
 from studio.core.styles.visual import (
     APPROACHES,
     COMPOSITIONS,
@@ -219,6 +221,7 @@ aparece na tela usando só o que o app sabe produzir.
 - title: até 5 palavras grandes no centro (overlay_text). text: as palavras da narração aparecem grandes no
   ritmo da fala (pergunta ou frase de impacto). quote: citação curta (overlay_text).
 - count: só no formato Top 10, na primeira batida de cada item (o app desenha o número do item).
+- chart e map: só quando o pedido trouxer as regras do estilo de dados (senão, use stat ou compare).
 Todo cartão (stat, compare, title, text, quote) usa de fundo a imagem de uma batida anterior (source "reuse" e
 reuse_key), desfocada e escurecida.
 Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras, ex. "RECORDE"; nunca
@@ -263,6 +266,20 @@ Regras:
    oficial de ficção aparece de costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha
    também language, shot, composition e entities (ids da direção que aparecem nela).
 7. composition: deixe livre a faixa da legenda informada no pedido."""
+
+# Regras dos cartões de gráfico e mapa, só no pedido de estilo da família de dados e geografia.
+STORYBOARD_DATA_RULES = """Estilo de dados e geografia: além de stat e compare, o app desenha gráficos e mapas animados.
+- chart: gráfico com 3 a 8 itens (label, value), todos medidos do mesmo jeito e na ordem do eixo. chart = "line"
+  para série no tempo (label = ano ou mês, em ordem), "bar" para categorias, "pie" ou "donut" para partes de um
+  todo (valores em %, somando perto de 100). label (título do cartão) diz o que é medido e a unidade; highlight é
+  o índice do item em destaque (ex.: o último ano). Só números da narração ou das fontes, nunca inventados.
+- map: mapa com 1 a 6 países ou estados dos EUA destacados; em cada item, region = código ISO ("BRA", "USA",
+  "US-TX") ou nome do lugar, label curto (ou vazio para o nome do lugar) e value opcional ("214 MI"). label (título)
+  diz o que o mapa mostra; highlight é o lugar principal. Use quando a batida fala de onde algo acontece, de rota,
+  fronteira ou comparação entre lugares. O mapa ocupa a tela inteira: não usa imagem de fundo (source "none").
+- stat continua sendo o número grande que conta na tela.
+- Prefira chart e map a imagens quando a batida trouxer série de números ou lugares, sem passar de 2 cartões
+  seguidos."""
 
 # Faixa da legenda na tela (mesmas alturas do renderer, Captions.tsx).
 _CAPTION_BANDS = {
@@ -392,11 +409,18 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
         "Batidas (chave [papel, duração]: frase):",
         *[_beat_line(b) for b in beats],
     ]
+    if is_data_style(style):
+        lines += ["", STORYBOARD_DATA_RULES]
     if doc.art is not None and doc.art.source == "user":
         user_art = doc.art.model_dump(mode="json", exclude={"source"})
         lines += ["", "Direção definida pelo usuário (não mude): " + json.dumps(user_art, ensure_ascii=False)]
     lines += ["", 'Devolva "direction" e uma entrada em "scenes" para cada batida, com a chave exata e na mesma ordem.']
     return "\n".join(lines)
+
+
+def is_data_style(style: StyleSpec) -> bool:
+    """O estilo usa a família de dados e geografia (gráficos e mapas no storyboard)."""
+    return Family.data_geo in style.all_families()
 
 
 def _number_label(value: float) -> str:
@@ -424,9 +448,10 @@ def _storyboard_context(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], bu
             "kind_hint": beat.kind_hint, "overlay_hint": beat.overlay_hint, "seconds": round(beat.seconds, 2),
             "has_number": bool(runs), "value": _number_label(runs[0][2]) if runs else None,
             "values": [_number_label(run[2]) for run in runs],
+            "regions": find_regions(beat.text),
         })  # fmt: skip
     return {"topic": doc.topic or doc.title, "bible": style.art.bible, "languages": list(style.art.languages),
-            "photoreal": style.art.photoreal, "budget": budget, "scenes": scenes,
+            "photoreal": style.art.photoreal, "budget": budget, "scenes": scenes, "data_geo": is_data_style(style),
             "sources": [{"n": n, "title": s.title, "url": s.url} for n, s in enumerate(doc.sources, 1)]}
 
 
@@ -606,18 +631,68 @@ def _source_of(ref: object, sources: list[Source]) -> str | None:
     return storyboard_check.source_label(sources[ref - 1]) or None
 
 
+# Itens por tipo de cartão: comparação, gráfico e mapa.
+MAX_ITEMS = {"compare": 3, "chart": 8, "map": 6}
+_YEAR = re.compile(r"(1[89]|20)\d\d")
+
+
+def _map_items(data: dict[str, Any], lang: str) -> list[CardItem]:
+    """Regiões do mapa que o renderer sabe desenhar (pelo código ou pelo nome), sem repetir. O rótulo que só repete o
+    nome da região sai (a timeline põe o nome no idioma de cada vídeo)."""
+    items: list[CardItem] = []
+    seen: set[str] = set()
+    for raw in _list(data.get("items")):
+        if not isinstance(raw, dict):
+            continue
+        item_label, item_value = _words_max(raw.get("label"), 4), _text(raw.get("value"), 24)
+        code = region_code(raw.get("region")) or region_code(item_label)
+        if code is None or code in seen:
+            continue
+        seen.add(code)
+        own_label = item_label and region_code(item_label) != code
+        items.append(CardItem(label={lang: item_label} if own_label else {},
+                              value={lang: item_value} if item_value else {}, region=code))
+        if len(items) == MAX_ITEMS["map"]:
+            break
+    return items
+
+
+def _chart_type(data: dict[str, Any], items: list[CardItem], lang: str) -> str:
+    """Tipo do gráfico pedido; pizza e rosca só com valores positivos. Sem tipo: linha quando os rótulos são anos."""
+    chart = pick(data.get("chart"), dict.fromkeys(CHART_TYPES))
+    amounts = [card_number(item.value.get(lang, "")) for item in items]
+    if chart in ("pie", "donut") and not all(a is not None and a > 0 for a in amounts):
+        chart = "bar"
+    if chart is None:
+        years = all(_YEAR.fullmatch(item.label.get(lang, "").strip()) for item in items)
+        chart = "line" if years else "bar"
+    return chart
+
+
 def _card_from(data: dict[str, Any], kind: str, lang: str,
                sources: list[Source] | None = None) -> tuple[str, SceneCard | None]:
-    """Tipo final e cartão da cena (stat sem valor e compare sem 2 itens viram outro tipo)."""
+    """Tipo final e cartão da cena: stat sem valor, compare sem 2 itens, gráfico sem 3 números e mapa sem região
+    conhecida viram outro tipo."""
     value = _text(data.get("value"), 24)
     label = _words_max(data.get("label"), 6)
     items: list[CardItem] = []
-    for raw in _list(data.get("items"))[:3]:
-        if isinstance(raw, dict):
-            item_label, item_value = _words_max(raw.get("label"), 6), _text(raw.get("value"), 24)
-            if item_label or item_value:
-                items.append(CardItem(label={lang: item_label} if item_label else {},
-                                      value={lang: item_value} if item_value else {}))
+    if kind == "map":
+        items = _map_items(data, lang)
+        if not items:
+            kind = "stat" if value else "text"
+    else:
+        for raw in _list(data.get("items"))[:MAX_ITEMS.get(kind, 3)]:
+            if isinstance(raw, dict):
+                item_label, item_value = _words_max(raw.get("label"), 6), _text(raw.get("value"), 24)
+                if item_label or item_value:
+                    items.append(CardItem(label={lang: item_label} if item_label else {},
+                                          value={lang: item_value} if item_value else {}))
+    if kind == "chart":
+        numeric = [item for item in items if card_number(item.value.get(lang, "")) is not None]
+        if len(numeric) >= 3:
+            items = numeric
+        else:
+            kind, items = "compare", (numeric or items)[:3]
     if kind == "compare" and len(items) < 2:
         if len(items) == 1 and items[0].value:
             value, label = value or items[0].value[lang], label or items[0].label.get(lang, "")
@@ -628,11 +703,13 @@ def _card_from(data: dict[str, Any], kind: str, lang: str,
     valid_highlight = isinstance(highlight, int) and not isinstance(highlight, bool) and 0 <= highlight < len(items)
     headline = _words_max(data.get("headline"), 5)
     stamp = _words_max(data.get("stamp"), 2)
+    with_items = kind in ("compare", "chart", "map")
     card = SceneCard(
         value={lang: value} if kind == "stat" and value else {},
-        label={lang: label} if kind in ("stat", "compare") and label else {},
-        items=items if kind == "compare" else [],
-        highlight=highlight if kind == "compare" and valid_highlight else None,  # type: ignore[arg-type]
+        label={lang: label} if kind in DATA_KINDS and label else {},
+        items=items if with_items else [],
+        highlight=highlight if with_items and valid_highlight else None,  # type: ignore[arg-type]
+        chart=_chart_type(data, items, lang) if kind == "chart" else None,  # type: ignore[arg-type]
         headline={lang: headline} if headline else {},
         stamp={lang: stamp} if stamp else {},
         source=_source_of(data.get("source_ref"), sources or []),
@@ -714,6 +791,8 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
                 root = None if source == "new" else last_new
         elif kind == "count" and source == "new":
             pass  # contador com imagem própria (item de uma batida só)
+        elif kind == "map":
+            source, root = "none", None  # o mapa ocupa a tela inteira: não usa imagem de fundo
         elif root is None and not (kind == "count" and source == "none"):
             # Cartão: fundo desfocado da última imagem nova, mesmo que a resposta peça o fundo liso ("none", que parece
             # slide); sem imagem antes, o fundo animado. O contador do Top 10 sem imagem no item fica como é.
