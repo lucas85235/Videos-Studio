@@ -472,6 +472,8 @@ export type Channel = {
   style_bible?: Record<string, unknown>;
   /** Canal do YouTube ligado (login do Google ou link público). Tipos no bloco "Canais e YouTube", no fim. */
   youtube?: ChannelYouTube | null;
+  /** Playlist em que os envios dos projetos deste canal entram (null: nenhuma). */
+  youtube_playlist?: { id: string; title: string } | null;
 };
 export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
 
@@ -728,6 +730,46 @@ export type YouTubeAccountStatus = {
   channel_id: string;
   global_connected?: boolean;
   linked?: { channel_id: string; channel_title: string }[];
+  /** Todas as contas que podem publicar (global e canais vinculados, sem repetir o mesmo canal). */
+  accounts?: YouTubeAccount[];
+  /** Com project_id: o canal do projeto não está vinculado, então o envio pode escolher a conta. */
+  can_choose_account?: boolean;
+  /** Com project_id: id no YouTube da conta que o projeto usa sem escolha ("" se não houver). */
+  account_channel_id?: string;
+  /** Com project_id: playlist padrão do canal do projeto. */
+  default_playlist?: { id: string; title: string } | null;
+  reason?: string | null;
+};
+
+export type YouTubeAccount = {
+  channel_id: string;
+  channel_title: string;
+  /** Conta conectada na aba de publicação (a "global"). */
+  global: boolean;
+  /** Canais do Vulto ligados a este canal do YouTube. */
+  vulto_channels: string[];
+};
+
+/** GET /api/youtube/playlists */
+export type YouTubePlaylist = { id: string; title: string; privacy: string; count: number | null };
+export type YouTubePlaylists = { account_title: string; playlists: YouTubePlaylist[] };
+
+/** GET /api/youtube/quota: cota da YouTube Data API usada hoje (dia do Pacífico). */
+export type YouTubeQuota = {
+  day: string;
+  resets_at: string;
+  limit: number;
+  custom_limit: boolean;
+  used: number;
+  remaining: number;
+  uploads: number;
+  upload_limit: number;
+  exhausted: boolean;
+  level: 'ok' | 'near' | 'over';
+  message: string | null;
+  /** Unidades que um envio típico gasta (capa + legendas). */
+  publish_estimate: number;
+  by_method: { method: string; calls: number; units: number }[];
 };
 
 /** POST /api/youtube/link */

@@ -45,6 +45,7 @@ import {
   useToast,
 } from '../ui';
 import { VoicePicker } from '../voices';
+import { YouTubeQuotaSettings } from '../youtube';
 import { AnchorLink, jumpTo, useCopy } from './ops/common';
 
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
@@ -519,6 +520,7 @@ const ProviderSection: React.FC<{ kind: Kind; providers: Provider[] }> = ({ kind
       ) : (
         <p className="text-sm text-muted">Nenhum provedor deste tipo.</p>
       )}
+      {kind === 'publish' ? <YouTubeQuotaSettings /> : null}
     </Section>
   </div>
 );
