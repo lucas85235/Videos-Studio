@@ -15,7 +15,7 @@ import json
 import logging
 import shutil
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +52,7 @@ from studio.db import session_scope
 from studio.media import audio as audio_mod
 from studio.media import audio_check, music_library
 from studio.media import depth as depth_mod
+from studio.media import lut as lut_mod
 from studio.media.ffmpeg import read_wav
 from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
@@ -269,6 +270,7 @@ class Builder:
         self.settings = get_settings()
         self.stats = BuildStats()
         self.warnings: list[str] = []
+        self.lut_graded: dict[str, str] = {}  # imagem original → versão com o LUT do estilo (lut_images)
         self.music_used: dict[str, Any] | None = None
         self._done = 0
         self._total = 1
@@ -840,6 +842,69 @@ class Builder:
         log.warning("parallax falhou na cena %s: %s", scene_id, exc)
         self.warnings.append(f"Parallax da {scene_label(self.doc, scene_id)} falhou ({exc}); a cena usa o Ken Burns.")
 
+    def lut_images(self, images: dict[str, str | None], extra: Iterable[str] = ()) -> dict[str, str | None]:
+        """Imagens das cenas com o LUT do estilo aplicado (efeito "lut"), em cache por imagem + LUT + intensidade.
+        Sem LUT, devolve as mesmas. LUT que sumiu da biblioteca vira aviso e o vídeo sai sem ele.
+
+        `extra` são outras imagens que aparecem no vídeo (a foto do cartão de notícia): ficam gradadas em
+        `self.lut_graded` (original → gradada). Cena de vídeo fica sem LUT, com aviso (a cor dela destoa)."""
+        effect = next((e for e in self.style.edit.effects if e.type == "lut" and e.amount > 0), None)
+        if effect is None or not effect.preset:
+            return images
+        try:
+            lut = lut_mod.load_lut(effect.preset)
+        except (lut_mod.LutError, OSError) as exc:
+            self.warnings.append(f"LUT de cor ignorado: {exc}")
+            return images
+        amount = round(effect.amount, 3)
+        done: dict[str, str] = {}
+
+        def grade(rel: str) -> str:
+            src = self.store.abs(rel)
+            h = hash_obj({"v": lut_mod.LUT_VERSION, "src": hash_file(src), "lut": lut.digest, "amount": amount})
+            cached = self.store.lookup("lut", h)
+            if cached:
+                self.stats.hit("lut", True)
+                return cached["path"]
+            out = lut_mod.grade_image(src, self.store.dir_for("lut", h), lut, amount)
+            out_rel = self.store.rel(out)
+            self.store.save("lut", h, {"path": out_rel, "files": [out_rel], "source": rel, "lut": effect.preset}, "numpy")
+            self.stats.hit("lut", False)
+            return out_rel
+
+        videos = sum(1 for rel in images.values() if rel and not rel.lower().endswith(lut_mod.IMAGE_EXTS))
+        if videos:
+            self.warnings.append(f"LUT de cor não é aplicado em cenas de vídeo ({videos} "
+                                 f"{'cena' if videos == 1 else 'cenas'}): a cor delas fica diferente das imagens.")
+        todo = sorted({rel for rel in [*images.values(), *extra]
+                       if rel and rel.lower().endswith(lut_mod.IMAGE_EXTS) and self.store.abs(rel).is_file()})
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [(rel, pool.submit(grade, rel)) for rel in todo]
+            for rel, future in futures:
+                if self.sink.cancelled():
+                    # Cancela o que ainda não começou: o `with` só espera as (no máximo 4) imagens em andamento.
+                    for _, f in futures:
+                        f.cancel()
+                    raise BuildCancelled("cancelado pelo usuário")
+                try:
+                    done[rel] = future.result()
+                except Exception as exc:  # noqa: BLE001 - imagem ilegível fica sem LUT, o vídeo segue
+                    log.warning("LUT não aplicado em %s: %s", rel, exc)
+                    self.warnings.append(f"LUT de cor não aplicado em uma imagem: {exc}")
+        if todo:
+            self._tick("Cor (LUT) aplicada")
+        self.lut_graded = done
+        return {sid: done.get(rel, rel) if rel else rel for sid, rel in images.items()}
+
+    def _lut_news_photos(self, timeline: dict[str, Any]) -> None:
+        """Troca a foto do cartão de notícia pela versão com LUT (gradada em lut_images)."""
+        if not self.lut_graded:
+            return
+        for scene in timeline.get("scenes", []):
+            news = scene.get("news")
+            if isinstance(news, dict) and news.get("image") in self.lut_graded:
+                news["image"] = self.lut_graded[news["image"]]
+
     def music(self, duration: float, timeline: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]] | None:
         """Trilha do vídeo. Uma faixa ativa sem `loop` = o caminho de sempre (mesma chave de cache: projeto antigo não
         refaz o áudio). Com várias faixas ou `loop` (e a `timeline`, que diz onde cada segmento começa), monta uma
@@ -1268,15 +1333,25 @@ class Builder:
                      for message, items in errors.items()]
             raise BuildError("falhas na geração:\n- " + "\n- ".join(lines[:20]))
         resolve_reused_images(doc, images)
-        layers = self.parallax(images)
+        # LUT do estilo: a timeline mostra as imagens já gradadas (a thumbnail continua com as originais), inclusive
+        # a foto do cartão de notícia (que usa a original da mídia, não a versão enquadrada da cena). As camadas do
+        # parallax saem da imagem gradada, para a cor bater com as outras cenas.
+        news_photos = [m.asset for s in scenes if s.kind == "image" and (m := s.visual.media) is not None
+                       and m.kind == "news" and m.asset]
+        timeline_images = self.lut_images(images, news_photos)
+        layers = self.parallax(timeline_images)
         videos = video_clips.build_clips(self, images)  # só do cache: o build nunca gera vídeo IA (é pago)
+        if videos and self.lut_graded:
+            n = len(videos)
+            self.warnings.append(f"LUT de cor não é aplicado nos clipes de vídeo IA ({n} {'cena' if n == 1 else 'cenas'}): "
+                                 "a cor deles fica diferente das imagens.")
         if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
             self.warnings.append(EDITORIAL_WARNING)
 
         results: dict[str, Any] = {}
         extra: dict[str, Any] = {}
         if self.multi_track:
-            results, extra = self._run_multi_track(tts_out, images, layers, videos)
+            results, extra = self._run_multi_track(tts_out, timeline_images, layers, videos)
         for lang in [] if self.multi_track else self.langs:
             self._check()
             narration: dict[str, NarrationClip] = {}
@@ -1287,7 +1362,8 @@ class Builder:
                 narration[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=out["duration"], words=words)
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
-            timeline = build_timeline(doc, self.style, lang, narration, images, layers, videos)
+            timeline = build_timeline(doc, self.style, lang, narration, timeline_images, layers, videos)
+            self._lut_news_photos(timeline)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")
@@ -1412,6 +1488,7 @@ class Builder:
             hashes[seg.id] = h
             self._tick("Alinhamento das palavras")
         timeline = build_timeline(doc, self.style, primary, clips, images, layers, videos)
+        self._lut_news_photos(timeline)
         self.warnings += timeline.pop("warnings", [])
         starts = {n["segment_id"]: n["start"] for n in timeline["narration"]}
         placed = [

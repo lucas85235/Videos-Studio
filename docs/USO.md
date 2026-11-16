@@ -192,6 +192,7 @@ O novo projeto já vem com *Curiosidades e Explicativo (Short)* marcado. Se o pr
 
 - **Duplicar e ajustar**: abra um preset, dê um id para a cópia e edite no formulário (ou no JSON completo).
 - **Criar por descrição**: em Estilos, descreva (ex.: "documentário de jornal antigo, lento, sépia, máquina de escrever") e escolha um estilo base. O app mostra as mudanças aplicadas e as rejeitadas.
+- **LUT de cor (.cube)**: no editor, em *Efeitos de imagem*, ligue **LUT de cor** e escolha um dos prontos (azul-petróleo e laranja, filme desbotado, noite fria, âmbar quente, processo cruzado, preto e branco contrastado) ou clique em **Enviar .cube** para usar o seu (fica em `data/library/luts`). A intensidade mistura o LUT com a cor original. O LUT é aplicado nas imagens no build (fica em cache) e aparece na prévia do vídeo; vídeos de cena (mídia real em vídeo) ficam sem LUT por enquanto (o build avisa). Um .cube com nome repetido é guardado como `nome-2.cube`, sem mudar a cor dos estilos que usam o antigo.
 - Famílias prontas na v1: imagens paradas (Ken Burns), motion graphics (cartões, tipografia cinética, documentos, contagem) e analógico (VHS, glitch, scanlines). As demais estão no backlog.
 
 ### Conferência da narração
@@ -239,7 +240,7 @@ Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** col
 
 | Sintoma | O que fazer |
 |---|---|
-| Render lento | VHS, desfoque de bordas e aberração cromática custam caro (o grão é leve). Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
+| Render lento | VHS, desfoque de bordas e aberração cromática custam caro (o grão e o LUT são leves; a aberração já desenha a imagem uma vez só). Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
 | Disco enchendo | Configurações → *Armazenamento* → **Limpar agora** (ou `uv run videos-studio clean`). Apaga renders e mixagens sem uso; narrações, imagens e os vídeos em *outputs* ficam. |
 | "provedores de teste" na prévia | Configure o Gemini (voz) e o Codex (imagens) e gere a prévia de novo: o app troca sozinho os itens de prévia. |
 | A voz lê instruções ou repete frases | Atualize o app (versão de 14/11/2026 em diante) e gere a prévia de novo: as narrações antigas não são reaproveitadas. Se o aviso continuar em algum trecho, ajuste uma palavra dele na aba Roteiro: só aquela narração é refeita. |

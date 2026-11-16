@@ -5,6 +5,7 @@ O mesmo formato é usado pelos presets em YAML, pelos estilos do usuário e pelo
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -95,7 +96,12 @@ EFFECTS = (
     "blur_edges",
     "flicker",
     "dust",
+    "lut",  # LUT .cube (pronto ou da biblioteca), aplicado nas imagens antes do render (media/lut.py)
 )
+# LUTs prontos, gerados no código (media/lut.py). O preset do efeito "lut" é um destes ou um arquivo .cube da
+# biblioteca (library/luts/<nome>.cube).
+LUT_PRESETS = ("teal-orange", "faded-film", "cold-night", "warm-amber", "cross-process", "mono-contrast")
+_LUT_FILE = re.compile(r"^[\w\- .()]{1,80}\.cube$", re.IGNORECASE)
 GRADE_PRESETS = (
     "neutral",
     "vivid",
@@ -285,6 +291,11 @@ class EffectSpec(StrictModel):
             preset = self.preset or "neutral"
             if preset not in GRADE_PRESETS:
                 raise ValueError(f"preset de cor desconhecido: {preset}")
+            self.preset = preset
+        elif self.type == "lut":
+            preset = (self.preset or LUT_PRESETS[0]).strip()
+            if preset not in LUT_PRESETS and not _LUT_FILE.match(preset):
+                raise ValueError(f"LUT desconhecido: {preset} (use um pronto: {', '.join(LUT_PRESETS)}, ou um arquivo .cube)")
             self.preset = preset
         return self
 

@@ -165,6 +165,14 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
 
   const chroma = hasEffect(effects, 'chromatic');
+  // Aberração cromática numa passada só: a imagem é desenhada uma vez e um filtro SVG separa os canais (antes eram
+  // 3 cópias da imagem, cada uma com a cadeia inteira de filtros CSS).
+  const chromaId = chroma ? `chroma-${String(scene.id).replace(/[^A-Za-z0-9_-]/g, '')}-${scene.seed}` : null;
+  const chromaFilter =
+    chroma && chromaId ? (
+      <ChromaticFilter id={chromaId} amount={chroma.amount} shift={((4 + 6 * chroma.amount) * Math.min(width, height)) / 1080} />
+    ) : null;
+  const fullFilter = chromaId ? `${filter} url(#${chromaId})`.trim() : filter;
 
   // Modo desfocado (imagem inteira sobre o fundo borrado) não tem camadas: fica no caminho normal (Ken Burns).
   if (scene.motion === 'parallax' && layers.length > 1 && !layout?.front) {
@@ -194,30 +202,11 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
         />
       );
     });
-    // Aberração cromática: a pilha repetida, tingida e deslocada de lado (como as duas cópias da imagem única).
-    const ghost = (shift: number, hue: number) => (
-      <AbsoluteFill
-        style={{
-          mixBlendMode: 'screen',
-          opacity: 0.32 * (chroma?.amount ?? 0),
-          transform: `translateX(${shift}px)`,
-          filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(${hue}deg)`,
-        }}
-      >
-        {stack}
-      </AbsoluteFill>
-    );
-    const shift = chroma ? 4 + 6 * chroma.amount : 0;
     return (
       <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>
+        {chromaFilter}
         <AbsoluteFill style={{ transform: jitter ? `translateX(${jitter}px)` : undefined }}>
-          <AbsoluteFill style={{ filter: filter || undefined }}>{stack}</AbsoluteFill>
-          {chroma ? (
-            <>
-              {ghost(shift, -40)}
-              {ghost(-shift, 160)}
-            </>
-          ) : null}
+          <AbsoluteFill style={{ filter: fullFilter || undefined }}>{stack}</AbsoluteFill>
         </AbsoluteFill>
       </AbsoluteFill>
     );
@@ -236,7 +225,7 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
     objectPosition: layout?.position,
     transform,
     transformOrigin: origin,
-    filter,
+    filter: fullFilter,
   };
   const front = layout?.front;
   // Modo desfocado: a imagem inteira sobre ela mesma ampliada, escurecida e desfocada; a câmera move as duas juntas.
@@ -274,29 +263,46 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
     );
   return (
     <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>
+      {chromaFilter}
       {picture(imgStyle)}
-      {chroma ? (
-        <>
-          {picture({
-            ...imgStyle,
-            position: 'absolute',
-            inset: 0,
-            mixBlendMode: 'screen',
-            opacity: 0.32 * chroma.amount,
-            transform: `${transform} translateX(${4 + 6 * chroma.amount}px)`,
-            filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(-40deg)`,
-          })}
-          {picture({
-            ...imgStyle,
-            position: 'absolute',
-            inset: 0,
-            mixBlendMode: 'screen',
-            opacity: 0.32 * chroma.amount,
-            transform: `${transform} translateX(-${4 + 6 * chroma.amount}px)`,
-            filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(160deg)`,
-          })}
-        </>
-      ) : null}
     </AbsoluteFill>
+  );
+};
+
+/**
+ * Filtro SVG da aberração cromática: desloca o vermelho para um lado e o azul para o outro, mantém o verde e mistura
+ * com a imagem original pela intensidade. Tudo em sRGB (sem conversão para RGB linear, mais rápido).
+ *
+ * O deslocamento deixa uma faixa vazia de `shift` px na borda da imagem; ali entra a imagem sem deslocar (feMerge
+ * com a SourceGraphic por baixo), senão o vermelho sumiria numa borda e o azul na outra (faixa ciano/amarela quando
+ * a borda da imagem encosta no quadro: câmera parada, fim de pan, foco perto da borda).
+ *
+ * A intensidade começa em 0 e fica perto do visual antigo (cópias coloridas com opacidade 0,32 × intensidade).
+ */
+const ChromaticFilter: React.FC<{ id: string; amount: number; shift: number }> = ({ id, amount, shift }) => {
+  const mix = Math.min(1, Math.max(0, 0.35 * amount));
+  return (
+    <svg width={0} height={0} style={{ position: 'absolute' }} aria-hidden="true">
+      <defs>
+        <filter id={id} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
+          <feOffset in="SourceGraphic" dx={shift} dy={0} result="rSo" />
+          <feMerge result="rDesloc">
+            <feMergeNode in="SourceGraphic" />
+            <feMergeNode in="rSo" />
+          </feMerge>
+          <feColorMatrix in="rDesloc" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r" />
+          <feOffset in="SourceGraphic" dx={-shift} dy={0} result="bSo" />
+          <feMerge result="bDesloc">
+            <feMergeNode in="SourceGraphic" />
+            <feMergeNode in="bSo" />
+          </feMerge>
+          <feColorMatrix in="bDesloc" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b" />
+          <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g" />
+          <feComposite in="r" in2="g" operator="arithmetic" k1={0} k2={1} k3={1} k4={0} result="rg" />
+          <feComposite in="rg" in2="b" operator="arithmetic" k1={0} k2={1} k3={1} k4={0} result="separado" />
+          <feComposite in="separado" in2="SourceGraphic" operator="arithmetic" k1={0} k2={mix} k3={1 - mix} k4={0} />
+        </filter>
+      </defs>
+    </svg>
   );
 };
