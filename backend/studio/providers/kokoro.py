@@ -164,6 +164,7 @@ class KokoroTTS(TTSProvider):
         local=True,
         free=True,
         deterministic=True,
+        spoken_text=True,
         cost_note="Grátis e sem cota: roda no seu computador",
         notes="Usada nas prévias para você conferir o conteúdo sem gastar a cota das vozes de API. Português, inglês, "
         f"espanhol, francês, italiano e hindi. Modelo de {MODEL_MB} MB, baixado na primeira vez (licença Apache-2.0).",

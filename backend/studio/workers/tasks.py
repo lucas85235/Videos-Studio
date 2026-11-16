@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from studio.config import get_settings
+from studio.core.glossary import GlossaryEntry, glossary_of
 from studio.core.project import service
 from studio.core.styles.library import get_style
 from studio.db import session_scope
@@ -48,6 +49,15 @@ def _record_lessons(project_id: str, stage: str, lessons: list[dict[str, Any]], 
                                     lessons_mod.usage_record(lessons, version=version))
     except Exception as exc:  # noqa: BLE001 - o roteiro já foi gravado; o registro é só um extra
         log.warning("não consegui registrar as lições usadas (%s): %s", stage, exc)
+
+
+def channel_glossary(channel_id: str | None) -> list[GlossaryEntry]:
+    """Glossário de tradução do canal (vazio sem canal)."""
+    if not channel_id:
+        return []
+    with session_scope() as s:
+        row = s.get(Channel, channel_id)
+        return glossary_of(row.settings) if row is not None else []
 
 
 def _gates(project_id: str) -> dict[str, Any]:
@@ -138,14 +148,21 @@ def run_translate(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
         version = service.commit(project_id, doc, f"Tradução encurtada para caber no tempo ({total} trechos)",
                                  author="ai") if shortened else None
         return {"version": version, "langs": sorted(shortened), "shortened": shortened}
+    glossary = channel_glossary(doc.channel_id)
     done = []
     for index, lang in enumerate(targets):
         ctx.progress(index / max(1, len(targets)), f"Traduzindo para {authoring.lang_name(lang)}")
-        doc, _provider = authoring.translate(doc, lang, screen_only=screen_only, project_id=project_id, job_id=ctx.job_id)
+        doc, _provider = authoring.translate(doc, lang, screen_only=screen_only, project_id=project_id, job_id=ctx.job_id,
+                                             glossary=glossary)
         done.append(lang)
     message = f"{'Tradução dos textos de tela' if screen_only else 'Tradução'}: {', '.join(done)}"
     version = service.commit(project_id, doc, message, author="ai") if done else None
-    return {"version": version, "langs": done}
+    result: dict[str, Any] = {"version": version, "langs": done}
+    # Conferência do glossário: o aviso aparece no roteiro (o detalhe do projeto refaz a conta a cada abertura).
+    issues = authoring.glossary_issues(doc, glossary, done)
+    if issues:
+        result["glossary_warnings"] = [f"{i['lang']} · {i['id']}: {i['message']}" for i in issues]
+    return result
 
 
 @job("metadata")

@@ -394,6 +394,7 @@ export type ProjectDetail = {
   jobs: Job[];
   outputs: { preview?: BuildResult | null; final?: BuildResult | null };
   publications: Publication[];
+  glossary_warnings?: GlossaryWarning[];
 };
 
 export type StyleSpec = {
@@ -529,8 +530,18 @@ export type Channel = {
   voice_defaults?: { final?: { provider: string; voice: string } };
   /** Playlist em que os envios dos projetos deste canal entram (null: nenhuma). */
   youtube_playlist?: { id: string; title: string } | null;
+  /** Dicionário de pronúncia: como a voz fala um termo (vale para todas as vozes). */
+  pronunciation?: PronunciationEntry[];
+  /** Glossário de tradução: termos que não se traduzem ou têm tradução fixa por idioma. */
+  glossary?: GlossaryEntry[];
 };
-export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
+/** `lang` vazio: vale para todos os idiomas. */
+export type PronunciationEntry = { term: string; say: string; lang: string };
+/** `keep`: não traduzir; `translations`: tradução fixa por idioma (vale mais que `keep`). */
+export type GlossaryEntry = { term: string; keep: boolean; translations: Record<string, string>; note: string };
+/** Termo do glossário que a tradução não respeitou (refeito a cada abertura do projeto). */
+export type GlossaryWarning = { lang: string; kind: 'segment' | 'scene'; id: string; term: string; expected: string; message: string };
+export type ChannelSlots ={ timezone: string; configured: boolean; slots: string[] };
 
 export type AgendaItem = {
   id: string;

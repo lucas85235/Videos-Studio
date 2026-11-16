@@ -46,8 +46,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
   - textos na tela (cartões, sobreposições) continuam no idioma principal em todas as faixas; um modo "sem texto na tela" no storyboard ajudaria;
   - o orçamento da tradução é estimado pelas palavras por minuto do estilo, não pela duração real da narração já gravada; a velocidade do TTS não é ajustada por idioma (só o `atempo` depois, de -8% a +10%);
   - não testado com um canal real (o primeiro envio deve ser privado).
-- [ ] Normalização de números e estrangeirismos para TTS local.
-- [ ] Glossário por canal na tradução.
+- [x] Normalização para a voz local (15/11/2026): números com moeda, escala, porcentagem, unidade e ordinal, datas, horas, graus, siglas, símbolos e estrangeirismos comuns viram texto falado só para o Kokoro/voz do Windows; a legenda continua com o roteiro. Dicionário de pronúncia por canal (vale para todas as vozes). Ficou de fora: algarismos romanos ("Dom Pedro II" fica como está), milhar separado por espaço ("2 000", comum em francês), soletração de siglas fora do português e concordância de gênero fora do pt (ex.: "uno" no lugar de "un" em espanhol).
+- [x] Glossário por canal na tradução (15/11/2026): termos que não se traduzem ou com tradução fixa por idioma, editados em Canais, vão no pedido de tradução e são conferidos depois (aviso na aba Roteiro). A conferência só avisa; não corrige a tradução sozinha nem traduz de novo.
 
 ### Estilos e render
 - [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.

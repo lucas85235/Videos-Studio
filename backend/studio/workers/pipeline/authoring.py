@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from studio.core.glossary import GlossaryEntry, check_pairs, glossary_prompt
 from studio.core.hashing import seed_from
 from studio.core.numbers import notable_number_runs, number_runs
 from studio.core.project.document import (
@@ -1215,12 +1216,40 @@ def shorten_translation(doc: ProjectDoc, lang: str, *, project_id: str | None = 
     if not shortened:
         return doc, []
     return ProjectDoc.model_validate(new_doc.model_dump()), shortened
+def translation_pairs(doc: ProjectDoc, lang: str) -> list[tuple[str, str, str, str]]:
+    """(tipo, id, texto original, texto em `lang`) da narração, das sobreposições e dos cartões já traduzidos.
+    Tipo "segment" (id do segmento) ou "scene" (id da cena)."""
+    source = doc.primary_language
+    out: list[tuple[str, str, str, str]] = []
+    for seg in doc.segments:
+        original, translated = seg.text_for(source), seg.text.get(lang, "")
+        if original.strip() and translated.strip():
+            out.append(("segment", seg.id, original, translated))
+    for scene in doc.scenes:
+        original, translated = scene.overlay_text.get(source, ""), scene.overlay_text.get(lang, "")
+        if original.strip() and translated.strip():
+            out.append(("scene", scene.id, original, translated))
+        for entry in _card_texts(scene, source):
+            target = _card_target(scene, entry["id"].split("#", 1)[1])
+            translated = (target or {}).get(lang, "")
+            if translated.strip():
+                out.append(("scene", scene.id, entry["text"], translated))
+    return out
+
+
+def glossary_issues(doc: ProjectDoc, entries: list[GlossaryEntry], langs: list[str] | None = None) -> list[dict[str, str]]:
+    """Termos do glossário do canal que a tradução não respeitou, em todos os idiomas traduzidos (ou em `langs`)."""
+    if not entries:
+        return []
+    targets = [lang for lang in (langs or doc.languages) if lang != doc.primary_language]
+    return [issue for lang in targets for issue in check_pairs(translation_pairs(doc, lang), entries, lang)]
 
 
 def translate(doc: ProjectDoc, target_lang: str, *, screen_only: bool = False, project_id: str | None = None,
-              job_id: str | None = None) -> tuple[ProjectDoc, str]:
+              job_id: str | None = None, glossary: list[GlossaryEntry] | None = None) -> tuple[ProjectDoc, str]:
     """Traduz a narração e os textos de tela. Com `screen_only`, só os textos de tela que faltam em
-    `target_lang`: a narração já traduzida (e a voz gravada dela) fica como está."""
+    `target_lang`: a narração já traduzida (e a voz gravada dela) fica como está. O `glossary` do canal entra no
+    pedido (só os termos que aparecem nos textos); a conferência fica em `glossary_issues`."""
     source = doc.primary_language
     if screen_only:
         segments: list[dict[str, str]] = []
@@ -1248,6 +1277,9 @@ Título: {doc.title}
 """ + body + (
         "\nTextos de tela (curtos; números com algarismos, adapte a unidade e o separador: 475 MI → 475M, "
         "3,5% → 3.5%):\n" + "\n".join(f"- {o['id']}: {o['text']}" for o in overlays) if overlays else "")
+    terms = glossary_prompt(glossary or [], [doc.title] + [t["text"] for t in segments + overlays], target_lang)
+    if terms:
+        prompt += "\n\n" + terms
     context = {"target_lang": target_lang, "title": doc.title, "segments": segments, "overlays": overlays}
     result, provider_id = _llm("translate", TRANSLATE_SYSTEM, prompt, TRANSLATE_SCHEMA, context, project_id, job_id)
     new_doc = doc.model_copy(deep=True)

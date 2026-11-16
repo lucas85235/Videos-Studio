@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from studio.config import get_settings
 from studio.core.agent import editor
+from studio.core.glossary import glossary_of
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc
 from studio.core.project.ops import OpError, apply_ops, parse_ops
@@ -21,6 +22,7 @@ from studio.models import Channel
 from studio.providers.registry import ChainFailed
 from studio.workers.jobs import get_runner, list_jobs
 from studio.workers.pipeline import dubbing
+from studio.workers.pipeline.authoring import glossary_issues
 from studio.workers.pipeline.build import DIRECTION_MISSING, plan, scenes_without_direction
 from studio.workers.publish.package import build_dub_package, build_package, list_publications
 
@@ -180,7 +182,19 @@ def detail(project_id: str) -> dict[str, Any]:
         "jobs": list_jobs(project_id, limit=20),
         "outputs": _outputs(project_id, row),
         "publications": list_publications(project_id),
+        "glossary_warnings": _glossary_warnings(doc),
     }
+
+
+def _glossary_warnings(doc: ProjectDoc) -> list[dict[str, str]]:
+    """Termos do glossário do canal que a tradução atual não respeitou (refeito a cada abertura: corrigir o texto à
+    mão tira o aviso)."""
+    if not doc.channel_id or len(doc.languages) < 2:
+        return []
+    with session_scope() as s:
+        row = s.get(Channel, doc.channel_id)
+        entries = glossary_of(row.settings) if row is not None else []
+    return glossary_issues(doc, entries)
 
 
 @router.delete("/{project_id}")

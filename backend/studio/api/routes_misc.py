@@ -10,6 +10,8 @@ from sqlalchemy import func
 
 from studio.config import get_settings
 from studio.core.agent import editor
+from studio.core.glossary import GlossaryEntry, glossary_of
+from studio.core.speech import PronunciationEntry, pronunciation_of
 from studio.core.styles.library import (
     StyleNotFound,
     delete_user_style,
@@ -147,6 +149,10 @@ class ChannelBody(BaseModel):
     credits_per_char: float = Field(default=0.0, ge=0)
     credit_price_usd: float = Field(default=0.0, ge=0)
     voice_defaults: dict[str, Any] = {}  # {"final": {"provider": ..., "voice": ...}}
+    # Dicionário de pronúncia ([{"term", "say", "lang"}]) e glossário de tradução ([{"term", "keep", "translations",
+    # "note"}]). Ficam em `settings`; None (não enviado) mantém o que já existe.
+    pronunciation: list[PronunciationEntry] | None = Field(default=None, max_length=500)
+    glossary: list[GlossaryEntry] | None = Field(default=None, max_length=500)
 
 
 def _channel_dict(row: Channel) -> dict[str, Any]:
@@ -173,6 +179,8 @@ def _channel_dict(row: Channel) -> dict[str, Any]:
         "credit_price_usd": row.credit_price_usd or 0.0,
         "voice_defaults": row.voice_defaults or {},
         "youtube_playlist": default_playlist(row.settings),  # playlist em que os envios entram (None: nenhuma)
+        "pronunciation": [e.model_dump() for e in pronunciation_of(row.settings)],
+        "glossary": [e.model_dump() for e in glossary_of(row.settings)],
     }
 
 
@@ -188,8 +196,12 @@ def _apply_channel(row: Channel, body: ChannelBody, fields: set[str]) -> None:
     from studio.workers.publish.schedule import PostingPlan
 
     data = body.model_dump()
-    for key in fields - {"posting"}:
+    for key in fields - {"posting", "pronunciation", "glossary"}:
         setattr(row, key, data[key])
+    for key in ("pronunciation", "glossary"):
+        entries = getattr(body, key)
+        if key in fields and entries is not None:
+            row.settings = {**(row.settings or {}), key: [e.model_dump() for e in entries]}
     if "posting" in fields and body.posting is not None:
         try:
             plan = PostingPlan.model_validate(body.posting)
