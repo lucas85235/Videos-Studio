@@ -3,6 +3,7 @@
 | canais (estudio.db)  | Vulto            | chave que evita duplicar             |
 |----------------------|------------------|--------------------------------------|
 | canais + canal.toml  | Channel (+ ofertas em AffiliateOffer) | settings["canais"]["id"]; canal + slug |
+| videos (com YouTube) | settings["analytics"]["videos"] do canal | id do YouTube                |
 | ideias               | Idea             | id `ide_cn<id>`                      |
 | metricas             | VideoMetric      | id do YouTube + dia                  |
 | experimentos         | Experiment       | id `exp_cn<id>`                      |
@@ -10,8 +11,13 @@
 | pendencias           | PendingTask      | id `pen_cn_<id>`                     |
 | receita              | RevenueEntry     | canal + loja + mês + ID de rastreamento |
 
-Rodar de novo não duplica nada: o que já existe fica como está (o Vulto pode ter sido editado depois). A exceção são
-as métricas, que só ganham os números que estavam vazios. `execucoes` e `videos` não têm destino (ver `NOTES`).
+Rodar de novo não duplica nada e NÃO atualiza o que já entrou (ideias, experimentos, lições, pendências e receita
+ficam como estão: o Vulto pode ter sido editado depois). A exceção são as métricas: os campos vazios são preenchidos e
+os contadores que só crescem (views, likes, idade...) ficam com o maior número, como no dia que ainda corria.
+`execucoes` não tem destino (ver `_notes`).
+
+Lições aplicadas no canais que entrariam no roteiro (escopo global, de canal ou de formato) chegam como propostas: muitas
+falam de arquivos do pipeline antigo e o usuário aprova em Desempenho › Lições as que ainda valem.
 
 Com `dry_run=True` tudo é feito numa transação desfeita no fim: a prévia é exatamente o que entraria.
 """
@@ -20,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from studio.db import session_scope
 from studio.models import (
+    Channel,
     Experiment,
     Idea,
     Lesson,
@@ -48,11 +56,17 @@ TABLE_LABELS = {
     "licoes": "Lições",
     "pendencias": "Pendências",
     "receita": "Receita",
+    "videos": "Vídeos (título, data e duração)",
 }
 
 IDEA_STATUS = {"nova", "aprovada", "rejeitada", "em_producao", "feita", "descartada"}
 METRIC_SOURCES = {"yt-dlp": "public", "geradormg": "youtube_api", "central-youtube-videos": "youtube_api"}
 EXPERIMENT_METRICS = ("views", "views_dia", "ctr", "retencao", "avd_s", "likes")
+# Variável do canais com nome diferente no Vulto (vale só quando as variantes já são os valores do Vulto).
+VARIABLE_ALIASES = {"horario": "hora"}
+# Formato do canais → escopo de lição. Short de notícia e corte de Short são mais estreitos que "todo Short": ficam
+# com o nome do canais (não valem para nenhum projeto até o usuário trocar o escopo).
+LESSON_FORMATS = {"doc-longo": "long", "longo": "long", "long": "long", "short": "short"}
 
 # canais → Vulto (métricas)
 METRIC_COLUMNS = {
@@ -60,6 +74,8 @@ METRIC_COLUMNS = {
     "ctr": "ctr", "avd_s": "avg_view_s", "pct_assistido": "pct_watched", "inscritos": "subscribers_gained",
     "receita_usd": "revenue_usd", "rpm": "rpm",
 }
+# Números que só crescem ao longo do dia: numa nova importação, o maior (o mais recente) fica.
+GROWING = ("age_hours", "views", "likes", "comments", "impressions", "subscribers_gained", "revenue_usd")
 
 
 def _when(value: Any) -> datetime | None:
@@ -88,16 +104,33 @@ def _legacy_key(prefix: str, raw: Any) -> str:
     return f"{prefix}{hashlib.sha1(str(raw).encode()).hexdigest()[: 32 - len(prefix)]}"
 
 
+_LETTER = re.compile(r"^[A-Z]:\s+")
+
+
 def variants_of(raw: Any) -> list[str]:
-    """Mesma leitura do canais (`melhoria.variantes_de`): lista JSON ou texto separado por vírgula."""
-    text = _text(raw)
+    """Variantes de um experimento do canais: lista JSON, texto livre separado por " | " (com ou sem "A: "/"B: ";
+    vírgulas dentro dos parênteses), " x " entre duas variantes sem vírgula, ou texto separado por vírgula."""
+    text = _text(raw).strip()
     try:
         data = json.loads(text)
         if isinstance(data, list):
             return [str(x) for x in data]
     except (ValueError, TypeError):
         pass
-    return [x.strip() for x in text.split(",") if x.strip()]
+    if "|" in text:
+        parts = text.split("|")
+    elif " x " in text and "," not in text:
+        parts = text.split(" x ")
+    else:
+        parts = text.split(",")
+    return [_LETTER.sub("", x.strip()) for x in parts if x.strip()]
+
+
+def _is_json_list(raw: Any) -> bool:
+    try:
+        return isinstance(json.loads(_text(raw)), list)
+    except (ValueError, TypeError):
+        return False
 
 
 def lesson_scope(raw: str, channel_of: Callable[[str], tuple[bool, str | None]]) -> str | None:
@@ -111,7 +144,7 @@ def lesson_scope(raw: str, channel_of: Callable[[str], tuple[bool, str | None]])
             return None
         return f"canal:{cid}" if cid else raw
     if kind == "formato" and value:
-        return f"formato:{chmap.FORMATS.get(value, value)}"
+        return f"formato:{LESSON_FORMATS.get(value, value)}"
     return raw[:120]
 
 
@@ -165,12 +198,16 @@ def _metrics(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _C
         values = {dst: r.get(src) for src, dst in METRIC_COLUMNS.items() if r.get(src) is not None}
         row = s.query(VideoMetric).filter_by(youtube_id=yid, day=day).first()
         if row is not None:
-            missing = {k: v for k, v in values.items() if getattr(row, k) is None}
+            # Vazio é preenchido; contador que cresceu (dia que ainda corria na importação anterior) fica com o maior.
+            changes = {k: v for k, v in values.items() if getattr(row, k) is None
+                       or (k in GROWING and isinstance(v, int | float) and v > getattr(row, k))}
             if not row.channel_id and cid:
-                missing["channel_id"] = cid
-            for k, v in missing.items():
+                changes["channel_id"] = cid
+            for k, v in changes.items():
                 setattr(row, k, v)
-            c.bump("updated" if missing else "existing")
+            if changes:
+                row.updated_at = datetime.now(UTC)
+            c.bump("updated" if changes else "existing")
             continue
         pub = (s.query(Publication).filter(Publication.external_id == yid, Publication.platform == "youtube")
                .order_by(Publication.created_at.desc()).first())
@@ -184,7 +221,23 @@ def _metrics(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _C
         c.new(f"{yid} em {day}")
 
 
-def _experiments(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _Counter) -> None:
+def _experiment_variable(raw: str, variants: list[str]) -> str | None:
+    """Variável do Vulto para a variável do canais (None = o Vulto não calcula)."""
+    from studio.workers.analytics.variables import VARIABLES, hour_band
+
+    var = VARIABLE_ALIASES.get(raw, raw)
+    if var not in VARIABLES:
+        return None
+    if var == "hora":  # só serve se as variantes já são as faixas do Vulto
+        bands = {hour_band(datetime(2026, 1, 1, h)) for h in range(24)}
+        if variants and not set(variants) <= bands:
+            return None
+    return var
+
+
+def _experiments(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _Counter) -> list[str]:
+    """Devolve os experimentos abertos que o Vulto não consegue medir (entram como abandonados)."""
+    stuck: list[str] = []
     for r in rows:
         ok, cid = channel_of(r.get("canal"))
         if not ok:
@@ -199,25 +252,42 @@ def _experiments(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c
         if metric not in EXPERIMENT_METRICS:
             notes.append(f"Métrica no canais: {metric}.")
             metric = "views"
+        raw_variants = _text(r.get("variantes")).strip()
+        if raw_variants and not _is_json_list(raw_variants):
+            notes.append(f"Variantes no canais: {raw_variants}.")
         videos = variants_of(r.get("videos"))
         if videos:
             notes.append(f"Vídeos no canais: {', '.join(videos)}.")
+        variants = variants_of(raw_variants)
+        raw_var = _text(r.get("variavel")).strip().removeprefix("var.")
+        variable = _experiment_variable(raw_var, variants)
         status = _text(r.get("status")) or "aberto"
+        status = status if status in ("aberto", "concluido", "abandonado") else "aberto"
+        result = _text(r.get("resultado"))
+        closed = _when(r.get("concluido_em"))
+        if variable is None and status == "aberto":
+            # Ficaria "cedo" para sempre: o Vulto não calcula essa variável nos vídeos.
+            status, closed = "abandonado", datetime.now(UTC)
+            result = _with_note(result, f"Fechado na importação: o Vulto não calcula a variável '{raw_var}'. Para "
+                                        "seguir com o teste, abra um experimento com uma variável do Vulto.")
+            stuck.append(f"{raw_var} ({_text(r.get('hipotese'))[:60]})")
         s.add(Experiment(
             id=eid, channel_id=cid, hypothesis=_with_note(_text(r.get("hipotese")), " ".join(notes)),
-            variable=_text(r.get("variavel")).removeprefix("var.")[:60], variants=variants_of(r.get("variantes")),
-            metric=metric, project_ids=[], status=status if status in ("aberto", "concluido", "abandonado") else "aberto",
-            result=_text(r.get("resultado")), learning=_text(r.get("aprendizado")),
-            created_at=_when(r.get("criado_em")) or datetime.now(UTC), closed_at=_when(r.get("concluido_em")),
+            variable=(variable or raw_var)[:60], variants=variants, metric=metric, project_ids=[], status=status,
+            result=result, learning=_text(r.get("aprendizado")),
+            created_at=_when(r.get("criado_em")) or datetime.now(UTC), closed_at=closed,
         ))
         c.new(_text(r.get("hipotese")))
+    return stuck
 
 
 def _lessons(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _Counter) -> int:
-    """Devolve quantas lições novas e aplicadas passam a entrar no roteiro (escopo global, canal ou formato)."""
-    to_script = 0
+    """Devolve quantas lições aplicadas no canais entram como propostas (as que iriam para o roteiro: escopo global,
+    de canal ou de formato). As de skill:* ficam aplicadas: não entram em nenhum pedido ao LLM do Vulto."""
+    to_review = 0
     for r in rows:
-        scope = lesson_scope(_text(r.get("escopo")), channel_of)
+        raw_scope = _text(r.get("escopo")).strip() or "global"
+        scope = lesson_scope(raw_scope, channel_of)
         if scope is None:
             c.bump("skipped")
             continue
@@ -228,17 +298,26 @@ def _lessons(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _C
         status = _text(r.get("status")) or "proposta"
         status = status if status in ("proposta", "aplicada", "descartada") else "proposta"
         video = _text(r.get("video_id"))
+        applied = _text(r.get("aplicada_em"))
+        notes = [f"Vídeo no canais: {video}" if video else ""]
+        if raw_scope.startswith("formato:") and scope != raw_scope:
+            notes.append(f"Escopo no canais: {raw_scope}.")
+        decided = _when(r.get("decidido_em"))
+        if status == "aplicada" and scope.partition(":")[0] in ("global", "canal", "formato"):
+            status, decided = "proposta", None
+            notes.append("Aplicada no canais" + (f" em: {applied}" if applied else "") + ". Confira se ainda vale no "
+                         "Vulto antes de aprovar.")
+            applied = ""
+            to_review += 1
         s.add(Lesson(
             id=lid, scope=scope, text=_text(r.get("texto")),
-            evidence=_with_note(_text(r.get("evidencia")), f"Vídeo no canais: {video}" if video else ""),
+            evidence=_with_note(_text(r.get("evidencia")), "\n".join(n for n in notes if n)),
             origin=(_text(r.get("origem")) or "canais")[:40], status=status,
-            applied_where=_text(r.get("aplicada_em")), reason=_text(r.get("motivo")),
-            created_at=_when(r.get("criado_em")) or datetime.now(UTC), decided_at=_when(r.get("decidido_em")),
+            applied_where=applied, reason=_text(r.get("motivo")),
+            created_at=_when(r.get("criado_em")) or datetime.now(UTC), decided_at=decided,
         ))
-        if status == "aplicada" and scope.partition(":")[0] in ("global", "canal", "formato"):
-            to_script += 1
         c.new(_text(r.get("texto")))
-    return to_script
+    return to_review
 
 
 def _pending(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _Counter) -> None:
@@ -281,14 +360,50 @@ def _revenue(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _C
         c.new(f"{store} {period}" + (f" ({tracking})" if tracking else ""))
 
 
+def _videos(s: Session, rows: list[dict[str, Any]], channel_of: Callable, c: _Counter) -> None:
+    """Título, data de publicação e duração dos vídeos do canais com id do YouTube vão para os dados da coleta do
+    canal (`settings["analytics"]["videos"]`, mesmo formato de analytics/collect.py): é daí que Desempenho tira hora,
+    dia, duração e formato. Entrada que já existe (a coleta do Vulto manda) fica como está."""
+    for r in rows:
+        yid = _text(r.get("youtube_id")).strip()
+        ok, cid = channel_of(r.get("canal"))
+        row = s.get(Channel, cid) if yid and ok and cid else None
+        if row is None:
+            c.bump("skipped")  # sem vídeo no YouTube, ou sem canal no Vulto onde guardar
+            continue
+        settings = dict(row.settings or {})
+        analytics = dict(settings.get("analytics") or {})
+        videos = dict(analytics.get("videos") or {})
+        if yid in videos:
+            c.bump("existing")
+            continue
+        try:
+            extra = json.loads(_text(r.get("variaveis")) or "{}")
+        except ValueError:
+            extra = {}
+        duration = r.get("duracao_s")
+        if duration is None and isinstance(extra, dict):
+            duration = extra.get("duracao_s")
+        published = _when(r.get("publicado_em"))
+        videos[yid] = {"title": _text(r.get("titulo")), "published_at": published.isoformat() if published else None,
+                       "duration_s": float(duration) if isinstance(duration, int | float) else None, "privacy": None}
+        analytics["videos"] = videos
+        settings["analytics"] = analytics
+        row.settings = settings  # atribuição nova: o SQLAlchemy só vê a troca do JSON inteiro
+        c.new(_text(r.get("titulo")) or yid)
+
+
 def _notes(src: CanaisSource) -> list[str]:
     notes = list(src.warnings)
     if src.counts.get("execucoes"):
         notes.append(f"Execuções ({src.counts['execucoes']}) não entram: o Vulto mede o tempo por etapa pelas tarefas do "
                      "próprio app (ADR 0002).")
     if src.counts.get("videos"):
-        notes.append(f"Vídeos ({src.counts['videos']}) não viram projetos: o canais não guarda o documento do vídeo. As "
-                     "métricas entram pelo id do YouTube e as ideias e lições citam o vídeo no texto.")
+        notes.append(f"Vídeos ({src.counts['videos']}) não viram projetos: o canais não guarda o documento do vídeo. Os "
+                     "que estão no YouTube levam título, data e duração para Desempenho; as métricas entram pelo id "
+                     "do YouTube e as ideias e lições citam o vídeo no texto.")
+    notes.append("Rodar de novo não duplica nada, mas só as métricas são atualizadas: ideias, experimentos, lições, "
+                 "pendências e receita que já entraram ficam como estão no Vulto.")
     notes.append("O radar e o registro de eventos do canais ficam de fora.")
     return notes
 
@@ -317,6 +432,11 @@ def import_canais(root: str | Path | None = None, choices: dict[str, str] | None
                 item["offers_new"], item["offers_existing"] = chmap.offers(s, row, ch)
                 item["vulto_id"] = None if action == "criar" and dry_run else row.id
                 item["vulto_name"] = row.name
+            if row is not None:
+                twin = next((k for k, v in mapped.items() if v == row.id), None)
+                if twin is not None:
+                    raise ValueError(f"os canais '{twin}' e '{slug}' iriam para o mesmo canal do Vulto ({row.name}): "
+                                     "escolha um destino diferente para um deles")
             mapped[slug] = row.id if row is not None else None
             report["channels"].append(item)
 
@@ -327,14 +447,18 @@ def import_canais(root: str | Path | None = None, choices: dict[str, str] | None
             return mapped[slug] is not None, mapped[slug]
 
         steps: list[tuple[str, Callable]] = [("ideias", _ideas), ("metricas", _metrics), ("experimentos", _experiments),
-                                             ("licoes", _lessons), ("pendencias", _pending), ("receita", _revenue)]
+                                             ("licoes", _lessons), ("pendencias", _pending), ("receita", _revenue),
+                                             ("videos", _videos)]
         for table, fn in steps:
             counter = _Counter(table, len(src.rows.get(table) or []))
             out = fn(s, src.rows.get(table) or [], channel_of, counter)
             if table == "licoes" and out:
-                report["notes"].append(f"{out} lições aplicadas (globais, do canal ou do formato) passam a entrar no "
-                                       "roteiro dos próximos vídeos. Descarte em Desempenho › Lições as que não "
-                                       "servirem mais.")
+                report["notes"].append(f"{out} lições aplicadas no canais (globais, do canal ou do formato) entram como "
+                                       "propostas: aprove em Desempenho › Lições as que ainda valem no Vulto. Só as "
+                                       "aprovadas vão para o roteiro.")
+            if table == "experimentos" and out:
+                report["notes"].append(f"{len(out)} experimentos abertos entram como abandonados porque o Vulto não "
+                                       f"calcula a variável: {'; '.join(out)}.")
             report["tables"].append(counter.data)
         s.flush()
         if dry_run:

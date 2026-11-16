@@ -1,7 +1,7 @@
 // Configurações › Importar do canais: prévia do que entra e importação do histórico do projeto antigo.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DatabaseZap, Eye, Info } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, type Channel } from '../../api';
 import { canaisDefaults, type CanaisChoice, type CanaisReport, importCanais, previewCanais } from '../../apiImport';
 import { Badge, type BadgeTone, Button, ErrorBox, Field, Input, Section, Select, useConfirm, useToast } from '../../ui';
@@ -20,7 +20,8 @@ const Report: React.FC<{
   channels: Channel[];
   choices: Record<string, CanaisChoice>;
   onChoice?: (slug: string, value: CanaisChoice) => void;
-}> = ({ report, channels, choices, onChoice }) => (
+  busy?: boolean;
+}> = ({ report, channels, choices, onChoice, busy }) => (
   <div className="flex flex-col gap-4">
     <div>
       <h3 className="mb-2 text-[13px] font-medium text-muted">Canais</h3>
@@ -44,14 +45,18 @@ const Report: React.FC<{
               ) : null}
               {onChoice ? (
                 <Field label="Destino no Vulto" className="mt-2 max-w-sm">
-                  <Select value={choices[c.slug] ?? 'auto'} onChange={(e) => onChoice(c.slug, e.target.value)}>
+                  <Select value={choices[c.slug] ?? 'auto'} disabled={busy} onChange={(e) => onChoice(c.slug, e.target.value)}>
                     <option value="auto">Automático (mesmo canal ou cria um novo)</option>
                     <option value="pular">Não importar este canal</option>
-                    {channels.map((ch) => (
-                      <option key={ch.id} value={ch.id}>
-                        Usar “{ch.name}”
-                      </option>
-                    ))}
+                    {channels.map((ch) => {
+                      // Dois canais do canais no mesmo canal do Vulto misturariam as linhas: o já escolhido fica bloqueado.
+                      const taken = Object.entries(choices).some(([slug, v]) => slug !== c.slug && v === ch.id);
+                      return (
+                        <option key={ch.id} value={ch.id} disabled={taken}>
+                          Usar “{ch.name}”{taken ? ' (já escolhido para outro canal)' : ''}
+                        </option>
+                      );
+                    })}
                   </Select>
                 </Field>
               ) : null}
@@ -121,15 +126,37 @@ export const ImportCanaisSection: React.FC = () => {
   const [done, setDone] = useState<CanaisReport | null>(null);
   // Última prévia (fica na tela enquanto a próxima é calculada) e as escolhas com que ela foi feita.
   const [plan, setPlan] = useState<CanaisReport | null>(null);
+  const [planChoices, setPlanChoices] = useState<Record<string, CanaisChoice>>({});
+  const filled = useRef(false);
+  const latest = useRef(0);
 
+  // A pasta padrão entra uma vez só: depois o campo pode ficar vazio enquanto a pessoa digita outro caminho.
   useEffect(() => {
-    if (defaults.data && !root) setRoot(defaults.data.default_root);
-  }, [defaults.data, root]);
+    if (defaults.data && !filled.current) {
+      filled.current = true;
+      const fallback = defaults.data.default_root;
+      setRoot((cur) => cur || fallback);
+    }
+  }, [defaults.data]);
 
   const preview = useMutation({
-    mutationFn: (next: Record<string, CanaisChoice>) => previewCanais({ root, channels: next }),
-    onSuccess: setPlan,
+    mutationFn: async (next: Record<string, CanaisChoice>) => {
+      const id = ++latest.current;
+      return { id, next, report: await previewCanais({ root, channels: next }) };
+    },
+    // Só a resposta do último pedido vale: uma prévia lenta de antes não sobrescreve a mais nova.
+    onSuccess: ({ id, next, report }) => {
+      if (id !== latest.current) return;
+      setPlan(report);
+      setPlanChoices(next);
+    },
   });
+  // A importação só sai com a prévia feita com as escolhas atuais (se a última prévia falhou, não confere).
+  const sameChoices = (a: Record<string, CanaisChoice>, b: Record<string, CanaisChoice>) => {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    return [...keys].every((k) => (a[k] ?? 'auto') === (b[k] ?? 'auto'));
+  };
+  const planReady = !!plan && sameChoices(choices, planChoices);
   const run = useMutation({
     mutationFn: () => importCanais({ root, channels: choices }),
     onSuccess: (report) => {
@@ -143,21 +170,23 @@ export const ImportCanaisSection: React.FC = () => {
 
   // Trocar a pasta invalida a prévia: a importação só sai com a prévia em dia.
   const stale = () => {
+    latest.current += 1; // prévia ainda em andamento para a pasta antiga é ignorada
     preview.reset();
     setPlan(null);
+    setPlanChoices({});
     setDone(null);
     setChoices({});
   };
 
   const onImport = async () => {
-    if (!plan) return;
+    if (!plan || !planReady) return;
     const total = plan.tables.reduce((n, t) => n + t.new, 0);
     const created = plan.channels.filter((c) => c.action === 'criar').length;
     const ok = await confirm({
       title: 'Importar o histórico do canais?',
       description: `Entram ${plural(total, 'registro novo', 'registros novos')}${
         created ? ` e ${plural(created, 'canal novo', 'canais novos')}` : ''
-      }. A pasta do canais não é alterada e rodar de novo não duplica nada.`,
+      }. A pasta do canais não é alterada e rodar de novo não duplica nada. Numa nova importação só as métricas são atualizadas: ideias, experimentos, lições e pendências que já entraram ficam como estão.`,
       confirmLabel: 'Importar',
     });
     if (ok) run.mutate();
@@ -185,7 +214,7 @@ export const ImportCanaisSection: React.FC = () => {
           <Button icon={Eye} onClick={() => preview.mutate(choices)} busy={preview.isPending} disabled={!root.trim() || preview.isPending}>
             Ver prévia
           </Button>
-          <Button variant="primary" onClick={() => void onImport()} busy={run.isPending} disabled={!plan || preview.isPending || run.isPending}>
+          <Button variant="primary" onClick={() => void onImport()} busy={run.isPending} disabled={!planReady || preview.isPending || run.isPending}>
             Importar
           </Button>
         </div>
@@ -199,6 +228,7 @@ export const ImportCanaisSection: React.FC = () => {
             report={plan}
             channels={channels.data ?? []}
             choices={choices}
+            busy={preview.isPending}
             onChoice={(slug, value) => {
               // Nova prévia na hora, com o destino escolhido.
               const next = { ...choices, [slug]: value };

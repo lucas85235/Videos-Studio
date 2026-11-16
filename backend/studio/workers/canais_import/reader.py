@@ -1,7 +1,9 @@
 """Leitura do projeto `canais` SÓ PARA LEITURA.
 
-Nada é escrito na pasta do canais: o `estudio/estudio.db` (e o `-wal`, se houver) é copiado para uma pasta temporária e
-lido de lá. Abrir o banco original, mesmo em modo leitura, pode criar os arquivos `-shm`/`-wal` ao lado dele.
+Nada é escrito na pasta do canais: o `estudio/estudio.db` (e o `-wal` ou `-journal`, se houver) é copiado para uma pasta
+temporária e lido de lá. Abrir o banco original, mesmo em modo leitura, pode criar os arquivos `-shm`/`-wal` ao lado dele.
+O canais pode estar gravando durante a cópia: se o banco ou o `-wal` mudarem no meio, a cópia é refeita (até
+`COPY_TRIES` vezes) e, se ainda assim mudarem, o relatório avisa que a leitura pode estar incompleta.
 Os `canal.toml` são lidos com o `tomllib` da biblioteca padrão.
 """
 
@@ -19,9 +21,11 @@ from studio.config import get_settings
 
 DB_RELATIVE = Path("estudio") / "estudio.db"
 
-# Tabelas lidas do estudio.db. `execucoes` e `videos` só são contadas (não têm destino no Vulto).
-TABLES = ("canais", "ideias", "metricas", "experimentos", "licoes", "pendencias", "receita")
+# Tabelas lidas do estudio.db. `execucoes` só é contada (não tem destino no Vulto).
+TABLES = ("canais", "ideias", "metricas", "experimentos", "licoes", "pendencias", "receita", "videos")
 COUNTED = ("execucoes", "videos")
+COPY_TRIES = 3
+SIDE_FILES = ("-wal", "-journal")
 
 
 class CanaisError(ValueError):
@@ -51,15 +55,45 @@ def default_root() -> Path:
     return get_settings().canais_dir or (Path.home() / "canais")
 
 
-def _read_db(db_path: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+def _state(paths: list[Path]) -> list[tuple[int, int] | None]:
+    """Tamanho e hora da última mudança de cada arquivo (None = não existe)."""
+    out: list[tuple[int, int] | None] = []
+    for path in paths:
+        try:
+            st = path.stat()
+        except OSError:
+            out.append(None)
+            continue
+        out.append((st.st_size, st.st_mtime_ns))
+    return out
+
+
+def _copy_db(db_path: Path, dest: Path) -> bool:
+    """Copia o banco e os arquivos ao lado dele (`-wal`, `-journal`) para `dest`. Devolve False se algum deles mudou
+    durante a cópia em todas as tentativas (o canais estava gravando)."""
+    sources = [db_path] + [db_path.with_name(db_path.name + suffix) for suffix in SIDE_FILES]
+    for _ in range(COPY_TRIES):
+        for suffix in SIDE_FILES:
+            dest.with_name(dest.name + suffix).unlink(missing_ok=True)
+        before = _state(sources)
+        shutil.copy2(db_path, dest)
+        for src, suffix in zip(sources[1:], SIDE_FILES, strict=True):
+            if src.is_file() and src.stat().st_size > 0:
+                shutil.copy2(src, dest.with_name(dest.name + suffix))
+        if _state(sources) == before:
+            return True
+    return False
+
+
+def _read_db(db_path: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], list[str]]:
     rows: dict[str, list[dict[str, Any]]] = {t: [] for t in TABLES}
     counts: dict[str, int] = {t: 0 for t in COUNTED}
+    warnings: list[str] = []
     with tempfile.TemporaryDirectory(prefix="vulto-canais-") as tmp:
         copy = Path(tmp) / "estudio.db"
-        shutil.copy2(db_path, copy)
-        wal = db_path.with_name(db_path.name + "-wal")
-        if wal.is_file() and wal.stat().st_size > 0:
-            shutil.copy2(wal, copy.with_name(copy.name + "-wal"))
+        if not _copy_db(db_path, copy):
+            warnings.append("O canais estava gravando no banco durante a leitura: alguma mudança recente pode ter "
+                            "ficado de fora. Rode a prévia de novo com o canais parado.")
         con = sqlite3.connect(copy)
         try:
             con.row_factory = sqlite3.Row
@@ -72,7 +106,7 @@ def _read_db(db_path: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, 
                     counts[table] = int(con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
         finally:
             con.close()
-    return rows, counts
+    return rows, counts, warnings
 
 
 def _toml_paths(root: Path, db_rows: list[dict[str, Any]]) -> list[Path]:
@@ -104,7 +138,8 @@ def read_source(root: str | Path | None = None) -> CanaisSource:
     counts: dict[str, int] = {t: 0 for t in COUNTED}
     if db_path.is_file():
         try:
-            rows, counts = _read_db(db_path)
+            rows, counts, db_warnings = _read_db(db_path)
+            warnings += db_warnings
         except sqlite3.DatabaseError as exc:
             raise CanaisError(f"não foi possível ler {db_path}: {exc}") from exc
     else:

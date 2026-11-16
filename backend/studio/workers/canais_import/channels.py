@@ -38,6 +38,29 @@ def youtube_id_of(ch: CanaisChannel) -> str:
     return str((ch.toml.get("youtube") or {}).get("channel_id") or ch.db.get("channel_id") or "").strip()
 
 
+def linked_slug(row: Channel) -> str:
+    """Canal do canais a que `row` foi ligado numa importação anterior ("" = nenhum)."""
+    return str(((row.settings or {}).get("canais") or {}).get("id") or "")
+
+
+def stock_format_of(toml: dict[str, Any]) -> str | None:
+    """Formato do estoque: `[agenda] estoque_formato` ou, sem ele, deduzido de `formatos`. Canal de longo (com ou sem
+    cortes) conta episódios; só Shorts conta Shorts; os dois tipos de vídeo próprios contam tudo."""
+    agenda = toml.get("agenda") or {}
+    fmt = FORMATS.get(str(agenda.get("estoque_formato") or ""))
+    if fmt:
+        return fmt
+    formats = {str(x) for x in toml.get("formatos") or []}
+    if not formats:
+        return None
+    own = {FORMATS.get(x) for x in formats if x != "corte-short"} - {None}  # o corte vem do longo, não é estoque
+    if own == {"long"}:
+        return "long"
+    if own == {"short"} or (not own and "corte-short" in formats):
+        return "short"
+    return "any" if own == {"long", "short"} else None
+
+
 def resolve(s: Session, ch: CanaisChannel, choice: str) -> tuple[str, Channel | None, str]:
     """(ação, canal do Vulto, motivo). Ação: "associar", "criar" ou "pular".
 
@@ -54,8 +77,10 @@ def resolve(s: Session, ch: CanaisChannel, choice: str) -> tuple[str, Channel | 
         return "associar", row, "escolhido à mão"
     rows = s.query(Channel).order_by(Channel.created_at).all()
     for row in rows:
-        if str(((row.settings or {}).get("canais") or {}).get("id") or "") == ch.slug:
+        if linked_slug(row) == ch.slug:
             return "associar", row, "importado antes"
+    # Canal já ligado a OUTRO canal do canais não serve: as linhas dos dois se misturariam e a ligação se perderia.
+    rows = [row for row in rows if not linked_slug(row)]
     yt = youtube_id_of(ch)
     if yt:
         for row in rows:
@@ -136,7 +161,7 @@ def fill(s: Session, row: Channel, ch: CanaisChannel, created: bool) -> list[str
         put("posts_per_day", max(0, min(int(agenda["posts_por_dia"]), 20)), "posts por dia", empty=0)
     if isinstance(agenda.get("estoque_minimo"), int):
         put("min_stock", max(0, min(int(agenda["estoque_minimo"]), 50)), "estoque mínimo", empty=0)
-    fmt = FORMATS.get(str(agenda.get("estoque_formato") or ""))
+    fmt = stock_format_of(t)
     if fmt and (created or row.stock_format in ("", None)):
         row.stock_format = fmt
         changed.append("formato do estoque")

@@ -31,7 +31,8 @@ CREATE TABLE canais (id TEXT PRIMARY KEY, nome TEXT NOT NULL, status TEXT, nivel
 CREATE TABLE ideias (id INTEGER PRIMARY KEY AUTOINCREMENT, canal TEXT NOT NULL, titulo TEXT NOT NULL, angulo TEXT,
   formato TEXT, origem TEXT, evidencia TEXT, busca TEXT, nota REAL, status TEXT NOT NULL DEFAULT 'nova', motivo TEXT,
   video_id TEXT, criado_em TEXT NOT NULL, decidido_em TEXT);
-CREATE TABLE videos (id TEXT PRIMARY KEY, canal TEXT NOT NULL, slug TEXT NOT NULL, criado_em TEXT NOT NULL);
+CREATE TABLE videos (id TEXT PRIMARY KEY, canal TEXT NOT NULL, slug TEXT NOT NULL, titulo TEXT, formato TEXT,
+  youtube_id TEXT, publicado_em TEXT, duracao_s REAL, variaveis TEXT NOT NULL DEFAULT '{}', criado_em TEXT NOT NULL);
 CREATE TABLE execucoes (id INTEGER PRIMARY KEY AUTOINCREMENT, video_id TEXT, canal TEXT, etapa TEXT NOT NULL,
   inicio TEXT NOT NULL, segundos REAL);
 CREATE TABLE metricas (youtube_id TEXT NOT NULL, data TEXT NOT NULL, video_id TEXT, canal TEXT, idade_h REAL,
@@ -137,7 +138,11 @@ def canais(tmp_path: Path) -> Path:
              None, "plantao-vice-ep1", t, None),
             ("money-rerun", "O fim do ouro", None, "corte-short", "radar", None, None, "rejeitada", "fraca", None, t, t),
         ])
-    con.executemany("INSERT INTO videos VALUES (?,?,?,?)", [("plantao-vice-ep1", "plantao-vice", "ep1", t)])
+    con.executemany("INSERT INTO videos VALUES (?,?,?,?,?,?,?,?,?,?)", [
+        ("plantao-vice-ep1", "plantao-vice", "ep1", "Por que GTA 6 demorou?", "doc-longo", "yt1",
+         "2026-11-02T16:54:10-04:00", None, '{"duracao_s": 944}', t),
+        ("plantao-vice-ep2", "plantao-vice", "ep2", "Ainda sem YouTube", "doc-longo", None, None, None, "{}", t),
+    ])
     con.executemany("INSERT INTO execucoes (video_id, canal, etapa, inicio, segundos) VALUES (?,?,?,?,?)",
                     [("plantao-vice-ep1", "plantao-vice", "roteiro", t, 12.0)] * 3)
     con.executemany(
@@ -154,6 +159,8 @@ def canais(tmp_path: Path) -> Path:
              "sem diferença", "hora não muda", t, t),
             ("plantao-vice", "Ângulo de busca", "var.angulo", '["jogador", "noticia"]', "views_48h",
              '["plantao-vice-ep1"]', "aberto", None, None, t, None),
+            ("plantao-vice", "Thumb sem pose", "thumb", "atual (personagem de quatro, 2-isso-foi-real) | sem a pose",
+             "views", "[]", "concluido", None, None, t, t),
         ])
     con.executemany(
         "INSERT INTO licoes (escopo, texto, evidencia, origem, video_id, status, aplicada_em, criado_em, decidido_em) "
@@ -163,6 +170,7 @@ def canais(tmp_path: Path) -> Path:
             ("skill:estudio-roteiro", "Conferir fontes", None, "producao", None, "aplicada", None, t, t),
             ("global", "Menos é mais", None, "metricas", None, "aplicada", None, t, t),
             ("canal:money-rerun", "Título com busca", None, "metricas", None, "proposta", None, t, None),
+            ("formato:short-noticia", "Fato repetido não", None, "metricas", None, "aplicada", "GeradorMG", t, t),
         ])
     con.executemany("INSERT INTO pendencias VALUES (?,?,?,?,?,?,?,?)", [
         ("pv-amazon-ids", "plantao-vice", "Criar IDs de rastreamento", "Associados", "aberta", 1, t, None),
@@ -201,10 +209,14 @@ def test_dry_run_nao_grava_nada_e_nao_mexe_no_canais(canais: Path):
     assert all(c["vulto_id"] is None for c in report["channels"])
     assert _table(report, "ideias")["new"] == 2
     assert _table(report, "metricas")["new"] == 3
-    assert _table(report, "licoes")["new"] == 5
+    assert _table(report, "licoes")["new"] == 6
+    assert _table(report, "videos")["new"] == 1 and _table(report, "videos")["skipped"] == 1
     assert _table(report, "receita")["new"] == 2
     assert any("Execuções (3)" in n for n in report["notes"])
-    assert any("2 lições aplicadas" in n for n in report["notes"])  # canal e global; skill:* não entra no roteiro
+    # canal, global e formato viram propostas; skill:* não entra no roteiro e fica aplicada
+    assert any("3 lições aplicadas no canais" in n and "propostas" in n for n in report["notes"])
+    assert any("1 experimentos abertos entram como abandonados" in n and "angulo" in n for n in report["notes"])
+    assert any("só as métricas são atualizadas" in n for n in report["notes"])
     # nada novo na pasta do canais (nem -shm/-wal ao lado do banco)
     assert _snapshot(canais) == before
 
@@ -248,16 +260,30 @@ def test_importa_tudo_para_as_tabelas_do_vulto(canais: Path):
         assert (orphan.channel_id, orphan.source) == (None, "manual")
 
         exps = {e.variable: e for e in s.query(Experiment)}
+        assert exps["thumb"].variants == ["atual (personagem de quatro, 2-isso-foi-real)", "sem a pose"]
+        assert "Variantes no canais: atual (personagem" in exps["thumb"].hypothesis
         assert exps["hora"].variants == ["tarde (12-18h)", "noite (18-24h)"]
         assert exps["hora"].status == "concluido" and exps["hora"].closed_at is not None
         assert exps["angulo"].variants == ["jogador", "noticia"]
         assert exps["angulo"].metric == "views" and "views_48h" in exps["angulo"].hypothesis
         assert "plantao-vice-ep1" in exps["angulo"].hypothesis and exps["angulo"].project_ids == []
+        # aberto com variável que o Vulto não calcula: ficaria "cedo" para sempre
+        assert exps["angulo"].status == "abandonado" and "não calcula a variável 'angulo'" in exps["angulo"].result
+        assert exps["hora"].result == "sem diferença"
 
-        scopes = {lesson.text: lesson.scope for lesson in s.query(Lesson)}
-        assert scopes == {"Shorts só de dia": f"canal:{pv.id}", "Abrir com a pergunta": "formato:long",
-                          "Conferir fontes": "skill:estudio-roteiro", "Menos é mais": "global",
-                          "Título com busca": f"canal:{mr.id}"}
+        lessons = {lesson.text: lesson for lesson in s.query(Lesson)}
+        assert {k: v.scope for k, v in lessons.items()} == {
+            "Shorts só de dia": f"canal:{pv.id}", "Abrir com a pergunta": "formato:long",
+            "Conferir fontes": "skill:estudio-roteiro", "Menos é mais": "global", "Título com busca": f"canal:{mr.id}",
+            "Fato repetido não": "formato:short-noticia"}  # não vira "todo Short"
+        assert {k for k, v in lessons.items() if v.status == "aplicada"} == {"Conferir fontes"}
+        dia = lessons["Shorts só de dia"]
+        assert dia.status == "proposta" and dia.applied_where == "" and dia.decided_at is None
+        assert "Aplicada no canais em: canal.toml" in dia.evidence and "19h fraco" in dia.evidence
+
+        cache = pv.settings["analytics"]["videos"]
+        assert cache == {"yt1": {"title": "Por que GTA 6 demorou?", "published_at": "2026-11-02T16:54:10-04:00",
+                                 "duration_s": 944.0, "privacy": None}}
 
         pend = {p.id: p for p in s.query(PendingTask)}
         assert pend["pen_cn_pv-amazon-ids"].where_hint == "Associados"
@@ -284,9 +310,18 @@ def test_rodar_duas_vezes_nao_duplica_e_completa_metricas(canais: Path):
         "key": "ideias", "label": "Ideias", "total": 2, "new": 0, "existing": 2, "updated": 0, "skipped": 0,
         "examples": []}
     assert _table(report, "metricas")["updated"] == 1
+    assert _table(report, "videos")["existing"] == 1
     with session_scope() as s:
         m = s.query(VideoMetric).filter_by(youtube_id="yt1", day="2026-11-03").one()
-        assert (m.avg_view_s, m.views) == (20.0, 1367)  # vazio é preenchido; número que já existia fica
+        # vazio é preenchido; contador que cresceu (o dia ainda corria na 1ª importação) fica com o maior
+        assert (m.avg_view_s, m.views, m.likes) == (20.0, 9999, 20)
+    con = sqlite3.connect(canais / "estudio" / "estudio.db")
+    con.execute("UPDATE metricas SET views = 10 WHERE youtube_id = 'yt1' AND data = '2026-11-03'")
+    con.commit()
+    con.close()
+    import_canais(canais, dry_run=False)
+    with session_scope() as s:
+        assert s.query(VideoMetric).filter_by(youtube_id="yt1", day="2026-11-03").one().views == 9999  # não diminui
 
 
 def test_associa_por_nome_sem_sobrescrever_e_pula_canal(canais: Path):
@@ -305,7 +340,7 @@ def test_associa_por_nome_sem_sobrescrever_e_pula_canal(canais: Path):
         assert row.audience == "Gamers de 14 a 30 anos."  # vazio: preenchido
         assert s.query(Idea).count() == 1  # a ideia do canal pulado ficou de fora
         assert {lesson.scope for lesson in s.query(Lesson)} == {f"canal:{cid}", "formato:long", "skill:estudio-roteiro",
-                                                                "global"}
+                                                                "global", "formato:short-noticia"}
     assert _table(report, "ideias")["skipped"] == 1
     assert _table(report, "licoes")["skipped"] == 1
 
@@ -342,6 +377,54 @@ def test_variantes_como_no_canais():
     assert variants_of('["a", "b"]') == ["a", "b"]
     assert variants_of("a, b,") == ["a", "b"]
     assert variants_of(None) == []
+    # texto livre do canais real: " | " com vírgulas dentro dos parênteses e "A: "/"B: " na frente
+    assert variants_of("A: They Ended Gold (curiosidade, sem termo de busca) | B: Nixon Shock (termo do autocompletar)") == [
+        "They Ended Gold (curiosidade, sem termo de busca)", "Nixon Shock (termo do autocompletar)"]
+    assert variants_of("CTA entre 0:20 e 0:30 (ep. 7: red-dead, guia) | sem CTA (ep1, jailbreak, iceberg)") == [
+        "CTA entre 0:20 e 0:30 (ep. 7: red-dead, guia)", "sem CTA (ep1, jailbreak, iceberg)"]
+    assert variants_of("com Vídeo relacionado (todos os cortes) x ritmo antes dos cortes") == [
+        "com Vídeo relacionado (todos os cortes)", "ritmo antes dos cortes"]
+
+
+def test_dois_canais_no_mesmo_destino_e_vinculo_de_outro(canais: Path):
+    cid = new_id("chn")
+    with session_scope() as s:
+        s.add(Channel(id=cid, name="Destino", settings={}))
+    with pytest.raises(ValueError, match="mesmo canal do Vulto"):
+        import_canais(canais, {"money-rerun": cid, "plantao-vice": cid}, dry_run=True)
+    # canal já ligado a outro canal do canais não é achado pelo nome nem pelo YouTube
+    with session_scope() as s:
+        s.add(Channel(id=new_id("chn"), name="Plantão Vice", settings={"canais": {"id": "outro"},
+                                                                       "youtube": {"channel_id": "UCplantao"}}))
+    report = import_canais(canais, {"money-rerun": cid}, dry_run=True)
+    assert {c["slug"]: c["action"] for c in report["channels"]} == {"money-rerun": "associar", "plantao-vice": "criar"}
+
+
+def test_formato_do_estoque_sem_estoque_formato(canais: Path):
+    toml = canais / "money-rerun" / "canal.toml"
+    text = toml.read_text(encoding="utf-8").replace("fuso = ", 'formatos = ["doc-longo", "corte-short"]\nfuso = ')
+    toml.write_text(text, encoding="utf-8")
+    import_canais(canais, dry_run=False)
+    with session_scope() as s:
+        assert s.query(Channel).filter_by(name="Money Rerun").one().stock_format == "long"
+        assert s.query(Channel).filter_by(name="Plantão Vice").one().stock_format == "short"
+
+
+def test_copia_refeita_quando_o_canais_grava_no_meio(canais: Path, monkeypatch: pytest.MonkeyPatch):
+    from studio.workers.canais_import import reader
+
+    calls = {"n": 0}
+    real = reader._state
+
+    def moving(paths):  # o banco "muda" a cada olhada: a cópia nunca fica estável
+        calls["n"] += 1
+        return [(calls["n"], 0)] + real(paths)[1:]
+
+    monkeypatch.setattr(reader, "_state", moving)
+    report = import_canais(canais, dry_run=True)
+    assert calls["n"] == 2 * reader.COPY_TRIES
+    assert any("estava gravando" in n for n in report["notes"])
+    assert _table(report, "ideias")["new"] == 2  # ainda lê o que copiou
 
 
 def test_api_previa_e_importacao(canais: Path):
