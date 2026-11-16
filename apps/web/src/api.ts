@@ -298,6 +298,9 @@ export type BuildResult = {
 
 export type LibraryTrack = { path: string; name: string; mood: string; size: number };
 export type LibraryMusic = { dir: string; tracks: LibraryTrack[]; counts: Record<string, number>; moods: string[] };
+/** LUTs de cor (.cube): os prontos (gerados no app) e os da biblioteca do usuário (library/luts). */
+export type LutUser = { name: string; bytes: number; title?: string; size?: number; dim?: number; error?: string };
+export type LutListing = { dir: string; builtin: { id: string; label: string }[]; user: LutUser[] };
 
 /** Rótulo de cada clima da trilha (as chaves de `MOODS` em backend/studio/media/audio.py). */
 export const MOOD_LABELS: Record<string, string> = {

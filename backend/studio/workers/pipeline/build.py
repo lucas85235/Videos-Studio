@@ -32,6 +32,7 @@ from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
 from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
 from studio.media import audio as audio_mod
+from studio.media import lut as lut_mod
 from studio.media import music_library
 from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
@@ -643,6 +644,47 @@ class Builder:
             self.stats.noncommercial.add(provider.info.id)
         return rel
 
+    def lut_images(self, images: dict[str, str | None]) -> dict[str, str | None]:
+        """Imagens das cenas com o LUT do estilo aplicado (efeito "lut"), em cache por imagem + LUT + intensidade.
+        Sem LUT, devolve as mesmas. LUT que sumiu da biblioteca vira aviso e o vídeo sai sem ele."""
+        effect = next((e for e in self.style.edit.effects if e.type == "lut" and e.amount > 0), None)
+        if effect is None or not effect.preset:
+            return images
+        try:
+            lut = lut_mod.load_lut(effect.preset)
+        except (lut_mod.LutError, OSError) as exc:
+            self.warnings.append(f"LUT de cor ignorado: {exc}")
+            return images
+        amount = round(effect.amount, 3)
+        done: dict[str, str] = {}
+
+        def grade(rel: str) -> str:
+            src = self.store.abs(rel)
+            h = hash_obj({"v": lut_mod.LUT_VERSION, "src": hash_file(src), "lut": lut.digest, "amount": amount})
+            cached = self.store.lookup("lut", h)
+            if cached:
+                self.stats.hit("lut", True)
+                return cached["path"]
+            out = lut_mod.grade_image(src, self.store.dir_for("lut", h), lut, amount)
+            out_rel = self.store.rel(out)
+            self.store.save("lut", h, {"path": out_rel, "files": [out_rel], "source": rel, "lut": effect.preset}, "numpy")
+            self.stats.hit("lut", False)
+            return out_rel
+
+        todo = sorted({rel for rel in images.values()
+                       if rel and rel.lower().endswith(lut_mod.IMAGE_EXTS) and self.store.abs(rel).is_file()})
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for rel, future in [(rel, pool.submit(grade, rel)) for rel in todo]:
+                self._check()
+                try:
+                    done[rel] = future.result()
+                except Exception as exc:  # noqa: BLE001 - imagem ilegível fica sem LUT, o vídeo segue
+                    log.warning("LUT não aplicado em %s: %s", rel, exc)
+                    self.warnings.append(f"LUT de cor não aplicado em uma imagem: {exc}")
+        if todo:
+            self._tick("Cor (LUT) aplicada")
+        return {sid: done.get(rel, rel) if rel else rel for sid, rel in images.items()}
+
     def music(self, duration: float) -> tuple[str, dict[str, Any]] | None:
         music_spec = self.style.audio.music
         cue = next((c for c in self.doc.music if c.enabled), None)
@@ -934,6 +976,9 @@ class Builder:
         if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
             self.warnings.append(EDITORIAL_WARNING)
 
+        # LUT do estilo: a timeline mostra as imagens já gradadas (a thumbnail continua com as originais).
+        timeline_images = self.lut_images(images)
+
         results: dict[str, Any] = {}
         for lang in self.langs:
             self._check()
@@ -945,7 +990,7 @@ class Builder:
                 clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=out["duration"], words=words)
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
-            timeline = build_timeline(doc, self.style, lang, clips, images)
+            timeline = build_timeline(doc, self.style, lang, clips, timeline_images)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")

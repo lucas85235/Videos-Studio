@@ -1,10 +1,11 @@
 // Controles do Editor de estilo: grupos de opções, faixas, pesos, efeitos, cores e prévias.
 
-import { Check, CircleX, TriangleAlert, type LucideIcon } from 'lucide-react';
-import React, { useEffect, useId, useState } from 'react';
-import type { StyleSpec } from '../../api';
-import { EFFECT_LABELS, GRADE_LABELS, label, type LabelMap } from '../../labels';
-import { Badge, FieldGroup, Input, Select } from '../../ui';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, CircleX, Download, TriangleAlert, Upload, type LucideIcon } from 'lucide-react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { api, type LutListing, type StyleSpec } from '../../api';
+import { EFFECT_LABELS, GRADE_LABELS, LUT_LABELS, label, type LabelMap } from '../../labels';
+import { Badge, Button, FieldGroup, Input, Select } from '../../ui';
 import { HEX_COLOR, fontStack, formatFixed, formatNumber } from './shared';
 
 /* ------------------------------------------------------------------ */
@@ -178,7 +179,7 @@ export const WeightsEditor: React.FC<{
 /* Efeitos: chips liga/desliga com intensidade                         */
 /* ------------------------------------------------------------------ */
 
-export const EFFECT_TYPES = ['grain', 'vignette', 'grade', 'scanlines', 'chromatic', 'vhs', 'light_leak', 'film_scratches', 'halftone', 'duotone', 'sepia', 'blur_edges', 'flicker', 'dust'];
+export const EFFECT_TYPES = ['grain', 'vignette', 'grade', 'scanlines', 'chromatic', 'vhs', 'light_leak', 'film_scratches', 'halftone', 'duotone', 'sepia', 'blur_edges', 'flicker', 'dust', 'lut'];
 export const GRADES = ['neutral', 'vivid', 'warm-soft', 'clean-cool', 'cold-teal-dark', 'warm-sepia', 'noir', 'bleach-bypass', 'vhs-faded', 'blood-red', 'night-green'];
 /** Efeitos que deixam a renderização bem mais lenta (USO.md). */
 const HEAVY_EFFECTS = new Set(['vhs', 'blur_edges', 'chromatic']);
@@ -190,7 +191,11 @@ export const EffectsEditor: React.FC<{ value: Effect[]; onChange: (value: Effect
   const find = (type: string) => value.find((e) => e.type === type);
   const toggle = (type: string) => {
     if (find(type)) onChange(value.filter((e) => e.type !== type));
-    else onChange([...value, type === 'grade' ? { type, amount: 0.6, preset: 'neutral' } : { type, amount: 0.5 }]);
+    else
+      onChange([
+        ...value,
+        type === 'grade' ? { type, amount: 0.6, preset: 'neutral' } : type === 'lut' ? { type, amount: 0.8, preset: LUT_DEFAULT } : { type, amount: 0.5 },
+      ]);
   };
   // Atualiza no lugar (a ordem dos efeitos é a ordem da cadeia de filtros).
   const patch = (type: string, changes: Partial<Effect>) => onChange(value.map((e) => (e.type === type ? { ...e, ...changes } : e)));
@@ -259,6 +264,7 @@ export const EffectsEditor: React.FC<{ value: Effect[]; onChange: (value: Effect
                       ))}
                     </Select>
                   ) : null}
+                  {type === 'lut' ? <LutPicker value={effect.preset ?? LUT_DEFAULT} onChange={(preset) => patch(type, { preset })} disabled={disabled} /> : null}
                 </div>
               ) : null}
             </li>
@@ -272,6 +278,103 @@ export const EffectsEditor: React.FC<{ value: Effect[]; onChange: (value: Effect
         </p>
       ) : null}
     </FieldGroup>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* LUT de cor (.cube): prontos + biblioteca, com amostra e envio       */
+/* ------------------------------------------------------------------ */
+
+const LUT_DEFAULT = 'teal-orange';
+const lutUrl = (name: string, file: string) => `/api/luts/${encodeURIComponent(name)}/${file}`;
+
+const LutPicker: React.FC<{ value: string; onChange: (value: string) => void; disabled?: boolean }> = ({ value, onChange, disabled }) => {
+  const client = useQueryClient();
+  const input = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const luts = useQuery({ queryKey: ['luts'], queryFn: () => api.get<LutListing>('/api/luts'), staleTime: 60_000 });
+  const upload = useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append('file', file);
+      return api.upload<{ name: string }>('/api/luts', form);
+    },
+    onSuccess: (data) => {
+      setError(null);
+      void client.invalidateQueries({ queryKey: ['luts'] });
+      onChange(data.name);
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Não deu para enviar o LUT.'),
+  });
+  const builtin = luts.data?.builtin ?? Object.keys(LUT_LABELS).map((id) => ({ id, label: label(LUT_LABELS, id) }));
+  const user = (luts.data?.user ?? []).filter((u) => !u.error);
+  const known = builtin.some((b) => b.id === value) || user.some((u) => u.name === value);
+  // Só avisa depois que a lista chegou (antes disso não dá para saber).
+  const missing = Boolean(luts.data) && !known;
+  return (
+    <div className="flex flex-col gap-2">
+      <Select aria-label="LUT de cor" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        <optgroup label="Prontos">
+          {builtin.map((b) => (
+            <option key={b.id} value={b.id}>
+              {label(LUT_LABELS, b.id)}
+            </option>
+          ))}
+        </optgroup>
+        {user.length || !known ? (
+          <optgroup label="Seus arquivos .cube">
+            {user.map((u) => (
+              <option key={u.name} value={u.name}>
+                {u.title ? `${u.title} (${u.name})` : u.name}
+              </option>
+            ))}
+            {!known ? <option value={value}>{missing ? `${value} (não encontrado)` : value}</option> : null}
+          </optgroup>
+        ) : null}
+      </Select>
+      {missing ? (
+        <p className="flex items-start gap-1.5 text-[13px] leading-snug text-amber-200">
+          <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+          Esse arquivo não está na biblioteca: o vídeo sai sem LUT até você enviá-lo de novo ou escolher outro.
+        </p>
+      ) : (
+        <img
+          src={lutUrl(value, 'swatch.png')}
+          alt="Amostra do LUT: em cima as cores originais, embaixo com o LUT"
+          className="h-12 w-full rounded border border-line object-cover"
+          loading="lazy"
+        />
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={input}
+          type="file"
+          accept=".cube"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (file) upload.mutate(file);
+          }}
+        />
+        <Button size="sm" icon={Upload} busy={upload.isPending} disabled={disabled} onClick={() => input.current?.click()}>
+          Enviar .cube
+        </Button>
+        {!missing ? (
+          <a href={lutUrl(value, 'file.cube')} download className="inline-flex items-center gap-1 text-[13px] text-muted hover:text-fg">
+            <Download size={13} aria-hidden="true" />
+            Baixar .cube
+          </a>
+        ) : null}
+      </div>
+      {error ? (
+        <p role="alert" className="flex items-start gap-1.5 text-[13px] leading-snug text-red-300">
+          <CircleX size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+          {error}
+        </p>
+      ) : null}
+      <p className="text-[12px] leading-snug text-muted">A cor do LUT entra nas imagens no build: aparece na prévia do vídeo, não nas amostras deste editor.</p>
+    </div>
   );
 };
 

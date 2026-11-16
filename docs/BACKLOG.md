@@ -37,8 +37,9 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Vídeo IA (image-to-video via fal.ai) em cenas-chave; o tipo de cena `video` existe no esquema, mas não tem gerador.
 - [ ] Estilo a partir de **vídeo de referência** (PySceneDetect/TransNetV2, paleta, ritmo).
 - [ ] **Style Lab**: componentes novos escritos por IA, com portões de teste.
-- [ ] LUTs reais (.cube) e os efeitos nativos do `@remotion/effects`; hoje a gradação é feita com filtros CSS.
-- [ ] Desempenho: a aberração cromática desenha a imagem 3 vezes com a cadeia de filtros (só o preset terror-analog usa); avaliar uma passada única. O grão já usa texturas pré-geradas.
+- [x] LUTs reais (.cube): efeito `lut` no StyleSpec (6 LUTs prontos gerados no código + arquivos do usuário em `library/luts`, com envio, amostra e download no editor de estilos). O LUT é aplicado nas imagens no build com numpy (trilinear, em cache por imagem + LUT + intensidade), então o render por blocos e a prévia mostram a mesma cor. Ficou de fora: LUT em cena de vídeo (mídia real em vídeo) e na foto do cartão de notícia, e nas amostras do editor de estilos (só aparece na prévia do vídeo).
+- [ ] `@remotion/effects` (avaliado na 4.0.543): tem `lut()` e `chromaticAberration()` via `<Img effects>` em WebGL/WebGPU, mas a licença no npm é `UNLICENSED` (não permissiva) e ele só vem como dependência do `@remotion/studio`; não foi adotado. Rever se a licença mudar.
+- [x] Desempenho: a aberração cromática desenha a imagem uma vez só, com um filtro SVG que separa os canais (antes eram 3 cópias da imagem com a cadeia de filtros). Falta medir o ganho num render real do terror-analog.
 - [ ] Várias faixas de música por vídeo, trocando por segmento (hoje vale a primeira faixa ativa; a biblioteca do usuário já funciona).
 - [ ] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal.
 - [ ] Imagens de referência/âncoras para consistência de personagens.

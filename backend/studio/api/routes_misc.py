@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 
@@ -417,6 +418,78 @@ def open_library_music() -> dict[str, Any]:
         raise HTTPException(status_code=501, detail=f"abra manualmente: {root}")
     os.startfile(root)  # noqa: S606 - pasta local do próprio app
     return {"opened": str(root)}
+
+
+# --------------------------------------------------------------------------------------------
+# LUTs de cor (.cube): prontos e da biblioteca do usuário
+# --------------------------------------------------------------------------------------------
+
+
+@router.get("/luts")
+def luts() -> dict[str, Any]:
+    from studio.media import lut
+
+    return {
+        "dir": str(lut.luts_dir()),
+        "builtin": [{"id": key, "label": label} for key, label in lut.BUILTIN_LABELS.items()],
+        "user": lut.list_user_luts(),
+    }
+
+
+@router.post("/luts")
+def upload_lut(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
+    """Guarda um .cube na biblioteca (library/luts) depois de conferir que ele lê."""
+    from studio.media import lut
+
+    data = file.file.read(lut.MAX_FILE_BYTES + 1)
+    try:
+        name, parsed = lut.save_user_lut(file.filename or "lut.cube", data)
+    except lut.LutError as exc:
+        raise HTTPException(status_code=422, detail=f"LUT inválido: {exc}") from exc
+    return {"name": name, "title": parsed.title, "size": parsed.size, "dim": parsed.dim, "bytes": len(data)}
+
+
+@router.delete("/luts/{name}")
+def delete_lut(name: str) -> dict[str, Any]:
+    from studio.media import lut
+
+    try:
+        path = lut.user_lut_path(name)
+    except lut.LutError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="LUT não encontrado")
+    path.unlink()
+    return {"deleted": path.name}
+
+
+def _load_lut_or_http(name: str):  # noqa: ANN202 - tipo do módulo carregado sob demanda
+    from studio.media import lut
+
+    try:
+        return lut.load_lut(name)
+    except lut.LutError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/luts/{name}/swatch.png")
+def lut_swatch(name: str) -> Response:
+    """Amostra do LUT: em cima as cores originais, embaixo com o LUT."""
+    from studio.media import lut
+
+    return Response(lut.swatch(_load_lut_or_http(name)), media_type="image/png",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@router.get("/luts/{name}/file.cube")
+def lut_file(name: str) -> Response:
+    """O LUT como .cube (os prontos também), para usar em outro editor."""
+    from studio.media import lut
+
+    parsed = _load_lut_or_http(name)
+    filename = name if name.lower().endswith(".cube") else f"{name}.cube"
+    return Response(lut.write_cube(parsed), media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # --------------------------------------------------------------------------------------------

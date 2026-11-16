@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS
+from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, LUT_PRESETS, SCENE_KINDS, TRANSITIONS
 from studio.core.styles.visual import VISUAL_LANGUAGES
 from studio.media.audio import MOODS
 
@@ -214,7 +214,8 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
 - edit.transitions: pesos por transição ({", ".join(TRANSITIONS)})
 - edit.transition_seconds, edit.zoom_strength (0–0.6)
 - edit.effects: lista de {{type, amount 0–1, preset?}}; tipos: grain, vignette, grade, scanlines, chromatic, vhs, light_leak,
-  film_scratches, halftone, duotone, sepia, blur_edges, flicker, dust; presets de grade: {", ".join(GRADE_PRESETS)}
+  film_scratches, halftone, duotone, sepia, blur_edges, flicker, dust, lut; presets de grade: {", ".join(GRADE_PRESETS)};
+  presets de lut (LUT de cor .cube aplicado nas imagens): {", ".join(LUT_PRESETS)}
 - edit.captions.style: karaoke | word | line | none ; edit.captions.font, size (12–240), color, highlight, stroke,
   position: top | center | bottom ; max_words_per_line ; uppercase
 - edit.text_cards.font, color, accent, background, animation: fade_up | typewriter | pop | slide | flicker

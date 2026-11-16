@@ -170,6 +170,17 @@ export const EFFECT_LABELS: LabelMap = {
   blur_edges: 'Bordas desfocadas',
   flicker: 'Tremulação',
   dust: 'Poeira',
+  lut: 'LUT de cor (.cube)',
+};
+
+/** LUTs prontos (media/lut.py). */
+export const LUT_LABELS: LabelMap = {
+  'teal-orange': 'Azul-petróleo e laranja',
+  'faded-film': 'Filme desbotado',
+  'cold-night': 'Noite fria',
+  'warm-amber': 'Âmbar quente',
+  'cross-process': 'Processo cruzado',
+  'mono-contrast': 'Preto e branco contrastado',
 };
 
 export const GRADE_LABELS: LabelMap = {
