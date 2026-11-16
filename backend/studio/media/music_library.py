@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -110,19 +111,38 @@ def repeat_window(channel_settings: dict[str, Any] | None) -> int:
         return DEFAULT_REPEAT_WINDOW
 
 
-def used_track(project_settings: dict[str, Any] | None) -> str | None:
-    """Faixa da biblioteca que o projeto usou no último build (vídeo final antes da prévia)."""
+def _used(project_settings: dict[str, Any] | None) -> tuple[str, str | None] | None:
+    """(faixa da biblioteca, quando foi renderizada) do último build (vídeo final antes da prévia)."""
     settings = project_settings or {}
     for key in ("last_final", "last_preview"):
-        music = (settings.get(key) or {}).get("music") or {}
+        build = settings.get(key) or {}
+        music = build.get("music") or {}
         if music.get("source") == "library" and music.get("track"):
-            return str(music["track"])
+            return str(music["track"]), build.get("built_at")
     return None
 
 
+def used_track(project_settings: dict[str, Any] | None) -> str | None:
+    """Faixa da biblioteca que o projeto usou no último build (vídeo final antes da prévia)."""
+    used = _used(project_settings)
+    return used[0] if used else None
+
+
+def _when(raw: str | None, fallback: datetime) -> datetime:
+    try:
+        when = datetime.fromisoformat(raw) if raw else fallback
+    except ValueError:
+        when = fallback
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
 def recent_tracks(project_id: str, window: int | None = None) -> list[str]:
-    """Faixas da biblioteca usadas nos `window` vídeos do mesmo canal feitos antes deste projeto (mais recente
-    primeiro). Projeto sem canal ou janela 0: lista vazia."""
+    """Faixas da biblioteca usadas nos `window` vídeos mais recentes do mesmo canal que já tocaram uma faixa (mais
+    recente primeiro, pela hora da renderização; build antigo sem essa hora vale pela criação do projeto).
+
+    Conta todo projeto do canal já renderizado, mesmo criado depois deste (episódios feitos em lote e renderizados
+    fora de ordem); rascunhos sem build e vídeos com música gerada não ocupam lugar na janela. Projeto sem canal ou
+    janela 0: lista vazia."""
     from studio.db import session_scope
     from studio.models import Channel, Project
 
@@ -135,17 +155,16 @@ def recent_tracks(project_id: str, window: int | None = None) -> list[str]:
             window = repeat_window(channel.settings if channel else None)
         if window <= 0:
             return []
-        others = (
-            s.query(Project)
-            .filter(Project.channel_id == row.channel_id, Project.id != row.id, Project.created_at <= row.created_at)
-            .order_by(Project.created_at.desc(), Project.id.desc())
-            .limit(window)
-            .all()
-        )
-        out: list[str] = []
+        others = s.query(Project).filter(Project.channel_id == row.channel_id, Project.id != row.id).all()
+        used: list[tuple[datetime, str, str]] = []
         for other in others:
-            track = used_track(other.settings)
-            if track and track not in out:
+            got = _used(other.settings)
+            if got:
+                used.append((_when(got[1], other.created_at), other.id, got[0]))
+        used.sort(reverse=True)
+        out: list[str] = []
+        for _, _, track in used[:window]:
+            if track not in out:
                 out.append(track)
         return out
 

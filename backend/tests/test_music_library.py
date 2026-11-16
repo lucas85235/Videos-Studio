@@ -122,3 +122,11 @@ def test_preview_does_not_repeat_channel_track(isolated_settings):
     result = _run("preview", third)
     assert result["music"]["track"] == used
     assert any("tocaram nos últimos vídeos do canal" in w for w in result["warnings"])
+
+    # a faixa fixada sumiu da biblioteca: a substituta ainda não repete a do vídeo anterior do canal
+    with session_scope() as s:
+        s.get(Channel, channel_id).settings = {"novelty": {"music_window": 1}}
+    _commit(third, [{"op": "set_music", "track": "misterio/sumiu.mp3"}])
+    gone = _run("preview", third)
+    assert any("não está mais na biblioteca" in w for w in gone["warnings"])
+    assert gone["music"]["track"] != music_library.recent_tracks(third)[0]

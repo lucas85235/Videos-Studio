@@ -112,10 +112,15 @@ export const NoveltyCheck: React.FC<{ projectId: string; channelId: string | nul
   const base = compared
     ? `Comparado com ${compared} vídeo${compared === 1 ? "" : "s"} recente${compared === 1 ? "" : "s"} do canal.`
     : "Ainda não há outros vídeos do canal com prévia ou vídeo final para comparar as imagens.";
+  const pending = r.pending?.length ?? 0;
+  const pendingNote = pending
+    ? ` ${pending} vídeo${pending === 1 ? "" : "s"} do canal ainda sem impressão digital das imagens (entra${pending === 1 ? "" : "m"} na comparação depois de renderizar de novo).`
+    : "";
   if (!r.warnings.length) {
     return (
       <Notice tone="info" icon={Check} title="Novidade: nada repetido demais" actions={again}>
         {base}
+        {pendingNote}
         {r.images.repeated.length
           ? ` ${r.images.repeated.length} de ${r.images.total} imagens parecem com as de outros vídeos (${pct(r.images.share)}), dentro do aceitável.`
           : ""}
@@ -129,7 +134,7 @@ export const NoveltyCheck: React.FC<{ projectId: string; channelId: string | nul
           <li key={w}>{w.replace(/^Novidade:\s*/, "")}</li>
         ))}
       </ul>
-      <p className="mt-1">{base} É só um aviso: dá para publicar assim mesmo.</p>
+      <p className="mt-1">{base}{pendingNote} É só um aviso: dá para publicar assim mesmo.</p>
     </Notice>
   );
 };

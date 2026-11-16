@@ -9,7 +9,7 @@ from studio.config import get_settings
 from studio.core.project import service
 from studio.core.styles.library import get_style
 from studio.db import session_scope
-from studio.models import Channel
+from studio.models import Channel, utcnow
 from studio.providers import media_search
 from studio.workers import novelty
 from studio.workers.jobs import JobContext, job
@@ -134,7 +134,10 @@ def _build(ctx: JobContext, payload: dict[str, Any], mode: str) -> dict[str, Any
     assert project_id
     builder = Builder(project_id, mode=mode, langs=payload.get("langs"), sink=ctx)  # type: ignore[arg-type]
     result = builder.run()
+    result["built_at"] = utcnow().isoformat()  # ordem de renderização (música sem repetir no canal)
     service.update_settings(project_id, {f"last_{mode}": result})
+    # Impressão digital para o verificador de novidade: feita aqui, no job, e não na hora de conferir.
+    novelty.refresh(project_id)
     if mode == "final":
         # Conferência de novidade (só aviso): imagens, miniatura e título parecidos com os últimos vídeos do canal.
         extra = [w for w in novelty.safe_warnings(project_id) if w not in result["warnings"]]

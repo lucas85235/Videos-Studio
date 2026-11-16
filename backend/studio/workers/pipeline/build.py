@@ -671,10 +671,11 @@ class Builder:
     def _library_music(self, mood: str, bucket: float, pinned: str | None) -> tuple[str, dict[str, Any]] | None:
         """Trilha da biblioteca do usuário (library/music), ajustada à duração. None = biblioteca vazia."""
         tracks = music_library.list_tracks()
-        if pinned and not any(t.path == pinned for t in tracks):
+        pinned_found = bool(pinned) and any(t.path == pinned for t in tracks)
+        if pinned and not pinned_found:
             self.warnings.append(f"A faixa fixada '{pinned}' não está mais na biblioteca; escolhi outra.")
         # Sem repetir a faixa dos últimos vídeos do canal (a fixada vale mais; a que o projeto já usava fica).
-        avoid = [] if pinned else music_library.recent_tracks(self.project_id)
+        avoid = [] if pinned_found else music_library.recent_tracks(self.project_id)
         prefer = music_library.used_track(service.get_project_row(self.project_id)["settings"]) if avoid else None
         track = music_library.pick_track(tracks, mood, seed_from(self.doc.seed, "music", mood), pinned,
                                          avoid=avoid, prefer=prefer)

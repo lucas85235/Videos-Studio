@@ -493,6 +493,8 @@ export type NoveltyReport = {
   };
   thumbnail: { project_id: string; project_title: string; distance: number } | null;
   titles: { title: string; similarity: number; source: 'projeto' | 'youtube'; project_id?: string; video_id?: string }[];
+  /** Vídeos do canal sem impressão digital em dia (renderizados antes do verificador): entram depois da próxima renderização deles. */
+  pending?: { project_id: string; title: string }[];
   warnings: string[];
 };
 

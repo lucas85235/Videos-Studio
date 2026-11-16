@@ -1,9 +1,11 @@
 """Verificador de novidade: o vídeo novo repete demais imagens, miniatura ou título dos últimos vídeos do canal?
 
 Cada projeto guarda a impressão digital do seu último build (`settings.novelty_fp`: hash perceptual de cada imagem
-ou quadro das cenas e da miniatura), refeita só quando as imagens mudam. A conferência compara o projeto com os
-últimos vídeos do mesmo canal (janela no canal, `settings.novelty.window`; 0 desliga) e com os títulos recentes do
-canal do YouTube ligado (vêm com o canal, sem chamar a internet aqui).
+ou quadro das cenas e da miniatura), feita no fim de cada prévia/vídeo final e refeita só quando as imagens ou a
+miniatura mudam. A conferência compara o projeto com os últimos vídeos do mesmo canal (janela no canal,
+`settings.novelty.window`; 0 desliga) e com os títulos recentes do canal do YouTube ligado (vêm com o canal, sem
+chamar a internet aqui). Dos outros projetos só lê a impressão guardada (nunca calcula nem grava neles): quem não tem
+uma em dia aparece como pendente até a próxima renderização.
 
 O resultado é só aviso: nunca bloqueia a renderização nem a publicação.
 """
@@ -12,7 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
+
+from sqlalchemy import update
 
 from studio.config import get_settings
 from studio.core.hashing import hash_obj
@@ -30,7 +35,7 @@ IMAGE_MIN_REPEATED = 2
 IMAGE_SHARE = 0.3
 # Títulos com semelhança a partir disso (0 a 1) contam como "muito parecidos".
 TITLE_SIMILAR = 0.8
-FP_VERSION = 1
+FP_VERSION = 2
 
 
 def window_of(channel_settings: dict[str, Any] | None) -> int:
@@ -72,8 +77,20 @@ def _sources(entry: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
-def fingerprint(project_id: str) -> dict[str, Any] | None:
-    """Impressão digital das imagens e da miniatura do último build (do cache quando nada mudou). None sem build."""
+def _file_stamp(rel: str | None) -> list[int] | None:
+    """Tamanho e data de mudança do arquivo: a miniatura é sempre copiada para o mesmo caminho, então o caminho sozinho
+    não diz se ela mudou."""
+    if not rel:
+        return None
+    try:
+        st = (get_settings().data_dir / rel).stat()
+    except OSError:
+        return None
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _current(project_id: str) -> tuple[dict[str, Any], str, list[tuple[str, str]], str | None] | None:
+    """(settings, chave, fontes, miniatura) do último build do projeto; None sem build."""
     row = service.get_project_row(project_id)
     settings = row["settings"] or {}
     build = _last_build(settings)
@@ -85,7 +102,28 @@ def fingerprint(project_id: str) -> dict[str, Any] | None:
         return None
     sources = _sources(entry)
     thumb = entry.get("thumbnail")
-    key = hash_obj({"srcs": [s for _, s in sources], "thumb": thumb, "v": FP_VERSION})
+    key = hash_obj({"srcs": [s for _, s in sources], "thumb": thumb, "thumb_file": _file_stamp(thumb),
+                    "v": FP_VERSION})
+    return settings, key, sources, thumb
+
+
+def _save(project_id: str, result: dict[str, Any]) -> None:
+    """Guarda a impressão digital sem mexer em `updated_at` (não é uma edição do projeto)."""
+    with session_scope() as s:
+        row = s.get(Project, project_id)
+        if row is None:
+            return
+        settings = {**(row.settings or {}), "novelty_fp": result}
+        s.execute(update(Project).where(Project.id == project_id)
+                  .values(settings=settings, updated_at=Project.updated_at))
+
+
+def fingerprint(project_id: str) -> dict[str, Any] | None:
+    """Impressão digital das imagens e da miniatura do último build (do cache quando nada mudou). None sem build."""
+    current = _current(project_id)
+    if current is None:
+        return None
+    settings, key, sources, thumb = current
     cached = settings.get("novelty_fp") or {}
     if cached.get("key") == key:
         return cached
@@ -96,8 +134,26 @@ def fingerprint(project_id: str) -> dict[str, Any] | None:
         if h and not any(fp.similar(h, other["hash"]) for other in images):  # imagem reaproveitada conta uma vez
             images.append({"scene": scene_id, "hash": h})
     result = {"key": key, "images": images, "thumbnail": fp.hash_file(data_dir / thumb) if thumb else None}
-    service.update_settings(project_id, {"novelty_fp": result})
+    _save(project_id, result)
     return result
+
+
+def cached_fingerprint(project_id: str) -> dict[str, Any] | None:
+    """A impressão digital guardada, só se ainda vale para o último build (não calcula nada)."""
+    current = _current(project_id)
+    if current is None:
+        return None
+    settings, key, _, _ = current
+    cached = settings.get("novelty_fp") or {}
+    return cached if cached.get("key") == key else None
+
+
+def refresh(project_id: str) -> None:
+    """Refaz a impressão digital no fim do build (sem nunca falhar o build)."""
+    try:
+        fingerprint(project_id)
+    except Exception as exc:  # noqa: BLE001 - o verificador é só uma ajuda
+        log.warning("impressão digital do projeto %s falhou: %s", project_id, exc)
 
 
 def _title_of(project_id: str) -> str:
@@ -118,11 +174,24 @@ def _history(project_id: str, channel_id: str, window: int) -> list[str]:
         return [r.id for r in rows if _last_build(r.settings or {}) is not None][:window]
 
 
+_YT_ID = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{6,})")
+
+
+def _video_id(url: str | None) -> str | None:
+    match = _YT_ID.search(url or "")
+    return match.group(1) if match else None
+
+
 def _youtube_titles(channel_settings: dict[str, Any], project_id: str) -> list[dict[str, str]]:
-    """Títulos recentes do canal do YouTube ligado, sem os vídeos que este projeto mesmo publicou."""
+    """Títulos recentes do canal do YouTube ligado, sem os vídeos que este projeto mesmo publicou (pelo id do envio
+    automático ou pelo link guardado ao marcar como publicado)."""
     videos = ((channel_settings.get("youtube") or {}).get("recent_videos")) or []
+    own: set[str] = set()
     with session_scope() as s:
-        own = {p.external_id for p in s.query(Publication).filter_by(project_id=project_id).all() if p.external_id}
+        for pub in s.query(Publication).filter_by(project_id=project_id).all():
+            for vid in (pub.external_id, _video_id(pub.url)):
+                if vid:
+                    own.add(vid)
     return [v for v in videos if v.get("title") and v.get("video_id") not in own]
 
 
@@ -132,7 +201,7 @@ def check(project_id: str) -> dict[str, Any]:
     channel_id = row.get("channel_id")
     report: dict[str, Any] = {
         "enabled": False, "ready": False, "window": 0, "compared": [], "warnings": [],
-        "images": {"total": 0, "repeated": [], "share": 0.0}, "thumbnail": None, "titles": [],
+        "images": {"total": 0, "repeated": [], "share": 0.0}, "thumbnail": None, "titles": [], "pending": [],
     }
     if not channel_id:
         report["reason"] = "O projeto não tem canal: não há vídeos anteriores para comparar."
@@ -166,18 +235,25 @@ def check(project_id: str) -> dict[str, Any]:
             report["titles"].append({**cand, "similarity": round(score, 2)})
     report["titles"].sort(key=lambda t: -t["similarity"])
 
-    mine = fingerprint(project_id)
+    try:
+        mine = fingerprint(project_id)
+    except Exception as exc:  # noqa: BLE001 - sem impressão digital, os títulos ainda valem
+        log.warning("impressão digital do projeto %s falhou: %s", project_id, exc)
+        mine = None
     report["ready"] = mine is not None
     if mine is not None:
+        # Dos outros projetos, só a impressão guardada (feita no build deles): nada de calcular nem gravar aqui.
         others: list[tuple[str, str, dict[str, Any]]] = []
         for other in history:
             try:
-                other_fp = fingerprint(other)
+                other_fp = cached_fingerprint(other)
             except Exception as exc:  # noqa: BLE001 - um projeto quebrado não derruba a conferência
                 log.warning("impressão digital do projeto %s falhou: %s", other, exc)
                 continue
             if other_fp is not None:
                 others.append((other, _title_of(other), other_fp))
+            else:
+                report["pending"].append({"project_id": other, "title": _title_of(other)})
         report["compared"] = [{"project_id": pid, "title": t} for pid, t, _ in others]
         repeated = []
         for image in mine["images"]:

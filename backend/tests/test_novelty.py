@@ -61,6 +61,10 @@ def test_title_similarity():
     assert fp.title_similarity("O mistério do farol abandonado", "Farol abandonado: o mistério") >= 0.8
     assert fp.title_similarity("O mistério do farol abandonado", "A cidade que sumiu do mapa") < 0.5
     assert fp.title_similarity("", "algo") == 0.0
+    # títulos de padrão fixo com assunto diferente não são "parecidos"
+    for a, b in (("O mistério do Titanic", "O mistério do Triângulo"), ("5 fatos sobre gatos", "5 fatos sobre ratos"),
+                 ("O que é DNA", "O que é RNA"), ("Por que o céu é azul?", "Por que o mar é azul?")):
+        assert fp.title_similarity(a, b) < 0.8, (a, b)
     assert fp.normalize_title("Ação 🔥 É Já!") == "acao e ja"
 
 
@@ -119,16 +123,35 @@ def test_recent_tracks_of_channel():
     last = _project(cid, "Último", 30)
     other_channel = _project(_channel(), "Outro canal", 20)
     current = _project(cid, "Atual", 10)
-    newer = _project(cid, "Mais novo", 5)
     for pid, track in ((old, "terror/a.mp3"), (mid, "terror/b.mp3"), (last, "terror/c.mp3"),
-                       (other_channel, "terror/d.mp3"), (newer, "terror/e.mp3")):
+                       (other_channel, "terror/d.mp3")):
         service.update_settings(pid, {"last_preview": {"music": {"source": "library", "track": track}}})
     # o vídeo final vale mais que a prévia
     service.update_settings(last, {"last_final": {"music": {"source": "library", "track": "terror/f.mp3"}}})
+    # rascunhos sem build e vídeo com música gerada não ocupam lugar na janela
+    for i in range(3):
+        _project(cid, f"Rascunho {i}", 15 - i)
+    procedural = _project(cid, "Música gerada", 12)
+    service.update_settings(procedural, {"last_preview": {"music": {"source": "procedural"}}})
     assert music_library.recent_tracks(current) == ["terror/f.mp3", "terror/b.mp3"]
     assert music_library.recent_tracks(current, window=5) == ["terror/f.mp3", "terror/b.mp3", "terror/a.mp3"]
     assert music_library.recent_tracks(current, window=0) == []
     assert music_library.recent_tracks(_project(None, "Sem canal", 1)) == []
+
+
+def test_recent_tracks_counts_render_order():
+    """Episódios criados em lote e renderizados fora de ordem: vale a ordem de renderização."""
+    cid = _channel({"novelty": {"music_window": 1}})
+    a = _project(cid, "Episódio A", 20)
+    b = _project(cid, "Episódio B", 10)
+    now = datetime.now(UTC)
+    service.update_settings(b, {"last_preview": {"music": {"source": "library", "track": "terror/a.mp3"},
+                                                 "built_at": (now - timedelta(minutes=5)).isoformat()}})
+    # B (criado depois) já tocou a faixa: A não pode repetir
+    assert music_library.recent_tracks(a) == ["terror/a.mp3"]
+    service.update_settings(a, {"last_preview": {"music": {"source": "library", "track": "terror/b.mp3"},
+                                                 "built_at": now.isoformat()}})
+    assert music_library.recent_tracks(b) == ["terror/b.mp3"]
 
 
 # --------------------------------------------------------------------------------------------
@@ -153,6 +176,7 @@ def _fake_build(project_id: str, images: list[Image.Image], thumb: Image.Image |
     if thumb is not None:
         entry["thumbnail"] = _save(thumb, folder / "thumbnail.jpg", quality=85).relative_to(data_dir).as_posix()
     service.update_settings(project_id, {key: {"langs": {"pt-BR": entry}, "warnings": []}})
+    novelty.refresh(project_id)  # como no fim do job de build
 
 
 def test_novelty_check_flags_repeated_images_thumbnail_and_title():
@@ -186,6 +210,72 @@ def test_novelty_check_flags_repeated_images_thumbnail_and_title():
     _fake_build(fresh, [_pattern(s) for s in (20, 21, 22)], thumb=_pattern(60))
     clean = novelty.check(fresh)
     assert clean["warnings"] == [] and clean["images"]["repeated"] == [] and clean["thumbnail"] is None
+
+
+def test_novelty_new_thumbnail_clears_warning():
+    """Trocar só a miniatura (mesmo caminho em outputs/, mesmas cenas) refaz a impressão digital."""
+    cid = _channel()
+    old = _project(cid, "A cidade que sumiu", 30)
+    _fake_build(old, [_pattern(1)], thumb=_pattern(50))
+    current = _project(cid, "O navio fantasma", 10)
+    _fake_build(current, [_pattern(9)], thumb=_pattern(50))
+    assert novelty.check(current)["thumbnail"]["project_id"] == old
+    _fake_build(current, [_pattern(9)], thumb=_pattern(51))  # outra miniatura, mesmo caminho
+    report = novelty.check(current)
+    assert report["thumbnail"] is None and report["warnings"] == []
+
+
+def test_novelty_reads_others_from_cache_without_touching_them():
+    """A conferência não calcula nem grava nada nos outros projetos; sem impressão em dia, fica pendente."""
+    cid = _channel()
+    old = _project(cid, "Primeiro", 30)
+    _fake_build(old, [_pattern(1), _pattern(2)])
+    legacy = _project(cid, "Antigo sem impressão", 20)
+    _fake_build(legacy, [_pattern(1), _pattern(2)])
+    with session_scope() as s:  # build de antes do verificador: sem impressão digital guardada
+        row = s.get(Project, legacy)
+        row.settings = {k: v for k, v in row.settings.items() if k != "novelty_fp"}
+    current = _project(cid, "Atual", 10)
+    _fake_build(current, [_pattern(1), _pattern(2)])
+    with session_scope() as s:
+        before = {pid: s.get(Project, pid).updated_at for pid in (old, legacy, current)}
+        settings_before = {pid: dict(s.get(Project, pid).settings) for pid in (old, legacy)}
+    report = novelty.check(current)
+    assert [c["project_id"] for c in report["compared"]] == [old]
+    assert [p["project_id"] for p in report["pending"]] == [legacy]
+    with session_scope() as s:
+        assert {pid: s.get(Project, pid).updated_at for pid in (old, legacy, current)} == before
+        assert {pid: dict(s.get(Project, pid).settings) for pid in (old, legacy)} == settings_before
+
+
+def test_novelty_broken_media_does_not_break_check(monkeypatch):
+    """ffmpeg que passa do tempo ou imagem gigante: sem impressão digital, mas a conferência responde."""
+    import subprocess
+
+    from PIL import Image as PILImage
+
+    from studio.media import ffmpeg
+
+    def slow(*_a, **_kw):
+        raise subprocess.TimeoutExpired("ffmpeg", 60)
+
+    monkeypatch.setattr(ffmpeg, "run_ffmpeg", slow)
+    video = get_settings().data_dir / "lento.mp4"
+    video.write_bytes(b"\0" * 10)
+    assert fp.hash_file(video) is None
+
+    def bomb(*_a, **_kw):
+        raise PILImage.DecompressionBombError("grande demais")
+
+    monkeypatch.setattr(PILImage, "open", bomb)
+    assert fp.hash_file(_save(_pattern(1), get_settings().data_dir / "grande.png")) is None
+
+    cid = _channel()
+    current = _project(cid, "Algum título", 5)
+    service.update_settings(current, {"last_final": {"langs": {"pt-BR": {"timeline": "x.json"}}}})
+    monkeypatch.setattr(novelty, "fingerprint", lambda _pid: 1 / 0)
+    report = novelty.check(current)
+    assert report["enabled"] and not report["ready"]
 
 
 def test_novelty_one_repeated_image_is_fine_and_window_limits():
@@ -235,6 +325,22 @@ def test_novelty_compares_youtube_titles_but_not_own_upload():
         s.add(Publication(id=new_id("pub"), project_id=current, platform="youtube", language="pt-BR",
                           driver="youtube_native", external_id="v1"))
     assert novelty.check(current)["titles"] == []
+
+
+def test_novelty_ignores_own_manual_publication():
+    """Publicado à mão (só o link guardado, sem external_id): o vídeo do YouTube não é comparado com ele mesmo."""
+    cid = _channel({"youtube": {"channel_id": "UC1", "recent_videos": [
+        {"title": "O farol abandonado", "video_id": "abcDEF12345"},
+    ]}})
+    current = _project(cid, "O farol abandonado", 5)
+    assert novelty.check(current)["titles"]
+    with session_scope() as s:
+        s.add(Publication(id=new_id("pub"), project_id=current, platform="youtube", language="pt-BR",
+                          driver="manual", status="published", url="https://youtu.be/abcDEF12345?si=x"))
+    assert novelty.check(current)["titles"] == []
+    assert novelty._video_id("https://www.youtube.com/watch?v=abcDEF12345&t=3") == "abcDEF12345"
+    assert novelty._video_id("https://youtube.com/shorts/abcDEF12345") == "abcDEF12345"
+    assert novelty._video_id(None) is None
 
 
 def test_novelty_api_and_channel_settings():

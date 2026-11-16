@@ -8,6 +8,7 @@ distância. Imagem quase lisa (tela preta, fundo de cartão) não tem impressão
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import unicodedata
 from difflib import SequenceMatcher
@@ -48,7 +49,7 @@ def hash_file(path: Path) -> str | None:
                 return dhash(img)
         if suffix in VIDEO_EXTS:
             return _video_frame_hash(path)
-    except (OSError, ValueError):
+    except Exception:  # noqa: BLE001 - arquivo ruim, imagem gigante (DecompressionBombError) etc.: fica sem hash
         return None
     return None
 
@@ -62,7 +63,7 @@ def _video_frame_hash(path: Path) -> str | None:
             run_ffmpeg(["-ss", "1", "-i", str(path), "-frames:v", "1", "-vf", "scale=160:-2", str(frame)], timeout=60)
             if not frame.is_file():  # vídeo com menos de 1 s: o primeiro quadro
                 run_ffmpeg(["-i", str(path), "-frames:v", "1", "-vf", "scale=160:-2", str(frame)], timeout=60)
-        except (FFmpegError, OSError, TimeoutError):
+        except (FFmpegError, OSError, subprocess.SubprocessError):  # inclui o ffmpeg que passou do tempo
             return None
         if not frame.is_file():
             return None
@@ -86,7 +87,7 @@ def similar(a: str | None, b: str | None, bits: int = SIMILAR_BITS) -> bool:
 # Palavras que não dizem nada sobre o assunto (pt, en, es): ficam fora da comparação por palavras.
 _STOP = frozenset(
     "a o as os um uma uns umas de do da dos das e em no na nos nas por para com sem que se seu sua ao aos "
-    "the of and in on for to with an is are was it this that what why how who "
+    "sobre the of and in on for to with an is are was it this that what why how who about "
     "el la los las un una del y en por para con que es".split()
 )
 
@@ -101,12 +102,23 @@ def _words(text: str) -> set[str]:
     return {w for w in normalize_title(text).split() if w not in _STOP and len(w) > 1}
 
 
+# Fração mínima de palavras de conteúdo em comum para a semelhança das letras contar.
+WORDS_SHARED = 0.6
+
+
 def title_similarity(a: str, b: str) -> float:
-    """0 a 1: o maior entre a semelhança das letras e a das palavras de conteúdo (ordem não importa)."""
+    """0 a 1, guiada pelas palavras de conteúdo (ordem não importa).
+
+    A semelhança das letras só sobe a nota quando os títulos já dividem boa parte das palavras de conteúdo: assim
+    títulos de padrão fixo com assunto diferente ("5 fatos sobre gatos" e "5 fatos sobre ratos") não contam como
+    parecidos. Sem palavras de conteúdo num dos lados, vale só a semelhança das letras.
+    """
     na, nb = normalize_title(a), normalize_title(b)
     if not na or not nb:
         return 0.0
     chars = SequenceMatcher(None, na, nb).ratio()
     wa, wb = _words(a), _words(b)
-    words = len(wa & wb) / len(wa | wb) if wa and wb else 0.0
-    return max(chars, words)
+    if not wa or not wb:
+        return chars
+    words = len(wa & wb) / len(wa | wb)
+    return max(chars, words) if words >= WORDS_SHARED else words
