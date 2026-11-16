@@ -216,52 +216,90 @@ def run_publish_buffer(ctx: JobContext, payload: dict[str, Any]) -> dict[str, An
     post_data("https://exemplo.invalid/v.mp4")  # valida (modo, horário no futuro) antes de subir o vídeo
     warnings: list[str] = [EDITORIAL_WARNING] if has_editorial(doc) else []
     video_path = get_settings().data_dir / entry["video"]
+    # O Buffer só baixa e valida o vídeo na hora de publicar: avisa já o que o TikTok ou o Reel não aceitam.
+    warnings += buffer.video_warnings(platform, aspect=style.format.aspect, duration_s=entry.get("duration"),
+                                      size_bytes=video_path.stat().st_size if video_path.exists() else None)
     key = r2.new_key(project_id, f"{platform}-{lang}")
-    ctx.progress(0.02, "Enviando o vídeo ao Cloudflare R2")
-    with httpx.Client(timeout=httpx.Timeout(60, read=900, write=900)) as client:
-        url = r2.upload(video_path, key, http=client,
-                        on_progress=lambda p: ctx.progress(0.02 + p * 0.8, "Enviando o vídeo ao Cloudflare R2"))
-        ctx.progress(0.85, "Criando o post no Buffer")
-        try:
-            post = buffer.create_post(post_data(url), http=client)
-        except Exception:
-            try:
-                r2.delete(key, http=client)  # o post não existe: o vídeo não precisa ficar no ar
-            except r2.R2Error as exc:
-                log.warning("o vídeo %s ficou no R2: %s", key, exc)
-            raise
-    status = buffer_flow.status_for(post)
-    due_at = buffer_flow.parse_time(post.get("dueAt"))
     details: dict[str, Any] = {
         "caption": caption,
         "mode": mode,
-        "buffer_status": post.get("status"),
         "buffer_channel_id": channel,
         "buffer_channel_name": payload.get("buffer_channel_name") or "",
         "r2_key": key,
-        "video_url": url,
+        **r2.location(),
         "synthetic": synthetic,
         "warnings": warnings,
         "tracking": True,
-        "last_checked": datetime.now(UTC).isoformat(),
     }
-    if due_at:
-        details["publish_at"] = due_at.isoformat()
     if (lines := credit_lines(doc, lang)):
         details["credits"] = len(lines)
     if has_editorial(doc):
         details["editorial"] = True
     pub_id = new_id("pub")
-    with session_scope() as s:
-        s.add(Publication(id=pub_id, project_id=project_id, platform=platform, language=lang, driver=buffer_flow.DRIVER,
-                          status=status, scheduled_at=due_at, external_id=post.get("id"),
-                          url=post.get("externalLink") or None, details=details))
-    buffer_flow.remember_channel(row.get("channel_id") or doc.channel_id, platform, channel)
-    if status in (buffer_flow.PUBLISHED, buffer_flow.FAILED):
+    ctx.progress(0.02, "Enviando o vídeo ao Cloudflare R2")
+    with httpx.Client(timeout=httpx.Timeout(60, read=900, write=900)) as client:
+        url = r2.upload(video_path, key, http=client,
+                        on_progress=lambda p: ctx.progress(0.02 + p * 0.8, "Enviando o vídeo ao Cloudflare R2"))
+        details["video_url"] = url
+        ctx.progress(0.85, "Criando o post no Buffer")
         try:
-            buffer_flow.sync_one(pub_id)  # já terminou: registra o fim e apaga o vídeo do R2
+            post = buffer.create_post(post_data(url), http=client)
+        except buffer.BufferError as exc:
+            if not exc.uncertain:
+                _drop_video(key, client)  # o Buffer recusou: o post não existe e o vídeo não precisa ficar no ar
+                raise
+            # Sem resposta clara (rede, erro 5xx): o post pode ter sido criado. O vídeo fica no R2 por uns dias e a
+            # publicação fica registrada para a pessoa conferir no Buffer ou cancelar (o que apaga o vídeo).
+            now = datetime.now(UTC)
+            message = (f"não deu para confirmar se o Buffer criou o post ({exc}). Confira a fila do Buffer: se o post "
+                       "estiver lá, ele usa o vídeo que ficou no R2. Não envie de novo antes de conferir (criaria um "
+                       "post duplicado); cancele aqui para apagar o vídeo.")
+            details = buffer_flow.failed_details({**details, "uncertain": True}, now, buffer_flow.UNCERTAIN_KEEP)
+            details["last_checked"] = now.isoformat()
+            _save_buffer_publication(pub_id, project_id, platform, lang, buffer_flow.FAILED, None, None, None,
+                                     details, error=message)
+            raise RuntimeError(message) from exc
+        except Exception:
+            _drop_video(key, client)
+            raise
+    now = datetime.now(UTC)
+    status = buffer_flow.status_for(post)
+    due_at = buffer_flow.parse_time(post.get("dueAt"))
+    details["buffer_status"] = post.get("status")
+    details["last_checked"] = now.isoformat()
+    if due_at:
+        details["publish_at"] = due_at.isoformat()
+    error = None
+    if status == buffer_flow.FAILED:
+        error = ((post.get("error") or {}).get("message")) or "o Buffer não conseguiu publicar"
+        details = buffer_flow.failed_details(details, now)
+    else:
+        details["checks"] = 0
+        details["next_check"] = buffer_flow.next_check(status, due_at, 0, now).isoformat()
+    _save_buffer_publication(pub_id, project_id, platform, lang, status, due_at, post.get("id"),
+                             post.get("externalLink") or None, details, error=error)
+    buffer_flow.remember_channel(row.get("channel_id") or doc.channel_id, platform, channel)
+    if status == buffer_flow.PUBLISHED:
+        try:
+            buffer_flow.sync_one(pub_id)  # já saiu: registra o fim e apaga o vídeo do R2 (sem consultar o Buffer)
         except buffer.BufferError as exc:
             warnings.append(f"não deu para conferir o post agora: {exc}")
     ctx.progress(1.0, "Post criado no Buffer")
     return {"publication_id": pub_id, "post_id": post.get("id"), "status": status,
-            "due_at": due_at.isoformat() if due_at else None, "warnings": warnings}
+            "due_at": due_at.isoformat() if due_at else None, "warnings": warnings, "error": error}
+
+
+def _drop_video(key: str, client: httpx.Client) -> None:
+    try:
+        r2.delete(key, http=client)
+    except r2.R2Error as exc:
+        log.warning("o vídeo %s ficou no R2: %s", key, exc)
+
+
+def _save_buffer_publication(pub_id: str, project_id: str, platform: str, lang: str, status: str,
+                             due_at: datetime | None, post_id: str | None, url: str | None,
+                             details: dict[str, Any], *, error: str | None = None) -> None:
+    with session_scope() as s:
+        s.add(Publication(id=pub_id, project_id=project_id, platform=platform, language=lang,
+                          driver=buffer_flow.DRIVER, status=status, scheduled_at=due_at, external_id=post_id,
+                          url=url, error=error, details=details))

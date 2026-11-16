@@ -555,6 +555,7 @@ export const OutputTab: React.FC<
               unsavedMeta={metaDirty}
               finalStale={finalStale}
               pickedSlot={pickedSlot}
+              duration={entry?.duration}
             />
           </div>
           <PublicationsList detail={detail} lang={lang} />

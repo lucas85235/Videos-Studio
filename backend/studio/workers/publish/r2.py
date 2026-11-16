@@ -39,6 +39,10 @@ class R2Error(RuntimeError):
     pass
 
 
+class R2Moved(R2Error):
+    """O vídeo foi para uma conta ou bucket que não é mais o configurado: não dá para apagá-lo daqui."""
+
+
 class R2Storage(Provider):
     info = ProviderInfo(
         id=PROVIDER_ID,
@@ -227,9 +231,24 @@ def upload(path: Path, key: str, *, http: httpx.Client | None = None, content_ty
             client.close()
 
 
-def delete(key: str, *, http: httpx.Client | None = None) -> None:
-    """Apaga o objeto (o S3 responde 204 mesmo se ele já não existir)."""
+def location() -> dict[str, str]:
+    """Conta e bucket atuais (guardados com cada vídeo, para apagar do lugar certo depois)."""
     cfg = _cfg()
+    return {"r2_account": cfg["account_id"], "r2_bucket": cfg["bucket"]}
+
+
+def delete(key: str, *, http: httpx.Client | None = None, account_id: str | None = None,
+           bucket: str | None = None) -> None:
+    """Apaga o objeto (o S3 responde 204 mesmo se ele já não existir).
+
+    `account_id` e `bucket` são os usados no envio: se a configuração mudou desde então, o vídeo ficou no bucket
+    antigo e a remoção não é tentada no novo (daria "sucesso" sem apagar nada)."""
+    cfg = _cfg()
+    if (account_id and account_id != cfg["account_id"]) or (bucket and bucket != cfg["bucket"]):
+        raise R2Moved(
+            f"o vídeo ficou no bucket “{bucket or cfg['bucket']}” (conta {account_id or cfg['account_id']}), que não é "
+            f"mais o configurado; apague “{key}” pelo painel da Cloudflare"
+        )
     url = _object_url(cfg, key)
     own = http is None
     client = http or new_client()
@@ -240,6 +259,8 @@ def delete(key: str, *, http: httpx.Client | None = None) -> None:
             resp = client.delete(url, headers=headers)
         except httpx.HTTPError as exc:
             raise R2Error(f"sem resposta do R2 ao apagar o vídeo: {exc}") from exc
+        if resp.status_code == 404 and "NoSuchBucket" in resp.text:
+            raise R2Error(f"não foi possível apagar o vídeo do R2: {_explain(resp)}")
         if resp.status_code not in (200, 204, 404):
             raise R2Error(f"não foi possível apagar o vídeo do R2: {_explain(resp)}")
     finally:

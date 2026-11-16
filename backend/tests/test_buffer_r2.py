@@ -41,7 +41,12 @@ class FakeCloud:
         self.deleted_posts: list[str] = []
         self.posts: dict[str, dict] = {}
         self.create_error: str | None = None
+        self.create_network_error = False
+        self.create_status = "scheduled"
+        self.default_due: str | None = "2030-01-02T21:00:00.000Z"
+        self.ratelimit: str | None = None
         self.graphql_calls: list[str] = []
+        self.post_queries = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == R2_HOST:
@@ -55,6 +60,8 @@ class FakeCloud:
                 self.objects[key] = body
                 return httpx.Response(200)
             if request.method == "DELETE":
+                if request.url.path.split("/")[1] != BUCKET:
+                    return httpx.Response(404, text="<Error><Code>NoSuchBucket</Code></Error>")
                 self.deleted.append(key)
                 self.objects.pop(key, None)
                 return httpx.Response(204)
@@ -63,6 +70,7 @@ class FakeCloud:
             body = json.loads(request.content)
             query, variables = body["query"], body.get("variables") or {}
             self.graphql_calls.append(query)
+            headers = {"RateLimit": self.ratelimit} if self.ratelimit else {}
             if "account" in query and "organizations" in query:
                 return httpx.Response(200, json={"data": {"account": {"organizations": [{"id": "org1", "name": "Minha"}]}}})
             if "channels(" in query:
@@ -80,9 +88,13 @@ class FakeCloud:
                 self.created.append(data)
                 if self.create_error:
                     return httpx.Response(200, json={"data": {"createPost": {"message": self.create_error}}})
-                post = {"id": f"post{len(self.created)}", "status": "scheduled",
-                        "dueAt": data.get("dueAt") or "2030-01-02T21:00:00.000Z", "externalLink": None}
+                post = {"id": f"post{len(self.created)}", "status": self.create_status,
+                        "dueAt": data.get("dueAt") or self.default_due, "externalLink": None}
+                if self.create_status == "error":
+                    post["error"] = {"message": "Instagram desconectado"}
                 self.posts[post["id"]] = dict(post)
+                if self.create_network_error:
+                    raise httpx.ReadTimeout("sem resposta", request=request)
                 return httpx.Response(200, json={"data": {"createPost": {"post": post}}})
             if "deletePost" in query:
                 post_id = variables["input"]["id"]
@@ -90,12 +102,20 @@ class FakeCloud:
                 self.posts.pop(post_id, None)
                 return httpx.Response(200, json={"data": {"deletePost": {"id": post_id}}})
             if "post(" in query:
+                self.post_queries += 1
                 post = self.posts.get(variables["input"]["id"])
                 if post is None:
                     return httpx.Response(200, json={"data": None, "errors": [
                         {"message": "Post not found", "extensions": {"code": "NOT_FOUND"}}]})
-                return httpx.Response(200, json={"data": {"post": post}})
+                return httpx.Response(200, json={"data": {"post": post}}, headers=headers)
         return httpx.Response(404, text="rota desconhecida")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_quota():
+    buffer.reset_quota()
+    yield
+    buffer.reset_quota()
 
 
 @pytest.fixture()
@@ -328,14 +348,34 @@ def test_sync_marks_sent_posts_and_cleans_r2(isolated_settings, cloud: FakeCloud
         assert pub.details["published_at"] == "2030-01-02T21:00:05Z"
 
 
-def test_sync_records_buffer_error_and_cleans(isolated_settings, cloud: FakeCloud):
+def test_sync_keeps_failed_video_for_a_while_then_cleans(isolated_settings, cloud: FakeCloud):
     pub_id, key = _published_job(isolated_settings, cloud)
     cloud.posts["post1"].update(status="error", error={"message": "TikTok recusou o vídeo"})
-    buffer_flow.sync(force=True)
+    now = datetime.now(UTC)
+    buffer_flow.sync(force=True, now=now)
     with session_scope() as s:
         pub = s.get(Publication, pub_id)
         assert pub.status == "failed" and pub.error == "TikTok recusou o vídeo"
-        assert pub.details["tracking"] is False
+        assert pub.details["tracking"] is True and "keep_until" in pub.details
+    assert cloud.deleted == []  # dá para tentar de novo pelo Buffer enquanto o vídeo estiver no R2
+    # Conferência rara enquanto falhou: nada antes de 12 h.
+    queries = cloud.post_queries
+    assert buffer_flow.sync(now=now + timedelta(hours=1))["checked"] == 0
+    assert cloud.post_queries == queries
+    # Tentaram de novo pelo Buffer e o post voltou para a fila: segue o fluxo normal.
+    cloud.posts["post1"].update(status="scheduled", error=None)
+    buffer_flow.sync(now=now + timedelta(hours=13))
+    with session_scope() as s:
+        pub = s.get(Publication, pub_id)
+        assert pub.status == "scheduled" and pub.error is None and "keep_until" not in pub.details
+    # Falhou de novo e o prazo acabou: o vídeo sai do R2 e a mensagem diz como tentar de novo.
+    cloud.posts["post1"].update(status="error", error={"message": "TikTok recusou o vídeo"})
+    buffer_flow.sync(force=True, now=now + timedelta(days=1))
+    buffer_flow.sync(now=now + timedelta(days=5))
+    with session_scope() as s:
+        pub = s.get(Publication, pub_id)
+        assert pub.status == "failed" and "envie outra vez pelo Vulto" in pub.error
+        assert pub.details["tracking"] is False and pub.details["r2_deleted"] is True
     assert cloud.deleted == [key]
 
 
@@ -354,7 +394,7 @@ def test_sync_retries_cleanup_when_r2_fails(isolated_settings, cloud: FakeCloud,
     cloud.posts["post1"]["status"] = "sent"
     real_delete = r2.delete
 
-    def broken(key, http=None):
+    def broken(key, http=None, **kw):
         raise r2.R2Error("fora do ar")
 
     monkeypatch.setattr(r2, "delete", broken)
@@ -423,3 +463,164 @@ def test_cancel_route(isolated_settings, cloud: FakeCloud):
         resp = client.post(f"/api/publications/{pub_id}/buffer/cancel")
         assert resp.status_code == 400 and "já foi publicado" in resp.json()["detail"]
         assert client.post("/api/buffer/sync").status_code == 200
+
+
+# --------------------------------------------------------------------------------------------
+# Correções da revisão: cota da API, cancelamento, criação incerta, falhas, bucket trocado, agenda
+# --------------------------------------------------------------------------------------------
+
+
+def test_future_scheduled_post_is_not_queried_before_due(isolated_settings, cloud: FakeCloud):
+    _configure()
+    pid = _rendered_project(isolated_settings)
+    due = datetime.now(UTC) + timedelta(days=3)
+    final = _run_job(pid, {"lang": "pt-BR", "platform": "tiktok", "buffer_channel_id": "ch-tt", "mode": "scheduled",
+                           "publish_at": due.isoformat()})
+    assert final["status"] == "done", final["error"]
+    now = datetime.now(UTC)
+    for hours in (1, 6, 24, 48, 71):  # o laço de fundo roda várias vezes até o horário
+        assert buffer_flow.sync(now=now + timedelta(hours=hours))["checked"] == 0
+    assert cloud.post_queries == 0
+    result = buffer_flow.sync(now=due + timedelta(minutes=6))
+    assert result["checked"] == 1 and cloud.post_queries == 1
+
+
+def test_queue_post_without_due_uses_growing_interval(isolated_settings, cloud: FakeCloud):
+    _configure()
+    cloud.default_due = None
+    pid = _rendered_project(isolated_settings)
+    assert _run_job(pid, {"lang": "pt-BR", "platform": "tiktok", "buffer_channel_id": "ch-tt",
+                          "mode": "queue"})["status"] == "done"
+    with session_scope() as s:
+        assert s.query(Publication).one().status == "uploaded"
+    t = datetime.now(UTC)
+    checks = []
+    for _ in range(48):  # 48 voltas de 10 min = 8 h com o app aberto
+        t += timedelta(minutes=10)
+        checks.append(buffer_flow.sync(now=t)["checked"])
+    assert 1 <= sum(checks) <= 5  # 10 min, 30 min, 1 h, 3 h... (antes eram 48)
+    assert cloud.post_queries == sum(checks)
+
+
+def test_low_quota_pauses_background_checks_but_not_cleanup(isolated_settings, cloud: FakeCloud):
+    pub_id, key = _published_job(isolated_settings, cloud)
+    cloud.ratelimit = '"15m";r=140;t=600, "24h";r=590;t=80000, "30d";r=12;t=2000000'
+    buffer_flow.sync(force=True)
+    assert buffer.quota_low()
+    queries = cloud.post_queries
+    later = datetime(2030, 1, 3, tzinfo=UTC)
+    result = buffer_flow.sync(now=later)
+    assert result["checked"] == 0 and "saldo" in result["reason"] and cloud.post_queries == queries
+    # Post já terminado só precisa do R2: a limpeza continua mesmo com o saldo baixo.
+    with session_scope() as s:
+        s.get(Publication, pub_id).status = "published"
+    buffer_flow.sync(now=later)
+    assert cloud.deleted == [key] and cloud.post_queries == queries
+
+
+def test_ratelimit_header_parsing():
+    assert buffer._parse_ratelimit(['"15m";r=149;t=900, "24h";r=599;t=86000', '"30d";r=999;t=2592000']) == [
+        (149, 900), (599, 86000), (999, 2592000)]
+    assert buffer._parse_ratelimit([]) == []
+
+
+def test_cleanup_runs_without_buffer_key(isolated_settings, cloud: FakeCloud):
+    pub_id, key = _published_job(isolated_settings, cloud)
+    with session_scope() as s:
+        s.get(Publication, pub_id).status = "published"
+    credentials.set_credential("buffer", {"api_key": ""})
+    result = buffer_flow.sync(force=True)
+    assert result["reason"] == "sem chave do Buffer" and result["checked"] == 1
+    assert cloud.deleted == [key]
+
+
+def test_cancel_refuses_when_buffer_already_sent_or_is_sending(isolated_settings, cloud: FakeCloud):
+    pub_id, key = _published_job(isolated_settings, cloud)
+    cloud.posts["post1"].update(status="sending")
+    with pytest.raises(ValueError, match="sendo publicado agora"):
+        buffer_flow.cancel(pub_id)
+    cloud.posts["post1"].update(status="sent", externalLink="https://www.tiktok.com/@eu/video/9")
+    with pytest.raises(ValueError, match="já foi publicado"):
+        buffer_flow.cancel(pub_id)
+    assert cloud.deleted_posts == []
+    with session_scope() as s:
+        pub = s.get(Publication, pub_id)
+        assert pub.status == "published" and pub.url == "https://www.tiktok.com/@eu/video/9"
+    assert cloud.deleted == [key]  # registrou a publicação e apagou o vídeo, que já saiu
+
+
+def test_job_keeps_video_when_buffer_answer_is_uncertain(isolated_settings, cloud: FakeCloud):
+    _configure()
+    cloud.create_network_error = True
+    pid = _rendered_project(isolated_settings)
+    final = _run_job(pid, {"lang": "pt-BR", "platform": "tiktok", "buffer_channel_id": "ch-tt", "mode": "queue"})
+    assert final["status"] == "failed" and "confirmar" in final["error"]
+    [key] = cloud.objects  # o post pode existir no Buffer: o vídeo continua no ar
+    assert cloud.deleted == []
+    with session_scope() as s:
+        pub = s.query(Publication).one()
+        assert pub.status == "failed" and pub.details["uncertain"] is True and pub.details["tracking"] is True
+        assert pub.details["r2_key"] == key and pub.external_id is None
+        pub_id = pub.id
+    queries = cloud.post_queries
+    buffer_flow.sync(force=True)
+    assert cloud.deleted == [] and cloud.post_queries == queries
+    buffer_flow.sync(now=datetime.now(UTC) + timedelta(days=8))
+    assert cloud.deleted == [key]
+    with session_scope() as s:
+        assert s.get(Publication, pub_id).details["tracking"] is False
+
+
+def test_job_records_error_when_post_is_born_failed(isolated_settings, cloud: FakeCloud):
+    _configure()
+    cloud.create_status = "error"
+    pid = _rendered_project(isolated_settings)
+    final = _run_job(pid, {"lang": "pt-BR", "platform": "instagram", "buffer_channel_id": "ch-ig", "mode": "now"})
+    assert final["status"] == "done", final["error"]
+    with session_scope() as s:
+        pub = s.query(Publication).one()
+        assert pub.status == "failed" and pub.error == "Instagram desconectado"
+        assert pub.details["tracking"] is True and "keep_until" in pub.details
+    assert cloud.deleted == [] and len(cloud.objects) == 1
+
+
+def test_cleanup_does_not_fake_success_after_bucket_change(isolated_settings, cloud: FakeCloud):
+    pub_id, key = _published_job(isolated_settings, cloud)
+    with session_scope() as s:
+        pub = s.get(Publication, pub_id)
+        assert (pub.details["r2_account"], pub.details["r2_bucket"]) == (ACCOUNT, BUCKET)
+        pub.status = "published"
+    credentials.set_credential(r2.PROVIDER_ID, {**credentials.get_credential(r2.PROVIDER_ID), "bucket": "novo"})
+    buffer_flow.sync(force=True)
+    assert cloud.deleted == [] and key in cloud.objects
+    with session_scope() as s:
+        d = s.get(Publication, pub_id).details
+        assert d["r2_left"] is True and "painel da Cloudflare" in d["cleanup_error"] and d["tracking"] is False
+        assert not d.get("r2_deleted")
+
+
+def test_r2_delete_treats_missing_bucket_as_error(cloud: FakeCloud):
+    _configure()
+    credentials.set_credential(r2.PROVIDER_ID, {**credentials.get_credential(r2.PROVIDER_ID), "bucket": "sumiu"})
+    with pytest.raises(r2.R2Error, match="bucket não existe"):
+        r2.delete("vulto/x.mp4")
+
+
+def test_agenda_shows_buffer_queue_as_upcoming(isolated_settings, cloud: FakeCloud):
+    from studio.workers.publish import schedule
+
+    _configure()
+    cloud.default_due = None
+    pid = _rendered_project(isolated_settings)
+    assert _run_job(pid, {"lang": "pt-BR", "platform": "tiktok", "buffer_channel_id": "ch-tt",
+                          "mode": "queue"})["status"] == "done"
+    data = schedule.agenda()
+    assert data["recent"] == []
+    [item] = data["upcoming"]
+    assert item["status"] == "queued" and item["scheduled_at"] is None
+
+
+def test_video_warnings_for_long_horizontal_render():
+    out = buffer.video_warnings("tiktok", aspect="16:9", duration_s=18 * 60, size_bytes=None)
+    assert any("vertical" in w for w in out) and any("até 10 min" in w for w in out)
+    assert buffer.video_warnings("instagram", aspect="9:16", duration_s=55, size_bytes=10_000_000) == []

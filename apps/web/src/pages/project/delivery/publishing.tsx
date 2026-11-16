@@ -584,6 +584,34 @@ const BUFFER_MODES: Record<string, string> = {
 
 const BUFFER_DONE = new Set(["failed", "canceled"]);
 
+/** Limites do TikTok e do Reel pelo Buffer (central de ajuda do Buffer); o mesmo que `buffer.VIDEO_LIMITS`. */
+const BUFFER_LIMITS: Record<string, { name: string; maxS: number }> = {
+  tiktok: { name: "TikTok", maxS: 10 * 60 },
+  instagram: { name: "Reels do Instagram", maxS: 15 * 60 },
+};
+const VERTICAL = new Set(["9:16", "4:5"]);
+
+/** Avisos de vídeo fora do que o TikTok ou o Reel aceitam: o Buffer só confere na hora de publicar. */
+const bufferFormatWarnings = (
+  platforms: string[],
+  aspect: string | undefined,
+  duration: number | null | undefined,
+): string[] => {
+  const out: string[] = [];
+  if (aspect && !VERTICAL.has(aspect))
+    out.push(
+      `O vídeo é ${aspect}; TikTok e Reels esperam vídeo vertical (9:16) e podem recusar ou cortar.`,
+    );
+  for (const pl of platforms) {
+    const lim = BUFFER_LIMITS[pl];
+    if (lim && duration && duration > lim.maxS)
+      out.push(
+        `O vídeo tem ${(duration / 60).toFixed(1).replace(".", ",")} min; o ${lim.name} aceita até ${lim.maxS / 60} min pelo Buffer.`,
+      );
+  }
+  return out;
+};
+
 export const BufferCard: React.FC<{
   detail: ProjectDetail;
   lang: string;
@@ -593,6 +621,8 @@ export const BufferCard: React.FC<{
   unsavedMeta: boolean;
   finalStale: boolean;
   pickedSlot: PickedSlot;
+  /** Duração do vídeo final deste idioma (s). */
+  duration?: number | null;
 }> = ({
   detail,
   lang,
@@ -602,6 +632,7 @@ export const BufferCard: React.FC<{
   unsavedMeta,
   finalStale,
   pickedSlot,
+  duration,
 }) => {
   const { doc } = detail;
   const client = useQueryClient();
@@ -620,7 +651,9 @@ export const BufferCard: React.FC<{
     queryFn: () =>
       api.get<{ channels: BufferChannel[] }>("/api/buffer/channels"),
     enabled: ready,
-    staleTime: 5 * 60_000,
+    // Cada busca gasta 1 + N pedidos da cota da API do Buffer (600 por dia no plano grátis).
+    staleTime: 30 * 60_000,
+    gcTime: 60 * 60_000,
   });
   const [platforms, setPlatforms] = useState<string[]>(BUFFER_PLATFORMS);
   const [picked, setPicked] = useState<Record<string, string>>({});
@@ -643,6 +676,11 @@ export const BufferCard: React.FC<{
     return options.length === 1 ? options[0].id : "";
   };
   const active = platforms.filter((pl) => usable(pl).length > 0);
+  const formatWarnings = bufferFormatWarnings(
+    active,
+    detail.style?.format.aspect,
+    duration,
+  );
 
   const publish = useMutation({
     mutationFn: async () => {
@@ -703,6 +741,14 @@ export const BufferCard: React.FC<{
                     : null;
 
   const send = async () => {
+    if (formatWarnings.length) {
+      const ok = await confirm({
+        title: "Enviar um vídeo fora do formato do TikTok ou do Reels?",
+        description: `${formatWarnings.join(" ")} O Buffer só confere o vídeo na hora de publicar, então a falha pode aparecer só depois.`,
+        confirmLabel: "Enviar assim mesmo",
+      });
+      if (!ok) return;
+    }
     if (finalStale) {
       const ok = await confirm({
         title: "Enviar um vídeo desatualizado?",
@@ -857,6 +903,12 @@ export const BufferCard: React.FC<{
               <Link to="/configuracoes" className={LINK}>
                 Configurar provedores
               </Link>
+            </Notice>
+          ) : null}
+          {formatWarnings.length ? (
+            <Notice tone="warn" title="Formato fora do que TikTok e Reels aceitam">
+              {formatWarnings.join(" ")} O Buffer só confere na hora de
+              publicar: o post pode falhar horas ou dias depois.
             </Notice>
           ) : null}
           {job ? <JobProgress job={job} title="Enviando ao Buffer" /> : null}
@@ -1091,7 +1143,12 @@ type PubDetails = Publication["details"] & {
   buffer_channel_name?: string;
   tracking?: boolean;
   r2_deleted?: boolean;
+  r2_left?: boolean;
   cleanup_error?: string;
+  /** Até quando o vídeo de um post que falhou fica no R2. */
+  keep_until?: string;
+  /** A criação do post ficou sem resposta do Buffer. */
+  uncertain?: boolean;
 };
 
 const STATUS: Record<string, { label: string; tone: BadgeTone }> = {
@@ -1110,12 +1167,17 @@ const PublicationRow: React.FC<{
 }> = ({ pub, projectId, testOnly }) => {
   const client = useQueryClient();
   const d = pub.details as PubDetails;
-  const st = STATUS[pub.status] ?? {
+  const manual = pub.driver === "manual_helper";
+  const viaBuffer = pub.driver === "buffer";
+  const st = (viaBuffer && pub.status === "uploaded"
+    ? { label: "Na fila do Buffer", tone: "info" as BadgeTone }
+    : STATUS[pub.status]) ?? {
     label: "Em andamento",
     tone: "neutral" as BadgeTone,
   };
-  const manual = pub.driver === "manual_helper";
-  const viaBuffer = pub.driver === "buffer";
+  // Falhou, mas o vídeo ainda está no R2: dá para tentar de novo pelo Buffer (ou cancelar e apagar).
+  const failedHeld =
+    viaBuffer && pub.status === "failed" && Boolean(d.tracking) && !d.r2_deleted && !d.r2_left;
   const confirm = useConfirm();
   const platformName =
     pub.platform === "youtube" && manual
@@ -1182,10 +1244,18 @@ const PublicationRow: React.FC<{
       {pub.error ? (
         <p className="text-[13px] text-red-300">{pub.error}</p>
       ) : null}
+      {failedHeld && d.keep_until ? (
+        <p className="text-xs text-amber-200">
+          {d.uncertain
+            ? `O vídeo fica no R2 até ${formatWhen(d.keep_until)}. Se o post estiver na fila do Buffer, ele sai normalmente até lá.`
+            : `O vídeo fica no R2 até ${formatWhen(d.keep_until)}: tentar de novo pelo Buffer só funciona até lá. Depois, envie outra vez pelo Vulto.`}
+        </p>
+      ) : null}
       {viaBuffer && d.cleanup_error ? (
         <p className="text-xs text-amber-200">
-          O vídeo ainda está no R2 (nova tentativa na próxima conferência):{" "}
-          {d.cleanup_error}
+          {d.r2_left
+            ? d.cleanup_error
+            : `O vídeo ainda está no R2 (nova tentativa na próxima conferência): ${d.cleanup_error}`}
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-1">
@@ -1232,7 +1302,8 @@ const PublicationRow: React.FC<{
             Marcar como postado
           </Button>
         ) : null}
-        {viaBuffer && (pub.status === "scheduled" || pub.status === "uploaded") ? (
+        {viaBuffer &&
+        (pub.status === "scheduled" || pub.status === "uploaded" || failedHeld) ? (
           <Button
             size="sm"
             variant="ghost"

@@ -13,6 +13,9 @@ developers.buffer.com:
   `externalLink` e `error { message }`; `deletePost(input: {id})` apaga um post que ainda não saiu.
 - Erros de sistema vêm com HTTP 200 e a lista `errors` (`extensions.code`: UNAUTHORIZED, FORBIDDEN, NOT_FOUND,
   UNEXPECTED, RATE_LIMIT_EXCEEDED); acima do limite, HTTP 429 com `Retry-After`.
+- Cada resposta traz os cabeçalhos `RateLimit` (`r` = pedidos que sobram, `t` = segundos até zerar), um por janela
+  (15 min, 24 h e 30 dias; guia "API Limits"). Guardamos o menor saldo para a conferência de fundo parar antes de
+  gastar o que o `createPost` vai precisar.
 - O Buffer baixa o vídeo **na hora de publicar**: a URL (aqui, do Cloudflare R2) precisa ficar no ar até lá.
 
 Ainda não testado com uma conta real (README §10.2: confirmar se o TikTok está liberado no plano grátis e se o Reel
@@ -22,7 +25,9 @@ sai sozinho). Os testes simulam a API.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+import re
+import threading
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -48,7 +53,7 @@ query Channels($input: ChannelsInput!) {
 _CREATE_MUTATION = """
 mutation CreatePost($input: CreatePostInput!) {
   createPost(input: $input) {
-    ... on PostActionSuccess { post { id status dueAt externalLink } }
+    ... on PostActionSuccess { post { id status dueAt externalLink error { message } } }
     ... on MutationError { message }
   }
 }"""
@@ -65,10 +70,73 @@ mutation DeletePost($input: DeletePostInput!) {
 }"""
 
 
+# Erros em que não dá para saber se o Buffer chegou a fazer o pedido (o post pode ter sido criado).
+UNCERTAIN_CODES = ("NETWORK", "SERVER", "UNEXPECTED")
+
+
 class BufferError(RuntimeError):
     def __init__(self, message: str, code: str = "") -> None:
         super().__init__(message)
         self.code = code
+
+    @property
+    def uncertain(self) -> bool:
+        """Verdadeiro quando o pedido pode ter dado certo do lado do Buffer (queda de rede, erro 5xx, erro interno)."""
+        return self.code in UNCERTAIN_CODES
+
+
+# --------------------------------------------------------------------------------------------
+# Saldo de pedidos (cabeçalhos RateLimit)
+# --------------------------------------------------------------------------------------------
+
+LOW_QUOTA = 25  # abaixo disso a conferência de fundo espera (sobra para criar posts e listar perfis)
+_quota_lock = threading.Lock()
+_quota: dict[str, Any] = {"remaining": None, "reset_at": None}
+_ITEM = re.compile(r"(?:^|;)\s*(r|t)\s*=\s*(\d+)")
+
+
+def _parse_ratelimit(values: list[str]) -> list[tuple[int, int]]:
+    """(restante, segundos até zerar) de cada janela do cabeçalho `RateLimit` (`"15m";r=149;t=900, ...`)."""
+    out: list[tuple[int, int]] = []
+    for item in ",".join(values).split(","):
+        fields = dict(_ITEM.findall(item))
+        if "r" in fields:
+            out.append((int(fields["r"]), int(fields.get("t") or 0)))
+    return out
+
+
+def _note_quota(resp: httpx.Response) -> None:
+    windows = _parse_ratelimit(resp.headers.get_list("RateLimit"))
+    now = datetime.now(UTC)
+    if resp.status_code == 429:
+        try:
+            wait = int(resp.headers.get("Retry-After") or 0)
+        except ValueError:
+            wait = 0
+        windows.append((0, wait or 15 * 60))
+    if not windows:
+        return
+    remaining, reset = min(windows)
+    with _quota_lock:
+        _quota["remaining"] = remaining
+        _quota["reset_at"] = now + timedelta(seconds=reset)
+
+
+def quota_low(threshold: int = LOW_QUOTA) -> bool:
+    """Se o último saldo visto está baixo e a janela dele ainda não zerou."""
+    with _quota_lock:
+        remaining, reset_at = _quota["remaining"], _quota["reset_at"]
+        if remaining is None:
+            return False
+        if reset_at is not None and reset_at <= datetime.now(UTC):
+            _quota["remaining"] = _quota["reset_at"] = None
+            return False
+        return remaining <= threshold
+
+
+def reset_quota() -> None:
+    with _quota_lock:
+        _quota["remaining"] = _quota["reset_at"] = None
 
 
 class BufferPublisher(Provider):
@@ -131,13 +199,15 @@ def graphql(query: str, variables: dict[str, Any] | None = None, *, http: httpx.
     finally:
         if own:
             client.close()
+    _note_quota(resp)
     if resp.status_code == 429:
         wait = resp.headers.get("Retry-After")
         raise BufferError(_CODE_HINTS["RATE_LIMIT_EXCEEDED"] + (f" (em {wait} s)" if wait else ""), "RATE_LIMIT_EXCEEDED")
     if resp.status_code == 401:
         raise BufferError(_CODE_HINTS["UNAUTHORIZED"], "UNAUTHORIZED")
     if resp.status_code != 200:
-        raise BufferError(f"erro do Buffer ({resp.status_code}): {resp.text[:300]}", "HTTP")
+        code = "SERVER" if resp.status_code >= 500 else "HTTP"
+        raise BufferError(f"erro do Buffer ({resp.status_code}): {resp.text[:300]}", code)
     try:
         body = resp.json()
     except ValueError as exc:
@@ -244,6 +314,35 @@ def create_post(data: dict[str, Any], http: httpx.Client | None = None) -> dict[
     if not post:
         raise BufferError(f"o Buffer recusou o post: {result.get('message') or 'sem detalhes'}", "MUTATION")
     return post
+
+
+# Limites dos vídeos que o Buffer publica sozinho (central de ajuda do Buffer: TikTok de 3 s a 10 min e até 1 GB;
+# Reel de 5 s a 15 min, até 300 MB, entre 4:5 e 9:16; fora disso o Reel vira só lembrete).
+VIDEO_LIMITS = {
+    "tiktok": {"min_s": 3, "max_s": 10 * 60, "max_mb": 1024},
+    "instagram": {"min_s": 5, "max_s": 15 * 60, "max_mb": 300},
+}
+VERTICAL_ASPECTS = ("9:16", "4:5")
+
+
+def video_warnings(platform: str, *, aspect: str | None, duration_s: float | None, size_bytes: int | None) -> list[str]:
+    """Avisos de um vídeo fora do que o TikTok ou o Reel aceitam (o Buffer só confere na hora de publicar)."""
+    limits = VIDEO_LIMITS.get(platform)
+    if not limits:
+        return []
+    name = "TikTok" if platform == "tiktok" else "Reels do Instagram"
+    out: list[str] = []
+    if aspect and aspect not in VERTICAL_ASPECTS:
+        out.append(f"o vídeo é {aspect}; o {name} espera vídeo vertical (9:16) e pode recusar ou cortar")
+    if duration_s:
+        if duration_s > limits["max_s"]:
+            out.append(f"o vídeo tem {round(duration_s / 60, 1)} min; o {name} aceita até {limits['max_s'] // 60} min "
+                       "pelo Buffer e o post deve falhar na hora de sair")
+        elif duration_s < limits["min_s"]:
+            out.append(f"o vídeo tem menos de {limits['min_s']} s, abaixo do mínimo do {name}")
+    if size_bytes and size_bytes > limits["max_mb"] * 1024 * 1024:
+        out.append(f"o arquivo passa de {limits['max_mb']} MB, acima do limite do {name}")
+    return out
 
 
 def get_post(post_id: str, http: httpx.Client | None = None) -> dict[str, Any]:
