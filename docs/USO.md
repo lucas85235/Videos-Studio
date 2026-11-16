@@ -87,6 +87,18 @@ No cartão do canal:
 - **Desvincular**: apaga só o acesso daquele canal; os dados trazidos ficam. **Remover link** tira também os dados do YouTube do canal.
 - Selo **Acesso expirado**: o Google recusou o acesso (tela de consentimento em "Testing" expira em 7 dias). Clique em **Vincular de novo**.
 
+### TikTok e Instagram pelo Buffer
+
+O Buffer publica no TikTok e no Instagram (Reels) pelo plano grátis. Como ele baixa o vídeo **na hora de publicar**, o Vulto guarda o vídeo numa URL pública do **Cloudflare R2** e apaga depois que o post sai.
+
+1. No **Buffer**, conecte o TikTok e o Instagram (conta Business ou Creator). Em *Settings → API*, crie uma chave e cole em **Configurações → Publicação → Buffer** (ou use a variável `BUFFER_API_KEY`).
+2. Na **Cloudflare**, crie um bucket no R2 e ative o acesso público (domínio próprio ou o endereço `r2.dev`, que tem limite de uso e serve para testes). Crie um token de API do R2 com leitura e escrita de objetos no bucket.
+3. Em **Configurações → Publicação → Cloudflare R2**, cole o ID da conta, o *Access Key ID*, a *Secret Access Key*, o nome do bucket e o endereço público (ex.: `https://pub-xxxx.r2.dev`).
+4. Na aba de publicação do projeto, no cartão **TikTok e Instagram pelo Buffer**, escolha as redes, o perfil (o Vulto lembra o perfil de cada canal) e quando: fila do Buffer, primeiro da fila, agora ou um horário marcado (os horários livres do canal também preenchem esse campo).
+5. Em **Publicações deste projeto**, o post aparece como *Agendado*. Com o app aberto, o Vulto confere no Buffer de 10 em 10 minutos (ou clique em **Conferir no Buffer**): quando o post sai, vira *Postado* com o link e o vídeo é apagado do R2. Se o Buffer falhar ou o post for apagado lá, o vídeo também é apagado. **Cancelar post** apaga o post do Buffer e o vídeo.
+
+A legenda é a mesma do pacote manual (texto, créditos das imagens e até 5 hashtags) e o rótulo de IA segue o estilo (como no YouTube). Renders com voz ou imagens de teste não podem ir ao Buffer, porque ele publica como público.
+
 ### Agenda e horários de postagem
 
 - Em **Canais**, defina os **horários de postagem** de cada canal (dias da semana, hora e fuso; ex.: seg/qua/sex 18:00, America/Sao_Paulo).
