@@ -7,7 +7,7 @@ antigos sem manifesto, recalcula os blocos a partir da timeline salva) e varre:
 - registros com falha, registros cujos arquivos sumiram e pastas sem registro;
 - bundles de versões antigas do renderer e temporários.
 
-Narrações, imagens, alinhamentos, trilhas e thumbnails nunca são apagados aqui: custam cota ou dinheiro para
+Narrações, imagens, clipes de vídeo IA, alinhamentos, trilhas e thumbnails nunca são apagados aqui: custam cota ou dinheiro para
 refazer, e versões antigas do projeto podem precisar deles. Tudo o que foi criado nas últimas 24 h é preservado
 (protege builds em andamento).
 """

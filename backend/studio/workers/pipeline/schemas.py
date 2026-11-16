@@ -100,6 +100,8 @@ STORYBOARD_SCHEMA = _obj(
                     "real_query": NS,  # inglês, 2 a 6 palavras
                     "real_note": NS,  # português: o que mostrar e onde achar
                     "real_source_ref": NI,  # número da fonte com o link da notícia em "Fontes do roteiro"
+                    # Vídeo IA (pago): o movimento em inglês nas poucas batidas que ganham com o clipe; null nas outras.
+                    "video_motion": NS,
                 }
             ),
         },

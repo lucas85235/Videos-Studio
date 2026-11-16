@@ -240,6 +240,12 @@ baixa nada sozinho: ele busca fotos livres e o usuário escolhe, cola um link ou
 - A cena continua com o prompt de IA de reserva (o vídeo funciona sem a mídia real). Com real_kind official de
   personagem, a reserva mostra de costas, em silhueta ou só objetos e lugar, nunca o rosto.
 
+Vídeo IA (video_motion): o app pode animar a imagem de poucas batidas com um clipe de IA (pago, o usuário confirma).
+Marque só as batidas de imagem nova em que o movimento conta a história (o gancho, uma virada, uma ação: fumaça
+subindo, ondas, multidão andando, a câmera avançando por um corredor), no máximo o limite do pedido. video_motion:
+o movimento em inglês, até 25 palavras ("slow push-in as fog rolls over the harbor"), sem estilo nem texto. Nas
+outras batidas (e com limite 0): null.
+
 Regras:
 1. Mostre o sujeito concreto da batida (pessoa, lugar, objeto, ação, na época real do assunto). Metáfora só
    quando a frase não tiver nada concreto, no máximo 1 a cada 5 imagens.
@@ -374,6 +380,7 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
         f"{', '.join(compositions_for_caption(position))}.",
         f'Limite de imagens novas (source "new"): {budget} de {len(beats)} batidas. O resto reaproveita imagem '
         "(reuse) ou é cartão.",
+        f"Limite de vídeo IA (video_motion): {video_limit(style)} batida(s).",
         "",
         "Estilos disponíveis (id: nome):",
         *([f"- {sid}: {name}" for sid, name in (styles or {}).items()] or ["(nenhum)"]),
@@ -543,6 +550,8 @@ class _Pick:
     """Contador do Top 10: batida seguinte do mesmo item cuja imagem ele mostra (resolvida depois do orçamento)."""
     real: RealHint | None = None
     """Sugestão de mídia real da batida (só em cena de imagem)."""
+    video: str | None = None
+    """Sugestão de vídeo IA: o movimento em inglês (só em imagem nova)."""
 
 
 _REAL_KINDS = dict.fromkeys(REAL_KINDS)
@@ -735,6 +744,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             p.focus = pick(data.get("focus"), FOCUS_POINTS)
             new_count += 1
             last_new, last_shot = i, p.shot
+            p.video = _text(data.get("video_motion"), 300) or None if p.kind == "image" else None
         elif p.source == "reuse":
             p.focus = pick(data.get("focus"), FOCUS_POINTS)
         p.motion = pick(data.get("motion"), _MOTIONS)
@@ -744,6 +754,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     _resolve_ahead(picks)
     issues += _trim_headlines(picks, lang, hook)
     issues += _limit_real(picks)
+    _limit_video(picks, video_limit(style))
 
     uses: dict[int, int] = {}
     for i, p in enumerate(picks):
@@ -769,7 +780,8 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             visual = Visual(type="none")
         scenes.append(Scene(segment_id=beat.segment_id, part=beat.part, parts=beat.parts, kind=p.kind,  # type: ignore[arg-type]
                             visual=visual, overlay_text={lang: p.overlay} if p.overlay else {}, number=p.number,
-                            motion=p.motion, span=len(beat.words), card=p.card, focus=p.focus, real=p.real))
+                            motion=p.motion, span=len(beat.words), card=p.card, focus=p.focus, real=p.real,
+                            video_hint=p.video if p.source == "new" else None))
     for p, scene in zip(picks, scenes, strict=True):
         if p.source == "reuse" and p.root is not None:
             scene.visual.reuse_of = scenes[p.root].id
@@ -777,6 +789,21 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     for issue in issues:
         issue.scene_id = id_of.get(issue.scene_key or "")
     return scenes, issues
+
+
+def video_limit(style: StyleSpec) -> int:
+    """Quantas sugestões de vídeo IA o storyboard pode fazer (o mesmo limite de cenas marcadas)."""
+    from studio.workers.pipeline.video_clips import max_video_scenes
+
+    return max_video_scenes(style)
+
+
+def _limit_video(picks: list[_Pick], limit: int) -> None:
+    """Fica com as primeiras `limit` sugestões de vídeo IA (o gancho vem primeiro); as outras saem sem aviso: são só
+    sugestões e o usuário escolhe na aba Cenas."""
+    hinted = [p for p in picks if p.video]
+    for p in hinted[max(0, limit):]:
+        p.video = None
 
 
 def _resolve_ahead(picks: list[_Pick]) -> None:

@@ -101,6 +101,15 @@ class ImageResult:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class VideoResult:
+    path: Path
+    seconds: float
+    usage: Usage
+    model: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
 class Provider:
     info: ProviderInfo
 
@@ -169,4 +178,19 @@ class ImageProvider(Provider):
 
 class AlignProvider(Provider):
     def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
+        raise NotImplementedError
+
+
+class VideoProvider(Provider):
+    """Image-to-video: anima uma imagem (o primeiro quadro) por alguns segundos (README §8.5)."""
+
+    def clip_seconds(self, seconds: float) -> int:
+        """Duração que o modelo aceita mais perto de `seconds` (cada modelo tem a sua lista)."""
+        return max(1, round(seconds))
+
+    def price(self, seconds: float) -> float:
+        """Preço em US$ de um clipe de `seconds` (já arredondado por `clip_seconds`). Sem chamada paga."""
+        return 0.0
+
+    def animate(self, *, image: Path, prompt: str, seconds: int, out_dir: Path) -> VideoResult:
         raise NotImplementedError

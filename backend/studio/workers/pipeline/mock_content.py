@@ -90,7 +90,7 @@ def _mock_scene(key: str, kind: str = "image", source: str = "new", **fields: An
 def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
     """Storyboard v2 por regras: gancho com imagem nova e headline, número vira `stat` (dois ou mais, `compare`)
     sobre imagem reaproveitada, o resto alterna imagem nova e reaproveitada e a chamada final reaproveita o gancho.
-    Mídia real: a primeira imagem nova depois do gancho sugere uma foto do tema e, com fonte de link no roteiro, a
+    Vídeo IA: o gancho sugere um movimento. Mídia real: a primeira imagem nova depois do gancho sugere uma foto do tema e, com fonte de link no roteiro, a
     seguinte sugere o cartão de notícia dessa fonte."""
     beats: list[dict[str, Any]] = ctx.get("scenes", [])
     topic = ctx.get("topic") or "o tema"
@@ -119,7 +119,8 @@ def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
         image = {"prompt": f"Cena: {focus}", "language": "editorial", "shot": _MOCK_SHOTS[shots % len(_MOCK_SHOTS)]}
         if index == 0:
             headline = item.get("value") if item.get("has_number") else " ".join(text.split()[:3]).upper()
-            scenes.append(_mock_scene(key, headline=headline.strip(" ?!.,") or None, motion="punch_zoom", **image))
+            scenes.append(_mock_scene(key, headline=headline.strip(" ?!.,") or None, motion="punch_zoom",
+                                      video_motion="slow push-in, subtle natural movement", **image))
             hook_key = last_new = key
             shots += 1
         elif hint in ("title", "count"):

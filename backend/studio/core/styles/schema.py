@@ -217,6 +217,10 @@ class ArtSpec(StrictModel):
     anchors: list[str] = []
     image_chain: list[str] = ["codex_cli"]
     thumbnail_chain: list[str] = ["codex_cli"]
+    video_chain: list[str] = ["fal_kling_turbo", "fal_kling_3"]
+    """Vídeo IA (image-to-video) das cenas-chave, na ordem de fallback."""
+    video_scenes: int | None = Field(default=None, ge=0, le=20)
+    """Máximo de cenas com vídeo IA por vídeo (é pago). None: 2 no Short e 6 no longo (README §15.2); 0 desliga."""
     sources_mix: dict[str, float] = {"ai_image": 1.0}
     photoreal: bool = False
     """Arte fotorrealista exige rótulo de conteúdo sintético nas plataformas."""

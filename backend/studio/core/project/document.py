@@ -118,6 +118,21 @@ class RealHint(BaseModel):
     """Posição (base 1) em `ProjectDoc.sources` da fonte com link que vira o cartão de notícia."""
 
 
+CLIP_SECONDS_MIN = 3
+CLIP_SECONDS_MAX = 10
+
+
+class ClipSpec(BaseModel):
+    """Vídeo IA (image-to-video) da cena-chave: a imagem da cena é o primeiro quadro e o modelo anima por alguns
+    segundos. Só vale com `Scene.kind == "video"`; tirar a marcação deixa isto guardado de reserva."""
+
+    prompt: str = Field(default="", max_length=600)
+    """Movimento em inglês ("slow push-in, smoke drifting, the lantern flickers"). Vazio: a sugestão do storyboard
+    (`Scene.video_hint`) ou um movimento de câmera suave."""
+    seconds: int = Field(default=5, ge=CLIP_SECONDS_MIN, le=CLIP_SECONDS_MAX)
+    """Duração pedida; o modelo arredonda para a que aceita (o Kling 2.5: 5 ou 10 s)."""
+
+
 class Segment(BaseModel):
     id: str = Field(default_factory=lambda: new_id("seg", 8))
     speaker: str = "narrator"
@@ -258,6 +273,11 @@ class Scene(BaseModel):
     """Id de `styles.visual.FOCUS_POINTS`: para onde a câmera olha (reaproveitamento e `zoom_to`)."""
     real: RealHint | None = None
     """Sugestão de mídia real do storyboard (None: nenhuma)."""
+    clip: ClipSpec | None = None
+    """Parâmetros do vídeo IA (só valem com kind "video"). None: os padrões."""
+    video_hint: str | None = None
+    """Sugestão do storyboard: esta batida ganha com vídeo IA; o texto é o movimento, em inglês. Nada é aplicado
+    sozinho (vídeo IA é pago): o usuário marca a cena."""
 
 
 class Entity(BaseModel):
@@ -446,6 +466,8 @@ class ProjectDoc(BaseModel):
                     extra.append(f"mídia real={scene.visual.media.kind}")
                 elif scene.real is not None:
                     extra.append(f"sugestão de mídia real={scene.real.kind}")
+                if scene.kind == "video":
+                    extra.append("vídeo IA")
                 if scene.motion:
                     extra.append(f"câmera={scene.motion}")
                 if scene.transition_in:

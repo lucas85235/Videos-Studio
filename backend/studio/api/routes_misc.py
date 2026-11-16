@@ -385,7 +385,7 @@ def status() -> dict[str, Any]:
         "video_encoder": video_encoder_args()[1],
         "nvenc": "h264_nvenc" in available_encoders(),
         "providers_available": {kind: [p["id"] for p in provs if p["kind"] == kind and p["available"]]
-                                for kind in ("llm", "tts", "image", "align")},
+                                for kind in ("llm", "tts", "image", "video", "align")},
     }
 
 
