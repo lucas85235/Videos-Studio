@@ -84,6 +84,10 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
     style = get_style(doc.style_id, doc.style_overrides)
     last = row["settings"].get("last_final") or {}
     entry = (last.get("langs") or {}).get(lang)
+    if entry and entry.get("dub_of") and not entry.get("video"):
+        from studio.workers.publish_tasks import dub_track_message
+
+        raise ValueError(dub_track_message(entry["dub_of"]))
     if not entry or not entry.get("video"):
         raise ValueError("renderize o vídeo final deste idioma antes de gerar o pacote")
     preview_only = last.get("preview_only_providers") or []

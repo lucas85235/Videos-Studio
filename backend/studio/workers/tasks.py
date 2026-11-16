@@ -103,6 +103,18 @@ def run_translate(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     screen_only = bool(payload.get("screen_only"))
     doc = service.get_doc(project_id)
     targets = targets or [lang for lang in doc.languages if lang != doc.primary_language]
+    if payload.get("shorten"):
+        # Modo B: só encurta os trechos que passam do tempo (correções manuais e trechos travados ficam).
+        shortened: dict[str, list[str]] = {}
+        for index, lang in enumerate(targets):
+            ctx.progress(index / max(1, len(targets)), f"Encurtando a tradução em {authoring.lang_name(lang)}")
+            doc, ids = authoring.shorten_translation(doc, lang, project_id=project_id, job_id=ctx.job_id)
+            if ids:
+                shortened[lang] = ids
+        total = sum(len(ids) for ids in shortened.values())
+        version = service.commit(project_id, doc, f"Tradução encurtada para caber no tempo ({total} trechos)",
+                                 author="ai") if shortened else None
+        return {"version": version, "langs": sorted(shortened), "shortened": shortened}
     done = []
     for index, lang in enumerate(targets):
         ctx.progress(index / max(1, len(targets)), f"Traduzindo para {authoring.lang_name(lang)}")

@@ -45,8 +45,21 @@ def test_fit_keeps_primary_time_and_speeds_up_within_limit():
     a, b = fits
     assert a.slot == 5.0 and a.pause == 0 and a.longest is None
     assert a.tempos["en-US"] == pytest.approx(1.06, abs=0.001)
-    assert b.slot == 4.0 and b.tempos["en-US"] == 1.0  # mais curto: não desacelera
+    assert b.slot == 4.0 and b.tempos["en-US"] == pytest.approx(0.975, abs=0.001)  # curta: desacelera para ocupar
     assert dubbing.fit_warnings(fits, "pt-BR") == []
+
+
+def test_fit_ignores_tiny_changes_and_limits_slowdown():
+    fits = dubbing.fit_segments(["a", "b", "c"], {"pt-BR": {"a": 4.0, "b": 4.0, "c": 8.0},
+                                                  "en-US": {"a": 4.012, "b": 3.99, "c": 4.0}}, "pt-BR")
+    a, b, c = fits
+    # +0.3% e -0.25%: o FFmpeg nem aplicaria (`to_wav` ignora abaixo de 0.5%); conta como 1.0.
+    assert a.tempos["en-US"] == 1.0 and b.tempos["en-US"] == 1.0
+    assert c.tempos["en-US"] == pytest.approx(dubbing.MIN_SLOWDOWN)  # metade do tempo: desacelera só até o limite
+    for fit in fits:  # nunca passa da vaga
+        assert fit.durations["en-US"] / fit.tempos["en-US"] <= fit.slot + 0.02
+    summary = dubbing.fit_summary(fits, "pt-BR")["langs"]["en-US"]
+    assert summary["min_tempo"] == pytest.approx(dubbing.MIN_SLOWDOWN) and summary["stretched"] == 1
 
 
 def test_longest_language_defines_the_segment_and_warns():
@@ -54,7 +67,7 @@ def test_longest_language_defines_the_segment_and_warns():
     fit = fits[0]
     assert fit.slot == pytest.approx(6.0) and fit.longest == "en-US"
     assert fit.tempos["en-US"] == pytest.approx(1.10, abs=0.001)  # no teto, cabe exato na vaga
-    assert fit.tempos["es-ES"] == 1.0
+    assert fit.tempos["es-ES"] == pytest.approx(dubbing.MIN_SLOWDOWN)  # sobra tempo: desacelera até o limite
     assert fit.pause == pytest.approx(1.0)
     warnings = dubbing.fit_warnings(fits, "pt-BR", {"en-US": "inglês"}.get)
     assert len(warnings) == 1 and "inglês" in warnings[0] and "1.0 s de pausa" in warnings[0]
@@ -76,6 +89,10 @@ def test_stretch_uses_atempo_and_respects_the_limit(tmp_path):
     assert rate == SAMPLE_RATE and float(np.abs(audio).max()) > 0.1  # som, não silêncio
     with pytest.raises(ValueError):
         dubbing.stretch(src, tmp_path / "demais.wav", 1.3)
+    slow = dubbing.stretch(src, tmp_path / "lenta.wav", 0.95)
+    assert wav_duration(slow) == pytest.approx(2.0 / 0.95, abs=0.02)
+    with pytest.raises(ValueError):
+        dubbing.stretch(src, tmp_path / "lenta-demais.wav", 0.8)
 
 
 def test_scale_words_and_srt():
@@ -122,6 +139,26 @@ def test_budgets_and_over_budget(isolated_settings):
     assert dubbing.over_budget(doc, style, "en-US") == [seg.id]
     seg.text["en-US"] = " ".join(["word"] * budgets[0].max_words)
     assert dubbing.over_budget(doc, style, "en-US") == []
+    seg.locked = True
+    seg.text["en-US"] = " ".join(["word"] * (budgets[0].max_words * 2))
+    assert dubbing.over_budget(doc, style, "en-US", skip_locked=True) == []
+
+
+@pytest.mark.parametrize("speed", [0.8, 1.0, 1.2])
+def test_budget_word_limit_matches_the_check_at_any_voice_speed(isolated_settings, speed):
+    pid = _project(["pt-BR", "en-US"])
+    _run("script", pid)
+    doc = service.get_doc(pid)
+    style = get_style(doc.style_id, {**doc.style_overrides, "voice": {"speed": speed}})
+    assert style.voice.speed == speed
+    budget = dubbing.segment_budgets(doc, style, "en-US")[0]
+    wpm = dubbing._wpm(style, "en-US")
+    assert budget.max_words == max(1, int(budget.seconds * speed * wpm / 60))
+    # O limite do prompt é o mesmo que a checagem usa: exatamente o limite cabe no tempo, sem a folga da aceleração.
+    seg = doc.segments[0]
+    seg.text["en-US"] = " ".join(["word"] * budget.max_words)
+    assert dubbing.speech_seconds(seg.text["en-US"], "en-US", style) <= budget.seconds + 1e-6
+    assert dubbing.over_budget(doc, style, "en-US", tolerance=1.0) == []
 
 
 def test_translation_prompt_has_budget_and_long_text_is_shortened(isolated_settings, monkeypatch):
@@ -149,16 +186,70 @@ def test_translation_prompt_has_budget_and_long_text_is_shortened(isolated_setti
     assert len(calls) == 2 and [s["id"] for s in calls[1]["context"]["segments"]] == [long_id]
     assert new_doc.segment(long_id).text["en-US"] == "Short one."
 
-    # Modo A: o orçamento vai no pedido, mas não há segunda rodada.
+    # Modo A: cada idioma tem vídeo próprio. Nada de orçamento no pedido, nem segunda rodada.
     calls.clear()
     doc.style_overrides = {}
     authoring.translate(doc, "en-US")
     assert len(calls) == 1
+    assert "palavras (~" not in calls[0]["prompt"] and "não passe dele" not in calls[0]["prompt"]
+    assert not any(s.get("budget") for s in calls[0]["context"]["segments"])
+
+
+def test_shorten_job_rewrites_only_long_unlocked_segments(isolated_settings, monkeypatch):
+    # Traduzido no Modo A e passado ao Modo B depois: a rodada de encurtar roda sozinha, sem traduzir de novo.
+    pid = _project(["pt-BR", "en-US"], delivery="separate_videos")
+    _run("script", pid)
+    _run("translate", pid)
+    doc = service.get_doc(pid)
+    long_id, locked_id, ok_id = doc.segments[0].id, doc.segments[1].id, doc.segments[2].id
+    doc.segment(long_id).text["en-US"] = "very " * 200 + "long."
+    doc.segment(locked_id).text["en-US"] = "locked " * 200 + "text."
+    doc.segment(locked_id).locked = True
+    doc.segment(ok_id).text["en-US"] = "Fixed by hand."
+    service.commit(pid, doc, "correções manuais")
+
+    calls: list[dict] = []
+
+    class Result:
+        def __init__(self, data):
+            self.data = data
+
+    def fake_llm(task, system, prompt, schema, context, project_id, job_id):
+        calls.append(context)
+        return Result({"segments": [{"id": s["id"], "text": "Short one."} for s in context["segments"]]}), "fake"
+
+    monkeypatch.setattr(authoring, "_llm", fake_llm)
+    # Fora do Modo B não faz nada.
+    assert _run("translate", pid, {"shorten": True})["shortened"] == {} and not calls
+
+    with TestClient(create_app()) as client:
+        resp = client.put(f"/api/projects/{pid}/delivery", json={"delivery": dubbing.MULTI_TRACK})
+        assert resp.status_code == 200 and resp.json()["over_budget"] == {"en-US": [long_id]}
+        assert client.get(f"/api/projects/{pid}/delivery/over-budget").json()["over_budget"] == {"en-US": [long_id]}
+        assert client.get("/api/projects/nao-existe/delivery/over-budget").status_code == 404
+    result = _run("translate", pid, {"shorten": True})
+    assert result["shortened"] == {"en-US": [long_id]} and result["version"]
+    assert [s["id"] for s in calls[0]["segments"]] == [long_id]
+    after = service.get_doc(pid)
+    assert after.segment(long_id).text["en-US"] == "Short one."
+    assert after.segment(locked_id).text["en-US"].startswith("locked")  # travado: fica
+    assert after.segment(ok_id).text["en-US"] == "Fixed by hand."  # correção manual: fica
 
 
 # --------------------------------------------------------------------------------------------
 # Build de ponta a ponta (voz de teste sintética)
 # --------------------------------------------------------------------------------------------
+
+
+def test_plan_in_multi_track_counts_the_primary_language(isolated_settings):
+    from studio.workers.pipeline.build import plan
+
+    pid = _project(["pt-BR", "en-US"])
+    _run("script", pid)
+    _run("storyboard", pid)
+    _run("translate", pid)
+    langs = {m["lang"] for m in plan(pid, langs=["en-US"], mode="preview")["tts_missing"]}
+    assert langs == {"pt-BR", "en-US"}  # o build grava o principal também (referência do tempo)
 
 
 def _set_delivery(pid: str, delivery: str) -> None:
@@ -225,6 +316,15 @@ def test_final_build_writes_studio_package_and_publish_sends_captions(isolated_s
     assert en["mix"].endswith(".wav") and "video" not in en and en["dub_of"] == "pt-BR"
     timeline_s = final["langs"]["pt-BR"]["duration"]
     assert abs(duration_of(data / en["mix"]) - timeline_s) < 0.1
+    # As legendas do render final ficam numa cópia própria: uma prévia depois não mexe nelas.
+    assert en["srt"].endswith("legendas-final.srt") and en["timeline"].endswith("timeline-final.json")
+    final_srt = (data / en["srt"]).read_text(encoding="utf-8")
+    doc = service.get_doc(pid)
+    doc.segments[0].text["en-US"] = "A completely different line."
+    service.commit(pid, doc, "tradução editada")
+    _run("preview", pid)
+    assert (data / en["srt"]).read_text(encoding="utf-8") == final_srt
+    assert (data / en["srt"]).with_name("legendas.srt").read_text(encoding="utf-8") != final_srt
 
     package = final["dub_package"]
     folder = data / package["folder"]
@@ -255,6 +355,11 @@ def test_final_build_writes_studio_package_and_publish_sends_captions(isolated_s
         details = s.query(Publication).filter_by(project_id=pid, platform="youtube").one().details
     assert details["caption_langs"] == ["en-US"]
 
+    # O idioma que é só faixa não tem vídeo para enviar: mensagem clara, e não "renderize de novo".
+    job = get_runner().submit("publish_youtube", {"lang": "en-US", "privacy": "private"}, pid, run_inline=True)
+    failed = get_job(job["id"])
+    assert failed["status"] == "failed" and "faixa de áudio" in failed["error"]
+
     # Pacote refeito depois do envio: link direto do vídeo no Studio.
     again = build_dub_package(pid)
     assert again["video_id"] == "vid123" and "vid123" in (data / again["checklist"]).read_text(encoding="utf-8")
@@ -267,6 +372,50 @@ def test_dub_package_needs_a_multi_track_render(isolated_settings):
     pid = _project(["pt-BR", "en-US"], delivery="separate_videos")
     with pytest.raises(ValueError):
         build_dub_package(pid)
+    with TestClient(create_app()) as client:
+        assert client.post("/api/projects/nao-existe/publish/dub-package").status_code == 404
+        assert client.post("/api/projects/nao-existe/publish/dub-package/open").status_code == 404
+
+
+def test_package_overwrites_without_wiping_the_folder(isolated_settings, tmp_path):
+    pid = _project(["pt-BR", "en-US"])
+    doc = service.get_doc(pid)
+    data = isolated_settings.data_dir
+    _tone(data / "mix-en.wav", 0.5)
+    folder = tmp_path / "faixas"
+    (folder / "en-US").mkdir(parents=True)
+    (folder / "en-US" / "minhas-notas.txt").write_text("não apague", encoding="utf-8")
+    (folder / "fr-FR").mkdir()  # idioma que saiu do projeto
+    entries = {"en-US": {"mix": "mix-en.wav", "duration": 0.5}}
+    dubbing.write_package(folder, doc=doc, entries=entries, data_dir=data)
+    assert (folder / "en-US" / "audio-en-US.wav").exists() and (folder / "CHECKLIST.md").exists()
+    assert (folder / "en-US" / "minhas-notas.txt").exists() and not (folder / "fr-FR").exists()
+    dubbing.write_package(folder, doc=doc, entries=entries, data_dir=data)  # de novo, por cima
+    assert (folder / "en-US" / "audio-en-US.wav").exists()
+
+
+def test_final_render_survives_a_locked_package(isolated_settings, monkeypatch):
+    pid = _project(["pt-BR", "en-US"])
+    _run("script", pid)
+    _run("storyboard", pid)
+    _run("translate", pid)
+
+    def fake_render(self, lang, timeline, mix_rel, images, entry):
+        out = self.outputs_dir(lang) / "video.mp4"
+        out.write_bytes(b"mp4")
+        entry["video"] = self.store.rel(out)
+
+    def busy(*args, **kwargs):
+        raise PermissionError("arquivo aberto em outro programa")
+
+    monkeypatch.setattr(Builder, "_render_final", fake_render)
+    monkeypatch.setattr(dubbing, "write_package", busy)
+    final = _run("render", pid)
+    assert "dub_package" not in final and any("feche os arquivos" in w for w in final["warnings"])
+    assert service.get_project_row(pid)["settings"]["last_final"]["langs"]["pt-BR"]["video"]  # render salvo
+    with TestClient(create_app()) as client:
+        resp = client.post(f"/api/projects/{pid}/publish/dub-package")
+        assert resp.status_code == 409 and "feche os arquivos" in resp.json()["detail"]
 
 
 def test_separate_videos_is_unchanged(isolated_settings):

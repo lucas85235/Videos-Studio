@@ -286,6 +286,8 @@ export type LangOutput = {
   dub_of?: string;
   /** Modo B: maior aceleração aplicada à narração deste idioma (1 = nenhuma). */
   max_tempo?: number;
+  /** Modo B: maior desaceleração (abaixo de 1) aplicada à narração curta deste idioma (1 = nenhuma). */
+  min_tempo?: number;
 };
 
 /** Como os idiomas saem: um vídeo por idioma (Modo A) ou faixas de áudio no mesmo vídeo (Modo B, só YouTube). */
@@ -295,8 +297,12 @@ export type LanguageDelivery = 'separate_videos' | 'multi_audio_track';
 export type DubSummary = {
   primary: string;
   max_speedup: number;
+  min_slowdown?: number;
   added_pause_s: number;
-  langs: Record<string, { max_tempo: number; stretched: number; longest_in: number; segments: number }>;
+  langs: Record<
+    string,
+    { max_tempo: number; min_tempo?: number; stretched: number; longest_in: number; segments: number }
+  >;
 };
 
 export type DubPackage = {

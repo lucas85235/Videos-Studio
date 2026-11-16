@@ -72,6 +72,14 @@ def youtube_localizations(doc, lang: str) -> dict[str, dict[str, str]]:
     return out
 
 
+def dub_track_message(primary: str) -> str:
+    """Idioma que, no Modo B, é só faixa de áudio do vídeo principal (não tem vídeo próprio para enviar)."""
+    from studio.workers.pipeline.authoring import lang_name
+
+    return (f"este idioma é uma faixa de áudio do vídeo em {lang_name(primary)}: publique o idioma principal e envie "
+            "a faixa pelo pacote do Studio (aba Saída)")
+
+
 @job("publish_youtube")
 def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     """Envia o vídeo final de um idioma ao YouTube (privado, não listado, público ou agendado)."""
@@ -84,6 +92,8 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
     privacy = payload.get("privacy", "private")
     last = row["settings"].get("last_final") or {}
     entry = (last.get("langs") or {}).get(lang)
+    if entry and entry.get("dub_of") and not entry.get("video"):
+        raise ValueError(dub_track_message(entry["dub_of"]))
     if not entry or not entry.get("video"):
         raise ValueError("renderize o vídeo final deste idioma antes de publicar")
     preview_only = last.get("preview_only_providers") or []

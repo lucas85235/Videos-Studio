@@ -1,5 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AudioLines, Download, FileText, FolderOpen, Languages, PackageOpen } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AudioLines, Download, FileText, FolderOpen, Languages, PackageOpen, Scissors } from "lucide-react";
 import React from "react";
 import {
   api,
@@ -18,6 +18,7 @@ import {
   useConfirm,
   useToast,
 } from "../../../ui";
+import { useStartJob } from "../../ProjectPage";
 import { findActiveJob, Notice } from "./shared";
 
 const MULTI: LanguageDelivery = "multi_audio_track";
@@ -35,9 +36,16 @@ const DELIVERY_OPTIONS: { id: LanguageDelivery; label: string; title: string }[]
   },
 ];
 
-/** Aceleração em texto ("+6%"); 1 vira "sem ajuste". */
-const tempoText = (tempo: number) =>
-  tempo > 1.0005 ? `acelerada até +${Math.round((tempo - 1) * 100)}%` : "sem ajuste de velocidade";
+/** Ajuste de velocidade em texto ("acelerada até +6%", "desacelerada até -4%"); 1 vira "sem ajuste". */
+const tempoText = (max: number, min: number) => {
+  const parts: string[] = [];
+  if (max >= 1.005) parts.push(`acelerada até +${Math.round((max - 1) * 100)}%`);
+  if (min <= 0.995) parts.push(`desacelerada até -${Math.round((1 - min) * 100)}%`);
+  return parts.length ? parts.join(", ") : "sem ajuste de velocidade";
+};
+
+/** Trechos da tradução que passam do tempo do original, por idioma (só no Modo B). */
+type OverBudget = { over_budget: Record<string, string[]> };
 
 /**
  * Entrega dos idiomas (README §7.3). No Modo B o render faz um vídeo só, mixa uma faixa por idioma com a mesma
@@ -52,6 +60,15 @@ export const MultiTrackPanel: React.FC<{ detail: ProjectDetail; busy: boolean }>
   const final = detail.outputs.final;
   const finalIsMulti = final?.delivery === MULTI;
   const renderJob = findActiveJob(detail, ["render", "autopilot"]);
+  const translateJob = findActiveJob(detail, ["translate", "autopilot"]);
+  const startJob = useStartJob(doc.id);
+  const isMulti = delivery === MULTI && doc.languages.length > 1;
+  // Quem passa ao Modo B depois da tradução: os trechos longos ainda não passaram pela rodada de encurtar.
+  const over = useQuery({
+    queryKey: ["over-budget", doc.id, detail.project.current_version, delivery],
+    queryFn: () => api.get<OverBudget>(`/api/projects/${doc.id}/delivery/over-budget`),
+    enabled: isMulti,
+  });
 
   const save = useMutation({
     mutationFn: (value: LanguageDelivery) =>
@@ -84,6 +101,22 @@ export const MultiTrackPanel: React.FC<{ detail: ProjectDetail; busy: boolean }>
     if (ok) save.mutate(value);
   };
 
+  const overLangs = Object.entries(over.data?.over_budget ?? {}).filter(([, ids]) => ids.length > 0);
+  const overTotal = overLangs.reduce((n, [, ids]) => n + ids.length, 0);
+  const shorten = () => startJob.mutate({ kind: "translate", payload: { shorten: true, langs: overLangs.map(([l]) => l) } });
+  const shortenButton = (
+    <Button
+      size="sm"
+      icon={Scissors}
+      busy={startJob.isPending || Boolean(translateJob)}
+      disabled={busy || overTotal === 0}
+      onClick={shorten}
+      title="Reescreve mais curto só os trechos que passam do tempo; o resto da tradução e os trechos travados ficam"
+    >
+      Encurtar traduções longas
+    </Button>
+  );
+
   const pkg = final?.dub_package;
   const summary = final?.dub;
   const others = doc.languages.filter((l) => l !== doc.primary_language);
@@ -109,8 +142,9 @@ export const MultiTrackPanel: React.FC<{ detail: ProjectDetail; busy: boolean }>
             O canal precisa de acesso aos <span className="text-fg">recursos avançados</span> do YouTube.
           </li>
           <li>
-            A tradução recebe o tempo de cada trecho; a narração que passa dele é acelerada até +10% (sem mudar o
-            tom). Passou disso, o trecho ganha uma pausa no vídeo e o app avisa.
+            A tradução recebe o tempo de cada trecho; a narração que passa dele é acelerada até +10% e a que fica
+            curta é desacelerada até -8% (sem mudar o tom). Passou disso, o trecho ganha uma pausa no vídeo e o app
+            avisa.
           </li>
           <li>
             Legendas não são queimadas: vão como legenda de cada idioma. Textos na tela ficam em{" "}
@@ -119,6 +153,19 @@ export const MultiTrackPanel: React.FC<{ detail: ProjectDetail; busy: boolean }>
           <li>Publicando pelo app, títulos, descrições e legendas de todos os idiomas vão juntos com o vídeo.</li>
         </ul>
       ) : null}
+
+      {isMulti && overTotal > 0 ? (
+        <Notice
+          tone="warn"
+          title={`${overTotal} ${overTotal === 1 ? "trecho traduzido passa" : "trechos traduzidos passam"} do tempo`}
+          actions={shortenButton}
+        >
+          {overLangs.map(([l, ids]) => `${langLabel(l)}: ${ids.length}`).join(" · ")}. Nas faixas no mesmo vídeo, a
+          narração longa é acelerada e, se não couber, vira pausa no vídeo. O app reescreve mais curto só esses
+          trechos, sem traduzir de novo.
+        </Notice>
+      ) : null}
+      <ErrorBox error={startJob.error} title="Não foi possível encurtar a tradução" onClose={() => startJob.reset()} />
 
       {delivery === MULTI && final && !finalIsMulti && !renderJob ? (
         <Notice tone="info" title="Renderize de novo para gerar as faixas">
@@ -134,7 +181,11 @@ export const MultiTrackPanel: React.FC<{ detail: ProjectDetail; busy: boolean }>
       {finalIsMulti ? (
         <div className="flex flex-col gap-3">
           {summary && summary.added_pause_s > 0.25 ? (
-            <Notice tone="warn" title={`O vídeo ganhou ${summary.added_pause_s.toFixed(1)} s de pausas`}>
+            <Notice
+              tone="warn"
+              title={`O vídeo ganhou ${summary.added_pause_s.toFixed(1)} s de pausas`}
+              actions={overTotal > 0 ? shortenButton : undefined}
+            >
               Alguma tradução não coube no tempo nem acelerada. Os trechos estão nos avisos da renderização; encurte
               a tradução e renderize de novo.
             </Notice>
@@ -153,7 +204,7 @@ export const MultiTrackPanel: React.FC<{ detail: ProjectDetail; busy: boolean }>
                   {entry ? (
                     <>
                       <Badge tone={info && info.longest_in > 0 ? "warn" : "neutral"}>
-                        {tempoText(entry.max_tempo ?? 1)}
+                        {tempoText(entry.max_tempo ?? 1, entry.min_tempo ?? 1)}
                       </Badge>
                       {info && info.stretched > 0 ? (
                         <span className="text-[13px] text-subtle">

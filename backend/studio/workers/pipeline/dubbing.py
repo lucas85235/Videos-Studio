@@ -7,7 +7,8 @@ praticamente a mesma duração do vídeo. Para isso:
 2. cada segmento ganha um **tempo de vaga**: a duração da narração principal, esticada só quando a de outro idioma
    não cabe nem acelerada até `MAX_SPEEDUP` (o idioma mais longo define o tempo do segmento);
 3. a narração que passa da vaga é acelerada com o filtro `atempo` do FFmpeg (muda a velocidade sem mudar o tom),
-   no máximo `MAX_SPEEDUP`; fora disso o app avisa (o vídeo ganha uma pausa naquele trecho);
+   no máximo `MAX_SPEEDUP`; fora disso o app avisa (o vídeo ganha uma pausa naquele trecho). A que fica curta é
+   desacelerada até `MIN_SLOWDOWN` para não sobrar silêncio no fim do trecho;
 4. cada idioma é mixado sobre a MESMA timeline (mesma trilha, mesmos efeitos, mesmos inícios de segmento);
 5. o pacote para o YouTube Studio junta, por idioma, o WAV mixado, a legenda SRT, o título e a descrição, com um
    checklist. A API do YouTube não aceita faixas de áudio extras: elas vão à mão em Studio → Idiomas → Dublagem.
@@ -32,6 +33,10 @@ MULTI_TRACK = "multi_audio_track"
 
 MAX_SPEEDUP = 1.10
 """Aceleração máxima da narração traduzida (+10%, README §7.3). Acima disso a voz soa apressada."""
+MIN_SLOWDOWN = 0.92
+"""Desaceleração máxima da narração traduzida curta (-8%, README §7.3). Abaixo disso a voz soa arrastada."""
+TEMPO_STEP = 0.005
+"""Ajuste menor que isso não é aplicado (`to_wav` ignora o `atempo` abaixo dele): conta como 1.0."""
 PAUSE_TOLERANCE_S = 0.25
 """Folga (s) que o segmento pode crescer sem aviso (arredondamento, respiro)."""
 SHORT_RATIO = 0.7
@@ -98,10 +103,13 @@ def segment_budgets(doc: ProjectDoc, style: StyleSpec, lang: str) -> list[Budget
     out = []
     for seg in doc.segments:
         seconds = speech_seconds(seg.text_for(source), source, style)
+        # `seconds` já está na velocidade da voz; o limite de texto volta à velocidade 1.0 (a mesma conta de
+        # `speech_seconds`, que `over_budget` usa para conferir).
+        spoken = seconds * (style.voice.speed or 1.0)
         if base in _CHARS_PER_SECOND:
-            out.append(Budget(seg.id, seconds, None, max(1, int(seconds * _CHARS_PER_SECOND[base]))))
+            out.append(Budget(seg.id, seconds, None, max(1, int(spoken * _CHARS_PER_SECOND[base]))))
         else:
-            out.append(Budget(seg.id, seconds, max(1, int(seconds * _wpm(style, lang) / 60))))
+            out.append(Budget(seg.id, seconds, max(1, int(spoken * _wpm(style, lang) / 60))))
     return out
 
 
@@ -110,17 +118,34 @@ def budget_line(budget: Budget) -> str:
     return f"{limit} (~{budget.seconds:.1f} s)"
 
 
-def over_budget(doc: ProjectDoc, style: StyleSpec, lang: str, tolerance: float = BUDGET_TOLERANCE) -> list[str]:
-    """Segmentos cuja tradução passa do orçamento mais a folga que a aceleração cobre."""
+def over_budget(doc: ProjectDoc, style: StyleSpec, lang: str, tolerance: float = BUDGET_TOLERANCE,
+                *, skip_locked: bool = False) -> list[str]:
+    """Segmentos cuja tradução passa do orçamento mais a folga que a aceleração cobre (com `skip_locked`, deixa de
+    fora os trechos travados, que o app não reescreve)."""
     budgets = {b.segment_id: b for b in segment_budgets(doc, style, lang)}
     out = []
     for seg in doc.segments:
+        if skip_locked and seg.locked:
+            continue
         text = seg.text_for(lang)
         budget = budgets.get(seg.id)
         if not text.strip() or budget is None or budget.seconds <= 0:
             continue
         if speech_seconds(text, lang, style) > budget.seconds * tolerance + 0.3:
             out.append(seg.id)
+    return out
+
+
+def over_budget_report(doc: ProjectDoc, style: StyleSpec) -> dict[str, list[str]]:
+    """Por idioma traduzido: os trechos (não travados) que passam do tempo. Serve para oferecer a rodada de
+    encurtar quando o projeto passa para o Modo B depois da tradução."""
+    out: dict[str, list[str]] = {}
+    for lang in doc.languages:
+        if lang == doc.primary_language:
+            continue
+        ids = over_budget(doc, style, lang, skip_locked=True)
+        if ids:
+            out[lang] = ids
     return out
 
 
@@ -136,7 +161,7 @@ class SegmentFit:
     """Tempo do segmento no vídeo (s): a narração principal ou o idioma mais longo acelerado ao máximo."""
     durations: dict[str, float]
     tempos: dict[str, float] = field(default_factory=dict)
-    """Aceleração (`atempo`) por idioma; 1.0 = sem mudança."""
+    """Velocidade (`atempo`) por idioma: acima de 1.0 acelera, abaixo desacelera; 1.0 = sem mudança."""
     pause: float = 0.0
     """Quanto o segmento cresceu além da narração principal (s)."""
     longest: str | None = None
@@ -147,13 +172,18 @@ def _ceil3(value: float) -> float:
     return math.ceil(value * 1000 - 1e-6) / 1000
 
 
+def _floor3(value: float) -> float:
+    return math.floor(value * 1000 + 1e-6) / 1000
+
+
 def fit_segments(segment_ids: list[str], durations: dict[str, dict[str, float]], primary: str,
-                 max_speedup: float = MAX_SPEEDUP) -> list[SegmentFit]:
-    """Tempo de vaga de cada segmento e a aceleração de cada idioma.
+                 max_speedup: float = MAX_SPEEDUP, min_slowdown: float = MIN_SLOWDOWN) -> list[SegmentFit]:
+    """Tempo de vaga de cada segmento e a velocidade de cada idioma.
 
     `durations[idioma][segmento]` é a duração da narração (s). A vaga é a narração principal; um idioma que não cabe
-    nela nem acelerado até `max_speedup` estica a vaga (o idioma mais longo define o tempo). A narração principal
-    nunca é acelerada: ela é a referência da imagem.
+    nela nem acelerado até `max_speedup` estica a vaga (o idioma mais longo define o tempo). O que fica curto é
+    desacelerado até `min_slowdown` para ocupar a vaga. A narração principal nunca muda: ela é a referência da
+    imagem. Ajuste menor que `TEMPO_STEP` vira 1.0 (o FFmpeg nem aplica).
     """
     fits = []
     for seg_id in segment_ids:
@@ -171,8 +201,9 @@ def fit_segments(segment_ids: list[str], durations: dict[str, dict[str, float]],
             if lang == primary:
                 continue
             ratio = table[seg_id] / slot if slot > 0 else 1.0
-            tempo = _ceil3(ratio) if ratio > 1.0 + 1e-6 else 1.0
-            tempos[lang] = min(tempo, _ceil3(max_speedup))
+            # Arredonda para cima nos dois sentidos: a faixa nunca passa da vaga.
+            tempo = min(_ceil3(ratio), _ceil3(max_speedup)) if ratio > 1.0 else max(_ceil3(ratio), _floor3(min_slowdown))
+            tempos[lang] = 1.0 if abs(tempo - 1.0) < TEMPO_STEP else tempo
         fits.append(SegmentFit(seg_id, slot, {lang: table[seg_id] for lang, table in durations.items()}, tempos,
                                round(max(0.0, slot - base), 3), longest))
     return fits
@@ -191,6 +222,7 @@ def fit_warnings(fits: list[SegmentFit], primary: str, label=lambda code: code) 
         for lang, dur in fit.durations.items():
             if lang == primary:
                 continue
+            dur = dur / fit.tempos.get(lang, 1.0)  # já com a velocidade ajustada
             gap = fit.slot - dur
             if dur < fit.slot * SHORT_RATIO and gap > SHORT_MIN_GAP_S:
                 out.append(
@@ -201,15 +233,17 @@ def fit_warnings(fits: list[SegmentFit], primary: str, label=lambda code: code) 
 
 
 def fit_summary(fits: list[SegmentFit], primary: str) -> dict[str, Any]:
-    """Resumo por idioma para a interface: maior aceleração, trechos acelerados e pausas criadas."""
+    """Resumo por idioma para a interface: maior aceleração e desaceleração, trechos ajustados e pausas criadas."""
     langs = sorted({lang for f in fits for lang in f.tempos})
-    summary: dict[str, Any] = {"primary": primary, "max_speedup": MAX_SPEEDUP, "added_pause_s": 0.0, "langs": {}}
+    summary: dict[str, Any] = {"primary": primary, "max_speedup": MAX_SPEEDUP, "min_slowdown": MIN_SLOWDOWN,
+                               "added_pause_s": 0.0, "langs": {}}
     summary["added_pause_s"] = round(sum(f.pause for f in fits), 2)
     for lang in langs:
         tempos = [f.tempos[lang] for f in fits]
         summary["langs"][lang] = {
             "max_tempo": max(tempos) if tempos else 1.0,
-            "stretched": sum(1 for t in tempos if t > 1.0),
+            "min_tempo": min(tempos) if tempos else 1.0,
+            "stretched": sum(1 for t in tempos if t != 1.0),
             "longest_in": sum(1 for f in fits if f.longest == lang),
             "segments": len(fits),
         }
@@ -217,15 +251,15 @@ def fit_summary(fits: list[SegmentFit], primary: str) -> dict[str, Any]:
 
 
 def stretch(src: Path, dst: Path, tempo: float) -> Path:
-    """Acelera a narração com `atempo` (sem mudar o tom). O FFmpeg aceita de 0.5 a 100 num filtro só; aqui fica em
-    1.0–`MAX_SPEEDUP`."""
-    if not 1.0 <= tempo <= MAX_SPEEDUP + 0.01:
-        raise ValueError(f"aceleração fora do limite: {tempo:.3f} (máximo {MAX_SPEEDUP})")
+    """Muda a velocidade da narração com `atempo` (sem mudar o tom). O FFmpeg aceita de 0.5 a 100 num filtro só;
+    aqui fica em `MIN_SLOWDOWN`–`MAX_SPEEDUP`."""
+    if not MIN_SLOWDOWN - 0.01 <= tempo <= MAX_SPEEDUP + 0.01:
+        raise ValueError(f"velocidade fora do limite: {tempo:.3f} (de {MIN_SLOWDOWN} a {MAX_SPEEDUP})")
     return to_wav(src, dst, tempo=tempo)
 
 
 def scale_words(words: list[Word], tempo: float) -> list[Word]:
-    """Tempos das palavras depois de acelerar o áudio por `tempo`."""
+    """Tempos das palavras depois de mudar a velocidade do áudio por `tempo`."""
     if tempo == 1.0:
         return list(words)
     return [Word(w.text, w.start / tempo, w.end / tempo) for w in words]
@@ -297,6 +331,10 @@ def _safe_name(lang: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "", lang) or "idioma"
 
 
+PACKAGE_BUSY = ("não deu para gravar o pacote de faixas: feche os arquivos da pasta faixas-youtube (player, editor) e "
+                "gere o pacote de novo")
+
+
 def write_package(
     folder: Path,
     *,
@@ -310,16 +348,27 @@ def write_package(
 ) -> dict[str, Any]:
     """Monta a pasta do pacote: uma subpasta por idioma (faixa WAV, legendas SRT, título, descrição e tags) e o
     `CHECKLIST.md` com os passos no YouTube Studio. `entries[idioma]` é a saída do build (caminhos relativos a
-    `data_dir`); o idioma principal entra com as legendas e o texto (a faixa dele já está no vídeo)."""
+    `data_dir`); o idioma principal entra com as legendas e o texto (a faixa dele já está no vídeo). Arquivo aberto
+    em outro programa (Windows) faz o `OSError` subir: quem chama troca por `PACKAGE_BUSY`."""
     primary = doc.primary_language
-    if folder.exists():
-        shutil.rmtree(folder)
+    # Sem apagar a pasta: no Windows, um arquivo aberto (a faixa tocando, o checklist no editor) faria o rmtree
+    # falhar. Os arquivos são regravados por cima; subpasta de idioma que saiu do projeto é removida se der.
     folder.mkdir(parents=True, exist_ok=True)
+    keep = {_safe_name(lang) for lang in entries}
+    for old in folder.iterdir():
+        if old.is_dir() and old.name not in keep:
+            shutil.rmtree(old, ignore_errors=True)
     langs_out: dict[str, Any] = {}
     missing_meta: list[str] = []
     for lang, entry in entries.items():
         sub = folder / _safe_name(lang)
         sub.mkdir(parents=True, exist_ok=True)
+        for stale in ("audio", "legendas"):  # sobras de um pacote anterior (faixa que deixou de existir etc.)
+            for old in sub.glob(f"{stale}-*"):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass  # aberto: é sobrescrito abaixo, ou fica (não atrapalha o checklist)
         files: dict[str, str] = {}
         if lang != primary and entry.get("mix"):
             src = data_dir / entry["mix"]
@@ -338,6 +387,8 @@ def write_package(
             files.update({"title": "titulo.txt", "description": "descricao.txt", "tags": "tags.txt"})
         else:
             missing_meta.append(lang)
+            for name in ("titulo.txt", "descricao.txt", "tags.txt"):
+                (sub / name).unlink(missing_ok=True)
         langs_out[lang] = {"folder": sub.name, "files": files, "duration": entry.get("duration")}
 
     video_link = f"https://studio.youtube.com/video/{video_id}/edit" if video_id else STUDIO_URL

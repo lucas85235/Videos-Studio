@@ -983,14 +983,26 @@ class Builder:
         }
 
     def _write_outputs(self, lang: str, timeline: dict[str, Any], mix_rel: str, srt: str) -> dict[str, Any]:
-        """Grava a timeline e as legendas do idioma na pasta de saída e devolve a entrada do resultado."""
+        """Grava a timeline e as legendas do idioma na pasta de saída e devolve a entrada do resultado.
+
+        `timeline.json` e `legendas.srt` são da última prévia ou render (o player lê a timeline daí). No render final
+        também sai uma cópia própria (`timeline-final.json`, `legendas-final.srt`) e a entrada aponta para ela: uma
+        prévia depois do render (tradução editada, outro modo de entrega) regrava os arquivos comuns, e as legendas
+        enviadas ao YouTube ou postas no pacote precisam bater com o MP4 e as faixas do último render final."""
         out_dir = self.outputs_dir(lang)
         timeline_doc = {**timeline, "mix": mix_rel, "version": service.get_project_row(self.project_id)["current_version"]}
-        (out_dir / "timeline.json").write_text(json.dumps(timeline_doc, ensure_ascii=False), encoding="utf-8")
+        timeline_text = json.dumps(timeline_doc, ensure_ascii=False)
+        (out_dir / "timeline.json").write_text(timeline_text, encoding="utf-8")
         srt_path = out_dir / "legendas.srt"
         srt_path.write_text(srt, encoding="utf-8")
+        timeline_path = out_dir / "timeline.json"
+        if self.mode == "final":
+            timeline_path = out_dir / "timeline-final.json"
+            timeline_path.write_text(timeline_text, encoding="utf-8")
+            srt_path = out_dir / "legendas-final.srt"
+            srt_path.write_text(srt, encoding="utf-8")
         return {
-            "timeline": self.store.rel(out_dir / "timeline.json"),
+            "timeline": self.store.rel(timeline_path),
             "mix": mix_rel,
             "srt": self.store.rel(srt_path),
             "duration": timeline["duration"],
@@ -1020,9 +1032,9 @@ class Builder:
     # Modo B: várias faixas de idioma no mesmo vídeo (README §7.3)
     # ---------------------------------------------------------------------------------------
     def stretched(self, tts_hash: str, tts_out: dict[str, Any], tempo: float) -> tuple[str, str]:
-        """Narração acelerada por `tempo` (FFmpeg atempo), em cache: (caminho relativo, hash). Sem aceleração,
-        devolve a própria narração."""
-        if tempo <= 1.0:
+        """Narração acelerada ou desacelerada por `tempo` (FFmpeg atempo), em cache: (caminho relativo, hash). Sem
+        ajuste (`fit_segments` já arredonda para 1.0 o que o FFmpeg não aplicaria), devolve a própria narração."""
+        if abs(tempo - 1.0) < dubbing.TEMPO_STEP:
             return tts_out["path"], tts_hash
         inputs = {"tts": tts_hash, "tempo": round(tempo, 3), "v": 1}
         h = hash_obj(inputs)
@@ -1106,6 +1118,7 @@ class Builder:
             entry = self._write_outputs(lang, dub_timeline, dub_mix, dubbing.narration_srt(placed))
             entry["dub_of"] = primary
             entry["max_tempo"] = max((fits[sid].tempos.get(lang, 1.0) for sid in seg_ids), default=1.0)
+            entry["min_tempo"] = min((fits[sid].tempos.get(lang, 1.0) for sid in seg_ids), default=1.0)
             results[lang] = entry
 
         if final:
@@ -1114,12 +1127,19 @@ class Builder:
         extra: dict[str, Any] = {"delivery": dubbing.MULTI_TRACK, "dub": summary}
         if final:
             folder = self.outputs_dir("faixas-youtube")
-            manifest = dubbing.write_package(folder, doc=doc, entries=results, data_dir=self.settings.data_dir,
-                                             summary=summary, warnings=list(dict.fromkeys(self.warnings)),
-                                             label=lang_name)
-            extra["dub_package"] = {"folder": self.store.rel(folder),
-                                    "checklist": self.store.rel(folder / "CHECKLIST.md"),
-                                    "langs": manifest["langs"]}
+            try:
+                manifest = dubbing.write_package(folder, doc=doc, entries=results, data_dir=self.settings.data_dir,
+                                                 summary=summary, warnings=list(dict.fromkeys(self.warnings)),
+                                                 label=lang_name)
+            except OSError as exc:
+                # O vídeo e as faixas já estão prontos: o pacote é só a cópia para o Studio e pode ser refeito na
+                # aba Saída. Não perde o render por um arquivo aberto no player ou no editor.
+                log.warning("pacote de faixas não gravado: %s", exc)
+                self.warnings.append(f"{dubbing.PACKAGE_BUSY[0].upper()}{dubbing.PACKAGE_BUSY[1:]} (aba Saída).")
+            else:
+                extra["dub_package"] = {"folder": self.store.rel(folder),
+                                        "checklist": self.store.rel(folder / "CHECKLIST.md"),
+                                        "langs": manifest["langs"]}
         return results, extra
 
 
@@ -1166,6 +1186,9 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     builder.doc = doc or service.get_doc(project_id)
     builder.style = get_style(builder.doc.style_id, builder.doc.style_overrides)
     builder.langs = langs or list(builder.doc.languages)
+    if dubbing.is_multi_track(builder.style, builder.doc) and builder.doc.primary_language not in builder.langs:
+        # Modo B: o build sempre grava o idioma principal (referência do tempo), como em `Builder.__init__`.
+        builder.langs = [builder.doc.primary_language, *builder.langs]
     builder.sink = ProgressSink()
     builder.store = ArtifactStore()
     builder.settings = get_settings()

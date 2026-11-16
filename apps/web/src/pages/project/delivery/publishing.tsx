@@ -271,7 +271,9 @@ export const YouTubeCard: React.FC<{
     (p) => p.driver === "youtube_native" && p.language === lang,
   );
 
-  const block = !entry?.video
+  const block = entry?.dub_of && !entry.video
+    ? `Esta faixa vai junto com o vídeo em ${langLabel(entry.dub_of)}: publique o idioma principal e envie a faixa pelo pacote do Studio.`
+    : !entry?.video
     ? "Renderize o vídeo final deste idioma primeiro."
     : publishJob
       ? null

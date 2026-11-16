@@ -20,6 +20,7 @@ from studio.db import session_scope
 from studio.models import Channel
 from studio.providers.registry import ChainFailed
 from studio.workers.jobs import get_runner, list_jobs
+from studio.workers.pipeline import dubbing
 from studio.workers.pipeline.build import DIRECTION_MISSING, plan, scenes_without_direction
 from studio.workers.publish.package import build_dub_package, build_package, list_publications
 
@@ -341,7 +342,27 @@ def set_delivery(project_id: str, body: DeliveryRequest) -> dict[str, Any]:
     doc.style_overrides = overrides
     label = "faixas de idioma no mesmo vídeo" if body.delivery == "multi_audio_track" else "um vídeo por idioma"
     version = service.commit(project_id, doc, f"Entrega dos idiomas: {label}")
-    return {"version": version, "delivery": body.delivery}
+    return {"version": version, "delivery": body.delivery, "over_budget": _over_budget(doc)}
+
+
+def _over_budget(doc: ProjectDoc) -> dict[str, list[str]]:
+    """Trechos traduzidos que passam do tempo do original (só no Modo B; vazio no Modo A)."""
+    try:
+        style = get_style(doc.style_id, doc.style_overrides)
+    except StyleNotFound:
+        return {}
+    return dubbing.over_budget_report(doc, style) if dubbing.is_multi_track(style, doc) else {}
+
+
+@router.get("/{project_id}/delivery/over-budget")
+def delivery_over_budget(project_id: str) -> dict[str, Any]:
+    """Modo B: por idioma, os trechos da tradução que passam do tempo (viram aceleração forte ou pausa no vídeo).
+    A rodada que encurta só esses trechos é o job `translate` com `{"shorten": true}`."""
+    try:
+        doc = service.get_doc(project_id)
+    except service.ProjectNotFound as exc:
+        raise _not_found(exc) from exc
+    return {"over_budget": _over_budget(doc)}
 
 
 @router.post("/{project_id}/publish/dub-package")
@@ -349,8 +370,12 @@ def dub_package(project_id: str) -> dict[str, Any]:
     """Pacote para o YouTube Studio com a faixa de áudio, as legendas e o título de cada idioma (Modo B)."""
     try:
         return build_dub_package(project_id)
+    except service.ProjectNotFound as exc:
+        raise _not_found(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:  # arquivo do pacote aberto em outro programa (Windows)
+        raise HTTPException(status_code=409, detail=dubbing.PACKAGE_BUSY) from exc
 
 
 @router.post("/{project_id}/publish/dub-package/open")
@@ -359,6 +384,10 @@ def open_dub_package(project_id: str) -> dict[str, Any]:
     import os
     import sys
 
+    try:
+        service.get_project_row(project_id)
+    except service.ProjectNotFound as exc:
+        raise _not_found(exc) from exc
     folder = get_settings().outputs_dir / project_id / "faixas-youtube"
     if not folder.is_dir():
         raise HTTPException(status_code=404, detail="gere o pacote de faixas primeiro")

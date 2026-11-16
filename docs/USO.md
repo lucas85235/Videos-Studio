@@ -166,10 +166,10 @@ Marque os idiomas no novo projeto (o primeiro é o principal). Depois do roteiro
 
 **Faixas no mesmo vídeo (modo B, só YouTube).** Na aba Saída, em *Idiomas no YouTube*, escolha **Faixas no mesmo vídeo**. Aí:
 
-- a tradução recebe o tempo de cada trecho (quantas palavras cabem), e uma tradução longa demais ganha uma segunda rodada pedindo uma versão mais curta;
-- o render faz **um vídeo só** (na imagem do idioma principal, sem legenda queimada) e uma **faixa de áudio por idioma** com a mesma duração: a narração que passa do tempo é acelerada até +10% sem mudar o tom; passou disso, o trecho ganha uma pausa no vídeo e o app avisa qual segmento encurtar;
+- a tradução recebe o tempo de cada trecho (quantas palavras cabem), e uma tradução longa demais ganha uma segunda rodada pedindo uma versão mais curta. Se o projeto já estava traduzido quando você trocou para o modo B, o painel mostra quantos trechos passam do tempo e o botão **Encurtar traduções longas**, que reescreve só esses trechos (suas correções e os trechos travados ficam);
+- o render faz **um vídeo só** (na imagem do idioma principal, sem legenda queimada) e uma **faixa de áudio por idioma** com a mesma duração: a narração que passa do tempo é acelerada até +10% e a que fica curta é desacelerada até -8%, sem mudar o tom; passou disso, o trecho ganha uma pausa no vídeo e o app avisa qual segmento encurtar;
 - o app monta a pasta `outputs\<projeto>\faixas-youtube\` com, por idioma, a faixa WAV, a legenda `.srt`, o título, a descrição e as tags, e um `CHECKLIST.md`;
-- ao publicar pelo app, títulos, descrições e legendas de todos os idiomas vão junto com o vídeo. As **faixas de áudio não têm API**: envie cada uma em YouTube Studio → Idiomas → Adicionar idioma → Dublagem. O canal precisa ter acesso aos recursos avançados.
+- ao publicar pelo app (no idioma principal: os outros idiomas são faixas e não têm vídeo próprio), títulos, descrições e legendas de todos os idiomas vão junto com o vídeo. As **faixas de áudio não têm API**: envie cada uma em YouTube Studio → Idiomas → Adicionar idioma → Dublagem. O canal precisa ter acesso aos recursos avançados.
 
 Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** coloca os títulos dos outros idiomas no mesmo vídeo (o YouTube mostra a versão no idioma de quem assiste). Deixe desmarcada se cada idioma vai ganhar o próprio vídeo ou canal, para os vídeos não competirem entre si.
 
