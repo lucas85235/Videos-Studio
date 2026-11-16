@@ -4,7 +4,10 @@ Regras:
 - a série cria episódios (projetos) até ter `stock_target` episódios abertos (em produção, esperando revisão, prontos
   ou com falha), no máximo `max_per_run` por rodada;
 - o tema de cada episódio sai da fila `topics` (o primeiro sai e vai para o episódio) ou, com `source="ideas"`, da
-  ideia **aprovada** de nota mais alta do canal, ainda sem projeto, no formato da série e com a palavra do filtro;
+  ideia **aprovada** de nota mais alta do canal, ainda sem projeto, no formato da série, com a palavra do filtro e que
+  ainda não virou episódio de nenhuma série (apagar o projeto de um episódio não faz a mesma ideia voltar);
+- a situação do episódio sai do status do projeto e do job **mais recente** do projeto (aprovar o roteiro dispara outro
+  job, e tentar de novo também): falhou, parado (cancelado ou terminado sem chegar a uma revisão) ou em produção;
 - cada episódio roda o job `autopilot` com os portões de roteiro e cenas ligados: para em "Revisar o roteiro" e
   espera você. O piloto nunca pula portão nem publica;
 - a rotina da manhã (`ops/routines.step_series`) roda as séries com piloto ligado; o botão "Rodar agora" roda uma
@@ -37,15 +40,19 @@ LIMITS = {"cadence_days": (1, 60), "stock_target": (0, 30), "max_per_run": (1, 5
 EDITABLE = ("channel_id", "name", "theme", "notes", "format", "style_id", "cadence_days", "stock_target",
             "max_per_run", "source", "topics", "idea_filter", "autopilot", "active")
 
-# Situação do episódio pelo status do projeto (o resto é "producao").
+# Situação do episódio pelo status do projeto e pelo job mais recente dele.
 REVIEW_STATUSES = ("script_review", "storyboard_review", "preview_ready")
 READY_STATUS = "rendered"
-OPEN_STATES = ("producao", "revisao", "pronto", "falhou")
+ACTIVE_JOB_STATUSES = ("queued", "running")
+# Falhou e parado contam no estoque: esperam você tentar de novo ou apagar (a série não empilha episódios novos
+# por cima de episódios largados).
+OPEN_STATES = ("producao", "revisao", "pronto", "falhou", "parado")
 STATE_LABELS = {
     "producao": "Em produção",
     "revisao": "Esperando revisão",
     "pronto": "Pronto",
     "falhou": "Falhou",
+    "parado": "Parado",
     "publicado": "Publicado",
     "apagado": "Projeto apagado",
 }
@@ -60,6 +67,10 @@ class SeriesError(ValueError):
 
 class SeriesNotFound(LookupError):
     pass
+
+
+class SeriesConflict(ValueError):
+    """A fila de temas mudou desde que você abriu a série (vira 409 na API)."""
 
 
 # ----------------------------------------------------------------------------- validação
@@ -156,12 +167,18 @@ def _episode_rows(s: Any, series_ids: list[str]) -> list[dict[str, Any]]:
         ):
             if _gone(status, details):
                 gone.add(pid)
-    job_ids = [r.job_id for r in rows if r.job_id]
-    jobs = {j.id: (j.status, j.error or "") for j in s.query(Job).filter(Job.id.in_(job_ids))} if job_ids else {}
+    # O job que vale é o mais recente do projeto, não só o primeiro que a série gravou: aprovar o roteiro dispara
+    # outro `autopilot`, e "Tentar de novo" na página do projeto também.
+    latest: dict[str, tuple[str, str, str]] = {}
+    if pids:
+        for job in s.query(Job).filter(Job.project_id.in_(pids)).order_by(Job.created_at, Job.id):
+            latest[job.project_id] = (job.id, job.status, job.error or "")
+    saved_ids = [r.job_id for r in rows if r.job_id and r.project_id not in latest]
+    saved = {j.id: (j.id, j.status, j.error or "") for j in s.query(Job).filter(Job.id.in_(saved_ids))} if saved_ids else {}
     out = []
     for r in rows:
         title, status = projects.get(r.project_id, (None, None))
-        job_status, job_error = jobs.get(r.job_id or "", (None, ""))
+        job_id, job_status, job_error = latest.get(r.project_id) or saved.get(r.job_id or "") or (r.job_id, None, "")
         if title is None:
             state = "apagado"
         elif r.project_id in gone:
@@ -170,10 +187,13 @@ def _episode_rows(s: Any, series_ids: list[str]) -> list[dict[str, Any]]:
             state = "revisao"
         elif status == READY_STATUS:
             state = "pronto"
+        elif job_status is None or job_status in ACTIVE_JOB_STATUSES:
+            state = "producao"
         elif job_status == "failed":
             state = "falhou"
         else:
-            state = "producao"
+            # Cancelado, ou terminou sem chegar a uma revisão: nada rodando, o episódio espera você.
+            state = "parado"
         out.append({
             "id": r.id,
             "series_id": r.series_id,
@@ -183,7 +203,7 @@ def _episode_rows(s: Any, series_ids: list[str]) -> list[dict[str, Any]]:
             "project_status": status,
             "topic": r.topic,
             "idea_id": r.idea_id,
-            "job_id": r.job_id,
+            "job_id": job_id,
             "job_status": job_status,
             "error": job_error[:300] if state == "falhou" else "",
             "origin": r.origin,
@@ -273,12 +293,27 @@ def create_series(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_series(series_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Salva a série. Com `topics_base` (a fila que o painel leu), recusa salvar `topics` se a fila mudou desde então
+    (a rotina ou o "Rodar agora" tirou um tema): sem isso o tema já usado voltaria para a fila."""
+    data = dict(data)
+    base = data.pop("topics_base", None)
     with session_scope() as s:
         row = s.get(Series, series_id)
         if row is None:
             raise SeriesNotFound(series_id)
-        for key, value in _check(s, data).items():
+        clean = _check(s, data)
+        if "topics" in clean and base is not None and _clean_topics(base) != list(row.topics or []):
+            raise SeriesConflict("a fila de temas mudou enquanto você editava (um tema virou episódio); "
+                                 "feche e abra a série de novo para ver a fila atual")
+        old = (row.source, list(row.topics or []), row.idea_filter, row.format)
+        for key, value in clean.items():
             setattr(row, key, value)
+        # A pendência "série sem temas" perde o sentido se a série parou de rodar sozinha ou a fonte dos temas mudou
+        # (a próxima rodada abre outra se ainda faltar tema).
+        stale = (not row.active or not row.autopilot or row.stock_target == 0
+                 or (row.source, list(row.topics or []), row.idea_filter, row.format) != old)
+    if stale:
+        _discard_no_topic(series_id)
     return get_series(series_id)
 
 
@@ -304,9 +339,12 @@ def _norm(text: str) -> str:
 
 def _pick_idea(s: Any, row: Series) -> Idea | None:
     """A ideia aprovada de nota mais alta do canal, sem projeto, no formato da série e com a palavra do filtro."""
+    # Ideia que já virou episódio (de qualquer série) não volta: se você apagou o projeto, descartou o episódio.
+    used = s.query(SeriesEpisode.idea_id).filter(SeriesEpisode.idea_id.is_not(None))
     ideas = (
         s.query(Idea)
-        .filter(Idea.channel_id == row.channel_id, Idea.status == "aprovada", Idea.project_id.is_(None))
+        .filter(Idea.channel_id == row.channel_id, Idea.status == "aprovada", Idea.project_id.is_(None),
+                Idea.id.not_in(used))
         .all()
     )
     key = _norm(row.idea_filter or "")
@@ -362,6 +400,22 @@ def _discard_no_topic(series_id: str, keep_key: str | None = None) -> None:
             p.done_at = datetime.now(UTC)
 
 
+def discard_orphan_pendings() -> int:
+    """Fecha as pendências "série sem temas" de séries que não existem mais (apagar o canal leva as séries junto)."""
+    from studio.models import PendingTask
+
+    closed = 0
+    with session_scope() as s:
+        alive = {sid for (sid,) in s.query(Series.id)}
+        for p in s.query(PendingTask).filter(PendingTask.kind == "auto", PendingTask.status == "aberta",
+                                             PendingTask.auto_key.like("serie:%:sem-temas:%")):
+            if (p.auto_key or "").split(":")[1] not in alive:
+                p.status = "descartada"
+                p.done_at = datetime.now(UTC)
+                closed += 1
+    return closed
+
+
 def _no_topic_pending(row_id: str, name: str, channel_id: str, source: str, now: datetime) -> None:
     from studio.workers.ops.pending import ensure_auto
 
@@ -412,6 +466,20 @@ def _create_episode(series_id: str, origin: str, submit: Submit, now: datetime) 
         settings={"gates": {"script": True, "storyboard": True, "preview": True, "publish": True},
                   "series": spec["series"]},
     )
+    taken = {"topic": False}
+    try:
+        return _link_episode(series_id, origin, submit, spec, doc.id, taken)
+    except Exception:
+        # Nada pela metade: sem isso sobrava um episódio sem job ("em produção" para sempre, ocupando o estoque) ou
+        # um projeto sem episódio, com o tema ainda na fila (a próxima rodada repetiria o tema).
+        _undo_episode(series_id, spec, doc.id, taken["topic"])
+        raise
+
+
+def _link_episode(series_id: str, origin: str, submit: Submit, spec: dict[str, Any], doc_id: str,
+                  taken: dict[str, bool]) -> dict[str, Any]:
+    """Grava o episódio, tira o tema da fila (ou marca a ideia) e dispara o job do piloto."""
+    popped = False
     with session_scope() as s:
         row = s.get(Series, series_id)
         assert row is not None
@@ -419,26 +487,48 @@ def _create_episode(series_id: str, origin: str, submit: Submit, now: datetime) 
             idea = s.get(Idea, spec["idea_id"])
             if idea is not None:
                 idea.status = "em_producao"
-                idea.project_id = doc.id
+                idea.project_id = doc_id
                 idea.decided_at = utcnow()
         else:
             topics = list(row.topics or [])
             if topics and topics[0] == spec["topic"]:
                 row.topics = topics[1:]
-        episode = SeriesEpisode(series_id=series_id, number=spec["series"]["number"], project_id=doc.id,
+                popped = True
+        episode = SeriesEpisode(series_id=series_id, number=spec["series"]["number"], project_id=doc_id,
                                 topic=spec["topic"], idea_id=spec["idea_id"], origin=origin)
         s.add(episode)
         s.flush()
         episode_id = episode.id
+    taken["topic"] = popped  # só depois do commit: se a sessão falhar, o tema nem saiu da fila
     _discard_no_topic(series_id)
     # Sem skip_gates: o job para no primeiro portão (roteiro) e espera a sua revisão.
-    job = submit("autopilot", {"series_id": series_id}, doc.id)
+    job = submit("autopilot", {"series_id": series_id}, doc_id)
     with session_scope() as s:
         ep = s.get(SeriesEpisode, episode_id)
         if ep is not None:
             ep.job_id = job.get("id")
-    return {"number": spec["series"]["number"], "project_id": doc.id, "topic": spec["topic"],
+    return {"number": spec["series"]["number"], "project_id": doc_id, "topic": spec["topic"],
             "idea_id": spec["idea_id"], "job_id": job.get("id")}
+
+
+def _undo_episode(series_id: str, spec: dict[str, Any], project_id: str, topic_taken: bool) -> None:
+    """Desfaz um episódio que não chegou a ter job: apaga episódio e projeto, devolve o tema à frente da fila e a
+    ideia para "aprovada". Erro aqui só vai para o log (o erro que importa é o original)."""
+    try:
+        with session_scope() as s:
+            s.query(SeriesEpisode).filter(SeriesEpisode.project_id == project_id).delete()
+            if spec["idea_id"]:
+                idea = s.get(Idea, spec["idea_id"])
+                if idea is not None and idea.project_id == project_id:
+                    idea.project_id = None
+                    idea.status = "aprovada"
+            elif topic_taken:
+                row = s.get(Series, series_id)
+                if row is not None:
+                    row.topics = [spec["topic"], *list(row.topics or [])]
+        service.delete_project(project_id)
+    except Exception:  # noqa: BLE001
+        log.exception("série %s: não deu para desfazer o episódio do projeto %s", series_id, project_id)
 
 
 _run_lock = threading.Lock()  # a rotina e o botão "Rodar agora" não criam o mesmo episódio duas vezes
@@ -467,6 +557,8 @@ def run_series(series_id: str, *, manual: bool = False, count: int | None = None
             wanted = max(1, min(int(count), LIMITS["max_per_run"][1]))
         else:
             wanted = min(max(0, info["stock_target"] - info["counts"]["open"]), info["max_per_run"])
+            if wanted == 0:
+                _discard_no_topic(series_id)  # estoque em dia: não precisa de tema novo agora
         created: list[dict[str, Any]] = []
         out_of_topics = False
         for _ in range(wanted):
@@ -513,9 +605,12 @@ def run_autopilots(now: datetime | None = None, submit: Submit | None = None) ->
             result = run_series(series_id, now=now, submit=submit)
         except Exception as exc:  # noqa: BLE001
             log.exception("série %s falhou na rotina", series_id)
-            lines.append(f'série "{name}": falhou ({type(exc).__name__}: {str(exc)[:200]})')
+            # Mesmo prefixo das partes da manhã ("séries: falhou (") para o comando `rotinas` marcar "parcial".
+            lines.append(f'séries: falhou (série "{name}": {type(exc).__name__}: {str(exc)[:200]})')
             continue
-        if result["created"] or result.get("error") or "sem temas" in result["message"]:
+        if result.get("error"):
+            lines.append(f'séries: falhou (série "{name}": {result["message"]})')
+        elif result["created"] or "sem temas" in result["message"]:
             lines.append(f'série "{name}": {result["message"]}')
     return lines
 
@@ -539,6 +634,7 @@ def today() -> list[dict[str, Any]]:
             "review": c["revisao"],
             "ready": c["pronto"],
             "failed": c["falhou"],
+            "stopped": c["parado"],
             "in_production": c["producao"],
             "coverage_days": item["coverage_days"],
             "topics_left": len(item["topics"]) if item["source"] == "list" else None,

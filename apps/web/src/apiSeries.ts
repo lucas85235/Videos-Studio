@@ -4,7 +4,8 @@ import { api } from './api';
 export type SeriesFormat = '' | 'short' | 'long';
 /** list: fila de temas da série; ideas: ideias aprovadas do canal (nota mais alta primeiro). */
 export type SeriesSource = 'list' | 'ideas';
-export type EpisodeState = 'producao' | 'revisao' | 'pronto' | 'falhou' | 'publicado' | 'apagado';
+/** parado: o job foi cancelado (ou terminou sem chegar a uma revisão); espera você tentar de novo ou apagar. */
+export type EpisodeState = 'producao' | 'revisao' | 'pronto' | 'falhou' | 'parado' | 'publicado' | 'apagado';
 
 export type SeriesEpisode = {
   id: number;
@@ -22,7 +23,7 @@ export type SeriesEpisode = {
   origin: 'auto' | 'manual';
   state: EpisodeState;
   state_label: string;
-  /** Em produção, esperando revisão, pronto ou com falha: conta no estoque da série. */
+  /** Em produção, esperando revisão, pronto, com falha ou parado: conta no estoque da série. */
   open: boolean;
   created_at: string | null;
 };
@@ -95,6 +96,8 @@ export type SeriesToday = {
   review: number;
   ready: number;
   failed: number;
+  /** Episódios parados (job cancelado): esperam você tentar de novo ou apagar. */
+  stopped: number;
   in_production: number;
   coverage_days: number;
   /** Temas que ainda restam na fila (null quando a série usa as ideias). */
@@ -110,7 +113,8 @@ export const seriesApi = {
   list: (channelId?: string | null) => api.get<Series[]>(`/api/series${channelId ? `?channel_id=${encodeURIComponent(channelId)}` : ''}`),
   get: (id: string) => api.get<Series>(`/api/series/${id}`),
   create: (body: SeriesInput) => api.post<Series>('/api/series', body),
-  update: (id: string, body: Partial<SeriesInput>) => api.put<Series>(`/api/series/${id}`, body),
+  /** `topics_base`: a fila que o painel leu. Se ela mudou desde então, salvar `topics` dá 409. */
+  update: (id: string, body: Partial<SeriesInput> & { topics_base?: string[] }) => api.put<Series>(`/api/series/${id}`, body),
   remove: (id: string) => api.del<{ deleted: boolean }>(`/api/series/${id}`),
   run: (id: string, count?: number) => api.post<SeriesRunResult>(`/api/series/${id}/run`, count ? { count } : {}),
 };

@@ -13,6 +13,7 @@ const STATE_TONES: Record<EpisodeState, BadgeTone> = {
   revisao: 'warn',
   pronto: 'good',
   falhou: 'bad',
+  parado: 'warn',
   publicado: 'neutral',
   apagado: 'neutral',
 };

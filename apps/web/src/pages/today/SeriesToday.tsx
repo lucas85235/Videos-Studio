@@ -37,6 +37,11 @@ export const SeriesSection: React.FC<{ items: SeriesToday[] }> = ({ items }) => 
                 {plural(s.failed, 'falhou', 'falharam')}
               </Badge>
             ) : null}
+            {s.stopped ? (
+              <Badge tone="warn" icon={CircleAlert}>
+                {plural(s.stopped, 'parado', 'parados')}
+              </Badge>
+            ) : null}
             {s.below ? (
               <Badge tone="warn" icon={CircleAlert}>
                 Abaixo do estoque

@@ -41,6 +41,8 @@ class SeriesPatch(BaseModel):
     max_per_run: int | None = Field(default=None, ge=1, le=5)
     source: Literal["list", "ideas"] | None = None
     topics: list[str] | None = None
+    # A fila que o painel leu ao abrir: se a fila mudou desde então, salvar `topics` dá 409 (não devolve tema usado).
+    topics_base: list[str] | None = None
     idea_filter: str | None = Field(default=None, max_length=200)
     autopilot: bool | None = None
     active: bool | None = None
@@ -85,6 +87,8 @@ def update_series(series_id: str, body: SeriesPatch) -> dict[str, Any]:
         return core.update_series(series_id, data)
     except core.SeriesNotFound as exc:
         raise _not_found() from exc
+    except core.SeriesConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except core.SeriesError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

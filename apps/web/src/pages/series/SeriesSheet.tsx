@@ -72,9 +72,14 @@ export const SeriesSheet: React.FC<{
     .filter(Boolean);
   const visibleStyles = styles.filter((s) => !form.format || s.style.format.type === form.format);
 
+  // A fila que o painel leu ao abrir. Se você não mexeu nela, salvar não manda a fila (a rotina pode ter tirado um
+  // tema enquanto o painel estava aberto, e mandar a cópia velha devolveria esse tema).
+  const baseTopics = initial?.topics ?? [];
+  const topicsChanged = topics.length !== baseTopics.length || topics.some((t, i) => t !== baseTopics[i]);
+
   const save = useMutation({
     mutationFn: () => {
-      const body: SeriesInput = {
+      const body: SeriesInput & { topics_base?: string[] } = {
         channel_id: form.channel_id,
         name: form.name.trim(),
         theme: form.theme,
@@ -85,10 +90,14 @@ export const SeriesSheet: React.FC<{
         stock_target: stock ?? 0,
         max_per_run: perRun ?? 1,
         source: form.source,
-        topics,
         idea_filter: form.idea_filter,
         autopilot: form.autopilot,
       };
+      if (!initial) body.topics = topics;
+      else if (topicsChanged) {
+        body.topics = topics;
+        body.topics_base = baseTopics;
+      }
       return initial ? seriesApi.update(initial.id, body) : seriesApi.create(body);
     },
     onSuccess: (out) => {

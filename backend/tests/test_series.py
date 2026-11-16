@@ -313,3 +313,154 @@ def test_deleting_channel_removes_its_series(isolated_settings):
         s.delete(s.get(Channel, cid))
     with session_scope() as s:
         assert s.query(Series).count() == 0 and s.query(SeriesEpisode).count() == 0
+
+
+# ----------------------------------------------------------------------------- correções da revisão
+
+
+def _add_job(project_id: str, status: str, when: datetime, error: str = "") -> str:
+    jid = new_id("job")
+    with session_scope() as s:
+        s.add(Job(id=jid, kind="autopilot", project_id=project_id, status=status, payload={}, error=error,
+                  created_at=when))
+    return jid
+
+
+def test_state_follows_latest_job_of_project(isolated_settings):
+    cid = _channel()
+    item = _series(cid, stock_target=1, max_per_run=1)
+    [ep] = core.run_series(item["id"], manual=True, now=NOW, submit=FakeSubmit())["created"]
+    pid = ep["project_id"]
+    _add_job(pid, "done", NOW)  # o primeiro job parou no roteiro
+    # você aprovou o roteiro: outro job do piloto, que falhou nas cenas
+    service.set_status(pid, "storyboard")
+    second = _add_job(pid, "failed", NOW + timedelta(minutes=5), error="sem imagem")
+    [row] = core.get_series(item["id"])["episodes"]
+    assert row["state"] == "falhou" and row["error"] == "sem imagem" and row["job_id"] == second
+    # tentou de novo pela página do projeto: volta a "Em produção"
+    _add_job(pid, "running", NOW + timedelta(minutes=10))
+    assert core.get_series(item["id"])["episodes"][0]["state"] == "producao"
+
+
+def test_canceled_episode_is_stopped_not_in_production(isolated_settings):
+    cid = _channel()
+    item = _series(cid, stock_target=1, max_per_run=1, autopilot=True)
+    [ep] = core.run_series(item["id"], manual=True, now=NOW, submit=FakeSubmit())["created"]
+    _add_job(ep["project_id"], "canceled", NOW)
+    info = core.get_series(item["id"])
+    assert info["episodes"][0]["state"] == "parado" and info["episodes"][0]["state_label"] == "Parado"
+    assert info["counts"]["parado"] == 1 and info["counts"]["producao"] == 0
+    [today] = core.today()
+    assert today["stopped"] == 1 and today["in_production"] == 0
+
+
+def test_submit_failure_undoes_episode_and_keeps_topic(isolated_settings):
+    cid = _channel()
+    item = _series(cid, stock_target=1, max_per_run=1)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("fila fora do ar")
+
+    result = core.run_series(item["id"], manual=True, now=NOW, submit=broken)
+    assert result.get("error") and result["created"] == []
+    info = core.get_series(item["id"])
+    assert info["episodes"] == [] and info["counts"]["open"] == 0
+    assert info["topics"][0] == "O farol da ilha Rasa" and len(info["topics"]) == 3
+    with session_scope() as s:
+        assert s.query(Project).count() == 0
+    # com ideias: a ideia volta para "aprovada" e sem projeto
+    item2 = _series(cid, name="Ideias", source="ideas", stock_target=1, max_per_run=1)
+    iid = _idea(cid, "Ideia boa", score=9)
+    core.run_series(item2["id"], manual=True, now=NOW, submit=broken)
+    with session_scope() as s:
+        idea = s.get(Idea, iid)
+        assert idea.status == "aprovada" and idea.project_id is None
+        assert s.query(Project).count() == 0 and s.query(SeriesEpisode).count() == 0
+
+
+def test_failure_while_linking_does_not_duplicate_topic(isolated_settings):
+    from sqlalchemy import event
+
+    cid = _channel()
+    item = _series(cid, stock_target=1, max_per_run=1)
+
+    def boom(*_a):
+        raise RuntimeError("banco travado")
+
+    # falha ao gravar o episódio (a sessão que tira o tema da fila volta atrás)
+    event.listen(SeriesEpisode, "before_insert", boom)
+    try:
+        result = core.run_series(item["id"], manual=True, now=NOW, submit=FakeSubmit())
+    finally:
+        event.remove(SeriesEpisode, "before_insert", boom)
+    assert result.get("error")
+    info = core.get_series(item["id"])
+    assert info["topics"] == ["O farol da ilha Rasa", "O farol de Santa Marta", "O farol do Calcanhar"]
+    with session_scope() as s:
+        assert s.query(Project).count() == 0
+
+
+def test_deleted_episode_idea_is_not_picked_again(isolated_settings):
+    from studio.workers.business import ideas
+
+    cid = _channel()
+    item = _series(cid, source="ideas", stock_target=1, max_per_run=1)
+    first = _idea(cid, "Melhor ideia", score=9)
+    second = _idea(cid, "Outra ideia", score=5)
+    [ep] = core.run_series(item["id"], manual=True, now=NOW, submit=FakeSubmit())["created"]
+    assert ep["idea_id"] == first
+    service.delete_project(ep["project_id"])
+    ideas.list_ideas(cid)  # a ideia volta a "aprovada" sem projeto
+    [again] = core.run_series(item["id"], manual=True, now=NOW, submit=FakeSubmit())["created"]
+    assert again["idea_id"] == second
+
+
+def test_autopilot_failure_line_marks_morning_partial(isolated_settings):
+    from studio.workers.ops import offline
+
+    cid = _channel()
+    _series(cid, name="Quebrada", autopilot=True, style_id="misterios-short")
+
+    def broken(*_a, **_k):
+        raise RuntimeError("fila fora do ar")
+
+    lines = core.run_autopilots(now=NOW, submit=broken)
+    assert lines and lines[0].startswith('séries: falhou (série "Quebrada": ')
+    done = [{"kind": "routine_morning", "status": "done", "result": {"lines": lines}}]
+    assert offline._morning_failures(done) == lines
+
+
+def test_no_topic_pending_closes_when_series_stops_needing_topics(isolated_settings):
+    cid = _channel()
+    item = _series(cid, topics=[], autopilot=True)
+    core.run_series(item["id"], now=NOW, submit=FakeSubmit())
+    assert len(_open_no_topic(item["id"])) == 1
+    core.update_series(item["id"], {"autopilot": False})
+    assert _open_no_topic(item["id"]) == []
+    # estoque em dia (alvo zero) também fecha (a pendência do dia não reabre: a de amanhã é outra)
+    core.update_series(item["id"], {"autopilot": True})
+    core.run_series(item["id"], now=NOW + timedelta(days=1), submit=FakeSubmit())
+    assert len(_open_no_topic(item["id"])) == 1
+    with session_scope() as s:
+        s.get(Series, item["id"]).stock_target = 0
+    core.run_series(item["id"], now=NOW + timedelta(days=1), submit=FakeSubmit())
+    assert _open_no_topic(item["id"]) == []
+
+
+def test_topics_conflict_and_channel_delete_closes_pending(isolated_settings, monkeypatch):
+    cid = _channel()
+    item = _series(cid, stock_target=1, max_per_run=1)
+    base = item["topics"]
+    core.run_series(item["id"], manual=True, now=NOW, submit=FakeSubmit())  # a rotina tirou o primeiro tema
+    with TestClient(create_app()) as client:
+        r = client.put(f"/api/series/{item['id']}", json={"topics": base, "topics_base": base})
+        assert r.status_code == 409
+        assert core.get_series(item["id"])["topics"] == base[1:]
+        # sem mexer na fila, o painel nem manda os temas
+        assert client.put(f"/api/series/{item['id']}", json={"name": "Outro nome"}).status_code == 200
+        # canal apagado: a pendência "sem temas" da série some junto
+        empty = _series(cid, name="Vazia", topics=[])
+        core.run_series(empty["id"], manual=True, now=NOW, submit=FakeSubmit())
+        assert len(_open_no_topic(empty["id"])) == 1
+        assert client.delete(f"/api/channels/{cid}").json() == {"deleted": True}
+    assert _open_no_topic(empty["id"]) == []
