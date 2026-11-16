@@ -58,7 +58,7 @@ def test_numbers_in_english_and_spanish():
     assert _spoken("In 2013, $5 billion and 3rd place", "en-US") == [
         (["2013,"], "twenty thirteen,"), (["$5", "billion"], "five billion dollars"), (["3rd"], "third"),
     ]
-    assert speech_plan("Son 30% y 2,5 kg", "es-ES", auto=True).spoken == "Son treinta por ciento y dos punto cinco kilos"
+    assert speech_plan("Son 30% y 2,5 kg", "es-ES", auto=True).spoken == "Son treinta por ciento y dos coma cinco kilos"
     assert speech_plan("Ganhou 2 mil reais em 100 km; anos 90", "pt-BR", auto=True).spoken == (
         "Ganhou dois mil reais em cem quilômetros; anos noventa")
     # idioma sem tabela de unidades: o número e o % solto ainda viram palavras
@@ -233,6 +233,48 @@ def test_channel_saves_pronunciation_and_glossary():
         assert bad.status_code == 422
 
 
+def test_ordinals_emphasis_fractions_and_durations_are_not_misread():
+    def say(text: str, lang: str = "pt-BR") -> str:
+        return speech_plan(text, lang, auto=True).spoken
+
+    # º sozinho é ordinal; grau só com ° ou º seguido de C/F
+    assert say("Ficou em 1º lugar e o 3º.") == "Ficou em primeiro lugar e o terceiro."
+    assert say("Fazia 30°C, 30ºC e 10°.") == "Fazia trinta graus Celsius, trinta graus Celsius e dez graus."
+    # maiúsculas de ênfase não são soletradas; siglas de verdade, sim (CD e DC não são algarismo romano)
+    assert not speech_plan("Isso é MUITO grave, NUNCA aconteceu e SEMPRE vai ISSO, GRANDE DE ESSE.", "pt-BR",
+                           auto=True).changed
+    assert say("O CD, a DC, o BRICS, o IBGE e a TV; século XX.") == (
+        "O cê dê, a dê cê, o BRICS, o í bê gê é e a tê vê; século XX.")
+    # a/b sem ano só é data depois de palavra de data; senão é fração ou 24/7
+    assert say("Cerca de 1/3 dos brasileiros trabalham 24/7.") == (
+        "Cerca de um terço dos brasileiros trabalham vinte e quatro horas por dia, sete dias por semana.")
+    assert say("Metade: 1/2 do total, 3/4 e 1/20; desde 15/11 e no dia 1/3.") == (
+        "Metade: meio do total, três quartos e um vinte avos; desde quinze de novembro e no dia primeiro de março.")
+    assert say("1/2 of people. Open 24/7, on 11/15.", "en-US") == (
+        "one half of people. Open twenty four seven, on November fifteenth.")
+    # hora com ':' e um algarismo, sem "às", é duração
+    assert say("O vídeo tem 1:30 de duração e começa às 9:05 ou 21:15.") == (
+        "O vídeo tem um minuto e trinta segundos de duração e começa às nove e cinco ou vinte e uma e quinze.")
+    assert say("Murieron a las 14h30, a las 1:00.", "es-ES") == "Murieron a las catorce y treinta, a las una hora."
+    # decimais como se fala: a parte depois da vírgula é um número inteiro (com os zeros dela)
+    assert say("Juros de 13,75%, altura de 1,80 m, 2,05 e 2,5 horas.") == (
+        "Juros de treze vírgula setenta e cinco por cento, altura de um vírgula oitenta metros, dois vírgula zero "
+        "cinco e duas vírgula cinco horas.")
+    assert say("It grew 13.75%.", "en-US") == "It grew thirteen point seven five percent."
+
+
+def test_dictionary_terms_with_punctuation_and_language():
+    entries = [PronunciationEntry(term="Dr.", say="doutor"), PronunciationEntry(term="Sra.", say="senhora"),
+               PronunciationEntry(term="etc.", say="etcétera"), PronunciationEntry(term="Vulto!", say="Vúlto!"),
+               PronunciationEntry(term="Nvidia", say="envídia", lang="pt-BR")]
+    # o ponto da abreviação sai no meio da frase (não vira pausa) e fica no fim
+    assert speech_plan("O Dr. Silva e a Sra. Ana, etc.", "pt-BR", entries).spoken == (
+        "O doutor Silva e a senhora Ana, etcétera.")
+    assert speech_plan("Viva o Vulto! E o Vulto.", "pt-BR", entries).spoken == "Viva o Vúlto! E o Vulto."
+    # a grafia em português não vai para a narração em inglês
+    assert not speech_plan("Nvidia launched", "en-US", entries).changed
+
+
 # --- glossário -------------------------------------------------------------------------------
 
 
@@ -251,6 +293,10 @@ def test_glossary_rules_prompt_and_check():
                          entries, "en-US")
     assert [(i["term"], i["expected"]) for i in issues] == [("Vulto", "Vulto"), ("canal dark", "faceless channel")]
     assert glossary_of({"glossary": [{"term": "ok"}, {"keep": True}]}) == [GlossaryEntry(term="ok")]
+    # palavra comum aceita o plural regular dos dois lados; nome continua literal
+    assert contains("Dois canais dark e três spoilers", "spoiler") and not contains("canais dark", "canal dark")
+    assert check_pairs([("segment", "seg_2", "Cada canal dark cresce.", "Faceless channels grow.")], entries,
+                       "en-US") == []
 
 
 def _run(kind: str, project_id: str, payload: dict | None = None) -> dict:

@@ -64,10 +64,17 @@ def _fold(text: str) -> str:
 
 
 def contains(text: str, term: str) -> bool:
-    """`term` aparece em `text` como palavra(s) inteira(s), sem diferenciar caixa e acento."""
-    if not term.strip():
+    """`term` aparece em `text` como palavra(s) inteira(s), sem diferenciar caixa e acento.
+
+    Termo em minúsculas (palavra comum: "canal dark", "faceless channel") também casa com o plural regular da última
+    palavra ("faceless channels", "spoilers"). Nome ("Vulto") é literal: "Vultos" não conta. Fora isso a conferência
+    é literal: plural irregular ou flexão no meio ("canais dark") não é reconhecido.
+    """
+    parts = _fold(term).split()
+    if not parts:
         return False
-    pattern = r"(?<!\w)" + r"\s+".join(re.escape(part) for part in _fold(term).split()) + r"(?!\w)"
+    plural = r"(?:e?s)?" if term == term.lower() and parts[-1][-1:].isalpha() else ""
+    pattern = r"(?<!\w)" + r"\s+".join(re.escape(part) for part in parts) + plural + r"(?!\w)"
     return re.search(pattern, _fold(text)) is not None
 
 

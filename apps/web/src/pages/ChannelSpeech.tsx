@@ -8,7 +8,7 @@
  */
 import { BookA, Languages, Plus, Trash2 } from 'lucide-react';
 import React from 'react';
-import type { GlossaryEntry, PronunciationEntry } from '../api';
+import { LANGUAGES, type GlossaryEntry, type PronunciationEntry } from '../api';
 import { langLabel } from '../labels';
 import { Button, Checkbox, FieldGroup, IconButton, Input, Select } from '../ui';
 
@@ -44,8 +44,10 @@ export const PronunciationEditor: React.FC<{
       legend="Pronúncia"
       hint={
         <>
-          Como a voz deve falar um nome ou termo (ex.: “Nvidia” → “envídia”). Vale para todas as vozes; a legenda continua como no roteiro. Na voz
-          local da prévia, números, datas, siglas, símbolos e palavras comuns em inglês já são lidos por extenso sem precisar de nada aqui.
+          Como a voz deve falar um nome ou termo (ex.: “Nvidia” → “envídia”). Vale para todas as vozes; a legenda continua como no roteiro. A
+          grafia de como falar só funciona no idioma em que foi escrita: “envídia” é português, então escolha o idioma da linha e use “Todos os
+          idiomas” só quando a fala servir para todos. Na voz local da prévia, números, datas, siglas, símbolos e palavras comuns em inglês já
+          são lidos por extenso sem precisar de nada aqui.
         </>
       }
     >
@@ -57,6 +59,7 @@ export const PronunciationEditor: React.FC<{
               <Input
                 aria-label={`Termo ${index + 1}`}
                 value={row.term}
+                maxLength={100}
                 invalid={invalid && half && !row.term.trim()}
                 onChange={(e) => set(index, { term: e.target.value })}
                 placeholder="Como está escrito (ex.: Nvidia)"
@@ -64,6 +67,7 @@ export const PronunciationEditor: React.FC<{
               <Input
                 aria-label={`Como falar o termo ${index + 1}`}
                 value={row.say}
+                maxLength={200}
                 invalid={invalid && half && !row.say.trim()}
                 onChange={(e) => set(index, { say: e.target.value })}
                 placeholder="Como falar (ex.: envídia)"
@@ -82,7 +86,7 @@ export const PronunciationEditor: React.FC<{
         );
       })}
       <div>
-        <Button size="sm" icon={Plus} onClick={() => onChange([...value, { term: '', say: '', lang: '' }])}>
+        <Button size="sm" icon={Plus} onClick={() => onChange([...value, { term: '', say: '', lang: languages[0] ?? '' }])}>
           Adicionar pronúncia
         </Button>
       </div>
@@ -106,55 +110,74 @@ export const GlossaryEditor: React.FC<{
   return (
     <FieldGroup
       legend="Glossário da tradução"
-      hint={
-        targets.length
-          ? 'Termos que não se traduzem (nome do canal, marcas) ou que têm tradução fixa. Vão no pedido de tradução e, depois de traduzir, o roteiro avisa quando um termo não foi respeitado.'
-          : 'Termos que não se traduzem ou que têm tradução fixa. Para dar a tradução de cada idioma, o canal precisa de outros idiomas além do principal.'
-      }
+      hint="Termos que não se traduzem (nome do canal, marcas) ou que têm tradução fixa. Vão no pedido de tradução e, depois de traduzir, o roteiro avisa quando um termo não foi respeitado. A tradução fixa aparece para os idiomas do canal; se um projeto traduz para outro idioma, escolha-o em “Tradução fixa em outro idioma”."
     >
-      {value.map((row, index) => (
-        <div key={index} className={ROW}>
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
-            <Input
-              aria-label={`Termo do glossário ${index + 1}`}
-              value={row.term}
-              onChange={(e) => set(index, { term: e.target.value })}
-              placeholder={`Como está no roteiro em ${langLabel(languages[0] ?? 'pt-BR')} (ex.: Vulto)`}
-            />
-            <IconButton label={`Remover o termo ${index + 1} do glossário`} icon={Trash2} onClick={() => onChange(value.filter((_, i) => i !== index))} />
-          </div>
-          <Checkbox
-            label="Não traduzir"
-            description="Fica igual em todos os idiomas, menos onde houver tradução fixa abaixo."
-            checked={row.keep}
-            onChange={(keep) => set(index, { keep })}
-          />
-          {targets.length ? (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {targets.map((l) => (
-                <label key={l} className="flex min-w-0 flex-col gap-1 text-[13px] text-muted">
-                  <span className="inline-flex items-center gap-1">
-                    <Languages size={14} aria-hidden="true" />
-                    Em {langLabel(l)}
-                  </span>
-                  <Input
-                    value={row.translations[l] ?? ''}
-                    onChange={(e) => set(index, { translations: { ...row.translations, [l]: e.target.value } })}
-                    placeholder={row.keep ? `${row.term.trim() || 'igual ao termo'} (sem traduzir)` : 'Tradução livre'}
-                  />
-                </label>
-              ))}
+      {value.map((row, index) => {
+        // Idiomas do canal e os que a linha já tem (um projeto pode traduzir para idiomas fora do canal).
+        const shown = [...targets, ...Object.keys(row.translations).filter((l) => l !== languages[0] && !targets.includes(l))];
+        const others = LANGUAGES.filter((l) => l.code !== languages[0] && !shown.includes(l.code));
+        return (
+          <div key={index} className={ROW}>
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
+              <Input
+                aria-label={`Termo do glossário ${index + 1}`}
+                value={row.term}
+                maxLength={100}
+                onChange={(e) => set(index, { term: e.target.value })}
+                placeholder={`Como está no roteiro em ${langLabel(languages[0] ?? 'pt-BR')} (ex.: Vulto)`}
+              />
+              <IconButton label={`Remover o termo ${index + 1} do glossário`} icon={Trash2} onClick={() => onChange(value.filter((_, i) => i !== index))} />
             </div>
-          ) : null}
-          <Input
-            aria-label={`Observação do termo ${index + 1}`}
-            value={row.note}
-            maxLength={300}
-            onChange={(e) => set(index, { note: e.target.value })}
-            placeholder="Observação para o tradutor (opcional; ex.: nome do canal)"
-          />
-        </div>
-      ))}
+            <Checkbox
+              label="Não traduzir"
+              description="Fica igual em todos os idiomas, menos onde houver tradução fixa abaixo."
+              checked={row.keep}
+              onChange={(keep) => set(index, { keep })}
+            />
+            {shown.length ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {shown.map((l) => (
+                  <label key={l} className="flex min-w-0 flex-col gap-1 text-[13px] text-muted">
+                    <span className="inline-flex items-center gap-1">
+                      <Languages size={14} aria-hidden="true" />
+                      Em {langLabel(l)}
+                    </span>
+                    <Input
+                      value={row.translations[l] ?? ''}
+                      maxLength={100}
+                      onChange={(e) => set(index, { translations: { ...row.translations, [l]: e.target.value } })}
+                      placeholder={row.keep ? `${row.term.trim() || 'igual ao termo'} (sem traduzir)` : 'Tradução livre'}
+                    />
+                  </label>
+                ))}
+              </div>
+            ) : null}
+            {others.length ? (
+              <Select
+                aria-label={`Tradução fixa do termo ${index + 1} em outro idioma`}
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) set(index, { translations: { ...row.translations, [e.target.value]: '' } });
+                }}
+              >
+                <option value="">Tradução fixa em outro idioma…</option>
+                {others.map((l) => (
+                  <option key={l.code} value={l.code}>
+                    {l.label}
+                  </option>
+                ))}
+              </Select>
+            ) : null}
+            <Input
+              aria-label={`Observação do termo ${index + 1}`}
+              value={row.note}
+              maxLength={300}
+              onChange={(e) => set(index, { note: e.target.value })}
+              placeholder="Observação para o tradutor (opcional; ex.: nome do canal)"
+            />
+          </div>
+        );
+      })}
       <div>
         <Button size="sm" icon={BookA} onClick={() => onChange([...value, { term: '', keep: true, translations: {}, note: '' }])}>
           Adicionar termo

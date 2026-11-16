@@ -494,9 +494,47 @@ def _join_groups_pt(text: str) -> str:
     return " ".join(parts[:-1]) + joiner + last
 
 
+# Palavra da vírgula decimal e do sinal de menos nos idiomas em que a parte decimal se lê como número inteiro
+# ("treze vírgula setenta e cinco"). Nos outros (en: "thirteen point seven five"), o num2words lê dígito a dígito.
+_DECIMAL_WORDS = {"pt": ("vírgula", "menos"), "es": ("coma", "menos")}
+
+
+def _decimal_digits(written: str, lang: str) -> tuple[bool, str, str] | None:
+    """(negativo, parte inteira, parte decimal) do número como foi escrito ('13,75' → (False, '13', '75')), mantendo
+    os zeros da parte decimal ('1,80' → '80', '2,05' → '05')."""
+    s = written.strip().replace("−", "-")
+    negative = s.startswith("-")
+    s = s.lstrip("+-")
+    sep, group = (".", ",") if lang.lower().startswith("en") else (",", ".")
+    if sep not in s:
+        return None
+    whole, frac = s.rsplit(sep, 1)
+    whole = whole.replace(group, "")
+    if not whole.isdigit() or not frac.isdigit():
+        return None
+    return negative, whole, frac
+
+
 def number_words(value: float, lang: str = "pt-BR", *, year: bool = False, ordinal: bool = False,
-                 feminine: bool = False) -> str | None:
-    """Número por extenso no idioma (num2words). None se o idioma não é suportado."""
+                 feminine: bool = False, written: str | None = None) -> str | None:
+    """Número por extenso no idioma (num2words). None se o idioma não é suportado.
+
+    `written` é o número como está no texto ("13,75"). Em pt e es, a parte decimal dele é lida como número inteiro
+    ("treze vírgula setenta e cinco", "um vírgula oitenta"), com os zeros da frente um a um ("dois vírgula zero
+    cinco"), que é como se fala; o num2words leria dígito a dígito ("sete cinco").
+    """
+    words_ = _DECIMAL_WORDS.get(_speech_lang(lang))
+    parts = _decimal_digits(written, lang) if written and words_ and not float(value).is_integer() else None
+    if parts is not None and words_ is not None:
+        negative, whole, frac = parts
+        spoken_whole = number_words(int(whole), lang, feminine=feminine)
+        zeros = len(frac) - len(frac.lstrip("0"))
+        rest = frac.lstrip("0")
+        spoken_frac = [number_words(0, lang)] * zeros + ([number_words(int(rest), lang)] if rest else [])
+        if spoken_whole is not None and all(spoken_frac):
+            comma, minus = words_
+            text = f"{spoken_whole} {comma} " + " ".join(str(w) for w in spoken_frac)
+            return f"{minus} {text}" if negative else text
     try:
         from decimal import Decimal
 
@@ -561,7 +599,9 @@ def spoken_number_runs(tokens: list[str], lang: str = "pt-BR") -> list[tuple[int
         nxt = normalize_token(tokens[run.i1]) if run.i1 < len(tokens) else ""
         feminine = pt and (unit in _FEMININE_UNITS or nxt in _FEMININE_PT or _ORDINAL_SUFFIXES.get(unit, False))
         plain_year = re.fullmatch(r"\d{4}", digits) is not None and not (currency or unit or percent)
-        spoken = number_words(run.value, lang, year=plain_year, ordinal=ordinal, feminine=feminine)
+        # A parte decimal só vem do texto quando o valor é o escrito (sem escala: "1,5 bilhão" é inteiro).
+        written = digits if _to_number(digits, lang) == run.value else None
+        spoken = number_words(run.value, lang, year=plain_year, ordinal=ordinal, feminine=feminine, written=written)
         if spoken is None:
             continue
         if percent and "%" in table:

@@ -27,7 +27,14 @@ from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import service
 from studio.core.project.document import ArtDirection, ProjectDoc, Scene, Visual
 from studio.core.project.media_edit import scene_label
-from studio.core.speech import PronunciationEntry, SpeechPlan, pronunciation_of, script_words, speech_plan
+from studio.core.speech import (
+    SPEECH_VERSION,
+    PronunciationEntry,
+    SpeechPlan,
+    pronunciation_of,
+    script_words,
+    speech_plan,
+)
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
@@ -404,6 +411,7 @@ class Builder:
         if plan.changed:
             # Só quando o texto falado muda: as gravações de antes continuam valendo para os textos sem troca.
             inputs["spoken"] = plan.spoken
+            inputs["speech_v"] = SPEECH_VERSION
         return inputs
 
     def narration(self, seg_id: str, lang: str) -> tuple[str, dict[str, Any]]:
