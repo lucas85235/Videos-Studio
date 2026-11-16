@@ -74,6 +74,7 @@ import {
   useToast,
 } from '../ui';
 import { cleanGlossary, cleanPronunciation, GlossaryEditor, halfFilledPronunciation, PronunciationEditor } from './ChannelSpeech';
+import { CharactersSheet } from './characters/CharactersSheet';
 import { chipClass, Sheet } from './ops/common';
 import { browserZone, sameOffsetAsBrowser, whenIn, zoneCity, zoneLabel } from './ops/zones';
 import { Notice } from './project/delivery/shared';
@@ -790,6 +791,9 @@ const YouTubeInfo: React.FC<{ y: ChannelYouTube }> = ({ y }) => {
   );
 };
 
+/** Quantos personagens fixos o canal tem (`style_bible.characters`). */
+const characterCount = (c: Channel) => (Array.isArray(c.style_bible?.characters) ? c.style_bible.characters.length : 0);
+
 type CardActions = {
   onEdit: () => void;
   onDelete: () => void;
@@ -798,6 +802,7 @@ type CardActions = {
   onUnlink: () => void;
   onForget: () => void;
   onSuggest: () => void;
+  onCharacters: () => void;
 };
 
 /** Playlist padrão do canal: os envios dos projetos dele entram nela. A lista só é lida ao abrir (gasta cota). */
@@ -865,7 +870,23 @@ const ChannelCard: React.FC<
     /** Outra sugestão da IA em andamento: uma por vez (a resposta de uma não passa por cima da outra). */
     suggestDisabled: boolean;
   } & CardActions
-> = ({ channel: c, styleName, editing, onEdit, onDelete, deleting, onLink, onRefresh, onUnlink, onForget, onSuggest, refreshing, suggesting, suggestDisabled }) => {
+> = ({
+  channel: c,
+  styleName,
+  editing,
+  onEdit,
+  onDelete,
+  deleting,
+  onLink,
+  onRefresh,
+  onUnlink,
+  onForget,
+  onSuggest,
+  onCharacters,
+  refreshing,
+  suggesting,
+  suggestDisabled,
+}) => {
   const y = c.youtube ?? null;
   const hasToken = y?.token === 'ok' || y?.token === 'error';
   return (
@@ -887,6 +908,9 @@ const ChannelCard: React.FC<
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <Button size="sm" icon={UserRound} onClick={onCharacters} aria-label={`Personagens do canal ${c.name}`}>
+            Personagens{characterCount(c) ? ` (${characterCount(c)})` : ''}
+          </Button>
           <Button size="sm" icon={Pencil} onClick={onEdit} aria-label={`Editar o canal ${c.name}`}>
             Editar
           </Button>
@@ -1185,6 +1209,7 @@ export const ChannelsPage: React.FC = () => {
   const [tried, setTried] = useState(false);
   /** Painel "Vincular canal do YouTube" aberto (target null: canal novo). */
   const [linking, setLinking] = useState<{ target: Channel | null } | null>(null);
+  const [charactersOf, setCharactersOf] = useState<Channel | null>(null);
   /** Proposta da IA aplicada no formulário aberto (ainda não salva). */
   const [suggestion, setSuggestion] = useState<ChannelSuggestion | null>(null);
 
@@ -1465,9 +1490,14 @@ export const ChannelsPage: React.FC = () => {
               onUnlink={() => void askUnlink(c)}
               onForget={() => void askForget(c)}
               onSuggest={() => suggest.mutate(c)}
+              onCharacters={() => setCharactersOf(c)}
             />
           ))}
         </div>
+      ) : null}
+
+      {charactersOf ? (
+        <CharactersSheet target={{ kind: 'channel', id: charactersOf.id, name: charactersOf.name }} onClose={() => setCharactersOf(null)} />
       ) : null}
 
       {linking ? (

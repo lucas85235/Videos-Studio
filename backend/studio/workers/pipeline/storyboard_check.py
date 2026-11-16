@@ -714,8 +714,8 @@ def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     names: list[tuple[str, str]] = []
     faceless: list[str] = []
     for entity in art.entities:
-        if entity.real:
-            continue
+        if entity.real or entity.character:
+            continue  # personagem cadastrado: `characters.finish` já trocou o nome pela descrição
         name, role = _split_entity_name(entity.name)
         aliases = _aliases(name, narration)
         if not aliases:
@@ -764,7 +764,7 @@ def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         art.hook = scrub(art.hook)
         art.world = scrub(art.world)
         for entity in art.entities:
-            if not entity.real:
+            if not entity.real and not entity.character:
                 entity.look = scrub(entity.look)
     for name in faceless:
         issues.append(Issue("personagem_sem_rosto", CORRIGIDO,

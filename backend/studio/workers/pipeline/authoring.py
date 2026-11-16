@@ -13,11 +13,13 @@ from typing import Any
 from studio.core.glossary import GlossaryEntry, check_pairs, glossary_prompt
 from studio.core.hashing import seed_from
 from studio.core.numbers import card_number, notable_number_runs, number_runs
+from studio.core.project import characters as characters_mod
 from studio.core.project.document import (
     DATA_KINDS,
     REAL_KINDS,
     ArtDirection,
     CardItem,
+    Character,
     Entity,
     Metadata,
     ProjectDoc,
@@ -58,6 +60,7 @@ from studio.core.text import estimate_seconds, normalize_token, split_beats
 from studio.providers import registry
 from studio.providers.base import LLMResult
 from studio.workers.analytics.lessons import lessons_block, lessons_key
+from studio.workers.pipeline import characters as character_scenes
 from studio.workers.pipeline import dubbing, storyboard_check
 from studio.workers.pipeline.schemas import (
     METADATA_SCHEMA,
@@ -380,7 +383,8 @@ def _beat_line(beat: Beat) -> str:
 
 
 def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int, *,
-                      channel: dict[str, Any] | None = None, styles: dict[str, str] | None = None) -> str:
+                      channel: dict[str, Any] | None = None, styles: dict[str, str] | None = None,
+                      characters: list[Character] | None = None) -> str:
     """Pedido do storyboard v2: contexto completo do vídeo, catálogos e as batidas."""
     lang = doc.primary_language
     channel = channel or {}
@@ -399,8 +403,10 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
     if channel:
         lines.append(f"Canal: {channel.get('name') or '(sem nome)'}; nicho: {channel.get('niche') or '(não informado)'}; "
                      f"persona: {channel.get('persona') or '(não informada)'}")
-        if channel.get("style_bible"):
-            lines.append("Identidade visual do canal: " + json.dumps(channel["style_bible"], ensure_ascii=False))
+        # Os personagens vão no bloco próprio (sem os caminhos das imagens âncora).
+        bible = {k: v for k, v in (channel.get("style_bible") or {}).items() if k != characters_mod.BIBLE_KEY}
+        if bible:
+            lines.append("Identidade visual do canal: " + json.dumps(bible, ensure_ascii=False))
     else:
         lines.append("Canal: (nenhum)")
     lines += [
@@ -438,6 +444,7 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
     if doc.art is not None and doc.art.source == "user":
         user_art = doc.art.model_dump(mode="json", exclude={"source"})
         lines += ["", "Direção definida pelo usuário (não mude): " + json.dumps(user_art, ensure_ascii=False)]
+    lines += character_scenes.prompt_lines(characters or [])
     lines += ["", 'Devolva "direction" e uma entrada em "scenes" para cada batida, com a chave exata e na mesma ordem.']
     return "\n".join(lines)
 
@@ -1089,13 +1096,15 @@ class _Attempt:
 
 
 def _attempt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], data: object, keep_segments: set[str],
-             budget: int, style_ids: set[str]) -> _Attempt:
+             budget: int, style_ids: set[str], characters: list[Character] | None = None) -> _Attempt:
     """Documento novo a partir de uma resposta do LLM, já normalizado e revisado."""
     payload = data if isinstance(data, dict) else {}
     if doc.art is not None and doc.art.source == "user":
         art = doc.art.model_copy(deep=True)
     else:
         art = _direction_from(payload.get("direction"), style, current_style_id=doc.style_id, style_ids=style_ids)
+    # Personagens cadastrados viram entidades antes das cenas (as cenas só aceitam ids de entidades da direção).
+    art, remap = character_scenes.prepare(art, characters or [])
     new_doc = doc.model_copy(deep=True)
     kept = [s for s in new_doc.scenes if s.segment_id in keep_segments]
     _detach_kept(doc, kept)
@@ -1109,6 +1118,7 @@ def _attempt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], data: object,
     new_doc.art = art
     new_doc.storyboard_approved = False
     new_doc = ProjectDoc.model_validate(new_doc.model_dump())
+    issues += character_scenes.finish(new_doc, beats, characters or [], remap)
     issues += storyboard_check.check(new_doc, style, beats, budget)
     return _Attempt(new_doc, issues)
 
@@ -1156,8 +1166,8 @@ def _review(doc: ProjectDoc, budget: int, issues: list[Issue], retried: bool) ->
 
 
 def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = None, job_id: str | None = None,
-               channel: dict[str, Any] | None = None,
-               styles: dict[str, str] | None = None) -> tuple[ProjectDoc, str, dict[str, Any]]:
+               channel: dict[str, Any] | None = None, styles: dict[str, str] | None = None,
+               characters: list[Character] | None = None) -> tuple[ProjectDoc, str, dict[str, Any]]:
     """Storyboard v2: direção de arte do vídeo e uma cena por batida, revisadas antes de gastar imagens.
 
     Segmentos com cena travada ficam como estão. Se a revisão achar problema grave, pede uma correção ao
@@ -1172,10 +1182,12 @@ def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = No
         new_doc = ProjectDoc.model_validate(new_doc.model_dump())
         return new_doc, "nenhum", _review(new_doc, budget, [], retried=False)
     catalog = styles if styles is not None else style_catalog(style)
-    prompt = storyboard_prompt(doc, style, beats, budget, channel=channel, styles=catalog)
+    if characters is None:
+        characters = characters_mod.for_doc(doc, (channel or {}).get("style_bible") or {})
+    prompt = storyboard_prompt(doc, style, beats, budget, channel=channel, styles=catalog, characters=characters)
     context = _storyboard_context(doc, style, beats, budget)
     result, provider_id = _llm("storyboard", STORYBOARD_SYSTEM, prompt, STORYBOARD_SCHEMA, context, project_id, job_id)
-    best = _attempt(doc, style, beats, result.data, keep_segments, budget, set(catalog))
+    best = _attempt(doc, style, beats, result.data, keep_segments, budget, set(catalog), characters)
     severe = best.graves
     retried = False
     if severe:
@@ -1187,7 +1199,7 @@ def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = No
             log.warning("a correção do storyboard falhou; fica a primeira resposta: %s", exc)
         else:
             retried = True
-            other = _attempt(doc, style, beats, second.data, keep_segments, budget, set(catalog))
+            other = _attempt(doc, style, beats, second.data, keep_segments, budget, set(catalog), characters)
             if len(other.graves) < len(severe):
                 best, provider_id = other, second_provider
     issues = best.issues

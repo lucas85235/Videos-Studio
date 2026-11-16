@@ -14,6 +14,7 @@ import {
   Star,
   Trash2,
   TriangleAlert,
+  UserRound,
   X,
   Check,
 } from 'lucide-react';
@@ -23,6 +24,7 @@ import { api, ApiError, type Job, type ProjectDetail } from '../api';
 import { usePageTitle } from '../documentTitle';
 import { langLabel } from '../labels';
 import { useSeenFailures } from '../shell/data';
+import { CharactersSheet } from './characters/CharactersSheet';
 import { formatLabel, statusMeta } from './projects/meta';
 import {
   Badge,
@@ -215,6 +217,7 @@ export const ProjectPage: React.FC = () => {
   const { dismissed, dismiss } = useDismissedFailures();
   const [searchParams, setSearchParams] = useSearchParams();
   const [editingTitle, setEditingTitle] = useState(false);
+  const [charactersOpen, setCharactersOpen] = useState(false);
   const [pinnedTab, setPinnedTab] = useState<{ id: string; tab: ProjectTab } | null>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   const unsaved = useUnsavedCount(projectId);
@@ -518,6 +521,15 @@ export const ProjectPage: React.FC = () => {
                   start('render');
                 }}
               />
+              <PopoverItem
+                icon={UserRound}
+                label="Personagens"
+                hint="Personagens fixos com descrição e imagens âncora (somam aos do canal)."
+                onClick={() => {
+                  close();
+                  setCharactersOpen(true);
+                }}
+              />
               <div className="my-1 border-t border-line" />
               <PopoverItem
                 icon={Trash2}
@@ -636,6 +648,10 @@ export const ProjectPage: React.FC = () => {
           title="Não foi possível atualizar o projeto"
           onRetry={() => project.refetch()}
         />
+      ) : null}
+
+      {charactersOpen ? (
+        <CharactersSheet target={{ kind: 'project', id: doc.id, name: doc.title }} onClose={() => setCharactersOpen(false)} />
       ) : null}
 
       <NextStepBanner

@@ -214,6 +214,14 @@ def _apply_channel(row: Channel, body: ChannelBody, fields: set[str]) -> None:
     from studio.workers.publish.schedule import PostingPlan
 
     data = body.model_dump()
+    if "style_bible" in fields:
+        # Os personagens têm rota própria: o formulário do canal (aberto antes de um cadastro) não os apaga.
+        from studio.core.project.characters import BIBLE_KEY
+
+        bible = {k: v for k, v in (data["style_bible"] or {}).items() if k != BIBLE_KEY}
+        if BIBLE_KEY in (row.style_bible or {}):
+            bible[BIBLE_KEY] = row.style_bible[BIBLE_KEY]
+        data["style_bible"] = bible
     for key in fields - {"posting", "pronunciation", "glossary", "novelty"}:
         setattr(row, key, data[key])
     for key in ("pronunciation", "glossary"):

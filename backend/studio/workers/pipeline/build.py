@@ -18,6 +18,7 @@ import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,8 +27,9 @@ from PIL import Image
 from studio.config import get_settings
 from studio.core.graph.store import ArtifactStore
 from studio.core.hashing import hash_file, hash_obj, seed_from
+from studio.core.project import characters as characters_mod
 from studio.core.project import service
-from studio.core.project.document import ArtDirection, ProjectDoc, Scene, Visual
+from studio.core.project.document import ArtDirection, Character, ProjectDoc, Scene, Visual
 from studio.core.project.media_edit import scene_label
 from studio.core.speech import (
     SPEECH_VERSION,
@@ -628,11 +630,13 @@ class Builder:
         else:
             chain = registry.resolve_chain("image", self.style.art.image_chain)
             if visual.language and self.doc.art is not None:
-                prompt = compose_directed_prompt(self.style, self.doc.art, visual)
+                # Personagem cadastrado: a descrição do cadastro entra no prompt (nunca o nome).
+                art, visual = self.character_view(visual)
+                prompt = compose_directed_prompt(self.style, art, visual)
             else:
                 # Cena antiga (sem linguagem ou sem direção): o prompt de sempre, com a mesma chave de cache.
                 prompt = compose_image_prompt(self.style, visual.prompt)
-        return {
+        inputs: dict[str, Any] = {
             "prompt": prompt,
             "width": self.style.format.width,
             "height": self.style.format.height,
@@ -641,6 +645,57 @@ class Builder:
             "type": visual.type,
             "chain": chain,
         }
+        refs = self.reference_images(scene)
+        if refs:
+            # Só quando há imagem âncora: as cenas sem personagem mantêm a chave de cache de antes. O nome do arquivo
+            # já é o hash do conteúdo (trocar a imagem do personagem gera a cena de novo).
+            inputs["references"] = [p.stem for p in refs]
+        return inputs
+
+    def character_view(self, visual: Visual) -> tuple[ArtDirection, Visual]:
+        """Direção com a descrição atual dos personagens e a cena com a referência ao personagem em dia no prompt
+        (editar a descrição não deixa "The tall woman" no prompt de quem virou homem idoso)."""
+        assert self.doc.art is not None
+        art = characters_mod.with_characters(self.doc.art, self.characters)
+        if self.characters and visual.entities:
+            from studio.workers.pipeline.characters import (
+                current_prompt,  # import circular (storyboard_check)
+            )
+
+            prompt = current_prompt(visual.prompt, self.doc.art, self.characters, visual.entities)
+            if prompt != visual.prompt:
+                visual = visual.model_copy(update={"prompt": prompt})
+        return art, visual
+
+    def references_pending(self, chain: list[str], cached: dict[str, Any]) -> bool:
+        """A imagem do cache saiu sem as imagens âncora (o gerador que as aceita estava sem cota ou fora do ar) e
+        agora há na cadeia um gerador que as aceita disponível: gera de novo para manter o personagem."""
+        if cached.get("references_used", True):
+            return False
+        for candidate in chain:
+            provider = registry.get(candidate)
+            if not provider.info.accepts_references:
+                continue
+            ok, _ = provider.availability()
+            if ok and not registry.quota_exhausted_today(candidate):
+                return True
+        return False
+
+    @cached_property
+    def characters(self) -> list[Character]:
+        """Personagens do projeto e do canal (lidos uma vez por build)."""
+        try:
+            return characters_mod.for_doc(self.doc)
+        except Exception as exc:  # noqa: BLE001 - sem o canal, fica só o que está no projeto
+            log.warning("não deu para ler os personagens do canal: %s", exc)
+            return list(self.doc.characters)
+
+    def reference_images(self, scene: Scene) -> list[Path]:
+        """Imagens âncora dos personagens da cena (só cena dirigida de imagem de IA)."""
+        visual = scene.visual
+        if visual.type == "stock" or not visual.language or self.doc.art is None or not visual.entities:
+            return []
+        return characters_mod.reference_images(visual, self.characters, self.settings.data_dir)
 
     def cached_image(self, inputs: dict[str, Any],
                      scene: Scene | None = None) -> tuple[str, dict[str, Any] | None]:
@@ -651,7 +706,9 @@ class Builder:
         variants = [inputs]
         visual = scene.visual if scene is not None else None
         if visual is not None and visual.type != "stock" and visual.language and self.doc.art is not None:
-            old = legacy_directed_prompt(self.style, self.doc.art, visual)
+            # Com os personagens de agora: depois de editar a descrição, a imagem velha não é achada pelo prompt antigo.
+            art, current = self.character_view(visual)
+            old = legacy_directed_prompt(self.style, art, current)
             if old != inputs["prompt"]:
                 variants.append({**inputs, "prompt": old})
         keys = [k for v in variants for k in (
@@ -704,6 +761,8 @@ class Builder:
         if inputs is None:
             return None
         h, cached = self.cached_image(inputs, scene)
+        if cached and inputs.get("references") and self.references_pending(inputs["chain"], cached):
+            cached = None
         if cached and not self._better_available(inputs["chain"], cached.get("provider")):
             self.stats.hit("image", True)
             if not cached.get("commercial", True):
@@ -711,21 +770,30 @@ class Builder:
             return cached["path"]
         out_dir = self.store.dir_for("image", h)
 
+        refs = self.reference_images(scene) if inputs.get("references") else []
+        sent: dict[str, bool] = {}
+
         def call(provider):
             self._check()
+            # Imagens âncora só para o gerador que as aceita; os outros ficam com a descrição do prompt.
+            extra = {"references": refs} if refs and provider.info.accepts_references else {}
+            sent[provider.info.id] = bool(extra)
             if provider.info.id == "codex_cli":
                 with _codex_lock:
                     self._check()  # cancelado enquanto esperava a vez do Codex: não começa outra imagem
                     return provider.generate(prompt=inputs["prompt"], width=inputs["width"], height=inputs["height"],
-                                             seed=inputs["seed"], out_dir=out_dir)
+                                             seed=inputs["seed"], out_dir=out_dir, **extra)
             return provider.generate(prompt=inputs["prompt"], width=inputs["width"], height=inputs["height"],
-                                     seed=inputs["seed"], out_dir=out_dir)
+                                     seed=inputs["seed"], out_dir=out_dir, **extra)
 
         result, provider, _ = registry.run_chain("image", inputs["chain"], call, usage_of=self._usage,
                                                  project_id=self.project_id, job_id=self.sink.job_id)
         rel = self.store.rel(result.path)
         output = {"path": rel, "provider": provider.info.id, "model": result.model, "commercial": provider.info.commercial_use,
                   "license": result.meta.get("license"), "files": [rel]}
+        if refs:
+            # Saiu sem as imagens âncora (outro gerador da cadeia): o próximo build tenta de novo com elas.
+            output["references_used"] = sent.get(provider.info.id, False)
         self.store.save("image", h, output, provider.info.id, result.usage.cost_usd)
         self.stats.hit("image", False, result.usage.cost_usd)
         if not provider.info.commercial_use:
@@ -1634,7 +1702,8 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
             continue
         # Imagem de teste (placeholder) é refeita quando há um gerador melhor: também entra na conta.
         _, cached = builder.cached_image(inputs, scene)
-        if not cached or builder._better_available(inputs["chain"], cached.get("provider")):
+        if (not cached or builder._better_available(inputs["chain"], cached.get("provider"))
+                or (inputs.get("references") and builder.references_pending(inputs["chain"], cached))):
             missing_images.append(scene.id)
     # Só a voz local quando todos os trechos que faltam saem dela (idioma sem voz local usa a voz final).
     langs = {m["lang"] for m in missing_tts} or set(builder.langs)
