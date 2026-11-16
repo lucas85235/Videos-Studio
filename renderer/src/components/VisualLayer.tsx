@@ -150,38 +150,47 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
   const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
   const chroma = hasEffect(effects, 'chromatic');
-  const imgStyle: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', transform, transformOrigin: origin, filter };
+  // Aberração cromática numa passada só: a imagem é desenhada uma vez e um filtro SVG separa os canais (antes eram
+  // 3 cópias da imagem, cada uma com a cadeia inteira de filtros CSS).
+  const chromaId = chroma ? `chroma-${String(scene.id).replace(/[^A-Za-z0-9_-]/g, '')}-${scene.seed}` : null;
+  const imgStyle: React.CSSProperties = {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    transform,
+    transformOrigin: origin,
+    filter: chromaId ? `${filter} url(#${chromaId})`.trim() : filter,
+  };
   return (
     <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>
-      <Img src={url} style={imgStyle} />
-      {chroma ? (
-        <>
-          <Img
-            src={url}
-            style={{
-              ...imgStyle,
-              position: 'absolute',
-              inset: 0,
-              mixBlendMode: 'screen',
-              opacity: 0.32 * chroma.amount,
-              transform: `${transform} translateX(${4 + 6 * chroma.amount}px)`,
-              filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(-40deg)`,
-            }}
-          />
-          <Img
-            src={url}
-            style={{
-              ...imgStyle,
-              position: 'absolute',
-              inset: 0,
-              mixBlendMode: 'screen',
-              opacity: 0.32 * chroma.amount,
-              transform: `${transform} translateX(-${4 + 6 * chroma.amount}px)`,
-              filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(160deg)`,
-            }}
-          />
-        </>
+      {chroma && chromaId ? (
+        <ChromaticFilter id={chromaId} amount={chroma.amount} shift={((4 + 6 * chroma.amount) * Math.min(width, height)) / 1080} />
       ) : null}
+      <Img src={url} style={imgStyle} />
     </AbsoluteFill>
+  );
+};
+
+/**
+ * Filtro SVG da aberração cromática: desloca o vermelho para um lado e o azul para o outro, mantém o verde e mistura
+ * com a imagem original pela intensidade. Tudo em sRGB (sem conversão para RGB linear, mais rápido).
+ */
+const ChromaticFilter: React.FC<{ id: string; amount: number; shift: number }> = ({ id, amount, shift }) => {
+  const mix = Math.min(1, 0.3 + 0.7 * amount);
+  return (
+    <svg width={0} height={0} style={{ position: 'absolute' }} aria-hidden="true">
+      <defs>
+        <filter id={id} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
+          <feOffset in="SourceGraphic" dx={shift} dy={0} result="rDesloc" />
+          <feColorMatrix in="rDesloc" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r" />
+          <feOffset in="SourceGraphic" dx={-shift} dy={0} result="bDesloc" />
+          <feColorMatrix in="bDesloc" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b" />
+          <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g" />
+          <feComposite in="r" in2="g" operator="arithmetic" k1={0} k2={1} k3={1} k4={0} result="rg" />
+          <feComposite in="rg" in2="b" operator="arithmetic" k1={0} k2={1} k3={1} k4={0} result="separado" />
+          <feComposite in="separado" in2="SourceGraphic" operator="arithmetic" k1={0} k2={mix} k3={1 - mix} k4={0} />
+        </filter>
+      </defs>
+    </svg>
   );
 };
