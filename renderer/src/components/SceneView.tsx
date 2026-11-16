@@ -3,8 +3,10 @@ import { AbsoluteFill, Sequence, useVideoConfig } from 'remotion';
 import { imageFilter } from '../look';
 import type { RenderStyle, SceneKind, TimelineScene } from '../types';
 import { Captions, captionCenter, captionHalfHeight, captionTop } from './Captions';
+import { ChartCard, chartRows } from './ChartCard';
 import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
+import { MapCard, mapItems } from './MapCard';
 import { assetUrl, CreditChip, creditChipHalf, creditChipPlace, NewsCard } from './RealMedia';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
@@ -29,20 +31,22 @@ const CARD_VIEWS: Partial<Record<SceneKind, React.FC<CardViewProps>>> = {
   text: KineticText,
   stat: StatCard,
   compare: CompareCard,
+  chart: ChartCard,
+  map: MapCard,
 };
 
 /** Quanto o fundo escurece em cada tipo. */
-const DIM: Partial<Record<SceneKind, number>> = { title: 0.55, count: 0.55, quote: 0.55, text: 0.62, stat: 0.6, compare: 0.6 };
+const DIM: Partial<Record<SceneKind, number>> = { title: 0.55, count: 0.55, quote: 0.55, text: 0.62, stat: 0.6, compare: 0.6, chart: 0.62 };
 /** Desfoque do fundo (px a 1080): os cartões ficam sobre a imagem (em geral reaproveitada) desfocada. */
-const BLUR: Partial<Record<SceneKind, number>> = { stat: 8, compare: 8, text: 6, title: 4 };
+const BLUR: Partial<Record<SceneKind, number>> = { stat: 8, compare: 8, chart: 8, text: 6, title: 4 };
 /** Sem imagem, o texto cinético fica sobre o fundo do estilo quase opaco (com imagem, só escurecida e desfocada). */
 const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text']);
-/** Cartão grande no meio da tela: a legenda desce para baixo dele. */
-const CARD_KINDS = new Set<SceneKind>(['title', 'count', 'stat', 'compare']);
+/** Cartão grande no meio da tela (ou o mapa, que ocupa a tela): a legenda desce para baixo dele. */
+const CARD_KINDS = new Set<SceneKind>(['title', 'count', 'stat', 'compare', 'chart', 'map']);
 /** O próprio cartão mostra as palavras, então não há legenda. */
 const NO_CAPTIONS = new Set<SceneKind>(['text', 'quote']);
 /** O painel do cartão já mostra a fonte e o carimbo; o cartão entra quando o número é dito (`reveal`). */
-const PANEL_KINDS = new Set<SceneKind>(['stat', 'compare']);
+const PANEL_KINDS = new Set<SceneKind>(['stat', 'compare', 'chart']);
 /** O cartão começa estes quadros antes do número dito: o painel já está entrando quando o impacto bate. */
 const REVEAL_LEAD = 3;
 /** Cartão de notícia: fundo (a própria imagem da notícia) como o dos cartões de dado. */
@@ -67,11 +71,15 @@ const sourceChipWidth = (source: string, width: number, height: number) => {
 const filled = (t: string | undefined) => Boolean(t?.trim());
 
 /**
- * Tipo que a cena desenha de fato: número sem valor nem rótulo e comparação com menos de 2 itens (tipo trocado na aba
+ * Tipo que a cena desenha de fato: número sem valor nem rótulo, comparação com menos de 2 itens, gráfico sem números e
+ * mapa sem região (tipo trocado na aba
  * Cenas, sem cartão) viram imagem, ou a fala em destaque quando não há imagem, em vez de um painel vazio.
  */
 const effectiveKind = (scene: TimelineScene, hasImage: boolean): SceneKind => {
   const card = scene.card;
+  // Gráfico com menos de 2 números vira comparação (que tem a sua própria reserva); mapa sem região conhecida, imagem.
+  if (scene.kind === 'chart' && chartRows(scene, 'en').length < 2) return effectiveKind({ ...scene, kind: 'compare' }, hasImage);
+  if (scene.kind === 'map' && !mapItems(scene, 'en').length) return hasImage ? 'image' : 'text';
   const empty =
     (scene.kind === 'stat' && !filled(card?.value) && !filled(card?.label) && scene.number == null && !filled(scene.text)) ||
     (scene.kind === 'compare' && (card?.items ?? []).filter((it) => filled(it.label) || filled(it.value)).length < 2);
@@ -86,7 +94,7 @@ const effectiveKind = (scene: TimelineScene, hasImage: boolean): SceneKind => {
  */
 const sourceSupport = (scene: TimelineScene, kind: SceneKind, hasNews: boolean): 'shown' | 'stamp' | null => {
   const card = scene.card;
-  if (filled(card?.headline) || hasNews || PANEL_KINDS.has(kind)) return 'shown';
+  if (filled(card?.headline) || hasNews || PANEL_KINDS.has(kind) || kind === 'map') return 'shown';
   if (TEXT_KINDS.has(kind) && (filled(scene.text) || (kind === 'text' && scene.words.length > 0) || (kind === 'count' && scene.number != null))) {
     return 'shown';
   }

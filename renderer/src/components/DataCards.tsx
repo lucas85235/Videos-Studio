@@ -68,11 +68,11 @@ const FONT_BOOST: Record<string, number> = { VT323: 1.3 };
 const boost = (font: string) => FONT_BOOST[font] ?? 1;
 
 /** Tamanho de fonte para `text` caber em `maxWidth` numa linha, entre `minSize` e `maxSize`. */
-const fitSize = (text: string, font: string, maxWidth: number, maxSize: number, minSize = 0) =>
+export const fitSize = (text: string, font: string, maxWidth: number, maxSize: number, minSize = 0) =>
   Math.max(minSize * boost(font), Math.min(maxSize * boost(font), maxWidth / Math.max(1, text.length * charEm(font))));
 
 /** Tamanho para caber em até `lines` linhas, quebrando nas palavras (estimativa conservadora). */
-const fitLines = (text: string, font: string, maxWidth: number, maxSize: number, minSize: number, lines: number) => {
+export const fitLines = (text: string, font: string, maxWidth: number, maxSize: number, minSize: number, lines: number) => {
   const longest = text.split(/\s+/).reduce((m, w) => Math.max(m, w.length), 1);
   const perLine = Math.max(longest, Math.ceil((text.length * 1.12) / lines));
   return Math.max(minSize * boost(font), Math.min(maxSize * boost(font), maxWidth / (perLine * charEm(font))));
@@ -84,7 +84,7 @@ const fitPreferOne = (text: string, font: string, maxWidth: number, maxSize: num
   return one >= minSingle * boost(font) ? one : fitLines(text, font, maxWidth, maxSize, minSize, lines);
 };
 
-const upper = (text: string, lang: string) => {
+export const upper = (text: string, lang: string) => {
   try {
     return text.toLocaleUpperCase(lang);
   } catch {
@@ -92,7 +92,7 @@ const upper = (text: string, lang: string) => {
   }
 };
 
-const cardWeight = (font: string) => fontWeight(font, 800);
+export const cardWeight = (font: string) => fontWeight(font, 800);
 
 const SOURCE_WORD: Record<string, string> = { pt: 'Fonte', es: 'Fuente', it: 'Fonte', en: 'Source', fr: 'Source', de: 'Quelle' };
 const sourceText = (source: string, lang: string) => `${SOURCE_WORD[lang.slice(0, 2).toLowerCase()] ?? 'Source'}: ${source}`;
@@ -232,20 +232,20 @@ const affixRatioOf = (affix: string) => (!affix ? 0 : /^(?:[^\p{L}\p{N}]{1,2}|[x
 // ---------------------------------------------------------------------------------------------
 // Peças comuns
 
-const layoutOf = (width: number, height: number) => {
+export const layoutOf = (width: number, height: number) => {
   const portrait = height >= width;
   const u = Math.min(width, height);
   const panelW = portrait ? width * 0.86 : Math.min(width * 0.6, height * 1.2);
   return { width, height, portrait, u, panelW };
 };
 
-const useLayout = () => {
+export const useLayout = () => {
   const { width, height } = useVideoConfig();
   return layoutOf(width, height);
 };
 
 /** Linhas que o texto ocupa em `maxWidth` com a fonte `size` (estimativa pela largura média). */
-const linesOf = (text: string, font: string, size: number, maxWidth: number, max = 3) =>
+export const linesOf = (text: string, font: string, size: number, maxWidth: number, max = 3) =>
   text ? Math.max(1, Math.min(max, Math.ceil((text.length * charEm(font) * size) / Math.max(1, maxWidth)))) : 0;
 
 /** Centro da faixa do topo em fração da altura: no vertical, abaixo da fileira do topo do TikTok/Reels (~9%). */
@@ -299,7 +299,7 @@ const stampRise = (label: string, font: string, maxWidth: number, u: number) => 
  * no meio da faixa livre (`band`, entre a faixa do topo e a legenda) e, se ainda não couber, encolhe.
  * `estimate` é a altura prevista do conteúdo (px, sem o respiro do painel).
  */
-const Panel: React.FC<{
+export const Panel: React.FC<{
   style: TextCardStyle;
   scene: TimelineScene;
   lang: string;
