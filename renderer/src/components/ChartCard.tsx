@@ -7,15 +7,18 @@ import { barAmount, type CardViewProps, cardWeight, fitLines, fitSize, linesOf, 
 // Cartão de gráfico (família de dados): barras, linha, pizza e rosca, no mesmo painel dos cartões de dado.
 // Rótulos e valores finais desde o primeiro quadro; só o desenho entra (barras crescem, linha se traça, fatias giram).
 
-export type ChartRow = { label: string; value: string; amount: number };
+/** Ponto do gráfico; `index` é a posição do item no cartão (o destaque aponta para ela). */
+export type ChartRow = { label: string; value: string; amount: number; index: number };
 
-/** Pontos do gráfico com número (o `amount` do backend; sem ele, o valor lido aqui). */
+/** Pontos do gráfico com número, lido aqui do texto do valor (unidade e separador de cada idioma: "1,200", "1.200",
+ *  "1.5 B"); o `amount` antigo do backend só vale quando o texto não tem número. */
 export const chartRows = (scene: TimelineScene, lang: string): ChartRow[] =>
   (scene.card?.items ?? [])
-    .map((it) => {
+    .map((it, index) => {
       const value = (it.value ?? '').trim();
-      const amount = typeof it.amount === 'number' && Number.isFinite(it.amount) ? it.amount : barAmount(value);
-      return { label: upper((it.label ?? '').trim(), lang), value: upper(value, lang), amount: amount ?? NaN };
+      const old = typeof it.amount === 'number' && Number.isFinite(it.amount) ? it.amount : null;
+      const amount = barAmount(value) ?? old;
+      return { label: upper((it.label ?? '').trim(), lang), value: upper(value, lang), amount: amount ?? NaN, index };
     })
     .filter((r) => Number.isFinite(r.amount))
     .slice(0, 8);
@@ -27,9 +30,11 @@ export const chartTypeOf = (scene: TimelineScene, rows: ChartRow[]): ChartType =
   return wanted;
 };
 
-const highlightOf = (scene: TimelineScene, n: number) => {
+/** Posição do ponto em destaque entre os desenhados (o item sem número sai e o destaque não pula para o vizinho). */
+const highlightOf = (scene: TimelineScene, rows: ChartRow[]) => {
   const h = scene.card?.highlight;
-  return typeof h === 'number' && h >= 0 && h < n ? h : null;
+  const at = typeof h === 'number' ? rows.findIndex((r) => r.index === h) : -1;
+  return at >= 0 ? at : null;
 };
 
 /** Cores das fatias: a de destaque (ou a primeira) na cor de destaque; as outras alternam tons do texto e do destaque. */
@@ -63,16 +68,28 @@ const barMetrics = (rows: ChartRow[], m: Metrics) => {
   return { gap, colW, valueSize, labelSize, labelLines, plotH, height };
 };
 
+/** Escala das barras: a linha do zero fica entre o maior e o menor valor; negativo desce, positivo sobe. */
+export const barScale = (amounts: number[]) => {
+  const hi = Math.max(0, ...amounts);
+  const lo = Math.min(0, ...amounts);
+  const span = hi - lo || 1;
+  return { zero: hi / span, span };
+};
+
 const BarChart: React.FC<{ rows: ChartRow[]; highlight: number | null; style: TextCardStyle; m: Metrics }> = ({ rows, highlight, style, m }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { gap, valueSize, labelSize, labelLines, plotH } = barMetrics(rows, m);
-  const max = Math.max(...rows.map((r) => r.amount), 1e-9);
+  // zero: fração da área (de cima) onde fica a linha do zero; com tudo positivo, embaixo, como sempre.
+  const { zero, span } = barScale(rows.map((r) => r.amount));
+  const axis = m.u * 0.004;
+  const radius = m.u * 0.012;
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', gap, fontFamily: fontStack(m.font), fontWeight: m.weight, lineHeight: 1 }}>
       {rows.map((row, i) => {
         const grow = spring({ frame: frame - (3 + i * 4), fps, config: { damping: 200 }, durationInFrames: Math.round(fps * 0.7) });
-        const share = Math.max(0.02, row.amount / max);
+        const share = row.amount === 0 ? 0 : Math.max(0.02, Math.abs(row.amount) / span);
+        const down = row.amount < 0;
         const on = highlight == null || highlight === i;
         return (
           <div key={i} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -88,17 +105,22 @@ const BarChart: React.FC<{ rows: ChartRow[]; highlight: number | null; style: Te
             >
               {row.value}
             </div>
-            <div style={{ height: plotH, width: '100%', display: 'flex', alignItems: 'flex-end' }}>
+            <div style={{ height: plotH + axis, width: '100%', position: 'relative' }}>
               <div
                 style={{
-                  width: '100%',
-                  height: `${100 * share * grow}%`,
-                  borderRadius: `${m.u * 0.012}px ${m.u * 0.012}px 0 0`,
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  ...(down ? { top: plotH * zero + axis } : { bottom: plotH * (1 - zero) + axis }),
+                  height: plotH * share * grow,
+                  borderRadius: down ? `0 0 ${radius}px ${radius}px` : `${radius}px ${radius}px 0 0`,
                   backgroundColor: on ? style.accent : withAlpha(style.color, 0.42),
                 }}
               />
+              <div
+                style={{ position: 'absolute', left: 0, right: 0, top: plotH * zero, height: axis, backgroundColor: withAlpha(style.color, 0.35) }}
+              />
             </div>
-            <div style={{ width: '100%', height: m.u * 0.004, backgroundColor: withAlpha(style.color, 0.35) }} />
             <div
               style={{
                 marginTop: m.u * 0.008,
@@ -342,7 +364,7 @@ export const ChartCard: React.FC<CardViewProps> = ({ scene, style, lang, band })
   const rows = chartRows(scene, lang);
   if (rows.length < 2) return null;
   const type = chartTypeOf(scene, rows);
-  const highlight = highlightOf(scene, rows.length);
+  const highlight = highlightOf(scene, rows);
   const title = upper((scene.card?.label ?? '').trim(), lang);
   const k = portrait ? 1.15 : 0.8;
   const pad = u * 0.05;

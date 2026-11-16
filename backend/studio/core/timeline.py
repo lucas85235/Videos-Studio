@@ -21,7 +21,7 @@ from studio.core.hashing import hash_obj, seed_from
 from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
 from studio.core.project.document import MediaRef, ProjectDoc, Scene
 from studio.core.project.media_edit import scene_label
-from studio.core.regions import region_code, region_name
+from studio.core.regions import region_codes, region_name
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
@@ -33,8 +33,10 @@ from studio.providers.base import Word
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
 # Cartões que entram com o som de impacto (quando a cena não escolheu outro).
 IMPACT_KINDS = ("title", "count", "stat", "compare", "chart")
-# Cartões de dado: entram quando o número é dito ("reveal") e já mostram o carimbo e a fonte no painel.
+# Cartões de dado: entram quando o número é dito ("reveal").
 REVEAL_KINDS = ("stat", "compare")
+# Cartões em painel: o carimbo e a fonte entram no painel, com o cartão (não é carimbo solto, nem tem som próprio).
+PANEL_KINDS = ("stat", "compare", "chart")
 # Teto da gradação trocada pela direção de arte (a do estilo pode ser mais forte, a da direção não).
 ART_GRADE_MAX = 0.45
 SFX_FOR_TRANSITION = {
@@ -376,9 +378,9 @@ def _spoken_number(words: list[Word], lang: str, targets: list[float], *, fallba
     return None
 
 
-def _card_targets(scene: Scene, card: dict[str, Any]) -> list[float]:
+def _card_targets(scene: Scene, card: dict[str, Any], lang: str) -> list[float]:
     texts = [card.get("value")] if scene.kind == "stat" else [item.get("value") for item in card.get("items", [])]
-    values = [v for v in (card_number(t or "") for t in texts) if v is not None]
+    values = [v for v in (card_number(t or "", lang) for t in texts) if v is not None]
     if scene.kind == "stat" and not values and scene.number is not None:
         values.append(float(scene.number))
     return values
@@ -403,13 +405,13 @@ def _spoken_timing(
     duration = resolved["durationInFrames"]
     card = resolved.get("card") or {}
     if scene.kind in REVEAL_KINDS and (card or scene.number is not None):
-        hit = _spoken_number(words, lang, _card_targets(scene, card), fallback=True)
+        hit = _spoken_number(words, lang, _card_targets(scene, card, lang), fallback=True)
         if hit is not None:
             latest = duration - round(REVEAL_MIN_VISIBLE_S * fps)
             resolved["reveal"] = max(0, min(frame(hit.start) - f0, latest))
     stamp = card.get("stamp")
-    if stamp and scene.kind not in REVEAL_KINDS and re.search(r"\d", stamp):
-        value = card_number(stamp)
+    if stamp and scene.kind not in PANEL_KINDS and re.search(r"\d", stamp):
+        value = card_number(stamp, lang)
         hit = _spoken_number(words, lang, [value], fallback=False) if value is not None else None
         if hit is not None:
             at = min(frame(hit.start) - f0, duration - round(STAMP_MIN_VISIBLE_S * fps))
@@ -449,7 +451,7 @@ def _scene_sfx(style: StyleSpec, scene: Scene, resolved: dict[str, Any], s0: flo
         kind = "impact"
     if kind:
         events.append(_sfx_event(kind, at, scene.id))
-    if card.get("stamp") and scene.kind not in REVEAL_KINDS:
+    if card.get("stamp") and scene.kind not in PANEL_KINDS:
         land = s0 + card.get("stamp_from", STAMP_DELAY) / fps + STAMP_LAND_S
         events.append(_sfx_event("impact", land, scene.id))
     return sorted(events, key=lambda e: e["start"])
@@ -692,7 +694,7 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     }
     # Chaves novas só quando preenchidas: a cena antiga gera o mesmo dict (e o mesmo hash de bloco) de antes.
     card = scene.card.resolved(lang, doc.primary_language) if scene.card is not None else {}
-    if card.get("stamp") and scene.kind not in REVEAL_KINDS:
+    if card.get("stamp") and scene.kind not in PANEL_KINDS:
         place = stamp_place(*image_framing(doc, scene))
         if place:
             card["stamp_at"] = place
@@ -711,24 +713,30 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
 
 
 def _data_items(kind: str, card: dict[str, Any], lang: str) -> None:
-    """Itens do gráfico e do mapa prontos para o renderer, com `amount` (o número do valor: "1,5 BI" → 1.5e9) quando
-    há número. No mapa, só regiões que o renderer sabe desenhar (código normalizado) e, sem rótulo, o nome da região
-    no idioma do vídeo; o destaque acompanha o item quando outro sai."""
+    """Itens do gráfico e do mapa prontos para o renderer. No gráfico, os valores vão como texto: o renderer lê o
+    número com a unidade e o separador de cada idioma ("1,200" em inglês, "1.200" em português). No mapa, só regiões
+    que o renderer sabe desenhar (código normalizado, lido junto com as outras: "CA" ao lado de "US-TX" é a
+    Califórnia), sem repetir e, sem rótulo, com o nome da região no idioma do vídeo; o destaque acompanha o item
+    quando outro sai."""
     out: list[dict[str, Any]] = []
     highlight = card.pop("highlight", None)
-    for index, item in enumerate(card["items"]):
+    items = card["items"]
+    codes = region_codes([(it.get("region"), it.get("label")) for it in items]) if kind == "map" else []
+    seen: dict[str, int] = {}
+    for index, item in enumerate(items):
         entry = dict(item)
+        entry.pop("amount", None)
         if kind == "map":
-            code = region_code(entry.get("region")) or region_code(entry.get("label"))
-            if code is None:
+            code = codes[index]
+            if code is None or code in seen:
+                if code is not None and index == highlight:
+                    card["highlight"] = seen[code]
                 continue
+            seen[code] = len(out)
             entry["region"] = code
             entry["label"] = entry.get("label") or region_name(code, lang)
         else:
             entry.pop("region", None)
-        amount = card_number(entry.get("value") or "")
-        if amount is not None:
-            entry["amount"] = amount
         if index == highlight:
             card["highlight"] = len(out)
         out.append(entry)

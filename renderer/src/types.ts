@@ -30,8 +30,9 @@ export const FOCUS_ORIGIN: Record<FocusPoint, string> = {
 };
 
 /**
- * Linha do compare, ponto do gráfico ou região do mapa. `amount`: o número do valor já lido pelo backend ("1,5 BI" →
- * 1.5e9), só no gráfico e no mapa. `region`: código da região do mapa ("BRA", "US-TX").
+ * Linha do compare, ponto do gráfico ou região do mapa. `amount`: só em timeline antiga (o backend não manda mais; o
+ * gráfico lê o número do `value`, com a unidade e o separador de cada idioma). `region`: código da região do mapa
+ * ("BRA", "US-TX").
  */
 export type TimelineCardItem = { label: string; value: string; amount?: number; region?: string };
 

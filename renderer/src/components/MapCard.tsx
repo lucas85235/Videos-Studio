@@ -36,6 +36,15 @@ export const mapItems = (scene: TimelineScene, lang: string): MapItem[] => {
   return out;
 };
 
+/** Posição da região em destaque entre as desenhadas: segue a região do item apontado (não a posição, que muda quando
+ *  um item repetido ou que o mapa não sabe desenhar sai). */
+export const mapMain = (scene: TimelineScene, items: MapItem[]): number | null => {
+  const h = scene.card?.highlight;
+  const region = typeof h === 'number' ? scene.card?.items?.[h]?.region?.trim().toUpperCase() : undefined;
+  const at = region ? items.findIndex((it) => it.region === region) : -1;
+  return at >= 0 ? at : null;
+};
+
 /** Menor largura (em unidades da projeção, ~0,35 rad) do enquadramento: país pequeno não vira um borrão gigante. */
 const MIN_SPAN = 0.35;
 /** Quanto o mapa começa mais afastado (e aproxima até o enquadramento final). */
@@ -50,8 +59,7 @@ export const MapCard: React.FC<CardViewProps> = ({ scene, style, lang, band }) =
   const font = style.font;
   const weight = cardWeight(font);
   const title = upper((scene.card?.label ?? '').trim(), lang);
-  const h = scene.card?.highlight;
-  const main = typeof h === 'number' && h >= 0 && h < items.length ? h : null;
+  const main = mapMain(scene, items);
   const withStates = items.some((it) => isUsState(it.region));
 
   const geo = useMemo(() => {

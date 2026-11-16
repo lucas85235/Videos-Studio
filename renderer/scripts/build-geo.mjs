@@ -98,7 +98,17 @@ const OVERRIDE = {
   es: { COD: 'República Democrática del Congo', KOR: 'Corea del Sur', PRK: 'Corea del Norte' },
 };
 // Apelidos comuns que o pacote não traz.
-const EXTRA_ALIAS = { USA: ['EUA', 'E.U.A.'], GBR: ['Grã-Bretanha'], NLD: ['Holanda'], KOR: ['Coreia'] };
+const EXTRA_ALIAS = {
+  USA: ['EUA', 'E.U.A.'],
+  GBR: ['Grã-Bretanha', 'Inglaterra', 'Escócia', 'País de Gales', 'England', 'Scotland', 'Wales', 'Escocia', 'Gales'],
+  NLD: ['Holanda'],
+  KOR: ['Coreia'],
+  CZE: ['República Tcheca', 'República Checa'],
+  BIH: ['Bósnia', 'Bosnia'],
+  ARE: ['Emirados Árabes', 'Emirados'],
+  MMR: ['Birmânia', 'Burma'],
+  COD: ['RD Congo', 'RDC', 'Congo-Kinshasa'],
+};
 // Nomes errados do pacote (Congo trocado): não viram apelido.
 const BAD_ALIAS = new Set(['República Popular do Congo', 'República Democrática do Congo:COG']);
 
@@ -135,13 +145,15 @@ const FIPS = {
   '56': 'WY', '60': 'AS', '66': 'GU', '69': 'MP', '72': 'PR', '78': 'VI',
 };
 const STATE_PT = {
-  CA: 'Califórnia', FL: 'Flórida', HI: 'Havaí', LA: 'Luisiana', NY: 'Nova York', NJ: 'Nova Jersey', NM: 'Novo México',
+  AK: 'Alasca', CA: 'Califórnia', FL: 'Flórida', HI: 'Havaí', LA: 'Luisiana', NY: 'Nova York', NJ: 'Nova Jersey', NM: 'Novo México',
   NH: 'Nova Hampshire', NC: 'Carolina do Norte', SC: 'Carolina do Sul', ND: 'Dakota do Norte', SD: 'Dakota do Sul',
   PA: 'Pensilvânia', VA: 'Virgínia', WV: 'Virgínia Ocidental', DC: 'Distrito de Colúmbia', MP: 'Ilhas Marianas do Norte',
   VI: 'Ilhas Virgens Americanas', AS: 'Samoa Americana', OR: 'Oregon', TN: 'Tennessee', MS: 'Mississippi',
 };
+// Outros nomes dos estados (o nome em inglês já vale).
+const STATE_ALIAS = { NY: ['Nova Iorque'], DC: ['Washington DC', 'Washington D.C.', 'Washington, D.C.'] };
 const STATE_ES = {
-  CA: 'California', NY: 'Nueva York', NJ: 'Nueva Jersey', NM: 'Nuevo México', NH: 'Nuevo Hampshire',
+  AK: 'Alaska', CA: 'California', NY: 'Nueva York', NJ: 'Nueva Jersey', NM: 'Nuevo México', NH: 'Nuevo Hampshire',
   NC: 'Carolina del Norte', SC: 'Carolina del Sur', ND: 'Dakota del Norte', SD: 'Dakota del Sur', PA: 'Pensilvania',
   VA: 'Virginia', WV: 'Virginia Occidental', HI: 'Hawái', LA: 'Luisiana', FL: 'Florida',
 };
@@ -154,7 +166,8 @@ for (const g of states.objects.states.geometries) {
   const id = `US-${code}`;
   usStates.push(regionOf(id, stateArcs, g, 0.08));
   const en = g.properties.name;
-  regionNames[id] = { pt: STATE_PT[code] ?? en, en, es: STATE_ES[code] ?? STATE_PT[code] ?? en };
+  const alias = STATE_ALIAS[code];
+  regionNames[id] = { pt: STATE_PT[code] ?? en, en, es: STATE_ES[code] ?? STATE_PT[code] ?? en, ...(alias ? { alias } : {}) };
 }
 
 // --- saída ----------------------------------------------------------------------------------------

@@ -546,7 +546,7 @@ def repeats_speech(text: str, words: list[str], lang: str) -> bool:
         if _has_digit(token):
             if i < len(tokens) and normalize_token(tokens[i]) in _SCALE_TOKENS:
                 token, i = f"{token} {tokens[i]}", i + 1
-            value = card_number(token)
+            value = card_number(token, lang)
             if value is None or not _known_number(value, numbers):
                 return False
         elif norm in _FUNCTION_WORDS:
@@ -840,7 +840,7 @@ def _check_numbers(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
                                 beat.key, scene.id))
         if scene.card:
             for text in card_numbers(scene.card):
-                value = card_number(text)
+                value = card_number(text, lang)
                 if value is None or _known_number(value, allowed):
                     continue
                 if full_check:
@@ -1171,7 +1171,7 @@ def _check_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         card = scene.card if scene is not None else None
         if scene is None or scene.locked or card is None or not (card.source or "").strip():
             continue
-        values = [(text, value) for text in card_numbers(card) if (value := card_number(text)) is not None]
+        values = [(text, value) for text in card_numbers(card) if (value := card_number(text, lang)) is not None]
         if not values:
             continue
         cited = (card.source or "").strip()
@@ -1210,20 +1210,22 @@ def _unit(value: str) -> str:
 
 
 def _check_compare_units(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
-    """Comparação entre medidas diferentes (porcentagem contra total, reais contra dólares): as barras enganam."""
+    """Comparação ou gráfico entre medidas diferentes (porcentagem contra total, reais contra dólares): as barras
+    enganam."""
     lang = doc.primary_language
     issues: list[Issue] = []
     for beat in beats:
         scene = scene_for(doc, beat)
-        if scene is None or scene.kind != "compare" or scene.card is None:
+        if scene is None or scene.kind not in ("compare", "chart") or scene.card is None:
             continue
         values = [v for v in (item.value.get(lang, "") for item in scene.card.items) if _has_digit(v)]
         units = {_unit(v) for v in values}
         if len(units) > 1:
             shown = ", ".join(sorted(u or "número" for u in units))
+            what = "O gráfico mistura" if scene.kind == "chart" else "O cartão compara"
             issues.append(Issue("comparacao_desigual", AVISO,
-                                f"O cartão compara medidas diferentes ({shown}): compare só números medidos do mesmo "
-                                "jeito.", beat.key, scene.id))
+                                f"{what} medidas diferentes ({shown}): compare só números medidos do mesmo jeito.",
+                                beat.key, scene.id))
     return issues
 
 
