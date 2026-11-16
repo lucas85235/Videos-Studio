@@ -27,16 +27,19 @@ from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import service
 from studio.core.project.document import ArtDirection, ProjectDoc, Scene, Visual
 from studio.core.project.media_edit import scene_label
+from studio.core.speech import PronunciationEntry, SpeechPlan, pronunciation_of, script_words, speech_plan
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
 from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline
+from studio.db import session_scope
 from studio.media import audio as audio_mod
 from studio.media import music_library
 from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
+from studio.models import Channel
 from studio.providers import kokoro, registry
 from studio.providers.align import map_to_script, narration_problems, word_error_rate
 from studio.providers.base import Word
@@ -246,6 +249,7 @@ class Builder:
         self._done = 0
         self._total = 1
         self._progress_lock = threading.Lock()
+        self._pronunciation: list[PronunciationEntry] | None = None
 
     # ---------------------------------------------------------------------------------------
     # utilidades
@@ -349,6 +353,23 @@ class Builder:
             return narrator
         return kokoro.pick_voice(lang, None, self._final_gender(speaker_voice, lang), avoid=narrator)
 
+    @property
+    def pronunciation(self) -> list[PronunciationEntry]:
+        """Dicionário de pronúncia do canal do projeto (vazio sem canal)."""
+        if getattr(self, "_pronunciation", None) is None:
+            entries: list[PronunciationEntry] = []
+            if self.doc.channel_id:
+                with session_scope() as s:
+                    row = s.get(Channel, self.doc.channel_id)
+                    entries = pronunciation_of(row.settings) if row is not None else []
+            self._pronunciation = entries
+        return self._pronunciation
+
+    def speech(self, text: str, lang: str, *, local: bool) -> SpeechPlan:
+        """Texto falado: o dicionário do canal sempre; nas vozes locais, também números, datas, siglas e
+        estrangeirismos por extenso (`core.speech`). A legenda continua com `text`."""
+        return speech_plan(text, lang, self.pronunciation, auto=local)
+
     def narration_inputs(self, seg_id: str, lang: str) -> dict[str, Any]:
         seg = self.doc.segment(seg_id)
         text = seg.text_for(lang)
@@ -357,7 +378,7 @@ class Builder:
         style_prompt = (speaker.style_prompt if speaker and speaker.style_prompt else None) or self.style.voice.style_prompt
         if self.local_preview(lang):
             # Voz local: sem instrução de estilo (não há o que interpretar nem o que vazar no áudio).
-            return {
+            inputs = {
                 "text": text,
                 "lang": lang,
                 "voice": self.preview_voice(lang, voice),
@@ -366,17 +387,24 @@ class Builder:
                 "chain": registry.resolve_chain("tts", registry.PREVIEW_TTS_CHAIN),
                 "v": 2,
             }
-        return {
-            "text": text,
-            "lang": lang,
-            "voice": voice,
-            "style_prompt": style_prompt,
-            "speed": self.style.voice.speed,
-            "chain": registry.resolve_chain("tts", self.style.voice.chain),
-            # v2: novo pedido ao Gemini TTS e conferência de cada narração. As gravações antigas podiam ter a
-            # instrução de estilo lida em voz alta, então não são reaproveitadas.
-            "v": 2,
-        }
+            plan = self.speech(text, lang, local=True)
+        else:
+            inputs = {
+                "text": text,
+                "lang": lang,
+                "voice": voice,
+                "style_prompt": style_prompt,
+                "speed": self.style.voice.speed,
+                "chain": registry.resolve_chain("tts", self.style.voice.chain),
+                # v2: novo pedido ao Gemini TTS e conferência de cada narração. As gravações antigas podiam ter a
+                # instrução de estilo lida em voz alta, então não são reaproveitadas.
+                "v": 2,
+            }
+            plan = self.speech(text, lang, local=False)
+        if plan.changed:
+            # Só quando o texto falado muda: as gravações de antes continuam valendo para os textos sem troca.
+            inputs["spoken"] = plan.spoken
+        return inputs
 
     def narration(self, seg_id: str, lang: str) -> tuple[str, dict[str, Any]]:
         inputs = self.narration_inputs(seg_id, lang)
@@ -391,7 +419,7 @@ class Builder:
             self.stats.hit("tts", True)
             if not cached.get("commercial", True):
                 self.stats.noncommercial.add(cached.get("provider", "?"))
-            problems = self._recheck_wer(cached, inputs["text"], lang)
+            problems = self._recheck_wer(cached, inputs["text"], lang, cached.get("spoken"))
             if problems:
                 self.warnings.append(
                     f"Narração de {seg_id} ({lang}) com problema: {'; '.join(problems)}. Ouça esse trecho antes "
@@ -407,23 +435,31 @@ class Builder:
         # voz do Windows.
         chain = self.final_chain(inputs["chain"]) if final else inputs["chain"]
 
+        # Texto falado de cada tipo de voz: as locais recebem números, siglas etc. por extenso.
+        plans = {local: self.speech(inputs["text"], lang, local=local) for local in (False, True)}
+
+        def plan_for(provider: Any) -> SpeechPlan:
+            return plans[bool(getattr(provider.info, "spoken_text", False))]
+
         def take(target: Path, style_prompt: str | None) -> dict[str, Any]:
             result, provider, _ = registry.run_chain(
                 "tts",
                 chain,
-                lambda p: p.synthesize(text=inputs["text"], lang=lang, voice=inputs["voice"], style_prompt=style_prompt,
-                                       speed=inputs["speed"], out_dir=target),
+                lambda p: p.synthesize(text=plan_for(p).spoken, lang=lang, voice=inputs["voice"],
+                                       style_prompt=style_prompt, speed=inputs["speed"], out_dir=target),
                 usage_of=self._usage,
                 project_id=self.project_id,
                 job_id=self.sink.job_id,
             )
-            qa = self._qa(inputs["text"], lang, result.path)
+            plan = plan_for(provider)
+            qa = self._qa(inputs["text"], lang, result.path, plan.spoken if plan.changed else None)
             heard = [w["text"] for w in qa["heard"]] if qa else None
-            problems = narration_problems(inputs["text"], heard, result.duration_s, style_prompt=inputs["style_prompt"],
-                                          words_per_minute=wpm, speed=inputs["speed"] or 1.0)
+            problems = narration_problems(qa["ref"] if qa else inputs["text"], heard, result.duration_s,
+                                          style_prompt=inputs["style_prompt"], words_per_minute=wpm,
+                                          speed=inputs["speed"] or 1.0)
             if qa and qa["wer"] > qa_spec.max_wer and not problems:
                 problems.append(f"{qa['wer']:.0%} das palavras diferem do roteiro")
-            return {"result": result, "provider": provider, "qa": qa, "problems": problems}
+            return {"result": result, "provider": provider, "qa": qa, "problems": problems, "plan": plan}
 
         def rank(t: dict[str, Any]) -> tuple[bool, float]:
             return bool(t["problems"]), t["qa"]["wer"] if t["qa"] else 0.0
@@ -444,6 +480,7 @@ class Builder:
             if rank(again) < rank(best):
                 best = again
         result, provider, qa, problems = best["result"], best["provider"], best["qa"], best["problems"]
+        plan = best["plan"]
         if problems:
             self.warnings.append(
                 f"Narração de {seg_id} ({lang}) com problema depois de {attempts} tentativa(s): {'; '.join(problems)}. "
@@ -462,13 +499,17 @@ class Builder:
             "commercial": provider.info.commercial_use,
             "files": [self.store.rel(result.path)],
         }
+        if plan.changed:
+            # O que a voz recebeu e o mapa para devolver os tempos às palavras do roteiro (a legenda).
+            output["spoken"] = plan.spoken
+            output["spoken_map"] = [list(g) for g in plan.groups]
         self.store.save("tts", h, output, provider.info.id, result.usage.cost_usd)
         self.stats.hit("tts", False, result.usage.cost_usd)
         if not provider.info.commercial_use:
             self.stats.noncommercial.add(provider.info.id)
         return h, output
 
-    def _recheck_wer(self, cached: dict[str, Any], text: str, lang: str) -> list[str]:
+    def _recheck_wer(self, cached: dict[str, Any], text: str, lang: str, spoken: str | None = None) -> list[str]:
         """Problemas de uma narração já gravada, refazendo a conta do erro com os números por extenso (as gravações
         de antes de 14/11/2026 contavam "2025" × "dois mil e vinte e cinco" como erro)."""
         problems = list(cached.get("problems") or [])
@@ -479,13 +520,16 @@ class Builder:
         if not any(p.endswith(suffix) for p in problems):
             return problems
         problems = [p for p in problems if not p.endswith(suffix)]
-        wer = word_error_rate(text, [w["text"] for w in heard], lang)
+        said = [w["text"] for w in heard]
+        wer = min(word_error_rate(ref, said, lang) for ref in (text, spoken) if ref)
         if wer > self.style.voice.qa.max_wer:
             problems.append(f"{wer:.0%} {suffix}")
         return problems
 
-    def _qa(self, text: str, lang: str, audio_path: Path) -> dict[str, Any] | None:
-        """Transcreve a narração e mede o erro contra o roteiro (só com o Whisper local instalado)."""
+    def _qa(self, text: str, lang: str, audio_path: Path, spoken: str | None = None) -> dict[str, Any] | None:
+        """Transcreve a narração e mede o erro contra o roteiro (só com o Whisper local instalado). Com o texto
+        falado (voz local), vale o menor erro entre o roteiro e o texto falado (o Whisper escreve "FBI" ou "efe bê
+        i"); `ref` é o que ficou mais perto do que foi ouvido."""
         if not self.style.voice.qa.enabled or self.settings.offline:
             return None
         try:
@@ -500,31 +544,41 @@ class Builder:
         except Exception as exc:  # noqa: BLE001 - QA nunca derruba o build
             log.warning("controle de qualidade da narração falhou: %s", exc)
             return None
-        return {"wer": word_error_rate(text, [w.text for w in heard], lang), "heard": [w.to_dict() for w in heard]}
+        said = [w.text for w in heard]
+        wer, ref = min((word_error_rate(r, said, lang), r) for r in (text, spoken) if r)
+        return {"wer": wer, "ref": ref, "heard": [w.to_dict() for w in heard]}
 
     def alignment(self, seg_id: str, lang: str, tts_hash: str, tts_out: dict[str, Any]) -> list[Word]:
         text = self.doc.segment(seg_id).text_for(lang)
         chain = registry.resolve_chain("align", None)
         inputs = {"tts": tts_hash, "text": text, "chain": chain, "from_tts": bool(tts_out.get("words")),
                   "heard": bool(tts_out.get("heard")), "v": 2}
+        spoken = tts_out.get("spoken") if tts_out.get("spoken_map") is not None else None
+        if spoken:
+            inputs["spoken"] = True
         h = hash_obj(inputs)
         cached = self.store.lookup("align", h)
         if cached and not (not tts_out.get("words") and not tts_out.get("heard") and self._better_available(chain, cached.get("provider"))):
             self.stats.hit("align", True)
             return [Word.from_dict(w) for w in cached["words"]]
         audio_path = self.store.abs(tts_out["path"])
+        # A voz recebeu o texto falado ("dois mil e vinte e cinco"): alinha contra ele e devolve os tempos às
+        # palavras do roteiro ("2025"), que são as da legenda.
+        target = spoken or text
         if tts_out.get("words"):
-            words = map_to_script(text, [Word.from_dict(w) for w in tts_out["words"]], audio_path)
+            words = map_to_script(target, [Word.from_dict(w) for w in tts_out["words"]], audio_path)
             provider_id = "tts"
         elif tts_out.get("heard"):
-            words = map_to_script(text, [Word.from_dict(w) for w in tts_out["heard"]], audio_path)
+            words = map_to_script(target, [Word.from_dict(w) for w in tts_out["heard"]], audio_path)
             provider_id = "faster_whisper"
         else:
             words, provider, _ = registry.run_chain(
-                "align", chain, lambda p: p.align(audio_path=audio_path, text=text, lang=lang),
+                "align", chain, lambda p: p.align(audio_path=audio_path, text=target, lang=lang),
                 project_id=self.project_id, job_id=self.sink.job_id,
             )
             provider_id = provider.info.id
+        if spoken:
+            words = script_words(text, words, tts_out["spoken_map"])
         self.store.save("align", h, {"words": [w.to_dict() for w in words], "provider": provider_id, "files": []}, provider_id)
         self.stats.hit("align", False)
         return words
@@ -1040,7 +1094,8 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     builder.settings = get_settings()
     builder.stats = BuildStats()
     builder.warnings = []
-    missing_tts = [{"segment_id": seg_id, "lang": lang, "chars": chars}
+    builder._pronunciation = None
+    missing_tts =[{"segment_id": seg_id, "lang": lang, "chars": chars}
                    for seg_id, lang, chars in builder.narrations_to_record()]
     missing_images = []
     # Cenas dirigidas sem direção (estilo trocado): o build recusa até as cenas serem refeitas, então não entram.

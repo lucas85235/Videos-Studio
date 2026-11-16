@@ -52,6 +52,9 @@ class ProviderInfo:
     """Mesma entrada gera a mesma saída (não adianta tentar de novo no controle de qualidade)."""
     hidden: bool = False
     """Não aparece em Configurações (ex.: o roteiro de regras, que só existe no modo offline dos testes)."""
+    spoken_text: bool = False
+    """Voz que lê mal o texto cru (vozes locais): recebe números, datas, siglas e estrangeirismos já escritos como
+    se falam (`core.speech`). A legenda continua com o roteiro."""
 
 
 @dataclass

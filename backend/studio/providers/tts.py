@@ -343,6 +343,7 @@ class Qwen3LocalTTS(TTSProvider):
         commercial_use=True,
         local=True,
         free=True,
+        spoken_text=True,
         notes="Apache-2.0. Instale o pacote faster-qwen3-tts e a GPU fará a narração sem custo (README §8.4).",
     )
 
@@ -404,6 +405,7 @@ class WindowsSapiTTS(TTSProvider):
         free=True,
         notes="Só para prévias e testes: o direito de uso comercial não está claro, então o app bloqueia na publicação.",
         deterministic=True,
+        spoken_text=True,
     )
 
     def availability(self) -> tuple[bool, str]:

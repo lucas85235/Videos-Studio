@@ -403,3 +403,179 @@ def merge_number_words(words_in: list[Word], lang: str = "pt-BR") -> list[Word]:
         i = run.i1
     out.extend(words_in[i:])
     return out
+
+
+# --- fala (voz local) --------------------------------------------------------------------------
+# As vozes locais (Kokoro, Windows) leem mal algarismos, moedas e porcentagens. Aqui o número com algarismo vira
+# palavras para o texto que vai para a voz; a legenda continua com o roteiro (ver `core.speech`).
+
+# Palavras de cada idioma para o que vem junto do número: (singular, plural). Idioma fora da tabela: só o número.
+_SPEECH_WORDS: dict[str, dict[str, tuple[str, str]]] = {
+    "pt": {
+        "%": ("por cento", "por cento"), "r$": ("real", "reais"), "us$": ("dólar", "dólares"), "u$": ("dólar", "dólares"),
+        "$": ("dólar", "dólares"), "€": ("euro", "euros"), "£": ("libra", "libras"),
+        "h": ("hora", "horas"), "min": ("minuto", "minutos"), "s": ("segundo", "segundos"), "km": ("quilômetro", "quilômetros"),
+        "kg": ("quilo", "quilos"), "m": ("metro", "metros"), "x": ("vez", "vezes"), "anos": ("ano", "anos"),
+        "gb": ("gigabyte", "gigabytes"), "tb": ("terabyte", "terabytes"), "mb": ("megabyte", "megabytes"),
+        "fps": ("quadro por segundo", "quadros por segundo"),
+    },
+    "en": {
+        "%": ("percent", "percent"), "r$": ("real", "reais"), "us$": ("dollar", "dollars"), "u$": ("dollar", "dollars"),
+        "$": ("dollar", "dollars"), "€": ("euro", "euros"), "£": ("pound", "pounds"),
+        "h": ("hour", "hours"), "min": ("minute", "minutes"), "s": ("second", "seconds"), "km": ("kilometer", "kilometers"),
+        "kg": ("kilo", "kilos"), "m": ("meter", "meters"), "x": ("time", "times"),
+        "gb": ("gigabyte", "gigabytes"), "tb": ("terabyte", "terabytes"), "mb": ("megabyte", "megabytes"),
+        "fps": ("frame per second", "frames per second"),
+    },
+    "es": {
+        "%": ("por ciento", "por ciento"), "r$": ("real", "reales"), "us$": ("dólar", "dólares"), "u$": ("dólar", "dólares"),
+        "$": ("dólar", "dólares"), "€": ("euro", "euros"), "£": ("libra", "libras"),
+        "h": ("hora", "horas"), "min": ("minuto", "minutos"), "s": ("segundo", "segundos"), "km": ("kilómetro", "kilómetros"),
+        "kg": ("kilo", "kilos"), "m": ("metro", "metros"), "x": ("vez", "veces"), "anos": ("año", "años"),
+    },
+    "fr": {"%": ("pour cent", "pour cent"), "€": ("euro", "euros"), "$": ("dollar", "dollars")},
+    "it": {"%": ("per cento", "per cento"), "€": ("euro", "euro"), "$": ("dollaro", "dollari")},
+    "de": {"%": ("Prozent", "Prozent"), "€": ("Euro", "Euro"), "$": ("Dollar", "Dollar")},
+}  # fmt: skip
+# Palavras femininas depois do número (pt): "2 horas" → "duas horas", "2 mil pessoas" → "duas mil pessoas".
+_FEMININE_PT = {
+    "hora", "horas", "vez", "vezes", "pessoa", "pessoas", "semana", "semanas", "libra", "libras", "tonelada", "toneladas",
+    "pagina", "paginas", "coisa", "coisas", "mulher", "mulheres", "crianca", "criancas", "empresa", "empresas", "cidade",
+    "cidades", "familia", "familias", "especie", "especies", "noite", "noites", "casa", "casas", "vitima", "vitimas",
+    "temporada", "temporadas", "edicao", "edicoes", "guerra", "guerras", "copa", "copas", "partida", "partidas",
+    "unidade", "unidades", "copia", "copias", "versao", "versoes", "missao", "missoes", "decada", "decadas",
+}  # fmt: skip
+_FEMININE_UNITS = {"h", "x"}
+_FEMININE_SWAP = {
+    "um": "uma", "dois": "duas", "duzentos": "duzentas", "trezentos": "trezentas", "quatrocentos": "quatrocentas",
+    "quinhentos": "quinhentas", "seiscentos": "seiscentas", "setecentos": "setecentas", "oitocentos": "oitocentas",
+    "novecentos": "novecentas",
+}  # fmt: skip
+_BIG_SCALE_WORDS = {
+    "milhao", "milhoes", "bilhao", "bilhoes", "trilhao", "trilhoes", "million", "billion", "trillion", "millon",
+    "millones",
+}  # fmt: skip
+# Sufixo de ordinal → é feminino?
+_ORDINAL_SUFFIXES = {"o": False, "a": True, "º": False, "ª": True, "th": False, "st": False, "nd": False, "rd": False}
+
+
+def _speech_lang(lang: str) -> str:
+    return lang.lower().split("-")[0]
+
+
+def _n2w_code(lang: str) -> str:
+    base = _speech_lang(lang)
+    return "pt_BR" if base == "pt" else base
+
+
+def speech_words(lang: str) -> dict[str, tuple[str, str]]:
+    """Palavras (singular, plural) de moedas, unidades e porcentagem no idioma (vazio fora da tabela)."""
+    return _SPEECH_WORDS.get(_speech_lang(lang), {})
+
+
+def _feminine(text: str) -> str:
+    """'dois mil e duzentos' → 'duas mil e duzentas'; o que vem antes de milhão/bilhão fica no masculino."""
+    tokens = text.split()
+    out = []
+    for i, tok in enumerate(tokens):
+        nxt = normalize_token(tokens[i + 1]) if i + 1 < len(tokens) else ""
+        out.append(_FEMININE_SWAP.get(tok, tok) if nxt not in _BIG_SCALE_WORDS else tok)
+    return " ".join(out)
+
+
+def _join_groups_pt(text: str) -> str:
+    """O num2words separa os grupos com vírgula ('um bilhão, quinhentos milhões'), e na fala a vírgula vira pausa.
+    O último grupo ganha 'e' quando não tem um ('um bilhão e quinhentos milhões')."""
+    parts = text.split(", ")
+    if len(parts) == 1:
+        return text
+    last = parts[-1]
+    joiner = " " if " e " in f" {last} " else " e "
+    return " ".join(parts[:-1]) + joiner + last
+
+
+def number_words(value: float, lang: str = "pt-BR", *, year: bool = False, ordinal: bool = False,
+                 feminine: bool = False) -> str | None:
+    """Número por extenso no idioma (num2words). None se o idioma não é suportado."""
+    try:
+        from decimal import Decimal
+
+        from num2words import num2words
+    except ImportError:
+        return None
+    code = _n2w_code(lang)
+    number: int | Decimal = int(value) if float(value).is_integer() else Decimal(repr(round(value, 6)))
+    try:
+        if ordinal and isinstance(number, int):
+            text = num2words(number, lang=code, to="ordinal")
+        elif year and isinstance(number, int) and code == "en" and 1100 <= number <= 2099 and number % 1000 >= 10:
+            text = num2words(number, lang=code, to="year")  # "twenty thirteen"
+        else:
+            text = num2words(number, lang=code)
+    except (NotImplementedError, OverflowError, ValueError, KeyError, TypeError):
+        return None
+    if code == "en":
+        text = text.replace("-", " ")
+    if code == "pt_BR":
+        text = _join_groups_pt(text)
+        if feminine:
+            text = " ".join(w[:-1] + "a" if w.endswith("o") else w for w in text.split()) if ordinal else _feminine(text)
+    return " ".join(text.replace(",", "").split())
+
+
+def _unit_key(suffix: str) -> str:
+    """Unidade grudada no algarismo ('h', 'km', 'º'); vazio quando é escala ('mi', '475M') ou não há."""
+    raw = suffix.strip().rstrip("+").replace("%", "")
+    if not raw or raw in ("M", "B", "K"):
+        return ""
+    if raw.lower() in ("º", "ª"):
+        return raw.lower()
+    key = normalize_token(raw)
+    return "" if key in _CARD_SCALES and key not in ("m", "b") else key
+
+
+def spoken_number_runs(tokens: list[str], lang: str = "pt-BR") -> list[tuple[int, int, str]]:
+    """Números com algarismo nos tokens e como falá-los: [(início, fim exclusivo, fala)].
+
+    Junta moeda, escala, porcentagem e unidade ('R$ 2 milhões' → 'dois milhões de reais', '30%' → 'trinta por
+    cento', '24h' → 'vinte e quatro horas', '1º' → 'primeiro'). Algarismo depois de nome também conta ('GTA 6' →
+    'GTA seis'). Números já por extenso ficam como estão. A pontuação das pontas é mantida.
+    """
+    table = speech_words(lang)
+    pt = _speech_lang(lang) == "pt"
+    out: list[tuple[int, int, str]] = []
+    for run in _runs(tokens, lang, names=True):
+        if not run.has_digit:
+            continue
+        group = tokens[run.i0 : run.i1]
+        currency = _core(group[0]).lower() if _is_currency(group[0]) else None
+        digit_index = 1 if currency else 0
+        parts = _digit_parts(group[digit_index]) if digit_index < len(group) else None
+        if parts is None:
+            continue
+        prefix, digits, suffix = parts
+        currency = currency or (prefix.lower() if prefix else None)
+        percent = run.percent or "%" in suffix
+        unit = _unit_key(suffix)
+        ordinal = unit in _ORDINAL_SUFFIXES
+        nxt = normalize_token(tokens[run.i1]) if run.i1 < len(tokens) else ""
+        feminine = pt and (unit in _FEMININE_UNITS or nxt in _FEMININE_PT or _ORDINAL_SUFFIXES.get(unit, False))
+        plain_year = re.fullmatch(r"\d{4}", digits) is not None and not (currency or unit or percent)
+        spoken = number_words(run.value, lang, year=plain_year, ordinal=ordinal, feminine=feminine)
+        if spoken is None:
+            continue
+        if percent and "%" in table:
+            spoken += " " + table["%"][1]
+        if unit and not ordinal:
+            names = table.get(unit)
+            spoken += " " + ((names[0] if run.value == 1 else names[1]) if names else suffix.strip().rstrip("+"))
+        if currency and currency in table:
+            singular, plural = table[currency]
+            big = normalize_token(spoken.split()[-1]) in _BIG_SCALE_WORDS
+            link = " de" if big and _speech_lang(lang) in ("pt", "es") else ""
+            spoken += f"{link} {singular if run.value == 1 else plural}"
+        first, last = group[0], group[-1]
+        lead = first[: len(first) - len(first.lstrip(_OPENERS))]
+        trail = re.search(r"[.,;:!?…]*[" + re.escape(_CLOSERS) + r"]*$", last.strip())
+        out.append((run.i0, run.i1, lead + spoken + (trail.group(0) if trail else "")))
+    return out
