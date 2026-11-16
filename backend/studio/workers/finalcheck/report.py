@@ -62,6 +62,11 @@ def run_final_check(project_id: str, lang: str | None = None, progress: Progress
     if not ctx.timeline_stale:
         step(0.65, "Textos perto do corte")
         items += late_triggers(ctx.timeline)
+    step(0.7, "Novidade frente aos últimos vídeos")
+    from studio.workers import novelty  # import tardio: o verificador puxa o canal e o YouTube
+
+    items += [measure.item("novelty", "aviso", "Parecido com vídeo recente do canal", text)
+              for text in novelty.safe_warnings(project_id)]
     step(0.75, "Folha de quadros")
     out = get_settings().outputs_dir / project_id / ctx.lang / SHEET_NAME
     contact_sheet(video, out, duration)

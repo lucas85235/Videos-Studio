@@ -310,6 +310,16 @@ def test_final_check_skips_timeline_measures_when_preview_rewrote_it(isolated_se
     assert preflight(pid, LANG)["fresh"] is True
 
 
+def test_final_check_lists_novelty_warnings(isolated_settings, synthetic_video: Path, monkeypatch):
+    from studio.workers import novelty
+
+    pid = _project(isolated_settings, video=synthetic_video, duration=10.0)
+    monkeypatch.setattr(novelty, "safe_warnings", lambda project_id: ["Título parecido com \"X\""])
+    report = run_final_check(pid, LANG)
+    found = [i for i in report["items"] if i["code"] == "novelty"]
+    assert len(found) == 1 and found[0]["level"] == "aviso" and "parecido" in found[0]["detail"]
+
+
 # ---------------------------------------------------------------- medidas e folha
 
 
