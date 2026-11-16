@@ -6,6 +6,12 @@
       "runtimeExecutable": "powershell",
       "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/start.ps1", "-NoBrowser"],
       "port": 8765
+    },
+    {
+      "name": "vulto-teste",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:VS_DATA_DIR = Join-Path $env:TEMP 'vulto-teste-data'; $env:VS_PORT = '8775'; $env:VS_OFFLINE = '1';$env:PYTHONUTF8 = '1'; $env:UV_PROJECT_ENVIRONMENT = (Resolve-Path 'backend/.venv').Path; uv run --no-sync --project backend python -m studio serve"],
+      "port": 8775
     }
   ]
 }

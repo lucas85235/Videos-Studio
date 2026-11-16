@@ -369,6 +369,15 @@ def test_heuristic_picks_contiguous_cuts_in_target():
     assert any(item["segment_ids"][0] == "s4" for item in items)  # começo de capítulo tem preferência
 
 
+def test_heuristic_fallback_does_not_claim_good_duration():
+    # Segmentos curtos e longos demais: nenhum trecho cabe em 15–30 s nem no teto; a reserva avisa.
+    items = heuristic(_overview([7, 70, 8]), limits_from(None))
+    assert items
+    for item in items:
+        assert "duração boa" not in item["reason"]
+        assert item["warnings"]
+
+
 # ---------------------------------------------------------------------------------------------
 # rotas
 # ---------------------------------------------------------------------------------------------

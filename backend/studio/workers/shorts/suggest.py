@@ -139,8 +139,18 @@ def heuristic(overview: dict[str, Any], limits: ShortLimits) -> list[dict[str, A
     for a, b in sorted(picked):
         first = segs[a]
         title = first["chapter"] or _first_sentence(first["text"])
+        dur = short_duration(overview, [s["id"] for s in segs[a : b + 1]])
+        if not low <= dur <= limits.max_s:
+            # Reserva: nenhum trecho coube no alvo. Não dizer que a duração é boa (os avisos dizem o que fazer).
+            reason = "Nenhum trecho cabe no alvo de duração: este é um dos mais curtos (ajuste o corte)"
+        elif first["chapter_start"]:
+            reason = "Começa num capítulo"
+        elif dur <= high:
+            reason = "Trecho com duração boa para Short"
+        else:
+            reason = "Trecho até o teto de duração"
         item = _item(overview, a, b, _clip(title, limits.title_max), _first_sentence(first["text"]), "normal",
-                     "Começa num capítulo" if first["chapter_start"] else "Trecho com duração boa para Short", limits)
+                     reason, limits)
         if item:
             items.append(item)
     return items
