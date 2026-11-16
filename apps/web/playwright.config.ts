@@ -9,17 +9,27 @@ import { E2E_PORT } from './e2e/ambiente.mjs';
  */
 const detectChannel = (): string => {
   if (process.env.VS_E2E_CHANNEL) return process.env.VS_E2E_CHANNEL;
+  const localAppData = process.env.LOCALAPPDATA ?? '';
   const candidates: Record<string, string[]> = {
     win32: [
       'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
       'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      // Instalação "só para este usuário", sem precisar de administrador.
+      ...(localAppData ? [`${localAppData}\\Google\\Chrome\\Application\\chrome.exe`] : []),
     ],
     linux: ['/opt/google/chrome/chrome', '/opt/microsoft/msedge/msedge'],
     darwin: ['/Applications/Google Chrome.app', '/Applications/Microsoft Edge.app'],
   };
   const found = (candidates[process.platform] ?? []).find((p) => existsSync(p));
-  if (!found) return 'chromium';
+  if (!found) {
+    throw new Error(
+      'Não achei o Edge nem o Chrome instalados para os testes de interface. Defina VS_E2E_CHANNEL=msedge ou ' +
+        'VS_E2E_CHANNEL=chrome se um deles estiver em outro lugar, ou instale o Chromium do Playwright ' +
+        '("npx playwright install chromium") e use VS_E2E_CHANNEL=chromium.',
+    );
+  }
   return /edge/i.test(found) ? 'msedge' : 'chrome';
 };
 

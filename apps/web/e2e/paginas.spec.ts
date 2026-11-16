@@ -1,4 +1,4 @@
-import { criarProjetoPelaApi, expect, test, tituloDaPagina } from './apoio';
+import { criarProjetoPelaApi, esperarApiQuieta, expect, test, tituloDaPagina } from './apoio';
 
 // Páginas principais: cada uma abre com o título certo, sem erro na tela nem no console.
 const PAGINAS = [
@@ -15,6 +15,8 @@ for (const { caminho, titulo } of PAGINAS) {
     await page.goto(caminho);
     await expect(tituloDaPagina(page)).toHaveText(titulo);
     await expect(page).toHaveTitle(new RegExp(`${titulo} · Vulto`));
+    // O <h1> sai antes dos dados: espera as consultas (e a nova tentativa das que falham) antes de conferir.
+    await esperarApiQuieta(page);
     await expect(page.getByText(/Não foi possível/)).toHaveCount(0);
   });
 }
@@ -51,6 +53,7 @@ test('o editor de estilo abre a partir da lista de estilos', async ({ page }) =>
   await primeiro.click();
   await expect(page).toHaveURL(destino ?? /\/estilos\//);
   await expect(tituloDaPagina(page)).not.toBeEmpty();
+  await esperarApiQuieta(page);
   await expect(page.getByText(/Não foi possível/)).toHaveCount(0);
 });
 
