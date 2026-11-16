@@ -82,3 +82,43 @@ def test_preview_uses_library_music(isolated_settings):
     # soltar a faixa fixada
     _commit(project_id, [{"op": "set_music", "track": ""}])
     assert service.get_doc(project_id).music[0].track is None
+
+
+def _channel_project(channel_id: str, title: str) -> str:
+    project_id = service.create_project(title=title, style_id="misterios-short", topic=title, channel_id=channel_id).id
+    _run("script", project_id)
+    _run("storyboard", project_id)
+    _commit(project_id, [{"op": "set_style", "path": "audio.music.source", "value": "library"}])
+    return project_id
+
+
+def test_preview_does_not_repeat_channel_track(isolated_settings):
+    from datetime import UTC, datetime, timedelta
+
+    from studio.db import session_scope
+    from studio.ids import new_id
+    from studio.models import Channel, Project
+
+    root = music_library.music_root()
+    (root / "misterio").mkdir(parents=True, exist_ok=True)
+    for name, freq in (("um.mp3", 330), ("dois.mp3", 440)):
+        run_ffmpeg(["-f", "lavfi", "-i", f"sine=frequency={freq}:duration=3", "-ac", "2", str(root / "misterio" / name)])
+    channel_id = new_id("chn")
+    with session_scope() as s:
+        s.add(Channel(id=channel_id, name="Canal", settings={"novelty": {"music_window": 1}}))
+    first = _channel_project(channel_id, "o farol")
+    second = _channel_project(channel_id, "a ilha")
+    with session_scope() as s:  # o primeiro foi criado antes
+        s.get(Project, first).created_at = datetime.now(UTC) - timedelta(hours=1)
+    # o clima do estilo é mistério: as duas faixas servem
+    used = _run("preview", first)["music"]["track"]
+    other = _run("preview", second)["music"]["track"]
+    assert used != other and {used, other} == {"misterio/um.mp3", "misterio/dois.mp3"}
+    # sem faixa nova do clima: repete a que tocou há mais tempo, com aviso
+    third = _channel_project(channel_id, "o poço")
+    with session_scope() as s:
+        s.get(Channel, channel_id).settings = {"novelty": {"music_window": 2}}
+        s.get(Project, second).created_at = datetime.now(UTC) - timedelta(minutes=30)
+    result = _run("preview", third)
+    assert result["music"]["track"] == used
+    assert any("tocaram nos últimos vídeos do canal" in w for w in result["warnings"])
