@@ -84,7 +84,7 @@ export type TimelineScene = {
   from: number;
   durationInFrames: number;
   src: string | null;
-  /** Movimento de câmera; inclui 'zoom_to' (zoom no ponto de foco). */
+  /** Movimento de câmera; inclui 'zoom_to' (zoom no ponto de foco) e 'parallax' (camadas por profundidade). */
   motion: string;
   transition: string;
   seed: number;
@@ -118,6 +118,11 @@ export type TimelineScene = {
    * aparelho já em cena), com a semente da cena que começou (mesma moldura e posição). Ausente: entra do zero.
    */
   treatment_continue?: number;
+  /**
+   * Parallax 2.5D (motion 'parallax'): camadas cortadas pelo mapa de profundidade, do fundo (opaca) para a frente
+   * (com transparência), caminhos relativos como `src`. Ausente: a cena usa o Ken Burns.
+   */
+  parallax?: { layers: string[] };
 };
 
 export type SceneTreatment = 'whiteboard' | 'collage' | 'screen';

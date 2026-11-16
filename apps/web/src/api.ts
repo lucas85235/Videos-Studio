@@ -474,6 +474,12 @@ export type BuildPlan = {
   media_scenes?: string[];
   /** Cenas com mídia real cujo arquivo sumiu da pasta de dados (ficam sem imagem). */
   media_missing?: string[];
+  /** Cenas com parallax 2.5D (camadas pelo mapa de profundidade). */
+  parallax_scenes?: string[];
+  /** Tamanho (MB) do modelo de profundidade que ainda vai ser baixado para o parallax. */
+  depth_model_mb?: number;
+  /** Por que o parallax não roda agora (sem onnxruntime, modo offline sem o modelo): as cenas sem camadas guardadas usam o Ken Burns. */
+  parallax_unavailable?: string;
   image_provider: string | null;
   estimated_cost_usd: number;
   estimated_seconds: number;

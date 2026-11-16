@@ -74,7 +74,11 @@ CAMERA_MOVES = (
     "drift",
     "static",
     "zoom_to",  # aproxima do foco da cena (Scene.focus); feito para imagem reaproveitada
+    "parallax",  # 2.5D: camadas pelo mapa de profundidade (studio.media.depth); sem o modelo vira ken_burns_in
 )
+# Movimentos que os LLMs (storyboard, estilo gerado) podem escolher sozinhos. O parallax fica de fora: baixa um modelo de
+# ~99 MB e custa CPU por imagem, então só entra quando o usuário (ou o editor, a pedido dele) escolhe.
+AUTO_CAMERA_MOVES = tuple(m for m in CAMERA_MOVES if m != "parallax")
 TRANSITIONS = ("cut", "flash", "fade_black", "glitch", "light_leak", "zoom_blur", "film_burn", "static_burst")
 EFFECTS = (
     "grain",

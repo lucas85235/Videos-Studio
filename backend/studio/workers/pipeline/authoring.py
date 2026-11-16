@@ -30,7 +30,14 @@ from studio.core.project.document import (
 )
 from studio.core.regions import find_regions, is_us_state, region_code, region_codes
 from studio.core.styles.library import StyleNotFound, get_style
-from studio.core.styles.schema import CAMERA_MOVES, CHART_TYPES, GRADE_PRESETS, Family, Structure, StyleSpec
+from studio.core.styles.schema import (
+    AUTO_CAMERA_MOVES,
+    CHART_TYPES,
+    GRADE_PRESETS,
+    Family,
+    Structure,
+    StyleSpec,
+)
 from studio.core.styles.visual import (
     APPROACHES,
     COMPOSITIONS,
@@ -299,7 +306,7 @@ _CAPTION_BANDS = {
 }
 _KINDS = dict.fromkeys(STORYBOARD_KINDS)
 _SOURCES = dict.fromkeys(STORYBOARD_SOURCES)
-_MOTIONS = dict.fromkeys(CAMERA_MOVES)
+_MOTIONS = dict.fromkeys(AUTO_CAMERA_MOVES)  # parallax só por escolha do usuário
 
 
 def image_budget(n_beats: int, style: StyleSpec) -> int:
@@ -407,7 +414,7 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
         "",
         catalog_text(photoreal=style.art.photoreal),
         "Gradações (grade): " + ", ".join(GRADE_PRESETS),
-        "Câmera (motion): " + ", ".join(CAMERA_MOVES) + " (zoom_to aproxima do focus; feito para reuse)",
+        "Câmera (motion): " + ", ".join(AUTO_CAMERA_MOVES) + " (zoom_to aproxima do focus; feito para reuse)",
         "",
         "Fontes do roteiro (source_ref é o número entre colchetes):",
         *([f"- [{n}] {s.title}" + (f": {s.note}" if s.note else "") + (f" ({s.url})" if s.url else "")

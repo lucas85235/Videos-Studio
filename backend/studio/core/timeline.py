@@ -65,6 +65,9 @@ REVEAL_POP_S = 0.3
 PERSON_SHOTS = frozenset({"medium", "close", "low_angle", "over_shoulder"})
 # Câmera da foto real sem movimento escolhido: só movimentos suaves (a foto não é feita para pan nem soco de zoom).
 REAL_MOTIONS = ("ken_burns_in", "ken_burns_out", "drift")
+# Parallax 2.5D: precisa das camadas do mapa de profundidade; sem elas a cena usa o Ken Burns.
+PARALLAX = "parallax"
+PARALLAX_FALLBACK = "ken_burns_in"
 # Tempo para ler a manchete do cartão de notícia: por palavra, mais a entrada do cartão (abaixo disso, aviso no build).
 NEWS_READ_WORD_S = 0.3
 NEWS_READ_BASE_S = 0.6
@@ -463,8 +466,10 @@ def build_timeline(
     lang: str,
     narration: dict[str, NarrationClip],
     images: dict[str, str | None],
+    parallax: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
-    """Monta a timeline completa de um idioma (em quadros)."""
+    """Monta a timeline completa de um idioma (em quadros). `parallax`: camadas por cena (fundo → frente) para o
+    movimento "parallax"; cena com parallax sem camadas (ou sem imagem) cai no Ken Burns."""
     fps = style.format.fps
     if not doc.segments:
         raise TimelineError("o projeto não tem roteiro")
@@ -536,6 +541,12 @@ def build_timeline(
                 for i in range(len(scene_lines) - 1):
                     scene_lines[i]["to"] = min(scene_lines[i]["to"], scene_lines[i + 1]["from"]) or scene_lines[i]["to"]
             resolved = resolve_scene(doc, style, scene, lang, is_first=(index == 0 and k == 0))
+            if resolved["motion"] == PARALLAX:
+                layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
+                if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
+                    resolved["parallax"] = {"layers": list(layers)}
+                else:
+                    resolved["motion"] = PARALLAX_FALLBACK
             resolved.update(
                 {
                     "from": f0,
@@ -674,11 +685,17 @@ def _real_media_keys(doc: ProjectDoc, scene: Scene, lang: str, out: dict[str, An
             out["news"] = news
 
 
+def scene_motion(doc: ProjectDoc, style: StyleSpec, scene: Scene) -> str:
+    """Movimento de câmera da cena: o escolhido nela ou sorteado (semente da cena) entre os pesos do estilo. Mídia
+    real sorteia só entre os movimentos calmos (REAL_MOTIONS)."""
+    camera = real_motion_pool(style) if doc.shown_media(scene) is not None else style.edit.camera
+    return scene.motion or pick_weighted(camera, seed_from(doc.seed, scene.id, "motion"))
+
+
 def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *, is_first: bool) -> dict[str, Any]:
     """Escolhas visuais da cena (determinísticas pela semente da cena)."""
     media = doc.shown_media(scene)
-    camera = real_motion_pool(style) if media is not None else style.edit.camera
-    motion = scene.motion or pick_weighted(camera, seed_from(doc.seed, scene.id, "motion"))
+    motion = scene_motion(doc, style, scene)
     if is_first:
         transition = "cut"
     else:

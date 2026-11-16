@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from PIL import Image
+
 from studio.config import get_settings
 from studio.core.graph.store import ArtifactStore
 from studio.core.hashing import hash_file, hash_obj, seed_from
@@ -38,10 +40,18 @@ from studio.core.speech import (
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
-from studio.core.timeline import NarrationClip, build_timeline, chunk_timeline, normalize_words
+from studio.core.timeline import (
+    PARALLAX,
+    NarrationClip,
+    build_timeline,
+    chunk_timeline,
+    normalize_words,
+    scene_motion,
+)
 from studio.db import session_scope
 from studio.media import audio as audio_mod
 from studio.media import audio_check, music_library
+from studio.media import depth as depth_mod
 from studio.media.ffmpeg import read_wav
 from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
@@ -59,6 +69,9 @@ log = logging.getLogger(__name__)
 Mode = Literal["preview", "final"]
 
 _codex_lock = threading.Lock()
+# Tipos de cena que não desenham o VisualLayer (o documento é um cartão com a imagem parada): sem parallax.
+NO_VISUAL_LAYER_KINDS = frozenset({"document"})
+_depth_lock = threading.Lock()  # mesma imagem em duas cenas: um mapa e um jogo de camadas só
 _media_lock = threading.Lock()  # duas cenas com a mesma mídia real não recortam nem gravam o mesmo cache ao mesmo tempo
 
 
@@ -717,6 +730,116 @@ class Builder:
             self.stats.noncommercial.add(provider.info.id)
         return rel
 
+    def depth_map(self, image_rel: str, *, estimate: bool = True) -> tuple[str, str]:
+        """Mapa de profundidade da imagem (cache "depth" pelo hash do arquivo e do modelo). Devolve (hash, caminho).
+        Com `estimate=False` só serve o cache (sem o modelo): levanta DepthUnavailable se precisar estimar."""
+        src = self.store.abs(image_rel)
+        inputs = {"image": hash_file(src), "model": depth_mod.MODEL_ID, "v": 1}
+        h = hash_obj(inputs)
+        with _depth_lock:
+            cached = self.store.lookup("depth", h)
+            if cached:
+                self.stats.hit("depth", True)
+                return h, cached["path"]
+            if not estimate:
+                raise depth_mod.DepthUnavailable("sem mapa de profundidade guardado")
+            depth = depth_mod.get_estimator()(src)
+            out = depth_mod.save_depth(depth, self.store.dir_for("depth", h) / "depth.png")
+            rel = self.store.rel(out)
+            self.store.save("depth", h, {"path": rel, "files": [rel], "model": depth_mod.MODEL_ID}, "depth_anything")
+        self.stats.hit("depth", False)
+        return h, rel
+
+    def parallax_layers(self, image_rel: str, *, estimate: bool = True) -> list[str]:
+        """Camadas do parallax 2.5D (cache "parallax" pela imagem e pelo mapa). Levanta DepthUnavailable sem modelo
+        (com `estimate=False`, sempre que o mapa não estiver no cache). Mapa plano dá uma camada só."""
+        depth_h, depth_rel = self.depth_map(image_rel, estimate=estimate)
+        inputs = {"image": hash_file(self.store.abs(image_rel)), "depth": depth_h, "layers": depth_mod.LAYERS,
+                  "v": depth_mod.LAYERS_VERSION}
+        h = hash_obj(inputs)
+        with _depth_lock:
+            cached = self.store.lookup("parallax", h)
+            if cached:
+                self.stats.hit("parallax", True)
+                return list(cached["layers"])
+            with Image.open(self.store.abs(image_rel)) as im:
+                image = im.convert("RGB")
+            paths = depth_mod.make_layers(image, depth_mod.load_depth(self.store.abs(depth_rel)),
+                                          self.store.dir_for("parallax", h))
+            rels = [self.store.rel(p) for p in paths]
+            self.store.save("parallax", h, {"layers": rels, "files": rels, "depth": depth_rel}, "numpy")
+        self.stats.hit("parallax", False)
+        return rels
+
+    def _download_depth_model(self) -> None:
+        """Baixa o modelo de profundidade mostrando o andamento no passo atual; cancelar o build interrompe."""
+        with self._progress_lock:
+            fraction = min(0.999, self._done / max(1, self._total))
+        total_mb = depth_mod.MODEL_MB
+        self.sink.progress(fraction, f"Baixando o modelo de profundidade (0/{total_mb} MB)")
+        shown = [0]
+
+        def on_chunk(done: int) -> None:
+            self._check()
+            mb = done // 1_000_000
+            if mb - shown[0] >= 5:  # a cada 5 MB: não escreve no banco a cada pedaço
+                shown[0] = mb
+                self.sink.progress(fraction, f"Baixando o modelo de profundidade ({mb}/{total_mb} MB)")
+
+        depth_mod.ensure_model(on_chunk=on_chunk)
+
+    def parallax(self, images: dict[str, str | None]) -> dict[str, list[str]]:
+        """Camadas das cenas com movimento "parallax" e imagem. Sem o modelo de profundidade (ou se falhar), a
+        cena fica sem camadas (a timeline usa o Ken Burns) e o usuário recebe um aviso só. Camadas que já estão no
+        cache valem mesmo sem o modelo."""
+        wanted = [s for s in self.doc.ordered_scenes()
+                  if images.get(s.id) and s.kind not in NO_VISUAL_LAYER_KINDS
+                  and scene_motion(self.doc, self.style, s) == PARALLAX]
+        if not wanted:
+            return {}
+        ok, reason = depth_mod.availability()
+        out: dict[str, list[str]] = {}
+        todo: list[str] = []
+        # 1ª passada: o que já está no cache (não precisa do modelo).
+        for scene in wanted:
+            self._check()
+            try:
+                out[scene.id] = self.parallax_layers(images[scene.id], estimate=False)  # type: ignore[arg-type]
+            except depth_mod.DepthUnavailable:
+                todo.append(scene.id)
+            except Exception as exc:  # noqa: BLE001 - imagem ruim: só esta cena cai no Ken Burns
+                self._parallax_failed(scene.id, exc)
+        problem = None if ok else reason
+        if todo and problem is None and depth_mod.uses_model() and not depth_mod.model_ready():
+            try:
+                self._download_depth_model()
+            except depth_mod.DepthUnavailable as exc:
+                problem = str(exc)
+        fallback: list[str] = []
+        for scene_id in todo:
+            self._check()
+            if problem is None:
+                try:
+                    out[scene_id] = self.parallax_layers(images[scene_id])  # type: ignore[arg-type]
+                    continue
+                except depth_mod.DepthUnavailable as exc:
+                    problem = str(exc)
+                except Exception as exc:  # noqa: BLE001
+                    self._parallax_failed(scene_id, exc)
+                    continue
+            fallback.append(scene_id)
+        if fallback:
+            n = len(fallback)
+            self.warnings.append(
+                f"Parallax 2.5D indisponível ({problem}): {n} cena{'s' if n > 1 else ''} "
+                f"ficara{'m' if n > 1 else ''} com o Ken Burns.")
+        # Mapa plano dá uma camada só: sem o que separar, a cena fica com o Ken Burns.
+        return {sid: layers for sid, layers in out.items() if len(layers) > 1}
+
+    def _parallax_failed(self, scene_id: str, exc: Exception) -> None:
+        log.warning("parallax falhou na cena %s: %s", scene_id, exc)
+        self.warnings.append(f"Parallax da {scene_label(self.doc, scene_id)} falhou ({exc}); a cena usa o Ken Burns.")
+
     def music(self, duration: float, timeline: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]] | None:
         """Trilha do vídeo. Uma faixa ativa sem `loop` = o caminho de sempre (mesma chave de cache: projeto antigo não
         refaz o áudio). Com várias faixas ou `loop` (e a `timeline`, que diz onde cada segmento começa), monta uma
@@ -1145,13 +1268,14 @@ class Builder:
                      for message, items in errors.items()]
             raise BuildError("falhas na geração:\n- " + "\n- ".join(lines[:20]))
         resolve_reused_images(doc, images)
+        layers = self.parallax(images)
         if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
             self.warnings.append(EDITORIAL_WARNING)
 
         results: dict[str, Any] = {}
         extra: dict[str, Any] = {}
         if self.multi_track:
-            results, extra = self._run_multi_track(tts_out, images)
+            results, extra = self._run_multi_track(tts_out, images, layers)
         for lang in [] if self.multi_track else self.langs:
             self._check()
             clips: dict[str, NarrationClip] = {}
@@ -1162,7 +1286,7 @@ class Builder:
                 clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=out["duration"], words=words)
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
-            timeline = build_timeline(doc, self.style, lang, clips, images)
+            timeline = build_timeline(doc, self.style, lang, clips, images, layers)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")
@@ -1252,7 +1376,8 @@ class Builder:
         return rel, h
 
     def _run_multi_track(self, tts_out: dict[tuple[str, str], tuple[str, dict[str, Any]]],
-                         images: dict[str, str | None]) -> tuple[dict[str, Any], dict[str, Any]]:
+                         images: dict[str, str | None],
+                         layers: dict[str, list[str]] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         """Uma imagem (a do idioma principal) e uma faixa de áudio por idioma, todas com a mesma duração.
 
         O tempo de cada segmento é o da narração principal, esticado só quando outro idioma não cabe nem acelerado
@@ -1284,7 +1409,7 @@ class Builder:
             clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=fits[seg.id].slot, words=words)
             hashes[seg.id] = h
             self._tick("Alinhamento das palavras")
-        timeline = build_timeline(doc, self.style, primary, clips, images)
+        timeline = build_timeline(doc, self.style, primary, clips, images, layers)
         self.warnings += timeline.pop("warnings", [])
         starts = {n["segment_id"]: n["start"] for n in timeline["narration"]}
         placed = [
@@ -1458,6 +1583,19 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     media_missing = [s.id for s in media_scenes if not builder.store.abs(s.visual.media.asset).is_file()]  # type: ignore[union-attr,arg-type]
     if media_missing:
         result["media_missing"] = media_missing
+    # Parallax 2.5D (só quando alguma cena usa): cenas e o download do modelo de profundidade, se faltar.
+    parallax_scenes = [s.id for s in builder.doc.ordered_scenes()
+                       if (scene_needs_image(s) or s.visual.asset or s.visual.media is not None or s.visual.reuse_of)
+                       and s.kind not in NO_VISUAL_LAYER_KINDS
+                       and scene_motion(builder.doc, builder.style, s) == PARALLAX]
+    if parallax_scenes:
+        result["parallax_scenes"] = parallax_scenes
+        depth_ok, depth_reason = depth_mod.availability()
+        if not depth_ok:
+            # Nada vai ser baixado: as cenas sem camadas no cache ficam com o Ken Burns.
+            result["parallax_unavailable"] = depth_reason
+        elif not depth_mod.model_ready():
+            result["depth_model_mb"] = depth_mod.MODEL_MB
     return result
 
 

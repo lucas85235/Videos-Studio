@@ -374,6 +374,15 @@ export const EditPanel: React.FC<{
                     : "imagens novas"}
                 </Badge>
               ) : null}
+              {est.parallax_unavailable ? (
+                <Badge tone="warn">
+                  parallax vira Ken Burns: {est.parallax_unavailable}
+                </Badge>
+              ) : est.depth_model_mb ? (
+                <Badge>
+                  parallax: baixa o modelo de profundidade ({est.depth_model_mb} MB)
+                </Badge>
+              ) : null}
               {est.tts_chars ? (
                 <Badge>
                   {est.tts_chars.toLocaleString("pt-BR")} caracteres de narração
