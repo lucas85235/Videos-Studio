@@ -4,9 +4,9 @@ import { fontStack } from '../fonts';
 import type { TextCardStyle, TimelineNews } from '../types';
 import { type CardBand, charEm } from './DataCards';
 
-// Mídia real: chip de crédito (qualquer cena que mostra mídia real) e cartão de notícia (cena de imagem dona da
-// notícia). O `src` da cena já vem enquadrado pelo backend (cover com foco ou contain com fundo desfocado), então a
-// foto em si passa pelo `VisualLayer` como qualquer imagem.
+// Mídia real: cartão de notícia (cena de imagem dona da notícia). O crédito das imagens não vai para a tela: fica na
+// descrição da publicação. O `src` da cena já vem enquadrado pelo backend (cover com foco ou contain com fundo
+// desfocado), então a foto em si passa pelo `VisualLayer` como qualquer imagem.
 
 /** Endereço de um arquivo do diretório de dados (imagem da cena, miniatura da notícia); URL completa passa direto. */
 export const assetUrl = (src: string | null | undefined, base: string | null | undefined) => {
@@ -17,100 +17,6 @@ export const assetUrl = (src: string | null | undefined, base: string | null | u
 };
 
 const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
-
-// ---------------------------------------------------------------------------------------------
-// Chip de crédito
-
-export type CreditCorner = 'top_left' | 'bottom_right';
-
-/** Letra do chip (px): pequena, mas legível no celular. */
-const chipFont = (width: number, height: number) => Math.max(13, Math.min(width, height) * 0.021);
-const CHIP_PAD_Y = 0.28;
-const CHIP_PAD_X = 0.55;
-const CHIP_LINE = 1.2;
-
-/** Meia altura do chip em fração da altura da tela (o painel e a legenda desviam dele). */
-export const creditChipHalf = (width: number, height: number) => (chipFont(width, height) * (CHIP_LINE + CHIP_PAD_Y * 2)) / 2 / height;
-
-/** Faixa de cima do vertical que o TikTok/Reels cobrem com a própria interface (e onde ficam logos da arte). */
-const TOP_UI = 0.13;
-
-/**
- * Lugar do chip: no horizontal, canto de baixo à direita (do lado oposto à fonte, que fica à esquerda); no vertical,
- * canto de cima à esquerda, logo abaixo da faixa do topo (`headBottom`, fração da altura) e sempre abaixo dos 13% de
- * cima (`TOP_UI`): longe da coluna de botões da direita e dos 20% de baixo (nome do canal e descrição).
- */
-export const creditChipPlace = (width: number, height: number, headBottom?: number): { corner: CreditCorner; y: number } =>
-  width > height
-    ? { corner: 'bottom_right', y: 0.925 }
-    : { corner: 'top_left', y: Math.max(TOP_UI + creditChipHalf(width, height) + 0.01, headBottom !== undefined ? headBottom + 0.035 : 0) };
-
-/** Até quantas letras o fim do crédito (origem e licença) fica sempre inteiro. */
-const CREDIT_TAIL_MAX = 40;
-
-/**
- * Crédito em começo e fim: só o começo (prefixo e autor) encolhe com reticências; o fim fica inteiro — a licença
- * (" · CC BY-SA 4.0") e, se couber em `CREDIT_TAIL_MAX`, a origem antes dela (" / Wikimedia Commons"). Sem separador,
- * o texto todo encolhe.
- */
-const creditParts = (label: string): [string, string] => {
-  const dot = label.lastIndexOf(' · ');
-  const slash = label.lastIndexOf(' / ', dot > 0 ? dot : undefined);
-  const cut = slash > 0 && label.length - slash <= CREDIT_TAIL_MAX ? slash : dot;
-  return cut > 0 ? [label.slice(0, cut), label.slice(cut)] : [label, ''];
-};
-
-/** "Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0" pequeno, num canto; entra nos quadros 6–14 e fica a cena toda. */
-export const CreditChip: React.FC<{
-  text: string;
-  corner: CreditCorner;
-  /** Centro do chip em fração da altura. */
-  y: number;
-  /** Largura máxima (px); sem ela, 62% da largura da tela. Texto maior encolhe o autor com reticências; origem e
-   * licença ficam inteiras. */
-  maxWidth?: number;
-}> = ({ text, corner, y, maxWidth }) => {
-  const frame = useCurrentFrame();
-  const { width, height } = useVideoConfig();
-  const label = text.trim();
-  if (!label) return null;
-  const size = chipFont(width, height);
-  const [head, tail] = creditParts(label);
-  const side: React.CSSProperties = corner === 'top_left' ? { left: width * 0.06 } : { right: width * 0.04 };
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        ...side,
-        top: height * y,
-        transform: 'translateY(-50%)',
-        maxWidth: maxWidth ?? width * 0.62,
-        padding: `${size * CHIP_PAD_Y}px ${size * CHIP_PAD_X}px`,
-        borderRadius: size * 0.35,
-        backgroundColor: 'rgba(0,0,0,0.55)',
-        color: '#FFFFFF',
-        fontFamily: fontStack('Noto Sans'),
-        fontWeight: 600,
-        fontSize: size,
-        lineHeight: CHIP_LINE,
-        letterSpacing: '0.01em',
-        textShadow: '0 1px 2px rgba(0,0,0,0.45)',
-        display: 'flex',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        opacity: interpolate(frame, [6, 14], [0, 1], clamp),
-      }}
-    >
-      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{head}</span>
-      {tail ? (
-        // `pre` guarda o espaço do começo; `maxWidth` é a rede de segurança se o fim for mais largo que o chip.
-        <span style={{ flexShrink: 0, maxWidth: '100%', whiteSpace: 'pre', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {tail}
-        </span>
-      ) : null}
-    </div>
-  );
-};
 
 // ---------------------------------------------------------------------------------------------
 // Cartão de notícia

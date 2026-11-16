@@ -75,14 +75,13 @@ def test_without_media_the_timeline_does_not_change():
     assert keys == [c["key"] for c in chunk_timeline(_timeline(reloaded), "v")]
 
 
-def test_media_scene_has_the_credit_in_the_video_language():
+def test_media_scene_has_no_credit_on_screen():
+    # O crédito da mídia real vai só na descrição da publicação, nunca na tela (nem em quem reaproveita).
     doc = _doc(media={"scn_0": PHOTO})
-    pt, en = _scenes(doc), _scenes(doc, "en-US")
-    assert pt["scn_0"]["credit"] == "Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0"
-    assert en["scn_0"]["credit"] == "Photo: Fulano / Wikimedia Commons · CC BY-SA 4.0"
-    assert pt["scn_1"]["credit"] == pt["scn_0"]["credit"]  # quem reaproveita mostra a mídia (e o crédito)
-    assert "credit" not in pt["scn_2"] and "credit" not in pt["scn_4"]
-    assert "news" not in pt["scn_0"]
+    for lang in ("pt-BR", "en-US"):
+        scenes = _scenes(doc, lang)
+        assert all("credit" not in s for s in scenes.values())
+    assert "news" not in _scenes(doc)["scn_0"]
 
 
 def test_news_card_only_on_its_own_image_scene():
@@ -91,11 +90,11 @@ def test_news_card_only_on_its_own_image_scene():
     assert pt["scn_2"]["news"] == {"outlet": "IGN Brasil", "headline": "GTA 6 bate recorde", "quoted": False,
                                    "date": "14 nov. 2026", "image": NEWS.asset}
     assert en["scn_2"]["news"]["date"] == "Nov 14, 2026" and en["scn_2"]["news"]["headline"] == "GTA 6 breaks a record"
-    assert pt["scn_2"]["credit"] == "Imagem: IGN Brasil"
-    assert "news" not in pt["scn_4"] and pt["scn_4"]["credit"] == "Imagem: IGN Brasil"  # reaproveita: só o crédito
+    assert "credit" not in pt["scn_2"] and "credit" not in en["scn_2"]  # o cartão fica; o crédito, não
+    assert "news" not in pt["scn_4"] and "credit" not in pt["scn_4"]  # reaproveita: só a imagem de fundo
     card = _doc(media={"scn_3": NEWS})
     stat = _scenes(card)["scn_3"]
-    assert "news" not in stat and stat["credit"] == "Imagem: IGN Brasil"  # em cartão, só fundo e crédito
+    assert "news" not in stat and "credit" not in stat  # em cartão, só o fundo
     no_image = _doc(media={"scn_2": NEWS.model_copy(update={"asset": None, "published": ""})})
     scene = _scenes(no_image)["scn_2"]
     assert scene["news"] == {"outlet": "IGN Brasil", "headline": "GTA 6 bate recorde", "quoted": False}

@@ -22,7 +22,7 @@ import {
   SpeedButtons,
   useConfirm,
 } from "../../ui";
-import { formatDuration, nextStep } from "./core/model";
+import { formatDuration, isBlocking, nextStep } from "./core/model";
 import { FinalVoiceSummary } from "./delivery/AudioPanels";
 import { AffiliateLinks } from "./delivery/AffiliateLinks";
 import { ShortsFromLong } from "./delivery/ShortsFromLong";
@@ -54,7 +54,6 @@ import {
   finalJobKinds,
   findActiveJob,
   humanizeWarning,
-  isActive,
   isFinalStale,
   JobProgress,
   LangSwitcher,
@@ -181,7 +180,7 @@ export const OutputTab: React.FC<
       : []),
   ];
   const metaBusy = Boolean(pendingMetaLang) || Boolean(anyMetadataJob);
-  const blocking = detail.jobs.find((j) => isActive(j) && j !== metadataJob);
+  const blocking = detail.jobs.find((j) => isBlocking(j) && j !== metadataJob);
   const generateBlock = !doc.segments.length
     ? "Escreva o roteiro antes de gerar o título e a descrição."
     : metadataJob

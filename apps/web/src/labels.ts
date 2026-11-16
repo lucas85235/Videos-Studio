@@ -366,4 +366,5 @@ export const JOB_DONE_LABELS: LabelMap = {
   publish_youtube: 'Vídeo enviado ao YouTube',
   publish_instagram: 'Reel publicado no Instagram',
   ab_build: 'Versões A/B prontas',
+  media_find: 'Busca de mídia oficial concluída',
 };

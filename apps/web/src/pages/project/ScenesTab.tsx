@@ -50,7 +50,7 @@ import {
   storyboardReviewOf,
   STYLE_MISSING_REASON,
 } from './core/model';
-import { RealMediaPanel } from './RealMediaPanel';
+import { RealMediaFinder, RealMediaPanel } from './RealMediaPanel';
 import { StoryboardReview } from './StoryboardReview';
 import { SceneVideoControl, VideoClipsPanel } from './VideoClipsPanel';
 import type { TabNavigation } from './types';
@@ -767,6 +767,7 @@ export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
     <div className="flex flex-col gap-6">
       <StoryboardReview detail={detail} busy={busy} numbers={numbers} onShowScene={showScene} />
       <VideoClipsPanel projectId={doc.id} disabled={Boolean(blockedReason) || busy} onShowScene={showScene} />
+      <RealMediaFinder detail={detail} busy={busy} blockedReason={blockedReason} />
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-card/95 px-3 py-2.5 backdrop-blur-md">
         <MonitorPlay size={16} aria-hidden="true" className="shrink-0 text-muted" />
         <div className="min-w-0 flex-1 text-sm" role="status">

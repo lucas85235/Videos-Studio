@@ -30,11 +30,21 @@ NEWS_ONLY_IMAGE = "O cartão de notícia só aparece em cena do tipo Imagem."
 LOCKED = "A cena está travada: destrave para mudar a mídia real."
 
 
+class FoundBody(BaseModel):
+    """O achado da busca na web escolhido (`FoundMedia`): o veículo vira o crédito e a página fica como fonte."""
+
+    image: str = Field(default="", max_length=2000)
+    page_url: str = Field(default="", max_length=2000)
+    title: str = Field(default="", max_length=600)
+    outlet: str = Field(default="", max_length=300)
+
+
 class AttachBody(BaseModel):
     via: Literal["candidate", "link"]
     candidate_id: str | None = Field(default=None, max_length=400)
     url: str | None = Field(default=None, max_length=2000)
     kind: RealKind | None = None
+    found: FoundBody | None = None
     rebuild: bool = False
 
 
@@ -131,7 +141,8 @@ def attach_media(project_id: str, scene_id: str, body: AttachBody) -> dict[str, 
             if not url:
                 raise MediaError("Cole um link.")
             kind = body.kind or (scene.real.kind if scene.real is not None else None)
-            media, warnings = real_media.media_from_link(url, project_id, kind=kind, lang=doc.primary_language)
+            media, warnings = real_media.media_from_link(url, project_id, kind=kind, lang=doc.primary_language,
+                                                         found=body.found.model_dump() if body.found else None)
     return _commit_media(project_id, scene_id, media, warnings, body.rebuild)
 
 

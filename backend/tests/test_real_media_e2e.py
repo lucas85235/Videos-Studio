@@ -180,19 +180,19 @@ def test_suggestion_to_published_credits(isolated_settings, net, monkeypatch):
         counts = storyboard_check.review_counts(doc, review["counts"]["budget"])
         assert counts["new_images"] == review["counts"]["new_images"] - 1 and "real_hints" not in counts
 
-        # 4) Prévia: a cena mostra a foto enquadrada (cache "media") com o crédito na tela; quem reaproveita também.
+        # 4) Prévia: a cena mostra a foto enquadrada (cache "media"), sem crédito na tela (ele vai na descrição); quem
+        # reaproveita mostra a mesma foto.
         preview = _run("preview", pid)
         entry = preview["langs"]["pt-BR"]
         timeline = json.loads((isolated_settings.data_dir / entry["timeline"]).read_text(encoding="utf-8"))
         by_id = {s["id"]: s for s in timeline["scenes"]}
         shown = by_id[scene.id]
-        assert shown["credit"] == f"Foto: {CREDIT}" and "news" not in shown
+        assert "credit" not in shown and "news" not in shown
         assert shown["src"] and "/media/" in shown["src"] and shown["src"] != media["asset"]
         assert scene.motion or shown["motion"] in ("ken_burns_in", "ken_burns_out", "drift")  # câmera suave na foto
         for sid in reusers:
-            assert by_id[sid]["credit"] == f"Foto: {CREDIT}" and by_id[sid]["src"] == shown["src"]
-        others = [s for s in timeline["scenes"] if s["id"] not in {scene.id, *reusers}]
-        assert others and all("credit" not in s for s in others)
+            assert by_id[sid]["src"] == shown["src"]
+        assert all("credit" not in s for s in timeline["scenes"])
         assert preview["generated"].get("image", 0) == len(after["images_missing"])
 
         # 5) Publicação: a descrição enviada ao YouTube leva o bloco de créditos antes das hashtags.

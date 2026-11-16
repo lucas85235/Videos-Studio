@@ -167,7 +167,7 @@ def test_same_media_on_two_scenes_is_framed_once_in_parallel(no_ai_images, isola
     assert src["scn_a"].startswith("cache/media/") and src["scn_c"] == src["scn_a"]
 
 
-def test_preview_with_media_has_credit_and_content_id_warning(no_ai_images, isolated_settings):
+def test_preview_with_media_has_content_id_warning_and_no_credit_on_screen(no_ai_images, isolated_settings):
     pid = project({})
     doc = service.get_doc(pid)
     doc.scenes = [s for s in doc.scenes if s.id != "scn_c"]
@@ -183,7 +183,7 @@ def test_preview_with_media_has_credit_and_content_id_warning(no_ai_images, isol
     timeline = json.loads((isolated_settings.data_dir / result["langs"]["pt-BR"]["timeline"]).read_text(encoding="utf-8"))
     first, second = timeline["scenes"]
     assert first["src"].startswith("cache/media/") and second["src"] == first["src"]
-    assert first["credit"] == second["credit"] == "Imagem: Rockstar Games"
+    assert "credit" not in first and "credit" not in second  # o crédito vai na descrição, não na tela
     assert "image" not in no_ai_images
 
 

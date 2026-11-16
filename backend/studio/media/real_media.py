@@ -35,8 +35,7 @@ CONTAIN_RATIO = 1.4
 """Proporção da foto dividida pela do vídeo acima disto (ou abaixo do inverso): imagem inteira com fundo desfocado."""
 SOURCE_LABELS = {"commons": "Wikimedia Commons", "openverse": "Openverse", "pexels": "Pexels",
                  "link": "link", "upload": "arquivo enviado"}
-EDITORIAL_WARNING = ("Material oficial pode gerar reivindicação de direitos (Content ID); o crédito vai na tela e na "
-                     "descrição.")
+EDITORIAL_WARNING = "Material oficial pode gerar reivindicação de direitos (Content ID); o crédito vai na descrição."
 CREDIT_MAX = 90
 BACKGROUND = (17, 17, 17)  # #111111 atrás da transparência
 ACCEPTED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "BMP", "TIFF", "MPO", "AVIF"}
@@ -283,10 +282,20 @@ def commons_title(url: str) -> str | None:
     return None
 
 
+def _found_https(found: dict[str, str] | None, key: str) -> str:
+    text = " ".join(str((found or {}).get(key) or "").split())
+    return text if text.lower().startswith("https://") and len(text) <= 2000 else ""
+
+
 def media_from_link(url: str, project_id: str, *, kind: RealKind | None, lang: str,
-                    http: httpx.Client | None = None) -> tuple[MediaRef, list[str]]:
+                    http: httpx.Client | None = None, found: dict[str, str] | None = None) -> tuple[MediaRef, list[str]]:
     """Mídia de um link colado: arquivo do Commons (licença conferida), imagem direta ou página (notícia, material
-    oficial). Material de terceiros fica `editorial` e ganha o aviso de Content ID."""
+    oficial). Material de terceiros fica `editorial` e ganha o aviso de Content ID.
+
+    `found`: o achado da busca na web (`FoundMedia`: image, page_url, title, outlet) que o usuário escolheu. O veículo
+    vira o crédito, a página dele fica como fonte e, na notícia, a imagem é a escolhida (não a og:image da página)."""
+    outlet = _short(str((found or {}).get("outlet") or ""), CREDIT_MAX)
+    found_title = _short(str((found or {}).get("title") or ""), 300)
     title = commons_title(url)
     if title:
         try:
@@ -315,36 +324,41 @@ def media_from_link(url: str, project_id: str, *, kind: RealKind | None, lang: s
         stored = store_image(preview.image or b"", project_id)
         warnings += stored.warnings
         media = MediaRef(kind=kind or "official", source="link", asset=stored.rel, url=preview.url,
-                         page_url=preview.url, credit=default_credit("link", site=link_preview.site_label(preview.url)),
+                         page_url=_found_https(found, "page_url") or preview.url, title=found_title,
+                         credit=outlet or default_credit("link", site=link_preview.site_label(preview.url)),
                          editorial=True, width=stored.width, height=stored.height)
-        warnings.append("Confira o crédito: escreva o dono do material (ex.: Rockstar Games).")
+        if not outlet:
+            warnings.append("Confira o crédito: escreva o dono do material (ex.: Rockstar Games).")
     else:
         site = preview.site_name or link_preview.site_label(preview.url)
         final_kind: RealKind = kind or ("news" if preview.is_article else "official")
         if final_kind == "news":
             stored = None
-            if preview.image_url:
+            # Achado escolhido na busca: a imagem dele (a miniatura que o usuário viu), não a og:image da página.
+            image_url = _found_https(found, "image") or preview.image_url
+            if image_url:
                 try:
                     # Sem aviso de imagem pequena: a og:image comum (1200x630) só vira miniatura e fundo desfocado.
-                    stored = store_image(_media_fetch(preview.image_url, http), project_id)
+                    stored = store_image(_media_fetch(image_url, http), project_id)
                 except (safe_http.FetchError, MediaError) as exc:
-                    log.warning("imagem da notícia %s não baixou: %r (%r)", preview.image_url, exc, exc.__cause__)
+                    log.warning("imagem da notícia %s não baixou: %r (%r)", image_url, exc, exc.__cause__)
                     warnings.append("Não consegui baixar a imagem da notícia: o cartão usa o fundo animado.")
             headline = link_preview.clean_headline(preview.title, site)
-            outlet = _short(site, 60)
+            news_outlet = _short(preview.site_name or outlet or site, 60)
             media = MediaRef(kind="news", source="link", asset=stored.rel if stored else None,
-                             url=preview.image_url if stored else "", page_url=preview.url, title=preview.title,
-                             author=preview.author, credit=outlet, editorial=True,
+                             url=image_url if stored else "", page_url=preview.url, title=preview.title,
+                             author=preview.author, credit=news_outlet, editorial=True,
                              width=stored.width if stored else None, height=stored.height if stored else None,
-                             outlet=outlet, published=preview.published, headline={lang: headline} if headline else {})
+                             outlet=news_outlet, published=preview.published,
+                             headline={lang: headline} if headline else {})
         else:
             if not preview.image_url:
                 raise MediaError("A página não tem imagem para usar. Cole o link da imagem ou envie o arquivo.")
             stored = store_image(_media_fetch(preview.image_url, http), project_id)
             warnings += stored.warnings
             media = MediaRef(kind=final_kind, source="link", asset=stored.rel, url=preview.image_url,
-                             page_url=preview.url, title=preview.title, author=preview.author,
-                             credit=default_credit("link", site=site), editorial=True, width=stored.width,
+                             page_url=preview.url, title=preview.title or found_title, author=preview.author,
+                             credit=outlet or default_credit("link", site=site), editorial=True, width=stored.width,
                              height=stored.height)
     warnings.append(EDITORIAL_WARNING)
     return media, warnings

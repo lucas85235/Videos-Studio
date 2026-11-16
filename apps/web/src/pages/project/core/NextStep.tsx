@@ -208,6 +208,7 @@ export const NextStepBanner: React.FC<{
   // Cenas esperando a conferência: o título diz quantas imagens a aprovação gera de fato (com o cache).
   const plan = usePreviewPlan(detail, awaitingScenes(detail));
   const step = nextStep(detail, { showFailure: Boolean(failure), plannedImages: plan.data?.images_missing.length });
+  // Mostra também a busca de mídia por trás (media_find), que não trava nada.
   const active = detail.jobs.filter(isActive);
   const { action } = step;
   const toFinal = detail.project.settings.gates?.preview === false;

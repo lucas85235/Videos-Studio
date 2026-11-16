@@ -22,10 +22,10 @@ import {
   useToast,
 } from "../../../ui";
 import { createKeyedStore, useKeyedStore } from "../core/drafts";
-import { awaitingScenes, humanizeVersionMessage } from "../core/model";
+import { awaitingScenes, humanizeVersionMessage, isBlocking } from "../core/model";
 import type { ProjectTab } from "../types";
 import { describeOp } from "./editOps";
-import { guardUnload, isActive, trackName } from "./shared";
+import { guardUnload, trackName } from "./shared";
 
 /** Exemplos clicáveis; os que falam da "cena atual" viram "cena N" com a cena na tela. */
 const EXAMPLES = [
@@ -109,7 +109,7 @@ export const EditPanel: React.FC<{
   const setOnlyCurrent = (value: boolean) =>
     patchDraft(projectId, { onlyCurrent: value });
 
-  const active = detail.jobs.filter(isActive);
+  const active = detail.jobs.filter(isBlocking);
   const otherJob = active.find((j) => j.kind !== "preview");
   const proposeBlock = otherJob
     ? `Aguarde: ${JOB_LABELS[otherJob.kind] ?? "uma tarefa"} em andamento.`

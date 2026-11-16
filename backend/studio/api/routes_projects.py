@@ -28,7 +28,7 @@ from studio.workers.publish.package import build_dub_package, build_package, lis
 
 router = APIRouter(prefix="/api/projects", tags=["projetos"])
 
-JOB_KINDS = {"script", "storyboard", "translate", "metadata", "preview", "render", "autopilot"}
+JOB_KINDS = {"script", "storyboard", "translate", "metadata", "preview", "render", "autopilot", "media_find"}
 
 
 class VoiceChoice(BaseModel):

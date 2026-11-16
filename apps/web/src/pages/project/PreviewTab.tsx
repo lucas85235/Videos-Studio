@@ -36,7 +36,7 @@ import {
   tabPanelProps,
   useToast,
 } from "../../ui";
-import { awaitingScenes, formatDuration, isShort, nextStep } from "./core/model";
+import { awaitingScenes, formatDuration, isBlocking, isShort, nextStep } from "./core/model";
 import { tabOwnsAction } from "./core/NextStep";
 import { MusicPanel, VoicePanel } from "./delivery/AudioPanels";
 import { AudioCheckPanel } from "./delivery/audio/AudioCheckPanel";
@@ -45,7 +45,6 @@ import {
   buildToken,
   findActiveJob,
   humanizeWarning,
-  isActive,
   isMusicWarning,
   JobProgress,
   LangSwitcher,
@@ -235,7 +234,7 @@ export const PreviewTab: React.FC<
   const bannerGoesToOutput = banner === "publish" || banner === "done";
 
   const previewJob = findActiveJob(detail, ["preview", "autopilot"]);
-  const otherJob = !previewJob ? detail.jobs.find(isActive) : undefined;
+  const otherJob = !previewJob ? detail.jobs.find(isBlocking) : undefined;
 
   const approve = useMutation({
     mutationFn: () =>

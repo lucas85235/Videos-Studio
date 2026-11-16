@@ -131,7 +131,7 @@ export const sampleProps: TimelineProps = {
       },
     },
     {
-      // Foto real (mídia anexada): o src chega enquadrado pelo backend; o crédito vai no canto.
+      // Foto real (mídia anexada): o src chega enquadrado pelo backend; o crédito vai na descrição, não na tela.
       id: 'scn_e',
       kind: 'image',
       from: 330,
@@ -157,7 +157,6 @@ export const sampleProps: TimelineProps = {
       ],
       words: [],
       focus: 'right',
-      credit: 'Foto: Ana Souza / Wikimedia Commons · CC BY-SA 4.0',
     },
     {
       // Notícia anexada: cartão desenhado sobre a própria imagem da notícia, desfocada.
@@ -185,7 +184,6 @@ export const sampleProps: TimelineProps = {
         },
       ],
       words: [],
-      credit: 'Imagem: Jornal do Litoral',
       news: {
         outlet: 'Jornal do Litoral',
         headline: 'Farol abandonado volta a acender sozinho depois de 40 anos apagado',

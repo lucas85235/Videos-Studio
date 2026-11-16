@@ -47,7 +47,7 @@ _CREDIT_LEADS = ("foto:", "imagem:", "photo:", "image:", "imagen:", "bild:", "im
 
 class MediaRef(BaseModel):
     """Mídia real anexada pelo usuário: a cena mostra este arquivo no lugar da imagem de IA (o prompt fica de reserva
-    e volta a valer quando a mídia sai). Guarda a origem e a licença para o crédito na tela e na descrição."""
+    e volta a valer quando a mídia sai). Guarda a origem e a licença para o crédito na descrição."""
 
     kind: RealKind = "photo"
     source: MediaSource = "upload"
@@ -111,6 +111,25 @@ class MediaRef(BaseModel):
         return _pick_text(self.headline, lang, fallback) or " ".join(self.title.split())
 
 
+class FoundMedia(BaseModel):
+    """Candidato achado na web pela busca automática (`media_find`) para uma sugestão de mídia real. Só o endereço e
+    os dados para a miniatura: o arquivo é baixado quando o usuário anexa (rota de mídia, via link)."""
+
+    image: str
+    """Endereço direto da imagem (https): a miniatura e o que se anexa em "official"/"photo"."""
+    page_url: str = ""
+    """Página onde a imagem está (a notícia ou a página oficial de mídia)."""
+    title: str = ""
+    """Descrição curta da imagem ou manchete da notícia."""
+    outlet: str = ""
+    """Site ou veículo ("Rockstar Games", "PC Gamer")."""
+    kind: RealKind
+    width: int = 0
+    height: int = 0
+    why: str = ""
+    """Uma frase curta: por que serve para a cena."""
+
+
 class RealHint(BaseModel):
     """Sugestão do storyboard: nesta batida, mídia real (anexada pelo usuário) vale mais que a imagem de IA. Nada é
     aplicado sozinho; a cena continua com o prompt de IA de reserva."""
@@ -122,6 +141,12 @@ class RealHint(BaseModel):
     """O que mostrar e onde achar, em português ("arte oficial da Lucia no Newswire da Rockstar")."""
     source_ref: int | None = None
     """Posição (base 1) em `ProjectDoc.sources` da fonte com link que vira o cartão de notícia."""
+    found: list[FoundMedia] = []
+    """Candidatos da busca automática na web (arte oficial, notícia), já conferidos (imagem grande o bastante)."""
+    searched: bool = False
+    """A busca automática já rodou para esta sugestão (mesmo sem achar nada): não repete sem pedido."""
+    searched_at: str = ""
+    """Quando a busca automática rodou por último (ISO, UTC): a busca de novo começa pelas mais antigas."""
 
 
 class SceneFrame(BaseModel):

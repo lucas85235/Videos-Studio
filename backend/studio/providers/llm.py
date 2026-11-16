@@ -43,8 +43,9 @@ CLAUDE_CODE_MODEL = "opus"  # apelido do Claude Code para o Opus mais recente
 # Variáveis que fariam o Claude Code cobrar pela API em vez de usar o plano da conta.
 _API_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 _AUTH_TTL_S = 300.0
-# Tarefas que podem buscar na web (checagem de fatos, ADR 0003 bloco F). As outras rodam sem nenhuma ferramenta.
-WEB_TASKS = frozenset({"factcheck"})
+# Tarefas que podem buscar na web (checagem de fatos, ADR 0003 bloco F; busca de arte oficial e notícias para as
+# sugestões de mídia real). As outras rodam sem nenhuma ferramenta.
+WEB_TASKS = frozenset({"factcheck", "media_find"})
 WEB_TIMEOUT_S = 1800  # a busca e a leitura das páginas levam bem mais que a escrita
 
 

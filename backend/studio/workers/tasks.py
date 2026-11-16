@@ -14,8 +14,8 @@ from studio.models import Channel, utcnow
 from studio.providers import media_search
 from studio.workers import novelty
 from studio.workers.analytics import lessons as lessons_mod
-from studio.workers.jobs import JobContext, job
-from studio.workers.pipeline import authoring, video_clips
+from studio.workers.jobs import JobContext, get_runner, job
+from studio.workers.pipeline import authoring, media_find, video_clips
 from studio.workers.pipeline.build import BuildCancelled, Builder
 
 log = logging.getLogger(__name__)
@@ -88,7 +88,9 @@ def run_script(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @job("storyboard")
-def run_storyboard(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: bool = False) -> dict[str, Any]:
+    """`find_inline`: a busca de arte oficial e notícias roda aqui mesmo (piloto automático); senão vira um job
+    `media_find` próprio na fila."""
     project_id = ctx.project_id
     assert project_id
     ctx.progress(0.1, "Planejando as cenas")
@@ -105,12 +107,42 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     # Com a parada das cenas ligada, as cenas novas esperam a conferência (storyboard() zera a aprovação).
     service.set_status(project_id, SCENES_REVIEW_STATUS if _gates(project_id).get("storyboard", False) else "storyboard")
     _prefetch_media(ctx, new_doc, style)
-    ctx.progress(1.0, "Cenas prontas para revisão")
     result = {"version": version, "provider": provider, "scenes": counts["scenes"], "new_images": counts["new_images"],
               "reused": counts["reused"], "cards": counts["cards"]}
     if counts.get("real_hints"):
         result["real_hints"] = counts["real_hints"]
+    warning: str | None = None
+    if ctx.cancelled():
+        pass  # cancelado: a busca na web (paga) não começa
+    elif find_inline:
+        found, warning = _find_media(ctx, new_doc)
+        if found:
+            result["media_find"] = found
+    else:
+        find_job, warning = media_find.queue_find(project_id, new_doc, get_runner().submit)
+        if find_job:
+            result["media_find_job"] = find_job
+    ctx.progress(1.0, "Cenas prontas para revisão")
+    if warning:
+        result["warnings"] = [warning]
     return result
+
+
+def _find_media(ctx: JobContext, doc: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Busca na web a arte oficial e as notícias das sugestões (uma chamada do Claude Code para o vídeo inteiro), só
+    online e com busca web. Falha vira aviso, nunca derruba o storyboard."""
+    assert ctx.project_id
+    return media_find.auto_find(ctx.project_id, doc, job_id=ctx.job_id,
+                                progress=lambda f, m: ctx.progress(0.92 + 0.07 * f, m), cancelled=ctx.cancelled)
+
+
+@job("media_find")
+def run_media_find(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """Acha na web arte oficial e imagens de notícia para as sugestões de mídia real pendentes. Payload:
+    `{refresh?}` (busca de novo as sugestões já buscadas)."""
+    assert ctx.project_id
+    return media_find.run_media_find(ctx.project_id, refresh=bool(payload.get("refresh")), job_id=ctx.job_id,
+                                     progress=ctx.progress, cancelled=ctx.cancelled)
 
 
 def _prefetch_media(ctx: JobContext, doc: Any, style: Any) -> None:
@@ -300,13 +332,16 @@ def run_autopilot(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
         if gates.get("script", True) and not payload.get("skip_gates"):
             return {"steps": steps, "stopped_at": "script", "message": "Roteiro aguardando sua aprovação"}
     doc = service.get_doc(project_id)
+    extra: dict[str, Any] = {}
     if not doc.scenes:
-        run_storyboard(ctx, payload)
+        # No piloto, a busca entra no mesmo job (nada corre junto); o resultado e o aviso dela vão no do piloto.
+        board = run_storyboard(ctx, payload, find_inline=True)
+        extra = {k: board[k] for k in ("media_find", "warnings") if board.get(k)}
         steps.append("storyboard")
         doc = service.get_doc(project_id)
     if gates.get("storyboard", False) and not doc.storyboard_approved and not payload.get("skip_gates"):
         service.set_status(project_id, SCENES_REVIEW_STATUS)
-        return {"steps": steps, "stopped_at": "storyboard", "message": "Cenas aguardando sua aprovação"}
+        return {"steps": steps, "stopped_at": "storyboard", "message": "Cenas aguardando sua aprovação", **extra}
     other_langs = [lang for lang in doc.languages if lang != doc.primary_language]
     doc = service.get_doc(project_id)
     # Narração que falta: tradução completa. Só textos de tela (cartões de cenas refeitas depois da tradução):
@@ -322,7 +357,8 @@ def run_autopilot(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     result = run_preview(ctx, payload)
     steps.append("preview")
     if gates.get("preview", True) and not payload.get("skip_gates"):
-        return {"steps": steps, "stopped_at": "preview", "message": "Prévia aguardando sua aprovação", "preview": result}
+        return {"steps": steps, "stopped_at": "preview", "message": "Prévia aguardando sua aprovação", "preview": result,
+                **extra}
     final = run_render(ctx, payload)
     steps.append("render")
-    return {"steps": steps, "stopped_at": None, "render": final}
+    return {"steps": steps, "stopped_at": None, "render": final, **extra}

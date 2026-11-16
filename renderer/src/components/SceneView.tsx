@@ -7,7 +7,7 @@ import { ChartCard, chartRows } from './ChartCard';
 import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
 import { MapCard, mapItems } from './MapCard';
-import { assetUrl, CreditChip, creditChipHalf, creditChipPlace, NewsCard } from './RealMedia';
+import { assetUrl, NewsCard } from './RealMedia';
 import { ClipLayer } from './ClipLayer';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
@@ -60,15 +60,10 @@ const TEXT_KINDS = new Set<SceneKind>(['title', 'count', 'quote', 'text', 'docum
 const SOURCE_FADE_IN = 8;
 const STAMP_DELAY = 6;
 
-// Medidas do `SourceChip` (mesma conta de DataCards), para o crédito e o cartão de notícia desviarem dele.
+// Medidas do `SourceChip` (mesma conta de DataCards), para o cartão de notícia desviar dele.
 const sourceChipFont = (width: number, height: number) => Math.max(14, Math.min(width, height) * 0.028);
 /** Meia altura em fração da altura da tela (linha 1,2 e respiro de 0,3 em cima e embaixo). */
 const sourceChipHalf = (width: number, height: number) => (sourceChipFont(width, height) * 0.9) / height;
-/** Largura prevista em px ("Fonte: X", respiro e borda de destaque), até os 70% de largura máxima do chip. */
-const sourceChipWidth = (source: string, width: number, height: number) => {
-  const size = sourceChipFont(width, height);
-  return Math.min(width * 0.7, (source.length + 8) * 0.58 * size + size * 1.4);
-};
 
 const filled = (t: string | undefined) => Boolean(t?.trim());
 
@@ -141,7 +136,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const stamp = scene.card?.stamp?.trim();
   const inPanel = PANEL_KINDS.has(kind);
   const headBox = headline ? headlineBox(headline, cards, lang, width, height) : null;
-  // Mídia real: cartão de notícia (só na cena de imagem dona dela) e o crédito de quem fez a foto/imagem.
+  // Mídia real: cartão de notícia (só na cena de imagem dona dela). O crédito da imagem vai na descrição, não na tela.
   const news = kind === 'image' && scene.news && (scene.news.outlet?.trim() || scene.news.headline?.trim()) ? scene.news : undefined;
   // A fonte solta igual ao veículo do cartão de notícia sai: o cartão já diz de onde veio. Sem nada na tela que ela
   // apoie, também sai; se só apoia o carimbo, entra junto com ele.
@@ -152,21 +147,12 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const sourceFrom = support === 'stamp' ? Math.max(0, stampDelay - SOURCE_FADE_IN) : 0;
   // Variação de família (lousa, colagem, tela): só na cena de imagem com imagem e sem cartão de notícia.
   const treatment = kind === 'image' && url && !news && isTreatment(scene.treatment) ? scene.treatment : undefined;
-  const credit = scene.credit?.trim();
-  const creditAt = credit ? creditChipPlace(width, height, headBox ? headBox.bottom / height : undefined) : null;
-  // No vertical o chip fica no topo: a legenda de cima e o painel começam abaixo dele.
-  const creditBottom = creditAt?.corner === 'top_left' ? creditAt.y + creditChipHalf(width, height) : null;
 
   const position = style.captions.position;
   const captionHalf = captionHalfHeight(style.captions, width, height);
   let captionAt: number | undefined;
   if (CARD_KINDS.has(kind) || news) captionAt = Math.max(0.76, captionTop(position));
   else if (headBox && position === 'top') captionAt = Math.max(0.25, headBox.bottom / height + captionHalf + 0.02);
-  if (creditBottom !== null && position === 'top' && !CARD_KINDS.has(kind) && !news) {
-    // Legenda de cima no vertical: desce para baixo do chip de crédito.
-    const below = creditBottom + captionHalf + 0.02;
-    if ((captionAt ?? captionTop(position)) < below) captionAt = below;
-  }
   // No vertical, a legenda não desce para os 20% de baixo (nome do canal e descrição).
   const captionMid = captionCenter(style.captions, width, height, captionAt);
   if (captionAt !== undefined || captionMid !== captionTop(position)) captionAt = captionMid;
@@ -174,7 +160,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const sourceY = width > height ? 0.925 : captionMid < 0.7 ? 0.76 : captionMid - 0.1;
   // Carimbo embaixo (sujeito no meio ou em cima): logo abaixo da legenda do meio, ou acima da legenda de baixo.
   const stampLowY = captionMid >= 0.65 ? 0.52 : captionMid <= 0.35 ? 0.66 : captionMid + captionHalf + 0.075;
-  // Carimbo do lado (0,3): desce para baixo da legenda de cima quando a faixa do topo ou o crédito a empurram.
+  // Carimbo do lado (0,3): desce para baixo da legenda de cima quando a faixa do topo a empurra.
   const stampSideY = captionMid < 0.45 ? Math.max(0.3, captionMid + captionHalf + 0.075) : 0.3;
   // Faixa livre para o painel dos cartões de dado: abaixo da faixa do topo e acima da legenda (meia legenda de 2
   // linhas e uma margem), para o painel nunca passar por baixo de nenhuma das duas.
@@ -182,14 +168,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     top: headBox ? headBox.bottom / height + 0.02 : 0.06,
     bottom: captionAt !== undefined && style.captions.style !== 'none' ? captionAt - captionHalf - 0.02 : 0.9,
   };
-  if (creditBottom !== null) band.top = Math.max(band.top, creditBottom + 0.01);
   // O cartão de notícia não desce até a fonte solta (no vertical ela fica entre o painel e a legenda).
   if (news && source) band.bottom = Math.min(band.bottom, sourceY - sourceChipHalf(width, height) - 0.012);
-  // No horizontal, crédito (à direita) e fonte solta (à esquerda) ficam na mesma linha: o crédito não cobre a fonte.
-  const creditMaxW =
-    creditAt?.corner === 'bottom_right' && source && !inPanel
-      ? Math.max(width * 0.3, Math.min(width * 0.62, width * 0.88 - sourceChipWidth(source, width, height)))
-      : undefined;
 
   // Cartão de dado entra quando o número é dito; dito logo no corte, entra parado ("pop"), sem contar.
   const reveal = inPanel && typeof scene.reveal === 'number' ? scene.reveal : undefined;
@@ -249,7 +229,6 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       ) : (
         sourceChip
       )}
-      {credit && creditAt ? <CreditChip text={credit} corner={creditAt.corner} y={creditAt.y} maxWidth={creditMaxW} /> : null}
       {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} />}
       <TransitionIn type={scene.transition} frames={style.transitionFrames} seed={scene.seed} />
     </AbsoluteFill>

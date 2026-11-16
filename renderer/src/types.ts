@@ -99,11 +99,6 @@ export type TimelineScene = {
   frame?: TimelineFrame;
   /** Stat/compare: quadro (relativo à cena) em que o número do cartão é dito; o cartão entra nele. */
   reveal?: number;
-  /**
-   * Crédito da mídia real que a cena mostra (a dela ou a reaproveitada), pronto no idioma do vídeo: "Foto: Fulano /
-   * Wikimedia Commons · CC BY-SA 4.0", "Imagem: Rockstar Games". Ausente: imagem de IA ou cartão sem mídia real.
-   */
-  credit?: string;
   /** Cartão de notícia (cena de imagem dona da notícia). Ausente: cena sem notícia. */
   news?: TimelineNews;
   /**

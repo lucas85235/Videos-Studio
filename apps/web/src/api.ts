@@ -82,6 +82,29 @@ export type RealHint = {
   note: string;
   /** Posição (base 1) em `doc.sources` da fonte com link (notícia). */
   source_ref: number | null;
+  /** Mídia oficial/notícia achada pelo job "media_find" (nada é anexado sozinho). */
+  found?: FoundMedia[];
+  /** A busca já rodou para esta sugestão (mesmo sem achar nada). */
+  searched?: boolean;
+  /** Quando a busca rodou por último (ISO, UTC): a busca de novo começa pelas mais antigas. */
+  searched_at?: string;
+};
+
+/** Imagem achada na web pelo job "media_find" (FoundMedia em core/project/document.py). */
+export type FoundMedia = {
+  /** URL direta da imagem (miniatura e o que é anexado em oficial/foto). */
+  image: string;
+  /** Página onde foi achada (notícia ou página de imprensa oficial). */
+  page_url: string;
+  /** Descrição curta da imagem ou manchete da notícia. */
+  title: string;
+  /** Site ou veículo ("Rockstar Games", "PC Gamer"). */
+  outlet: string;
+  kind: RealKind;
+  width: number;
+  height: number;
+  /** Por que serve para a cena (uma frase). */
+  why: string;
 };
 
 /** Situação de cada fonte na busca: ok, vazio (nada achado), erro (não respondeu), offline, sem_chave (Pexels). */
@@ -927,6 +950,7 @@ export const JOB_LABELS: Record<string, string> = {
   thumbs_variants: 'Miniaturas para o teste A/B',
   publish_instagram: 'Publicação no Instagram',
   ab_build: 'Versões A/B',
+  media_find: 'Busca de mídia oficial',
 };
 
 /* ------------------------------------------------------------------ */

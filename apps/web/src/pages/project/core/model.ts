@@ -17,6 +17,15 @@ import type { ProjectTab } from '../types';
 
 export const isActive = (job: Job) => job.status === 'queued' || job.status === 'running';
 
+/**
+ * Jobs de ajuda que correm por trás sem travar o projeto: a busca de mídia oficial e notícias ("media_find") só grava
+ * os achados nas sugestões que não mudaram durante a busca (relê o documento antes de gravar).
+ */
+export const BACKGROUND_KINDS = new Set(['media_find']);
+
+/** Job em andamento que trava o projeto (aprovar, editar, gerar a prévia): os de ajuda por trás não contam. */
+export const isBlocking = (job: Job) => isActive(job) && !BACKGROUND_KINDS.has(job.kind);
+
 /** Tipos de job que o endpoint /api/projects/{id}/jobs aceita (dá para tentar de novo pela página). */
 export const RETRYABLE_KINDS = new Set(['script', 'storyboard', 'translate', 'metadata', 'preview', 'render', 'autopilot']);
 
@@ -265,7 +274,7 @@ export const nextStep = (
   const renderCost = 'Usa a cota ou os créditos da voz do vídeo final.';
 
   const base = { current, steps };
-  if (detail.jobs.some(isActive)) {
+  if (detail.jobs.some(isBlocking)) {
     return { ...base, action: { kind: 'job' }, title: 'Trabalhando no seu vídeo', description: 'Você pode sair desta página: o progresso continua.' };
   }
   if (!hasScript) {

@@ -7,6 +7,7 @@ import {
   type MediaCandidates,
   type MediaCredits,
   type MediaPatch,
+  type FoundMedia,
   type MediaRef,
   type ProjectDoc,
   type RealHint,
@@ -31,8 +32,15 @@ export const mediaCandidates = (pid: string, sid: string, q?: string, refresh = 
 export const attachCandidate = (pid: string, sid: string, candidateId: string, kind?: RealKind) =>
   api.post<MediaAttachResult>(`${base(pid, sid)}/media`, { via: 'candidate', candidate_id: candidateId, kind });
 
-export const attachLink = (pid: string, sid: string, url: string, kind?: RealKind | null) =>
-  api.post<MediaAttachResult>(`${base(pid, sid)}/media`, { via: 'link', url, kind: kind ?? null });
+/** `found`: o achado da busca na web escolhido (o veículo vira o crédito, a página fica como fonte e, na notícia, a
+ * imagem anexada é a da miniatura). */
+export const attachLink = (pid: string, sid: string, url: string, kind?: RealKind | null, found?: FoundMedia) =>
+  api.post<MediaAttachResult>(`${base(pid, sid)}/media`, {
+    via: 'link',
+    url,
+    kind: kind ?? null,
+    ...(found ? { found: { image: found.image, page_url: found.page_url, title: found.title, outlet: found.outlet } } : {}),
+  });
 
 export const uploadMedia = (pid: string, sid: string, file: File, fields: { kind: RealKind; credit?: string; editorial?: boolean }) => {
   const form = new FormData();
@@ -90,13 +98,38 @@ const CREDIT_LEADS = [
   'source:',
 ];
 
-/** Crédito na tela no idioma do vídeo ("Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0"); vazio sem crédito. */
+/** Crédito com o prefixo do idioma do vídeo ("Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0"); vazio sem crédito.
+ * Não é a linha da descrição (essa é `descriptionCreditLine`). */
 export const creditLine = (media: Pick<MediaRef, 'credit' | 'kind'>, lang: string): string => {
   let text = media.credit.split(/\s+/).filter(Boolean).join(' ');
   while (CREDIT_LEADS.some((lead) => text.toLowerCase().startsWith(lead))) text = text.slice(text.indexOf(':') + 1).trim();
   if (!text) return '';
   const [photo, image] = CREDIT_PREFIX[lang.toLowerCase().slice(0, 2)] ?? CREDIT_PREFIX.en;
   return `${media.kind === 'photo' ? photo : image}: ${text}`;
+};
+
+const clean = (text: string) => text.split(/\s+/).filter(Boolean).join(' ');
+
+/**
+ * Linha da mídia nos créditos da descrição (credit_line em workers/publish/credits.py), com `credit` no lugar do
+ * crédito salvo. Notícia: veículo, data, manchete e link; o crédito só entra sem veículo nem data. Outras: título (ou o
+ * crédito, sem título), autor, licença e a página. A data da notícia aparece aqui como foi salva (na descrição vai
+ * escrita no idioma).
+ */
+export const descriptionCreditLine = (media: MediaRef, lang: string, credit = media.credit): string => {
+  if (media.source === 'upload' && !(credit.trim() || media.license.trim() || media.page_url.trim())) return '';
+  let parts: string[];
+  if (media.kind === 'news') {
+    const lead = [clean(media.outlet), clean(media.published)].filter(Boolean).join(', ');
+    const headline = clean(media.headline?.[lang] || Object.values(media.headline ?? {})[0] || media.title).replace(/^[\s"“”«»]+|[\s"“”«»]+$/g, '');
+    parts = [lead || clean(credit), headline ? `“${headline}”` : '', media.page_url || media.url];
+  } else {
+    const title = clean(media.title) || clean(credit);
+    const author = clean(media.author) && !title.toLowerCase().includes(clean(media.author).toLowerCase()) ? clean(media.author) : '';
+    const license = clean(media.license);
+    parts = [title, author, license && media.license_url ? `${license} (${media.license_url})` : license, media.page_url || media.url];
+  }
+  return parts.map((p) => p.trim()).filter(Boolean).join(' — ');
 };
 
 /** Cenas com sugestão de mídia real e sem mídia anexada, na ordem do vídeo (como `ProjectDoc.ordered_scenes`). */
@@ -115,4 +148,4 @@ export const linkedSources = (doc: ProjectDoc) =>
 export const hasEditorialMedia = (doc: ProjectDoc) => doc.scenes.some((s) => Boolean(s.visual.media?.editorial));
 
 /** Aviso de material oficial (EDITORIAL_WARNING em media/real_media.py). */
-export const EDITORIAL_NOTICE = 'Material oficial pode gerar reivindicação de direitos (Content ID). O crédito vai na tela e na descrição.';
+export const EDITORIAL_NOTICE = 'Material oficial pode gerar reivindicação de direitos (Content ID). O crédito vai na descrição.';

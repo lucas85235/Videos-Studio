@@ -63,7 +63,7 @@ import {
   estimateSeconds,
   formatDuration,
   freshness,
-  isActive,
+  isBlocking,
   latestFailure,
 } from './project/core/model';
 import { NextStepBanner } from './project/core/NextStep';
@@ -331,7 +331,7 @@ export const ProjectPage: React.FC = () => {
   }
 
   const { doc, project: row, warnings, style } = data;
-  const active = data.jobs.filter(isActive);
+  const active = data.jobs.filter(isBlocking);
   const busy = active.length > 0;
   const docBusy = docJobRunning(data);
   // Só os rascunhos de trechos que existem bloqueiam a aprovação; os órfãos ficam listados na aba Roteiro.

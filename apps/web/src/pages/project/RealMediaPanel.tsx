@@ -1,29 +1,53 @@
 // Painel "Mídia real" do cartão da cena (aba Cenas): a sugestão do storyboard, fotos livres (Commons/Openverse),
 // link colado, arquivo enviado e a mídia anexada (crédito, enquadramento, notícia). Nada é anexado sozinho.
+// O painel do projeto (RealMediaFinder) roda a busca de mídia oficial e notícias (job "media_find"); o achado de cada
+// cena aparece no cartão dela para usar com um clique.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Camera, Copyright, ExternalLink, ImagePlus, Link2, Newspaper, Replace, RotateCw, Search, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
+import {
+  Camera,
+  Copyright,
+  ExternalLink,
+  Globe,
+  ImagePlus,
+  Link2,
+  ListChecks,
+  Newspaper,
+  Replace,
+  RotateCw,
+  Search,
+  Trash2,
+  TriangleAlert,
+  Upload,
+  X,
+} from 'lucide-react';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   fileUrl,
+  type FoundMedia,
+  type Job,
   type MediaCandidate,
   type MediaCandidates,
   type MediaPatch,
   type MediaRef,
+  type ProjectDetail,
   type ProjectDoc,
   type RealHint,
   type RealKind,
   type Scene,
 } from '../../api';
 import { FOCUS_LABELS, label, MEDIA_FIT_LABELS, MEDIA_SOURCE_LABELS, REAL_KIND_LABELS } from '../../labels';
-import { Badge, Button, Checkbox, ErrorBox, IconButton, Input, Select, Skeleton, useConfirm } from '../../ui';
+import { Badge, Button, Card, Checkbox, ErrorBox, IconButton, Input, Select, Skeleton, useConfirm } from '../../ui';
+import { useJobStarting, useStartJob } from '../ProjectPage';
 import { sceneChanges } from './core/drafts';
+import { isActive } from './core/model';
+import { JobProgress, useLiveJob } from './delivery/shared';
 import { ProofCapture } from './proof/ProofCapture';
 import {
   attachCandidate,
   attachLink,
-  creditLine,
+  descriptionCreditLine,
   EDITORIAL_NOTICE,
   linkedSources,
   mediaCandidates,
@@ -50,7 +74,7 @@ const SOURCE_DOWN: Record<string, string> = {
 
 type AttachVars =
   | { via: 'candidate'; id: string }
-  | { via: 'link'; url: string; kind: RealKind | null; from: 'link' | 'source' | 'hint' }
+  | { via: 'link'; url: string; kind: RealKind | null; from: 'link' | 'source' | 'hint' | 'found'; found?: FoundMedia }
   | { via: 'upload'; file: File; kind: RealKind };
 
 /** Marca `true` quando o elemento chega perto da tela (uma vez só): a busca da sugestão só roda para cartões vistos. */
@@ -174,7 +198,7 @@ const CandidateItem: React.FC<{ candidate: MediaCandidate; disabled: boolean; bu
       <img src={c.thumb} alt={c.title || 'Foto livre'} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
     </a>
     <div className="flex min-w-0 flex-wrap items-center gap-1">
-      <Badge tone="good" title={c.attribution_required ? 'Exige o crédito do autor (vai na tela e na descrição)' : 'Livre, sem exigência de crédito'}>
+      <Badge tone="good" title={c.attribution_required ? 'Exige o crédito do autor (vai na descrição do vídeo)' : 'Livre, sem exigência de crédito'}>
         {c.license || 'Livre'}
       </Badge>
     </div>
@@ -189,6 +213,111 @@ const CandidateItem: React.FC<{ candidate: MediaCandidate; disabled: boolean; bu
     </Button>
   </li>
 );
+
+/** Endereço anexado de um achado: a página da notícia (vira o cartão com veículo, data e manchete) ou a imagem direta. */
+export const foundUrl = (f: FoundMedia) => (f.kind === 'news' && f.page_url ? f.page_url : f.image);
+
+/** Achados que a cena mostra (sem imagem nem endereço, não há o que anexar). */
+const usableFound = (hint: RealHint | null | undefined) => (hint?.found ?? []).filter((f) => f.image && foundUrl(f));
+
+/** Uma imagem achada pela busca de mídia oficial e notícias. */
+const FoundItem: React.FC<{ item: FoundMedia; disabled: boolean; busy: boolean; onUse: () => void; onBroken: () => void }> = ({
+  item: f,
+  disabled,
+  busy,
+  onUse,
+  onBroken,
+}) => {
+  const KindIcon = KIND_ICONS[f.kind] ?? Camera;
+  const size = f.width > 0 && f.height > 0 ? `${f.width}×${f.height}` : '';
+  const name = f.title || f.outlet || 'Imagem achada';
+  return (
+    <li className="flex min-w-0 flex-col gap-1">
+      <div title={f.why || undefined} className="block aspect-video overflow-hidden rounded-md border border-line bg-canvas">
+        {/* Miniatura direto do site de origem (sem referer). Se não carregar, o cartão some. */}
+        <img src={f.image} alt={name} loading="lazy" referrerPolicy="no-referrer" onError={onBroken} className="h-full w-full object-cover" />
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <Badge tone="info" icon={KindIcon}>
+          {label(REAL_KIND_LABELS, f.kind)}
+        </Badge>
+        {size ? <span className="text-xs tabular-nums text-subtle">{size}</span> : null}
+      </div>
+      {f.outlet ? (
+        <span className="truncate text-xs font-medium text-fg" title={f.outlet}>
+          {f.outlet}
+        </span>
+      ) : null}
+      {f.title ? (
+        <span className="line-clamp-2 text-xs text-muted" title={f.title}>
+          {f.title}
+        </span>
+      ) : null}
+      {f.why ? (
+        <span className="line-clamp-2 text-xs text-subtle" title={f.why}>
+          {f.why}
+        </span>
+      ) : null}
+      {f.page_url ? (
+        <a
+          href={f.page_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex w-fit items-center gap-1 rounded-sm text-xs text-sky-300 hover:underline"
+        >
+          <ExternalLink size={12} aria-hidden="true" className="shrink-0" />
+          Ver página
+        </a>
+      ) : null}
+      <Button size="sm" disabled={disabled} busy={busy} onClick={onUse} className="mt-auto">
+        Usar
+      </Button>
+    </li>
+  );
+};
+
+/** Achados da busca de mídia oficial e notícias de uma cena (ou o aviso de que a busca não achou nada). */
+const FoundList: React.FC<{
+  hint: RealHint;
+  locked: boolean;
+  pending: AttachVars | null;
+  onAttach: (vars: AttachVars) => void;
+}> = ({ hint, locked, pending, onAttach }) => {
+  // Miniaturas que não carregaram (link quebrado, site que recusa): o cartão some.
+  const [broken, setBroken] = useState<ReadonlySet<string>>(new Set());
+  const all = usableFound(hint);
+  const items = all.filter((f) => !broken.has(f.image));
+  const busy = pending !== null;
+  if (!hint.searched && !all.length) return null;
+  if (!items.length) {
+    return (
+      <p className="text-[13px] text-muted" role="status">
+        A busca não achou imagem boa para esta cena.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium text-subtle">Achadas na web</span>
+      <ul aria-label="Imagens achadas na web" className="m-0 grid list-none grid-cols-2 gap-2 p-0 @sm:grid-cols-3">
+        {items.map((f) => {
+          const url = foundUrl(f);
+          const mine = pending?.via === 'link' && pending.from === 'found' && pending.found?.image === f.image && pending.url === url;
+          return (
+            <FoundItem
+              key={`${f.image}|${f.page_url}`}
+              item={f}
+              disabled={locked || (busy && !mine)}
+              busy={mine}
+              onUse={() => onAttach({ via: 'link', url, kind: f.kind, from: 'found', found: f })}
+              onBroken={() => setBroken((prev) => new Set(prev).add(f.image))}
+            />
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
 
 type OptionsProps = {
   scene: Scene;
@@ -279,8 +408,12 @@ const MediaOptions: React.FC<OptionsProps> = ({ scene, doc, projectId, hint, loc
   const noContact = statuses.commons === 'sem_contato';
   const candidates = data?.candidates ?? [];
 
+  const hasFound = usableFound(hint).length > 0;
+
   return (
     <div ref={rootRef} className="flex flex-col gap-3">
+      {hint ? <FoundList hint={hint} locked={locked} pending={pending} onAttach={onAttach} /> : null}
+
       {showSearch ? (
         <div className="flex flex-col gap-2">
           <form
@@ -359,7 +492,7 @@ const MediaOptions: React.FC<OptionsProps> = ({ scene, doc, projectId, hint, loc
                   </div>
                 ) : null}
               </div>
-              {candidates.length ? <p className="text-xs text-subtle">O crédito do autor e a licença vão na tela e na descrição.</p> : null}
+              {candidates.length ? <p className="text-xs text-subtle">O crédito do autor e a licença vão na descrição do vídeo (nunca na tela).</p> : null}
             </div>
           ) : null}
         </div>
@@ -384,7 +517,9 @@ const MediaOptions: React.FC<OptionsProps> = ({ scene, doc, projectId, hint, loc
       {hint?.kind === 'official' ? (
         <p className="flex items-start gap-1.5 text-[13px] text-amber-100">
           <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-amber-200" />
-          <span>{EDITORIAL_NOTICE} Só você pode anexar: cole o link ou envie o arquivo.</span>
+          <span>
+            {EDITORIAL_NOTICE} {hasFound ? 'Escolha uma achada acima, cole o link ou envie o arquivo.' : 'Só você pode anexar: cole o link ou envie o arquivo.'}
+          </span>
         </p>
       ) : null}
 
@@ -538,7 +673,7 @@ export const RealMediaPanel: React.FC<Props> = ({ scene, index, doc, projectId, 
       v.via === 'candidate'
         ? attachCandidate(projectId, scene.id, v.id)
         : v.via === 'link'
-          ? attachLink(projectId, scene.id, v.url, v.kind)
+          ? attachLink(projectId, scene.id, v.url, v.kind, v.found)
           : uploadMedia(projectId, scene.id, v.file, { kind: v.kind }),
     onSuccess: async (r) => {
       await refresh(true);
@@ -747,15 +882,16 @@ export const RealMediaPanel: React.FC<Props> = ({ scene, index, doc, projectId, 
       ) : null}
 
       <SavedInput
-        label="Crédito na tela"
+        label="Crédito (na descrição)"
         value={m.credit}
         maxLength={120}
         placeholder="Ex.: Rockstar Games"
         disabled={locked || (busy && !editing('credit'))}
         busy={editing('credit')}
         hint={(draft) => {
-          const line = creditLine({ kind: m.kind, credit: draft }, lang);
-          return line ? `Na tela: ${line}` : 'Sem crédito na tela.';
+          // A linha que vai nos créditos da descrição (o crédito só entra sem título; na notícia, sem veículo e data).
+          const line = descriptionCreditLine(m, lang, draft);
+          return line ? `Na descrição: ${line}` : 'Esta mídia não entra nos créditos da descrição.';
         }}
         onSave={(credit) => runEdit({ credit })}
       />
@@ -838,5 +974,169 @@ export const RealMediaPanel: React.FC<Props> = ({ scene, index, doc, projectId, 
       {open ? <div className="border-t border-line pt-2.5">{options}</div> : null}
       {errorBox}
     </section>
+  );
+};
+
+/** Último job "media_find" do projeto (o mais novo). */
+const lastFindJob = (detail: ProjectDetail): Job | undefined =>
+  detail.jobs
+    .filter((j) => j.kind === 'media_find')
+    .sort((a, b) => (Date.parse(b.created_at ?? '') || 0) - (Date.parse(a.created_at ?? '') || 0))[0];
+
+/** Resumo do job concluído ("3 cenas, 7 imagens achadas"). */
+const findSummary = (job: Job) => {
+  const r = job.result as { message?: unknown } | null;
+  return typeof r?.message === 'string' && r.message.trim() ? r.message.trim() : job.message;
+};
+
+/**
+ * Painel do projeto (aba Cenas): busca mídia oficial e notícias para as sugestões do storyboard (job "media_find", uma
+ * chamada do Claude com busca na web) e anexa as primeiras achadas de uma vez. Cada cena mostra os achados no cartão.
+ */
+export const RealMediaFinder: React.FC<{ detail: ProjectDetail; busy: boolean; blockedReason: string | null }> = ({ detail, busy, blockedReason }) => {
+  const client = useQueryClient();
+  const { doc } = detail;
+  const projectId = doc.id;
+  const startJob = useStartJob(projectId);
+  const starting = useJobStarting(projectId);
+  const [attached, setAttached] = useState(0);
+  const [bulkWarnings, setBulkWarnings] = useState<string[]>([]);
+
+  const last = lastFindJob(detail);
+  const running = last && isActive(last) ? last : undefined;
+  // Acompanha o job ativo: quando termina, recarrega o documento (os achados ficam nas sugestões das cenas).
+  const live = useLiveJob(running);
+  const liveDone = Boolean(running && live && !isActive(live));
+  useEffect(() => {
+    if (liveDone) void client.invalidateQueries({ queryKey: ['project', projectId] });
+  }, [liveDone, client, projectId]);
+
+  const attachFirst = useMutation({
+    mutationFn: async (targets: { scene: Scene; item: FoundMedia }[]) => {
+      setAttached(0);
+      setBulkWarnings([]);
+      // Uma por vez: o servidor grava uma versão do documento a cada anexo. Para no primeiro erro (os avisos das já
+      // anexadas ficam na tela).
+      for (const { scene, item } of targets) {
+        const r = await attachLink(projectId, scene.id, foundUrl(item), item.kind, item);
+        sceneChanges.set(projectId, scene.id, Date.now());
+        setAttached((n) => n + 1);
+        if (r.warnings?.length) setBulkWarnings((prev) => [...new Set([...prev, ...r.warnings])]);
+      }
+    },
+    onSettled: () => client.invalidateQueries({ queryKey: ['project', projectId] }),
+  });
+
+  const hinted = doc.scenes.filter((s) => s.real);
+  if (!hinted.length) return null;
+  // O que a busca cobre (como `pending_scenes` em media_find.py): sugestão oficial/notícia sem mídia e destravada, e a
+  // foto só depois que a busca livre não achou nada (aí ela já aparece como buscada).
+  const searchable = hinted.filter((s) => !s.visual.media && !s.locked && (s.real?.kind !== 'photo' || s.real.searched));
+  const searched = searchable.filter((s) => s.real?.searched).length;
+  const allSearched = searchable.length > 0 && searched === searchable.length;
+  // Foto ainda não buscada: só o servidor sabe se a busca livre voltou vazia (o cache). O botão fica liberado e, sem
+  // nada a buscar, o job volta na hora sem chamar o Claude.
+  const photoOnly = !searchable.length && hinted.some((s) => !s.visual.media && !s.locked && s.real?.kind === 'photo');
+  const ready = hinted
+    .filter((s) => !s.visual.media && !s.locked)
+    .map((s) => ({ scene: s, item: usableFound(s.real)[0] }))
+    .filter((t): t is { scene: Scene; item: FoundMedia } => Boolean(t.item));
+  const withFound = hinted.filter((s) => usableFound(s.real).length > 0).length;
+
+  const searching = Boolean(running) || (startJob.isPending && startJob.variables?.kind === 'media_find');
+  const locked = Boolean(blockedReason) || ((busy || starting) && !searching);
+  const reason = blockedReason ?? (busy ? 'Aguarde a tarefa em andamento terminar.' : undefined);
+  const nothingToSearch = !searchable.length && !photoOnly;
+  const search = () => {
+    if (starting) return;
+    attachFirst.reset();
+    setBulkWarnings([]);
+    startJob.mutate({ kind: 'media_find', payload: allSearched ? { refresh: true } : {} });
+  };
+  const finished = !running && last && (last.status === 'done' || last.status === 'failed') ? last : undefined;
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Globe size={16} aria-hidden="true" className="text-muted" />
+        <h2 className="font-display text-[15px] font-semibold text-fg">Mídia oficial e notícias</h2>
+        {searchable.length ? (
+          <Badge title="Cenas com sugestão oficial ou de notícia (sem mídia anexada) já buscadas">
+            {searched}/{searchable.length} buscadas
+          </Badge>
+        ) : null}
+        {withFound ? <Badge tone="good">{withFound === 1 ? '1 cena com achados' : `${withFound} cenas com achados`}</Badge> : null}
+      </div>
+      <p className="text-[13px] text-muted">
+        Ao criar as cenas, o app já procura sozinho imagens oficiais e de notícias para as sugestões de mídia real (com o
+        Claude Code e busca na web). Os achados aparecem no cartão de cada cena; nada é anexado sem você escolher.
+      </p>
+      {running ? <JobProgress job={running} title="Buscando mídia oficial e notícias" /> : null}
+      {finished?.status === 'done' && findSummary(finished) ? (
+        <p className="text-[13px] text-fg" role="status">
+          {findSummary(finished)}
+        </p>
+      ) : null}
+      {finished?.status === 'failed' ? (
+        <ErrorBox error={finished.error || finished.message || 'A busca falhou.'} title="A busca de mídia falhou" />
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant={!searched && !searching ? 'primary' : 'secondary'}
+          icon={allSearched ? RotateCw : Search}
+          busy={searching}
+          disabled={locked || searching || attachFirst.isPending || nothingToSearch}
+          title={
+            locked
+              ? reason
+              : nothingToSearch
+                ? 'Nenhuma sugestão de mídia real sem mídia anexada para buscar.'
+                : photoOnly
+                  ? 'Fotos: a busca na web só entra nas que a busca de fotos livres não achou nada.'
+                  : undefined
+          }
+          onClick={search}
+        >
+          {allSearched ? 'Buscar de novo' : 'Buscar mídia oficial e notícias'}
+        </Button>
+        {ready.length ? (
+          <Button
+            size="sm"
+            icon={ListChecks}
+            busy={attachFirst.isPending}
+            disabled={locked || searching || attachFirst.isPending}
+            title={locked ? reason : undefined}
+            onClick={() => attachFirst.mutate(ready)}
+          >
+            {attachFirst.isPending
+              ? `Anexando ${attached + 1} de ${ready.length}…`
+              : `Usar as primeiras (${ready.length === 1 ? '1 cena' : `${ready.length} cenas`})`}
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-xs text-subtle">A busca usa uma chamada do Claude com busca na web.</p>
+      <ErrorBox
+        error={startJob.variables?.kind === 'media_find' ? startJob.error : null}
+        title="Não foi possível começar a busca"
+        onClose={() => startJob.reset()}
+      />
+      <ErrorBox
+        error={attachFirst.error}
+        title={`Não foi possível anexar todas${attached ? ` (${attached === 1 ? '1 anexada' : `${attached} anexadas`} antes do erro)` : ''}`}
+        onClose={() => attachFirst.reset()}
+      />
+      {bulkWarnings.length ? (
+        <div className="flex items-start gap-1.5 text-[13px] text-amber-100">
+          <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-amber-200" />
+          <ul className="m-0 flex min-w-0 flex-1 list-none flex-col gap-0.5 p-0">
+            {bulkWarnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+          <IconButton size="sm" label="Dispensar os avisos" icon={X} className="-mr-1 -mt-1" onClick={() => setBulkWarnings([])} />
+        </div>
+      ) : null}
+    </Card>
   );
 };

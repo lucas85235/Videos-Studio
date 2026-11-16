@@ -672,12 +672,8 @@ def verbatim_headline(media: MediaRef, headline: str) -> bool:
 
 
 def _real_media_keys(doc: ProjectDoc, scene: Scene, lang: str, out: dict[str, Any]) -> None:
-    """Crédito na tela (texto pronto) e cartão de notícia, só quando a cena mostra mídia real."""
-    media = doc.shown_media(scene)
-    if media is not None and media.asset:
-        line = media.credit_line(lang)
-        if line:
-            out["credit"] = line
+    """Cartão de notícia da cena de imagem dona da notícia. O crédito da mídia real não vai para a tela: fica na
+    descrição da publicação ("Créditos das imagens")."""
     own = scene.visual.media
     if own is not None and own.kind == "news" and scene.kind == "image":
         outlet = own.outlet.strip()
