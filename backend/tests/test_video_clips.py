@@ -19,17 +19,23 @@ from studio.core.project import service
 from studio.core.project.document import ClipSpec, MediaRef, Scene, Segment, Visual
 from studio.core.styles.library import get_style
 from studio.core.timeline import build_timeline
+from studio.db import session_scope
+from studio.models import CostEntry
 from studio.providers import registry
 from studio.providers.base import (
+    Billed,
+    NoBalance,
     NotConfigured,
+    ProviderError,
     ProviderInfo,
-    QuotaExceeded,
     Refused,
+    Stopped,
     TransientError,
     Usage,
     VideoProvider,
     VideoResult,
 )
+from studio.providers.image import PlaceholderImage
 from studio.providers.video import (
     FAL_QUEUE,
     KLING_3_TURBO,
@@ -41,7 +47,7 @@ from studio.providers.video import (
 )
 from studio.workers.jobs import get_job, get_runner
 from studio.workers.pipeline import authoring, video_clips
-from studio.workers.pipeline.build import Builder, plan
+from studio.workers.pipeline.build import BuildCancelled, Builder, plan
 from studio.workers.pipeline.video_clips import ClipError
 
 MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 64
@@ -57,8 +63,11 @@ class FalNet:
     """A fila do fal.ai de mentira: envio, situação (fila → rodando → pronto), resultado e download."""
 
     def __init__(self, *, statuses=("IN_QUEUE", "IN_PROGRESS", "COMPLETED"), submit_status=200, submit_body=None,
-                 completed_extra=None, video=MP4) -> None:
+                 completed_extra=None, video=MP4, video_status=200, too_many=0) -> None:
         self.statuses = list(statuses)
+        self.last_status = "IN_QUEUE"
+        self.video_status = video_status
+        self.too_many = too_many
         self.submit_status = submit_status
         self.submit_body = submit_body
         self.completed_extra = completed_extra or {}
@@ -69,6 +78,9 @@ class FalNet:
         self.requests.append(request)
         url = str(request.url)
         if request.method == "POST" and url == f"{FAL_QUEUE}/{ENDPOINT}":
+            if self.too_many:
+                self.too_many -= 1
+                return httpx.Response(429, json={"detail": "Too many requests"})
             if self.submit_status != 200:
                 return httpx.Response(self.submit_status, json=self.submit_body or {"detail": "erro"})
             base = f"{FAL_QUEUE}/{APP}/requests/req-1"
@@ -76,15 +88,20 @@ class FalNet:
                                              "response_url": base, "cancel_url": f"{base}/cancel", "queue_position": 0})
         if url.endswith("/requests/req-1/status"):
             status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+            self.last_status = status
             body = {"status": status}
             if status == "COMPLETED":
                 body.update({"metrics": {"inference_time": 42.0}, **self.completed_extra})
             return httpx.Response(200, json=body)
         if request.method == "PUT" and url.endswith("/cancel"):
+            if self.last_status == "IN_QUEUE":
+                return httpx.Response(200, json={"status": "OK"})
             return httpx.Response(202, json={"status": "CANCELLATION_REQUESTED"})
         if url == f"{FAL_QUEUE}/{APP}/requests/req-1":
             return httpx.Response(200, json={"video": {"url": "https://v3.fal.media/files/out.mp4", "content_type": "video/mp4"}})
         if url == "https://v3.fal.media/files/out.mp4":
+            if self.video_status != 200:
+                return httpx.Response(self.video_status, text="not found")
             return httpx.Response(200, content=self.video)
         return httpx.Response(404)
 
@@ -140,9 +157,11 @@ def test_fal_queue_happy_path(tmp_path, fal_key):
     ("status", "body", "error"),
     [
         (401, {"detail": "Invalid key"}, NotConfigured),
-        (403, {"detail": "User is locked. Reason: Exhausted balance."}, QuotaExceeded),
-        (429, {"detail": "Too many requests"}, QuotaExceeded),
+        (403, {"detail": "User is locked. Reason: Exhausted balance."}, NoBalance),
+        (402, {"detail": "Payment required"}, NoBalance),
+        (429, {"detail": "Too many requests"}, TransientError),
         (503, {"detail": "down"}, TransientError),
+        (422, {"detail": "duration must be 5 or 10"}, ProviderError),
     ],
 )
 def test_fal_http_errors_map_to_chain_errors(tmp_path, fal_key, status, body, error):
@@ -161,15 +180,49 @@ def test_fal_failed_request_and_safety_refusal(tmp_path, fal_key):
 
 
 def test_fal_timeout_cancels_the_request(tmp_path, fal_key):
+    # Rodando: o cancelamento não é garantido (202), então o pedido conta como cobrado e não passa ao próximo modelo.
     net = FalNet(statuses=("IN_PROGRESS",))
-    with pytest.raises(TransientError, match="sem terminar"):
+    with pytest.raises(Billed, match="sem terminar") as exc:
         fal(net, timeout_s=-1).animate(image=png(tmp_path), prompt="x", seconds=5, out_dir=tmp_path / "out")
+    assert exc.value.cost_usd == 0.35 and exc.value.meta == {"request_id": "req-1"}
+    assert any(r.method == "PUT" and r.url.path.endswith("/cancel") for r in net.requests)
+    # Ainda na fila: o cancelamento tira o pedido (200), nada é cobrado e a cadeia pode seguir.
+    queued = FalNet(statuses=("IN_QUEUE",))
+    with pytest.raises(TransientError, match="saiu da fila"):
+        fal(queued, timeout_s=-1).animate(image=png(tmp_path), prompt="x", seconds=5, out_dir=tmp_path / "out")
+
+
+def test_fal_download_failure_retries_the_same_request_and_counts_the_cost(tmp_path, fal_key):
+    net = FalNet(video_status=404)
+    with pytest.raises(Billed) as exc:
+        fal(net).animate(image=png(tmp_path), prompt="x", seconds=10, out_dir=tmp_path / "out")
+    assert exc.value.cost_usd == 0.70
+    assert sum(r.method == "POST" for r in net.requests) == 1  # um envio só: as novas tentativas são do mesmo pedido
+    assert sum(str(r.url).endswith("out.mp4") for r in net.requests) == 3
+
+
+def test_fal_429_waits_and_tries_the_same_model_again(tmp_path, fal_key):
+    waits: list[float] = []
+    net = FalNet(too_many=2)
+    provider = FalImageToVideo(kling_turbo().info, KLING_25_TURBO, transport=httpx.MockTransport(net), sleep=waits.append)
+    result = provider.animate(image=png(tmp_path), prompt="x", seconds=5, out_dir=tmp_path / "out")
+    assert result.usage.cost_usd == 0.35 and sum(r.method == "POST" for r in net.requests) == 3
+    assert waits[:2] == [5.0, 10.0]
+
+
+def test_fal_cancel_while_waiting(tmp_path, fal_key):
+    net = FalNet(statuses=("IN_QUEUE",))
+    calls = iter([False, True])
+    with pytest.raises(Stopped) as exc:
+        fal(net).animate(image=png(tmp_path), prompt="x", seconds=5, out_dir=tmp_path / "out",
+                         should_stop=lambda: next(calls))
+    assert exc.value.cost_usd == 0.0  # saiu da fila antes de rodar
     assert any(r.method == "PUT" and r.url.path.endswith("/cancel") for r in net.requests)
 
 
 def test_fal_rejects_a_download_that_is_not_a_video(tmp_path, fal_key):
     net = FalNet(video=b"<html>erro</html>")
-    with pytest.raises(TransientError, match="MP4"):
+    with pytest.raises(Billed, match="MP4"):  # pronto no fal.ai: já pode ter sido cobrado
         fal(net).animate(image=png(tmp_path), prompt="x", seconds=5, out_dir=tmp_path / "out")
     assert not (tmp_path / "out" / "clip.mp4").exists()
 
@@ -288,7 +341,7 @@ class PricedVideo(VideoProvider):
     def price(self, seconds: float) -> float:
         return round(self.per_second * seconds, 4)
 
-    def animate(self, *, image, prompt, seconds, out_dir) -> VideoResult:
+    def animate(self, *, image, prompt, seconds, out_dir, should_stop=None) -> VideoResult:
         self.calls.append({"image": image, "prompt": prompt, "seconds": seconds})
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "clip.mp4"
@@ -296,13 +349,21 @@ class PricedVideo(VideoProvider):
         return VideoResult(path=path, seconds=seconds, usage=Usage(seconds, "seconds", self.price(seconds)), model="falso")
 
 
+class FinalImage(PlaceholderImage):
+    """Gerador de imagem falso que vai para o canal (no lugar do Codex): o clipe pago só sai de imagem final."""
+
+    info = ProviderInfo(id="imagem_final", kind="image", name="Imagem final falsa", commercial_use=True)
+
+
 @pytest.fixture
 def priced(monkeypatch):
-    """Cadeia de vídeo com dois geradores pagos falsos (US$ 0,10/s e US$ 0,20/s)."""
+    """Cadeia de vídeo com dois geradores pagos falsos (US$ 0,10/s e US$ 0,20/s) e imagem final falsa."""
     cheap, dear = PricedVideo("video_barato", 0.10), PricedVideo("video_caro", 0.20)
     monkeypatch.setitem(registry._PROVIDERS, cheap.info.id, cheap)
     monkeypatch.setitem(registry._PROVIDERS, dear.info.id, dear)
+    monkeypatch.setitem(registry._PROVIDERS, "imagem_final", FinalImage())
     monkeypatch.setitem(registry.OFFLINE_ONLY, "video", [cheap.info.id, dear.info.id])
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "image", ["imagem_final", "placeholder"])
     return cheap, dear
 
 
@@ -357,6 +418,133 @@ def test_fallback_to_the_next_model_when_the_first_fails(priced, monkeypatch):
     mark(pid, "scn_a")
     result = video_clips.generate(Builder(pid, mode="preview"), 1.0)
     assert result["generated"] == ["scn_a"] and result["cost_usd"] == 1.0 and len(dear.calls) == 1
+
+
+def test_billed_failure_counts_the_cost_and_does_not_pay_the_next_model(priced, monkeypatch):
+    cheap, dear = priced
+
+    def lost(**kw):
+        raise Billed("o download falhou; o pedido req-9 pode ter sido cobrado", cost_usd=0.5, meta={"request_id": "req-9"})
+
+    monkeypatch.setattr(cheap, "animate", lost)
+    pid = project()
+    mark(pid, "scn_a", "scn_c")
+    result = video_clips.generate(Builder(pid, mode="preview"), 0.9)
+    # A cena A pode ter custado US$ 0,50 sem vídeo: o caro não tenta (cobraria de novo) e a C não cabe nos US$ 0,40.
+    assert not dear.calls and result["generated"] == [] and result["cost_usd"] == 0.5
+    assert result["skipped"] == ["scn_c"] and "req-9" in result["errors"][0] and "US$ 0,50" in result["errors"][0]
+    with session_scope() as s:
+        costs = [(c.provider, c.cost_usd) for c in s.query(CostEntry).filter_by(project_id=pid, kind="video")]
+    assert costs == [("video_barato", 0.5)]
+
+
+def test_no_balance_stops_without_marking_the_day(priced, monkeypatch):
+    cheap, dear = priced
+
+    def broke(**kw):
+        raise NoBalance("a conta do fal.ai está sem saldo")
+
+    monkeypatch.setattr(cheap, "animate", broke)
+    pid = project()
+    mark(pid, "scn_a", "scn_c")
+    result = video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert not dear.calls and result["generated"] == [] and result["skipped"] == ["scn_c"]
+    assert "sem saldo" in result["errors"][0]
+    assert not registry.quota_exhausted_today("video_barato")  # recarregou, volta a funcionar no mesmo dia
+
+
+def test_other_provider_error_stays_in_its_scene(priced, monkeypatch):
+    cheap, _ = priced
+    original = cheap.animate
+
+    def picky(**kw):
+        if "foggy" in kw["prompt"]:
+            raise ProviderError("erro do fal.ai ao enviar o pedido (422): duration")
+        return original(**kw)
+
+    monkeypatch.setattr(cheap, "animate", picky)
+    pid = project()
+    mark(pid, "scn_a", "scn_c")
+    result = video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert result["generated"] == ["scn_c"] and "422" in result["errors"][0] and result["cost_usd"] == 0.5
+
+
+def test_cancel_during_the_wait_stops_the_job_and_counts_the_cost(priced, monkeypatch):
+    cheap, dear = priced
+
+    def stopped(**kw):
+        assert callable(kw["should_stop"])
+        raise Stopped("cancelado pelo usuário", cost_usd=0.5)
+
+    monkeypatch.setattr(cheap, "animate", stopped)
+    pid = project()
+    mark(pid, "scn_a")
+    with pytest.raises(BuildCancelled):
+        video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert not dear.calls
+    with session_scope() as s:
+        assert [c.cost_usd for c in s.query(CostEntry).filter_by(project_id=pid, kind="video")] == [0.5]
+
+
+def test_paid_clip_never_animates_a_test_image(priced, monkeypatch):
+    cheap, _ = priced
+    pid = project()
+    mark(pid, "scn_a")
+    # Sem o gerador final, a imagem sai do placeholder (de teste): nada de clipe pago em cima dela.
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "image", ["placeholder"])
+    result = video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert not cheap.calls and result["skipped"] == ["scn_a"] and "ainda é de teste" in result["errors"][0]
+    status = video_clips.estimate(Builder(pid, mode="preview"))
+    assert status["scenes"][0]["status"] == "blocked" and status["missing"] == 0
+    # O gerador final voltou: a estimativa avisa que a imagem é refeita e a geração anima a imagem nova.
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "image", ["imagem_final", "placeholder"])
+    status = video_clips.estimate(Builder(pid, mode="preview"))
+    assert status["scenes"][0]["status"] == "missing" and "refeita" in status["scenes"][0]["detail"]
+    result = video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert result["generated"] == ["scn_a"] and len(cheap.calls) == 1
+    assert video_clips.estimate(Builder(pid, mode="preview"))["scenes"][0]["status"] == "ready"
+
+
+def test_test_clip_gives_way_to_a_real_one(priced, monkeypatch):
+    cheap, dear = priced
+    pid = project()
+    mark(pid, "scn_a")
+    # Sem gerador pago (modo offline puro), sai o clipe de teste do mock_video em cima da imagem de teste.
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "video", ["mock_video"])
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "image", ["placeholder"])
+    assert video_clips.generate(Builder(pid, mode="preview"), 0.0)["generated"] == ["scn_a"]
+    # Com gerador de verdade (e imagem final), o clipe de teste não vale mais: nem na estimativa, nem no build.
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "video", [cheap.info.id, dear.info.id])
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "image", ["imagem_final", "placeholder"])
+    builder = Builder(pid, mode="preview")
+    image = builder.image(builder.doc.scene("scn_a"))  # a imagem final no lugar da de teste
+    doc_scene = builder.doc.scene("scn_a")
+    assert video_clips.cached_clip(builder, doc_scene, image) is None
+    result = video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert result["generated"] == ["scn_a"] and len(cheap.calls) == 1
+
+
+def test_mock_clip_on_a_fixed_image_is_replaced_when_online(priced, monkeypatch, isolated_settings):
+    cheap, dear = priced
+    pid = project()
+    frame = isolated_settings.data_dir / "uploads" / "fixa.png"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1080, 1920), (10, 20, 30)).save(frame)
+    doc = service.get_doc(pid)
+    doc.scene("scn_a").visual.asset = "uploads/fixa.png"
+    service.commit(pid, doc, "imagem enviada")
+    mark(pid, "scn_a")
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "video", ["mock_video"])
+    assert video_clips.generate(Builder(pid, mode="preview"), 0.0)["generated"] == ["scn_a"]
+    monkeypatch.setitem(registry.OFFLINE_ONLY, "video", [cheap.info.id, dear.info.id])
+    status = video_clips.estimate(Builder(pid, mode="preview"))
+    assert status["scenes"][0]["status"] == "missing" and "de teste" in status["scenes"][0]["detail"]
+    built = Builder(pid, mode="preview")
+    assert video_clips.build_clips(built, {"scn_a": "uploads/fixa.png"}) == {}
+    assert any("clipe pronto é de teste" in w for w in built.warnings)
+    result = video_clips.generate(Builder(pid, mode="preview"), 5.0)
+    assert result["generated"] == ["scn_a"] and result["reused"] == [] and len(cheap.calls) == 1
+    assert video_clips.estimate(Builder(pid, mode="preview"))["scenes"][0]["provider"] == "video_barato"
 
 
 def test_preview_never_generates_clips_and_uses_the_ready_ones(priced, monkeypatch, isolated_settings):

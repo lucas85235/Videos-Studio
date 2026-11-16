@@ -8,7 +8,8 @@ API do fal.ai (conferida em nov/2026 em fal.ai/docs/model-apis/model-endpoints/q
     status_url, response_url, cancel_url;
   - GET status_url → IN_QUEUE | IN_PROGRESS | COMPLETED (com `error` quando falhou);
   - GET response_url → {"video": {"url": ...}};
-  - PUT cancel_url para desistir (no tempo limite).
+  - PUT cancel_url para desistir: 200 só quando o pedido ainda estava na fila (sai sem rodar); 202
+    CANCELLATION_REQUESTED quando já está rodando (pode terminar e ser cobrado); 400 ALREADY_COMPLETED.
 A imagem vai como data URI (base64), que os modelos do fal aceitam no `image_url`; o upload para o CDN do fal fica de
 fora (só faz falta em arquivos grandes, e o primeiro quadro é recomprimido para JPEG antes).
 """
@@ -31,11 +32,13 @@ from studio.config import get_settings
 from studio.media.ffmpeg import run_ffmpeg
 from studio.providers import credentials
 from studio.providers.base import (
+    Billed,
+    NoBalance,
     NotConfigured,
     ProviderError,
     ProviderInfo,
-    QuotaExceeded,
     Refused,
+    Stopped,
     TransientError,
     Usage,
     VideoProvider,
@@ -54,6 +57,12 @@ FIRST_FRAME_MAX_SIDE = 1536
 FIRST_FRAME_MIN_SIDE = 300
 POLL_EVERY_S = 5.0
 TIMEOUT_S = 15 * 60
+SUBMIT_TRIES = 3
+"""Envios no 429 (limite de pedidos), com espera crescente, antes de desistir do modelo."""
+POLL_TRIES = 5
+"""Falhas seguidas ao consultar a situação antes de desistir (o pedido continua no fal.ai)."""
+FETCH_TRIES = 3
+"""Tentativas de buscar e baixar o resultado de um pedido pronto (que já pode ter sido cobrado)."""
 
 
 @dataclass(frozen=True)
@@ -132,15 +141,25 @@ def _error_text(resp: httpx.Response) -> str:
 
 
 def _raise_for(resp: httpx.Response, what: str) -> None:
-    """Erro HTTP do fal.ai no erro de provedor certo (a cadeia decide se tenta o próximo)."""
+    """Erro HTTP do fal.ai no erro de provedor certo (a cadeia decide se tenta o próximo).
+
+    - 401/403 sem falar de saldo: chave errada (NotConfigured);
+    - 402 ou mensagem de saldo/crédito ("Exhausted balance"): NoBalance. A chave é a mesma nos dois modelos do fal,
+      então o outro modelo não é tentado, e o provedor não fica marcado como "cota esgotada hoje" (recarregou, voltou);
+    - 429: limite de pedidos ou de pedidos simultâneos, passageiro (TransientError; o envio já tentou de novo antes);
+    - 5xx: fora do ar (TransientError); política de conteúdo: Refused; outro 4xx: ProviderError."""
     if resp.status_code < 400:
         return
     text = _error_text(resp)
     lowered = text.lower()
-    if resp.status_code in (401, 403) and "balance" not in lowered and "credit" not in lowered:
+    no_money = any(word in lowered for word in ("balance", "credit", "insufficient funds"))
+    if resp.status_code in (401, 403) and not no_money:
         raise NotConfigured(f"o fal.ai recusou a chave ({resp.status_code}): confira a chave em Configurações")
-    if resp.status_code in (402, 429) or "balance" in lowered or "credit" in lowered:
-        raise QuotaExceeded(f"fal.ai sem saldo ou no limite de pedidos ({resp.status_code}): {text}")
+    if resp.status_code == 402 or no_money:
+        raise NoBalance(f"a conta do fal.ai está sem saldo ({resp.status_code}): recarregue no painel do fal.ai e "
+                        f"gere de novo ({text})")
+    if resp.status_code == 429:
+        raise TransientError(f"fal.ai no limite de pedidos ao {what} (429): tente de novo daqui a pouco")
     if resp.status_code >= 500:
         raise TransientError(f"fal.ai fora do ar ao {what} ({resp.status_code})")
     if any(word in lowered for word in ("safety", "nsfw", "content policy", "moderation")):
@@ -148,8 +167,54 @@ def _raise_for(resp: httpx.Response, what: str) -> None:
     raise ProviderError(f"erro do fal.ai ao {what} ({resp.status_code}): {text}")
 
 
+@dataclass
+class _Request:
+    """Um pedido aceito pela fila do fal.ai (a partir daqui ele pode ser cobrado)."""
+
+    client: httpx.Client
+    headers: dict[str, str]
+    ticket: dict[str, Any]
+    cost: float
+
+    @property
+    def id(self) -> str | None:
+        return self.ticket.get("request_id")
+
+    @property
+    def status_url(self) -> str:
+        return self.ticket["status_url"]
+
+    @property
+    def response_url(self) -> str:
+        return self.ticket["response_url"]
+
+    def cancel(self, last_status: str) -> float:
+        """Pede o cancelamento e devolve o que pode ter sido cobrado. Pela doc da fila do fal.ai, só o pedido ainda na
+        fila sai de verdade (200 OK); o que já está rodando recebe 202 (CANCELLATION_REQUESTED) e pode terminar."""
+        url = self.ticket.get("cancel_url")
+        if not url:
+            return self.cost
+        try:
+            resp = self.client.put(url, headers=self.headers)
+        except httpx.HTTPError:
+            return self.cost
+        return 0.0 if last_status == "IN_QUEUE" and resp.status_code == 200 else self.cost
+
+    def lost(self, problem: str, cost: float) -> ProviderError:
+        """Erro de um pedido aceito que não deu vídeo: cobrado (Billed) ou não (saiu da fila: o próximo pode tentar)."""
+        if not cost:
+            return TransientError(f"{problem} (o pedido saiu da fila antes de começar)")
+        return Billed(f"{problem}; o pedido {self.id or '?'} pode ter sido cobrado", cost_usd=cost,
+                      meta={"request_id": self.id})
+
+
 class FalImageToVideo(VideoProvider):
-    """Um modelo image-to-video do fal.ai pela fila assíncrona (enviar, acompanhar, buscar o resultado, baixar)."""
+    """Um modelo image-to-video do fal.ai pela fila assíncrona (enviar, acompanhar, buscar o resultado, baixar).
+
+    Depois que a fila aceita o pedido, o fal.ai pode cobrar por ele. Por isso, a partir daí, uma falha do nosso lado
+    (rede, tempo limite, download) não passa para o próximo modelo, que cobraria de novo: o resultado é buscado de
+    novo pelo mesmo pedido e, se ainda assim não vier, sai `Billed` com o preço (quem chamou conta como gasto). Só o
+    pedido que ainda estava na fila e foi cancelado com sucesso (200) não conta."""
 
     def __init__(self, info: ProviderInfo, model: FalVideoModel, *, transport: httpx.BaseTransport | None = None,
                  sleep: Callable[[float], None] = time.sleep, poll_every: float = POLL_EVERY_S,
@@ -182,58 +247,72 @@ class FalImageToVideo(VideoProvider):
     def _client(self, timeout: float = 60) -> httpx.Client:
         return httpx.Client(transport=self.transport, timeout=timeout, follow_redirects=True)
 
-    def animate(self, *, image: Path, prompt: str, seconds: int, out_dir: Path) -> VideoResult:
+    def animate(self, *, image: Path, prompt: str, seconds: int, out_dir: Path,
+                should_stop: Callable[[], bool] | None = None) -> VideoResult:
         key = self._key()
         if not key:
             raise NotConfigured("falta a chave do fal.ai")
         seconds = self.model.seconds(seconds)
+        cost = self.model.price(seconds)
         body: dict[str, Any] = {"prompt": prompt[:2400], "image_url": first_frame_data_uri(image),
                                 "duration": str(seconds), **dict(self.model.extra_input)}
         headers = {"Authorization": f"Key {key}"}
-        try:
-            with self._client() as client:
-                resp = client.post(f"{FAL_QUEUE}/{self.model.endpoint}", json=body, headers=headers)
-                _raise_for(resp, "enviar o pedido")
-                ticket = resp.json()
-                status_url, response_url = ticket.get("status_url"), ticket.get("response_url")
-                if not status_url or not response_url:
-                    raise TransientError("o fal.ai não devolveu o endereço do pedido")
-                data = self._wait(client, headers, status_url, ticket.get("cancel_url"))
-                resp = client.get(response_url, headers=headers)
-                _raise_for(resp, "buscar o resultado")
-                video = (resp.json() or {}).get("video") or {}
-                url = video.get("url") if isinstance(video, dict) else None
-                if not url:
-                    raise TransientError("o fal.ai terminou sem devolver o vídeo")
-                out_dir.mkdir(parents=True, exist_ok=True)
-                target = out_dir / "clip.mp4"
-                with client.stream("GET", url, timeout=300) as stream:
-                    if stream.status_code >= 400:
-                        stream.read()
-                        _raise_for(stream, "baixar o vídeo")
-                    with open(target, "wb") as fh:
-                        for chunk in stream.iter_bytes():
-                            fh.write(chunk)
-        except httpx.HTTPError as exc:
-            raise TransientError(f"falha de conexão com o fal.ai: {exc}") from exc
-        if not looks_like_mp4(target):
-            target.unlink(missing_ok=True)
-            raise TransientError("o arquivo baixado do fal.ai não é um vídeo MP4")
-        cost = self.model.price(seconds)
-        meta = {"request_id": ticket.get("request_id"), "inference_s": (data.get("metrics") or {}).get("inference_time")}
+        with self._client() as client:
+            ticket = self._submit(client, headers, body)
+            request = _Request(client, headers, ticket, cost)
+            data = self._wait(request, should_stop)
+            target = self._fetch(request, out_dir)
+        meta = {"request_id": request.id, "inference_s": (data.get("metrics") or {}).get("inference_time")}
         return VideoResult(path=target, seconds=float(seconds), model=self.model.endpoint, meta=meta,
                            usage=Usage(units=float(seconds), unit_name="seconds", cost_usd=cost))
 
-    def _wait(self, client: httpx.Client, headers: dict[str, str], status_url: str, cancel_url: str | None) -> dict[str, Any]:
-        """Acompanha o pedido até COMPLETED. No tempo limite, pede o cancelamento e segue a cadeia."""
-        started = time.monotonic()
+    def _submit(self, client: httpx.Client, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """Põe o pedido na fila. No 429 (limite de pedidos) espera um pouco e tenta de novo no mesmo modelo."""
+        attempt = 0
         while True:
-            resp = client.get(status_url, headers=headers)
-            _raise_for(resp, "acompanhar o pedido")
-            data = resp.json() or {}
+            try:
+                resp = client.post(f"{FAL_QUEUE}/{self.model.endpoint}", json=body, headers=headers)
+            except httpx.HTTPError as exc:
+                raise TransientError(f"falha de conexão com o fal.ai: {exc}") from exc
+            attempt += 1
+            if resp.status_code == 429 and attempt < SUBMIT_TRIES:
+                self.sleep(self.poll_every * attempt)
+                continue
+            _raise_for(resp, "enviar o pedido")
+            try:
+                ticket = resp.json() or {}
+            except ValueError:
+                ticket = {}
+            if not ticket.get("status_url") or not ticket.get("response_url"):
+                raise TransientError("o fal.ai não devolveu o endereço do pedido")
+            return ticket
+
+    def _wait(self, request: _Request, should_stop: Callable[[], bool] | None) -> dict[str, Any]:
+        """Acompanha o pedido até COMPLETED. Falha de rede na consulta tenta de novo; no tempo limite (ou se o usuário
+        cancelou) pede o cancelamento."""
+        started = time.monotonic()
+        last = "IN_QUEUE"
+        errors = 0
+        while True:
+            if should_stop is not None and should_stop():
+                raise Stopped("cancelado pelo usuário", cost_usd=request.cancel(last), meta={"request_id": request.id})
+            try:
+                resp = request.client.get(request.status_url, headers=request.headers)
+                _raise_for(resp, "acompanhar o pedido")
+                data = resp.json() or {}
+                errors = 0
+            except (httpx.HTTPError, TransientError, ValueError) as exc:
+                errors += 1
+                if errors >= POLL_TRIES:
+                    raise request.lost(f"não deu para acompanhar o pedido no fal.ai ({exc})",
+                                       request.cancel(last)) from exc
+                self.sleep(self.poll_every)
+                continue
             status = data.get("status")
             if status == "COMPLETED":
                 if data.get("error"):
+                    # Pedido que falhou no fal.ai não gera vídeo (o preço do modelo é por vídeo gerado): a cadeia
+                    # pode tentar o próximo modelo.
                     error = str(data.get("error"))
                     kind = str(data.get("error_type") or "")
                     if any(w in (error + kind).lower() for w in ("safety", "nsfw", "content", "moderation")):
@@ -241,15 +320,44 @@ class FalImageToVideo(VideoProvider):
                     raise TransientError(f"o fal.ai não conseguiu gerar o vídeo: {error[:300]}")
                 return data
             if status not in ("IN_QUEUE", "IN_PROGRESS"):
-                raise TransientError(f"situação desconhecida do pedido no fal.ai: {status}")
+                raise request.lost(f"situação desconhecida do pedido no fal.ai: {status}", request.cancel(last))
+            last = status
             if time.monotonic() - started > self.timeout_s:
-                if cancel_url:
-                    try:
-                        client.put(cancel_url, headers=headers)
-                    except httpx.HTTPError:  # pragma: no cover - só tenta
-                        pass
-                raise TransientError(f"o fal.ai passou de {int(self.timeout_s // 60)} min sem terminar o vídeo")
+                raise request.lost(f"o fal.ai passou de {int(self.timeout_s // 60)} min sem terminar o vídeo",
+                                   request.cancel(last))
             self.sleep(self.poll_every)
+
+    def _fetch(self, request: _Request, out_dir: Path) -> Path:
+        """Busca o resultado e baixa o vídeo, tentando de novo pelo mesmo pedido (que já pode ter sido cobrado)."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        target = out_dir / "clip.mp4"
+        problem = ""
+        for attempt in range(FETCH_TRIES):
+            if attempt:
+                self.sleep(self.poll_every)
+            try:
+                resp = request.client.get(request.response_url, headers=request.headers)
+                _raise_for(resp, "buscar o resultado")
+                video = (resp.json() or {}).get("video") or {}
+                url = video.get("url") if isinstance(video, dict) else None
+                if not url:
+                    problem = "o fal.ai terminou sem devolver o vídeo"
+                    continue
+                with request.client.stream("GET", url, timeout=300) as stream:
+                    if stream.status_code >= 400:
+                        stream.read()
+                        _raise_for(stream, "baixar o vídeo")
+                    with open(target, "wb") as fh:
+                        for chunk in stream.iter_bytes():
+                            fh.write(chunk)
+            except (httpx.HTTPError, ProviderError, ValueError, OSError) as exc:
+                problem = str(exc) or type(exc).__name__
+                continue
+            if looks_like_mp4(target):
+                return target
+            target.unlink(missing_ok=True)
+            problem = "o arquivo baixado do fal.ai não é um vídeo MP4"
+        raise request.lost(problem, request.cost)
 
 
 def kling_turbo() -> FalImageToVideo:
@@ -301,7 +409,8 @@ class MockVideo(VideoProvider):
     def clip_seconds(self, seconds: float) -> int:
         return max(1, min(10, round(seconds)))
 
-    def animate(self, *, image: Path, prompt: str, seconds: int, out_dir: Path) -> VideoResult:
+    def animate(self, *, image: Path, prompt: str, seconds: int, out_dir: Path,
+                should_stop: Callable[[], bool] | None = None) -> VideoResult:
         out_dir.mkdir(parents=True, exist_ok=True)
         target = out_dir / "clip.mp4"
         seconds = self.clip_seconds(seconds)

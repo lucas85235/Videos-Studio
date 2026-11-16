@@ -7,7 +7,9 @@ Regras:
   ("video_clips"), que só roda com o custo confirmado pelo usuário e para antes de passar dele;
 - o clipe fica no cache pelo hash do que o define (o arquivo da imagem, o movimento, a duração), não de quem gera:
   trocar a imagem ou o movimento pede um clipe novo; voltar ao que era reaproveita o antigo sem pagar de novo;
-- sem clipe (não gerado, sem chave, imagem nova), a cena mostra a imagem com o movimento de câmera e o build avisa.
+- sem clipe (não gerado, sem chave, imagem nova), a cena mostra a imagem com o movimento de câmera e o build avisa;
+- clipe pago só sai de imagem que vai para o canal (a imagem de teste seria refeita e o clipe perdido), e o clipe
+  de teste (mock_video) deixa de valer quando há um gerador de verdade, como a imagem de teste.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from studio.core.project.document import ClipSpec, ProjectDoc, Scene
 from studio.core.project.media_edit import scene_label
 from studio.core.styles.schema import StyleSpec
 from studio.providers import registry
-from studio.providers.base import NotConfigured, VideoProvider
+from studio.providers.base import Billed, NoBalance, NotConfigured, ProviderError, Stopped, VideoProvider
 
 if TYPE_CHECKING:
     from studio.workers.pipeline.build import Builder
@@ -175,12 +177,16 @@ def chain_for(style: StyleSpec) -> list[str]:
     return registry.resolve_chain("video", style.art.video_chain)
 
 
+def _image_owner_scene(doc: ProjectDoc, scene: Scene) -> Scene:
+    """A cena dona da imagem (a própria ou a que ela reaproveita)."""
+    if scene.visual.reuse_of and not scene.visual.asset and scene.visual.media is None:
+        return doc.reuse_root(scene) or scene
+    return scene
+
+
 def known_image(builder: Builder, scene: Scene) -> str | None:
     """A imagem que a cena mostra, se já existe (nada é gerado)."""
-    doc = builder.doc
-    owner = scene
-    if scene.visual.reuse_of and not scene.visual.asset and scene.visual.media is None:
-        owner = doc.reuse_root(scene) or scene
+    owner = _image_owner_scene(builder.doc, scene)
     if owner.visual.asset:
         return owner.visual.asset
     inputs = builder.image_inputs(owner)
@@ -188,6 +194,22 @@ def known_image(builder: Builder, scene: Scene) -> str | None:
         return None
     _, cached = builder.cached_image(inputs, owner)
     return cached["path"] if cached else None
+
+
+def draft_image(builder: Builder, scene: Scene) -> tuple[str, bool] | None:
+    """Se a imagem da cena (já no cache) é de teste: (provedor, há um gerador melhor disponível agora). None: a imagem
+    pode ir para o canal (gerador final, enviada ou fixada) ou ainda não existe."""
+    owner = _image_owner_scene(builder.doc, scene)
+    if owner.visual.asset:
+        return None
+    inputs = builder.image_inputs(owner)
+    if inputs is None:
+        return None
+    _, cached = builder.cached_image(inputs, owner)
+    if not cached or cached.get("commercial", True):
+        return None
+    provider = str(cached.get("provider") or "?")
+    return provider, builder._better_available(inputs["chain"], provider)  # noqa: SLF001
 
 
 def clip_inputs(builder: Builder, scene: Scene, image_rel: str) -> dict[str, Any] | None:
@@ -203,26 +225,58 @@ def clip_key(inputs: dict[str, Any]) -> str:
     return hash_obj(inputs)
 
 
-def cached_clip(builder: Builder, scene: Scene, image_rel: str | None) -> dict[str, Any] | None:
+def paid_available(style: StyleSpec) -> bool:
+    """Há um gerador de vídeo que vai para o canal disponível agora? (com ele, o clipe de teste não vale mais)"""
+    return any(p.provider.info.commercial_use for p in _available(style)[0])
+
+
+def _usable(cached: dict[str, Any] | None, paid: bool) -> bool:
+    """O clipe do cache vale? O clipe de teste (mock_video: imagem parada) só vale enquanto não há gerador de verdade,
+    como a imagem de teste (`Builder._better_available`)."""
+    return cached is not None and (cached.get("commercial", True) or not paid)
+
+
+def cached_clip(builder: Builder, scene: Scene, image_rel: str | None, *,
+                paid: bool | None = None) -> dict[str, Any] | None:
+    """O clipe pronto da cena (None: falta gerar; o de teste não conta quando há gerador de verdade)."""
     if not image_rel:
         return None
     inputs = clip_inputs(builder, scene, image_rel)
-    return builder.store.lookup(CLIP_KIND, clip_key(inputs)) if inputs else None
+    cached = builder.store.lookup(CLIP_KIND, clip_key(inputs)) if inputs else None
+    if cached is None:
+        return None
+    if paid is None:
+        paid = cached.get("commercial", True) is False and paid_available(builder.style)
+    return cached if _usable(cached, paid) else None
+
+
+def _draft_clip(builder: Builder, scene: Scene, image_rel: str | None) -> bool:
+    """A cena tem só o clipe de teste (que deixou de valer porque há gerador de verdade)?"""
+    inputs = clip_inputs(builder, scene, image_rel) if image_rel else None
+    cached = builder.store.lookup(CLIP_KIND, clip_key(inputs)) if inputs else None
+    return bool(cached) and not cached.get("commercial", True)  # type: ignore[union-attr]
 
 
 def build_clips(builder: Builder, images: dict[str, str | None]) -> dict[str, dict[str, Any]]:
     """Os clipes que o build usa (só do cache: o build nunca gera vídeo IA). Avisa das cenas que ficam na imagem."""
     out: dict[str, dict[str, Any]] = {}
-    for scene in video_scenes(builder.doc):
+    scenes = video_scenes(builder.doc)
+    paid = paid_available(builder.style) if scenes else False
+    for scene in scenes:
         label = scene_label(builder.doc, scene.id)
         reason = blocked_reason(builder.doc, scene)
         if reason:
             builder.warnings.append(f"{label}: {reason} A cena ficou com a imagem.")
             continue
-        cached = cached_clip(builder, scene, images.get(scene.id))
+        image_rel = images.get(scene.id)
+        cached = cached_clip(builder, scene, image_rel, paid=paid)
         if cached is None:
-            builder.warnings.append(f"{label}: o vídeo IA ainda não foi gerado; a cena mostra a imagem com movimento de "
-                                    "câmera. Gere os clipes na aba Cenas.")
+            if _draft_clip(builder, scene, image_rel):
+                builder.warnings.append(f"{label}: o clipe pronto é de teste (imagem parada) e já há gerador de vídeo "
+                                        "IA; a cena mostra a imagem com movimento de câmera. Gere os clipes na aba Cenas.")
+            else:
+                builder.warnings.append(f"{label}: o vídeo IA ainda não foi gerado; a cena mostra a imagem com movimento "
+                                        "de câmera. Gere os clipes na aba Cenas.")
             continue
         if not cached.get("commercial", True):
             builder.stats.noncommercial.add(cached.get("provider", "?"))
@@ -254,12 +308,20 @@ def _available(style: StyleSpec) -> tuple[list[_Provider], list[str]]:
     return usable, reasons
 
 
+def _draft_image_reason(provider: str) -> str:
+    name = registry.get(provider).info.name if provider in registry._PROVIDERS else provider  # noqa: SLF001
+    return (f"A imagem da cena ainda é de teste ({name}): o clipe pago não sai de imagem provisória. Configure o "
+            "gerador de imagens final e gere a imagem antes do clipe.")
+
+
 def estimate(builder: Builder) -> dict[str, Any]:
-    """Custo de gerar os clipes que faltam: com o primeiro modelo disponível e, no pior caso (ele falha e o próximo
-    da cadeia assume), com o mais caro. Nada é gerado nem cobrado."""
+    """Custo de gerar os clipes que faltam: com o primeiro modelo disponível e, no pior caso (ele falha antes de
+    aceitar o pedido e o próximo da cadeia assume), com o mais caro. Cada cena paga no máximo um pedido: depois que a
+    fila aceita, uma falha não passa para o próximo modelo (ver `Billed`). Nada é gerado nem cobrado."""
     doc, style = builder.doc, builder.style
     usable, reasons = _available(style)
     first = usable[0] if usable else None
+    paid = any(p.provider.info.commercial_use for p in usable)
     items: list[dict[str, Any]] = []
     missing = 0
     cost = worst = 0.0
@@ -273,14 +335,23 @@ def estimate(builder: Builder) -> dict[str, Any]:
             items.append(item)
             continue
         image_rel = known_image(builder, scene)
-        cached = cached_clip(builder, scene, image_rel)
+        test = draft_image(builder, scene) if paid and image_rel else None
+        if test is not None and not test[1]:
+            item.update(status="blocked", detail=_draft_image_reason(test[0]))
+            items.append(item)
+            continue
+        cached = None if test is not None else cached_clip(builder, scene, image_rel, paid=paid)
         if cached is not None:
             item.update(status="ready", path=cached["path"], provider=cached.get("provider"),
                         seconds=cached.get("seconds") or spec.seconds)
             items.append(item)
             continue
-        if not image_rel:
+        if test is not None:
+            item["detail"] = "A imagem de teste da cena é refeita com o gerador final antes do clipe."
+        elif not image_rel:
             item["detail"] = "A imagem da cena ainda não existe: ela é gerada antes do clipe."
+        elif paid and _draft_clip(builder, scene, image_rel):
+            item["detail"] = "O clipe pronto é de teste (imagem parada): sai um clipe de verdade."
         missing += 1
         if first is not None:
             item["clip_seconds"] = first.provider.clip_seconds(spec.seconds)
@@ -315,9 +386,15 @@ def check_confirmed(plan: dict[str, Any], confirmed: float) -> None:
 
 def generate(builder: Builder, max_cost_usd: float) -> dict[str, Any]:
     """Gera os clipes que faltam, sem passar de `max_cost_usd` (o valor confirmado). A imagem da cena é gerada
-    antes, se ainda não existir (usa a cota de imagens, como a prévia)."""
+    antes, se ainda não existir (usa a cota de imagens, como a prévia); imagem de teste não vira clipe pago.
+
+    Pedido aceito pelo gerador que não deu vídeo (`Billed`) conta como gasto (e vai para os custos do app): o teto
+    vale para o que pode ter sido cobrado, não só para os clipes que chegaram."""
+    from studio.workers.pipeline.build import BuildCancelled  # noqa: PLC0415 - build importa este módulo
+
     doc = builder.doc
     chain = chain_for(builder.style)
+    paid = paid_available(builder.style)
     spent = 0.0
     generated: list[str] = []
     reused: list[str] = []
@@ -328,33 +405,42 @@ def generate(builder: Builder, max_cost_usd: float) -> dict[str, Any]:
     for scene in todo:
         builder._check()  # noqa: SLF001
         label = scene_label(doc, scene.id)
-        owner = scene
-        if scene.visual.reuse_of and not scene.visual.asset:
-            owner = doc.reuse_root(scene) or scene
+        owner = _image_owner_scene(doc, scene)
         try:
             image_rel = builder.image(owner)
         except Exception as exc:  # noqa: BLE001 - a imagem falhou: o clipe desta cena fica para depois
+            if isinstance(exc, BuildCancelled):
+                raise
             errors.append(f"{label}: a imagem não saiu ({exc})")
             continue
         inputs = clip_inputs(builder, scene, image_rel) if image_rel else None
         if inputs is None:
             errors.append(f"{label}: a cena ficou sem imagem para animar")
             continue
+        test = draft_image(builder, scene) if paid else None
+        if test is not None:
+            skipped.append(scene.id)
+            errors.append(f"{label}: {_draft_image_reason(test[0])}")
+            continue
         key = clip_key(inputs)
-        if builder.store.lookup(CLIP_KIND, key):
+        if _usable(builder.store.lookup(CLIP_KIND, key), paid):
             reused.append(scene.id)
             builder._tick(f"{label}: clipe já estava pronto")  # noqa: SLF001
             continue
         out_dir = builder.store.dir_for(CLIP_KIND, key)
         image_path = builder.store.abs(image_rel)  # type: ignore[arg-type]
+        tried: list[VideoProvider] = []
 
         def call(provider: VideoProvider, seconds: int = inputs["seconds"], prompt: str = inputs["prompt"],
-                 remaining: float = max_cost_usd - spent, image_path: Path = image_path, out_dir: Path = out_dir):
+                 remaining: float = max_cost_usd - spent, image_path: Path = image_path, out_dir: Path = out_dir,
+                 tried: list[VideoProvider] = tried):
             price = provider.price(seconds)
             if price > remaining + _COST_SLACK:
                 raise NotConfigured(f"passaria do valor confirmado ({usd(max_cost_usd)})")
             builder._check()  # noqa: SLF001
-            return provider.animate(image=image_path, prompt=prompt, seconds=seconds, out_dir=out_dir)
+            tried.append(provider)
+            return provider.animate(image=image_path, prompt=prompt, seconds=seconds, out_dir=out_dir,
+                                    should_stop=builder.sink.cancelled)
 
         try:
             result, provider, _ = registry.run_chain("video", chain, call, usage_of=builder._usage,  # noqa: SLF001
@@ -365,6 +451,21 @@ def generate(builder: Builder, max_cost_usd: float) -> dict[str, Any]:
                 errors.append(f"{label}: não gerado para não passar do valor confirmado")
             else:
                 errors.append(f"{label}: {exc}")
+            continue
+        except Billed as exc:
+            spent += _charge(builder, tried[-1] if tried else None, exc)
+            if isinstance(exc, Stopped):
+                raise BuildCancelled("cancelado pelo usuário") from exc
+            errors.append(f"{label}: {exc} ({usd(exc.cost_usd)} contado no gasto)")
+            continue
+        except NoBalance as exc:
+            # Sem saldo, as próximas cenas falhariam igual: para aqui (sem marcar o dia; recarregou, gera de novo).
+            errors.append(f"{label}: {exc}")
+            skipped.extend(s.id for s in todo[todo.index(scene) + 1:])
+            break
+        except (ProviderError, OSError, RuntimeError) as exc:
+            # Erro que não segue a cadeia (pedido inválido, arquivo da imagem, FFmpeg): fica só nesta cena.
+            errors.append(f"{label}: {exc}")
             continue
         spent += result.usage.cost_usd
         rel = builder.store.rel(result.path)
@@ -377,3 +478,13 @@ def generate(builder: Builder, max_cost_usd: float) -> dict[str, Any]:
         builder._tick(f"{label}: clipe pronto")  # noqa: SLF001
     return {"generated": generated, "reused": reused, "skipped": skipped, "errors": errors,
             "cost_usd": round(spent, 4), "max_cost_usd": round(max_cost_usd, 4)}
+
+
+def _charge(builder: Builder, provider: VideoProvider | None, exc: Billed) -> float:
+    """Registra nos custos do app o pedido que pode ter sido cobrado sem dar vídeo. Devolve o valor."""
+    if exc.cost_usd and provider is not None:
+        registry.record_success(provider.info.id, "video", 0.0, "seconds", exc.cost_usd, builder.project_id,
+                                builder.sink.job_id)
+        log.warning("vídeo IA: pedido %s do %s pode ter sido cobrado sem dar vídeo (%s)",
+                    exc.meta.get("request_id"), provider.info.id, exc)
+    return exc.cost_usd

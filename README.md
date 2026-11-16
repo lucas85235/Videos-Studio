@@ -591,6 +591,12 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
   imagem e o movimento de câmera. Cadeia padrão (`art.video_chain`): Kling 2.5 Turbo Pro (US$ 0,35 por 5 s) → Kling 3
   Turbo Standard (US$ 0,112/s), pela fila assíncrona do fal.ai, com a chave `FAL_KEY` ou a do cofre. Limite por vídeo
   (`art.video_scenes`): 2 no Short e 6 no longo. Cena com mídia real não é animada.
+  Cobrança: cada cena paga no máximo um pedido. Depois que a fila do fal.ai aceita, uma falha do nosso lado (tempo
+  limite, rede, download) não passa para o outro modelo: o resultado é buscado de novo pelo mesmo pedido e, se não vier,
+  o preço conta no gasto (e nos custos do app). Só o pedido cancelado ainda na fila não conta. Sem saldo, o job para
+  sem marcar o fal.ai como esgotado no dia (recarregou, funciona); 429 espera e tenta de novo. Cancelar o job cancela
+  o pedido na fila. Clipe pago só sai de imagem final (a imagem procedural de teste é recusada) e o clipe de teste do
+  modo offline deixa de valer quando há gerador de verdade.
 
 ### 8.6 Regras de operação do notebook
 - Jobs pesados **ligado na tomada**, no modo de desempenho da Samsung.
