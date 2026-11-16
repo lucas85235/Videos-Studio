@@ -85,12 +85,17 @@ def youtube_quota() -> dict[str, Any]:
 
 class QuotaLimitBody(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=100_000_000)  # vazio volta aos 10.000 padrão
+    # Envios de vídeo por dia (cota própria do videos.insert). Ausente: não muda; nulo: volta aos 100 padrão.
+    upload_limit: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 @router.put("/youtube/quota")
 def youtube_quota_limit(body: QuotaLimitBody) -> dict[str, Any]:
-    """Limite diário do projeto do Google Cloud (para quem conseguiu aumento de cota)."""
-    quota.set_daily_limit(body.limit)
+    """Limites diários do projeto do Google Cloud (para quem conseguiu aumento de cota)."""
+    if "limit" in body.model_fields_set or not body.model_fields_set:
+        quota.set_daily_limit(body.limit)
+    if "upload_limit" in body.model_fields_set:
+        quota.set_upload_limit(body.upload_limit)
     return quota.status()
 
 
@@ -110,10 +115,11 @@ def youtube_playlists(project_id: str | None = None, channel_id: str | None = No
     Custa 1 unidade de cota por página de 50 playlists."""
     key = _account_key(project_id, channel_id, account)
     try:
-        items = yt.playlists_for(key)
+        items, truncated = yt.playlists_for(key)
     except yt.YouTubeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"account_title": yt.account_title(key), "playlists": items}
+    return {"account_title": yt.account_title(key), "playlists": items, "truncated": truncated,
+            "max": yt.PLAYLIST_PAGES * 50}
 
 
 class PlaylistCreateBody(BaseModel):

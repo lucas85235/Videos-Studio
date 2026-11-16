@@ -81,6 +81,9 @@ export type YouTubeStatus = {
 
 /** Valor do seletor de playlist que segue a playlist padrão do canal. */
 const DEFAULT_PLAYLIST = "__padrao";
+/** A conta global sem id de canal (o Google não devolveu o canal no login): vai como account=null. */
+const GLOBAL_ACCOUNT = "__global";
+const accountValue = (a: YouTubeAccount) => a.channel_id || GLOBAL_ACCOUNT;
 
 const accountLabel = (a: YouTubeAccount) =>
   `${a.channel_title || a.channel_id || "Canal sem nome"}${a.global ? " (conta da aba de publicação)" : a.vulto_channels.length ? ` (canal ${a.vulto_channels.join(", ")})` : ""}`;
@@ -274,7 +277,7 @@ export const YouTubeCard: React.FC<{
         publish_at:
           privacy === "scheduled" && when ? new Date(when).toISOString() : null,
         localize: localize && otherLangs.length > 0,
-        account: accountChoice || null,
+        account: accountParam || null,
         // null: a playlist padrão do canal; "": nenhuma.
         playlist_id: playlist === DEFAULT_PLAYLIST ? null : playlist,
         playlist_title: playlist === DEFAULT_PLAYLIST ? null : playlistTitle,
@@ -307,11 +310,16 @@ export const YouTubeCard: React.FC<{
   const s = status.data;
   const accounts = s?.accounts ?? [];
   const chooseAccount = Boolean(s?.can_choose_account) && accounts.length > 0;
+  // A conta padrão do projeto funcionou (connected sem motivo) mas não tem id de canal: é a global sem id.
+  const defaultAccount =
+    s?.account_channel_id || (s?.connected && !s?.reason ? GLOBAL_ACCOUNT : "");
   const accountId = chooseAccount
-    ? accountChoice || s?.account_channel_id || ""
+    ? accountChoice || defaultAccount
     : s?.account_channel_id || "";
+  /** O que vai no envio: a conta global (sentinela) vira null, como a conta padrão. */
+  const accountParam = accountChoice === GLOBAL_ACCOUNT ? "" : accountChoice;
   const accountTitle =
-    accounts.find((a) => a.channel_id === accountId)?.channel_title ||
+    accounts.find((a) => accountValue(a) === accountId)?.channel_title ||
     s?.channel_title ||
     "";
   // A playlist padrão do canal só vale para a conta do próprio canal.
@@ -322,7 +330,8 @@ export const YouTubeCard: React.FC<{
     playlist === DEFAULT_PLAYLIST
       ? (defaultPlaylist?.title ?? "")
       : (playlistChoice?.title ?? "");
-  const quotaOver = quota.data?.level === "over";
+  // Só a cota de envios de vídeo bloqueia: sem a cota geral o vídeo sobe (capa, legendas e playlist falham).
+  const quotaOver = Boolean(quota.data?.uploads_over);
 
   const block = !entry?.video
     ? "Renderize o vídeo final deste idioma primeiro."
@@ -335,7 +344,7 @@ export const YouTubeCard: React.FC<{
           : chooseAccount && !accountId
             ? "Escolha a conta do YouTube que vai receber o vídeo."
             : quotaOver
-              ? (quota.data?.message ?? "A cota do YouTube de hoje acabou.")
+              ? (quota.data?.message ?? "A cota de envios de vídeo de hoje acabou.")
               : privacy === "scheduled" && !when
                 ? "Escolha a data e a hora do agendamento."
                 : privacy === "scheduled" && !isFutureLocal(when)
@@ -437,7 +446,7 @@ export const YouTubeCard: React.FC<{
               >
                 {!accountId ? <option value="">Escolha a conta…</option> : null}
                 {accounts.map((a) => (
-                  <option key={a.channel_id} value={a.channel_id}>
+                  <option key={accountValue(a)} value={accountValue(a)}>
                     {accountLabel(a)}
                   </option>
                 ))}
@@ -540,10 +549,11 @@ export const YouTubeCard: React.FC<{
           {!chooseAccount || accountId ? (
             <PlaylistPicker
               key={accountId}
+              lazy
               className="max-w-md"
               scope={{
                 project_id: projectId,
-                account: accountChoice || undefined,
+                account: accountParam || undefined,
               }}
               value={playlist}
               onChange={(id, title) => setPlaylist({ id, title })}

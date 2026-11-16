@@ -48,8 +48,10 @@ export const QuotaMeter: React.FC<{ quota: YouTubeQuota; details?: boolean; clas
   details,
   className = '',
 }) => {
-  const tone = quota.level === 'over' ? 'bad' : quota.level === 'near' ? 'warn' : 'accent';
-  const textTone = quota.level === 'over' ? 'text-red-300' : quota.level === 'near' ? 'text-amber-200' : 'text-subtle';
+  // Sem envios de vídeo, nada sobe (vermelho); sem a cota geral, o vídeo ainda sobe (amarelo).
+  const level = quota.uploads_over ? 'over' : quota.level === 'over' ? 'near' : quota.level;
+  const tone = level === 'over' ? 'bad' : level === 'near' ? 'warn' : 'accent';
+  const textTone = level === 'over' ? 'text-red-300' : level === 'near' ? 'text-amber-200' : 'text-subtle';
   return (
     <div className={`flex flex-col gap-1.5 ${className}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-xs">
@@ -100,7 +102,8 @@ const NEW = '__nova';
 
 /**
  * Escolha de playlist do canal do YouTube. `scope` diz de qual conta: projeto, canal do Vulto ou conta escolhida.
- * `extra` são opções fixas no topo (ex.: "Padrão do canal", "Nenhuma"). Listar gasta 1 unidade de cota; criar, 50.
+ * `extra` são opções fixas no topo (ex.: "Padrão do canal", "Nenhuma"). Listar gasta 1 unidade de cota por página;
+ * criar, 50. Com `lazy`, a lista só é buscada quando a pessoa abre a escolha (não gasta cota a cada visita).
  */
 export const PlaylistPicker: React.FC<{
   scope: { project_id?: string; channel_id?: string; account?: string };
@@ -110,15 +113,19 @@ export const PlaylistPicker: React.FC<{
   label?: string;
   disabled?: boolean;
   className?: string;
-}> = ({ scope, value, onChange, extra, label = 'Playlist', disabled, className = '' }) => {
+  lazy?: boolean;
+}> = ({ scope, value, onChange, extra, label = 'Playlist', disabled, className = '', lazy = false }) => {
   const client = useQueryClient();
+  const [opened, setOpened] = useState(!lazy);
   const params = new URLSearchParams(Object.entries(scope).filter(([, v]) => Boolean(v)) as [string, string][]);
   const key = ['youtube-playlists', params.toString()];
   const list = useQuery({
     queryKey: key,
     queryFn: () => api.get<YouTubePlaylists>(`/api/youtube/playlists?${params}`),
     staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
     retry: false,
+    enabled: opened,
   });
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
@@ -144,6 +151,8 @@ export const PlaylistPicker: React.FC<{
         <Select
           value={creating ? NEW : value}
           disabled={disabled}
+          onFocus={() => setOpened(true)}
+          onMouseDown={() => setOpened(true)}
           onChange={(e) => {
             const id = e.target.value;
             if (id === NEW) {
@@ -168,6 +177,12 @@ export const PlaylistPicker: React.FC<{
           {list.data ? <option value={NEW}>+ Nova playlist…</option> : null}
         </Select>
       </Field>
+      {list.data?.truncated ? (
+        <p className="text-xs text-subtle">
+          O canal tem mais de {list.data.max ?? items.length} playlists: só as primeiras aparecem aqui. Para usar outra,
+          escolha-a no YouTube Studio depois do envio.
+        </p>
+      ) : null}
       {list.error ? (
         <ErrorBox error={list.error} title="Não foi possível ler as playlists" onRetry={() => list.refetch()} />
       ) : null}
@@ -216,15 +231,24 @@ export const YouTubeQuotaSettings: React.FC = () => {
     queryFn: () => api.get<YouTubeAccountStatus>('/api/youtube/status'),
   });
   const [limit, setLimit] = useState('');
+  const [uploadLimit, setUploadLimit] = useState('');
   const save = useMutation({
-    mutationFn: (value: number | null) => api.put<YouTubeQuota>('/api/youtube/quota', { limit: value }),
+    mutationFn: (body: { limit?: number | null; upload_limit?: number | null }) =>
+      api.put<YouTubeQuota>('/api/youtube/quota', body),
     onSuccess: (data) => {
       client.setQueryData(['youtube-quota'], data);
       setLimit('');
+      setUploadLimit('');
     },
   });
   const accounts = status.data?.accounts ?? [];
   const parsed = Number(limit.replace(/\D/g, ''));
+  const parsedUploads = Number(uploadLimit.replace(/\D/g, ''));
+  const changes: { limit?: number; upload_limit?: number } = {
+    ...(parsed > 0 ? { limit: parsed } : {}),
+    ...(parsedUploads > 0 ? { upload_limit: parsedUploads } : {}),
+  };
+  const custom = quota.data?.custom_limit || quota.data?.custom_upload_limit;
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-line bg-card p-4">
       <h3 className="font-display text-[15px] font-semibold text-fg">Cota e contas do YouTube</h3>
@@ -235,7 +259,8 @@ export const YouTubeQuotaSettings: React.FC = () => {
       ) : null}
       <p className="text-xs text-subtle">
         A cota é do seu projeto no Google Cloud e vale para todas as contas abaixo. O app conta só as chamadas que ele
-        mesmo fez; se o Google avisar que a cota acabou, o dia fica marcado como esgotado.
+        mesmo fez; se o Google avisar que a cota acabou, aquele tipo de cota fica esgotado até zerar. Sem a cota geral o
+        vídeo ainda sobe (só a capa, as legendas e a playlist falham); sem os envios do dia, nada sobe.
       </p>
       {accounts.length ? (
         <div className="flex flex-col gap-1">
@@ -259,7 +284,7 @@ export const YouTubeQuotaSettings: React.FC = () => {
         className="flex flex-wrap items-end gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          if (parsed > 0) save.mutate(parsed);
+          if (Object.keys(changes).length) save.mutate(changes);
         }}
       >
         <Field
@@ -274,11 +299,28 @@ export const YouTubeQuotaSettings: React.FC = () => {
             onChange={(e) => setLimit(e.target.value)}
           />
         </Field>
-        <Button type="submit" size="sm" busy={save.isPending} disabled={!(parsed > 0)}>
-          Salvar limite
+        <Field
+          label="Envios de vídeo por dia"
+          hint="O padrão do Google é 100 (cota própria do envio de vídeo)."
+          className="min-w-40"
+        >
+          <Input
+            inputMode="numeric"
+            placeholder={quota.data ? number.format(quota.data.upload_limit) : '100'}
+            value={uploadLimit}
+            onChange={(e) => setUploadLimit(e.target.value)}
+          />
+        </Field>
+        <Button type="submit" size="sm" busy={save.isPending} disabled={!Object.keys(changes).length}>
+          Salvar limites
         </Button>
-        {quota.data?.custom_limit ? (
-          <Button type="button" size="sm" variant="ghost" onClick={() => save.mutate(null)}>
+        {custom ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => save.mutate({ limit: null, upload_limit: null })}
+          >
             Voltar ao padrão
           </Button>
         ) : null}

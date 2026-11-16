@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from studio.db import session_scope
 from studio.models import Channel, Job, Project, Publication
+from studio.workers.publish import quota
 
 DEFAULT_TZ = "America/Sao_Paulo"
 MIN_LEAD = timedelta(minutes=20)
@@ -250,8 +251,19 @@ def plan_youtube_batch(
     items: list[dict[str, str]],
     submit: Callable[[str, dict[str, Any], str], dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Agenda cada vídeo (na ordem dada) no próximo horário livre do canal dele e enfileira o envio."""
+    """Agenda cada vídeo (na ordem dada) no próximo horário livre do canal dele e enfileira o envio.
+
+    Confere a cota de envios de vídeo uma vez: os envios que já estão na fila contam, e os que passarem do que resta
+    hoje voltam com erro em vez de virar jobs que falham um a um.
+    """
     ready = {(r["project_id"], r["lang"]): r for r in ready_for_youtube()}
+    info = quota.status()
+    with session_scope() as s:
+        queued = s.query(Job).filter(Job.kind == "publish_youtube", Job.status == "queued").count()
+    uploads_left = max(0, info["uploads_remaining"] - queued)
+    quota_error = (info["message"] if info["uploads_over"] else
+                   f"a cota de envios de vídeo de hoje acaba antes deste ({info['uploads']} de {info['upload_limit']} "
+                   f"usados e {queued} na fila); tente depois da meia-noite do horário do Pacífico")
     pending_times = [_aware(datetime.fromisoformat(at.replace("Z", "+00:00"))) for _, _, at in _pending_publish_jobs() if at]
     assigned: dict[str, list[datetime]] = {}
     results: list[dict[str, Any]] = []
@@ -281,9 +293,13 @@ def plan_youtube_batch(
         if not slots:
             results.append({**base, "error": "nenhum horário livre nos próximos 60 dias"})
             continue
+        if uploads_left <= 0:
+            results.append({**base, "error": quota_error})
+            continue
         when = slots[0]
         payload = {"lang": lang, "privacy": "scheduled", "publish_at": when.astimezone(UTC).isoformat().replace("+00:00", "Z")}
         job = submit("publish_youtube", payload, project_id)
+        uploads_left -= 1
         assigned.setdefault(channel_id, []).append(when)
         results.append({**base, "publish_at": when.isoformat(), "job_id": job["id"]})
     return results

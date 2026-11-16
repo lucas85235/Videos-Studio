@@ -387,12 +387,19 @@ def access_token(http: httpx.Client, account: str | None = None) -> str:
 
 
 def _track(method: str, resp: httpx.Response | None) -> None:
-    """Soma a chamada no medidor de cota e marca o dia como esgotado se o Google disser que a cota acabou."""
+    """Soma a chamada no medidor de cota e marca o balde como esgotado se o Google disser que a cota acabou.
+
+    O medidor é só uma estimativa: se gravar falhar (ex.: banco ocupado), a chamada ao YouTube, que já aconteceu,
+    segue normalmente. Chamada recusada conta 1 unidade, como diz a documentação do Google.
+    """
     if resp is None:
         return
-    quota.spend(method)
-    if resp.status_code in (403, 429) and ("quotaExceeded" in resp.text or "dailyLimitExceeded" in resp.text):
-        quota.mark_exhausted()
+    try:
+        quota.spend(method, failed=resp.status_code >= 400)
+        if resp.status_code in (403, 429) and ("quotaExceeded" in resp.text or "dailyLimitExceeded" in resp.text):
+            quota.mark_exhausted(quota.bucket(method))
+    except Exception as exc:  # noqa: BLE001 - o contador nunca derruba um envio que já foi feito
+        log.warning("medidor de cota do YouTube não gravou %s: %s", method, exc)
 
 
 def _get(http: httpx.Client, url: str, token: str, params: dict[str, str] | None = None, *, method: str) -> dict[str, Any]:
@@ -696,8 +703,11 @@ def _count(value: Any) -> int | None:
         return None
 
 
-def list_playlists(http: httpx.Client, token: str) -> list[dict[str, Any]]:
-    """Playlists do canal da conta (playlists.list com mine=true; 1 unidade por página de 50)."""
+def list_playlists_page(http: httpx.Client, token: str) -> tuple[list[dict[str, Any]], bool]:
+    """Playlists do canal da conta (playlists.list com mine=true; 1 unidade por página de 50).
+
+    Lê no máximo PLAYLIST_PAGES páginas; o segundo valor diz se ficaram playlists de fora (a lista foi cortada).
+    """
     out: list[dict[str, Any]] = []
     page: str | None = None
     for _ in range(PLAYLIST_PAGES):
@@ -709,7 +719,11 @@ def list_playlists(http: httpx.Client, token: str) -> list[dict[str, Any]]:
         page = data.get("nextPageToken")
         if not page:
             break
-    return sorted(out, key=lambda p: p["title"].lower())
+    return sorted(out, key=lambda p: p["title"].lower()), bool(page)
+
+
+def list_playlists(http: httpx.Client, token: str) -> list[dict[str, Any]]:
+    return list_playlists_page(http, token)[0]
 
 
 def create_playlist(http: httpx.Client, token: str, title: str, privacy: str = "public", description: str = "") -> dict[str, Any]:
@@ -737,11 +751,12 @@ def add_to_playlist(http: httpx.Client, token: str, playlist_id: str, video_id: 
     return data.get("id") or ""
 
 
-def playlists_for(account_key: str, http: httpx.Client | None = None) -> list[dict[str, Any]]:
+def playlists_for(account_key: str, http: httpx.Client | None = None) -> tuple[list[dict[str, Any]], bool]:
+    """(playlists, cortada): cortada quando o canal tem mais playlists do que o app lê."""
     own = http is None
     client = http or new_client(timeout=30)
     try:
-        return list_playlists(client, access_token(client, account_key))
+        return list_playlists_page(client, access_token(client, account_key))
     finally:
         if own:
             client.close()

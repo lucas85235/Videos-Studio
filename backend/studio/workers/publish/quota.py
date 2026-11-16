@@ -10,7 +10,12 @@ zera à meia-noite do horário do Pacífico. Custos conforme a documentação of
   `captions.insert` custa 400.
 
 O app só conta o que ele mesmo chamou: outro programa usando o mesmo projeto do Google Cloud não aparece aqui.
-Quando o Google responde `quotaExceeded`, o dia fica marcado como esgotado, mesmo que a conta local seja menor.
+Chamada recusada (4xx/5xx) conta 1 unidade ("toda chamada, mesmo inválida, custa ao menos 1 ponto"), não o custo
+cheio. Quando o Google responde `quotaExceeded`, o balde daquele método (geral ou de envios) fica esgotado no dia,
+mesmo que a conta local seja menor.
+
+Os baldes são separados: sem a cota geral o vídeo ainda sobe (só a capa, as legendas e a playlist falham); sem a
+cota de envios nada sobe. Por isso só o balde de envios bloqueia o envio; o geral vira aviso.
 """
 
 from __future__ import annotations
@@ -49,7 +54,8 @@ COSTS: dict[str, tuple[int, str]] = {
 }
 
 LIMIT_KEY = "youtube_quota_limit"
-EXHAUSTED_KEY = "youtube_quota_exhausted"
+UPLOAD_LIMIT_KEY = "youtube_upload_limit"
+EXHAUSTED_KEY = "youtube_quota_exhausted"  # {"day": "AAAA-MM-DD", "buckets": ["general", "uploads"]}
 
 
 class QuotaExhausted(RuntimeError):
@@ -73,6 +79,10 @@ def resets_at(now: datetime | None = None) -> datetime:
 
 def cost(method: str) -> int:
     return COSTS.get(method, (1, GENERAL))[0]
+
+
+def bucket(method: str) -> str:
+    return COSTS.get(method, (1, GENERAL))[1]
 
 
 def _setting(key: str) -> Any:
@@ -107,10 +117,27 @@ def set_daily_limit(limit: int | None) -> int:
     return daily_limit()
 
 
-def spend(method: str, calls: int = 1, now: datetime | None = None) -> None:
-    """Soma o custo de uma chamada à API (o Google cobra mesmo quando a chamada falha)."""
+def upload_limit() -> int:
+    """100 envios de vídeo por dia, ou o número maior que o Google liberou para o seu projeto (Configurações)."""
+    value = _setting(UPLOAD_LIMIT_KEY)
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return UPLOAD_LIMIT
+    return number if number > 0 else UPLOAD_LIMIT
+
+
+def set_upload_limit(limit: int | None) -> int:
+    if limit is not None and not 1 <= limit <= 1_000_000:
+        raise ValueError("limite de envios inválido")
+    _set_setting(UPLOAD_LIMIT_KEY, limit)
+    return upload_limit()
+
+
+def spend(method: str, calls: int = 1, now: datetime | None = None, *, failed: bool = False) -> None:
+    """Soma o custo de uma chamada à API. Chamada recusada pelo Google (`failed`) custa 1 unidade, não o custo cheio."""
     day = pacific_day(now)
-    units = cost(method) * calls
+    units = (1 if failed else cost(method)) * calls
     for _ in range(2):  # duas tentativas: outro envio pode criar a linha do dia ao mesmo tempo
         try:
             with session_scope() as s:
@@ -125,9 +152,20 @@ def spend(method: str, calls: int = 1, now: datetime | None = None) -> None:
             continue
 
 
-def mark_exhausted(now: datetime | None = None) -> None:
-    """O Google respondeu quotaExceeded: o dia fica esgotado até a meia-noite do Pacífico."""
-    _set_setting(EXHAUSTED_KEY, pacific_day(now))
+def _exhausted_buckets(day: str) -> set[str]:
+    value = _setting(EXHAUSTED_KEY)
+    if isinstance(value, str):  # formato antigo (só o dia): sem saber o balde, vale para os dois
+        return {GENERAL, UPLOADS} if value == day else set()
+    if isinstance(value, dict) and value.get("day") == day:
+        return {b for b in value.get("buckets") or [] if isinstance(b, str)}
+    return set()
+
+
+def mark_exhausted(bucket_name: str = GENERAL, now: datetime | None = None) -> None:
+    """O Google respondeu quotaExceeded: aquele balde fica esgotado até a meia-noite do Pacífico."""
+    day = pacific_day(now)
+    buckets = _exhausted_buckets(day) | {bucket_name}
+    _set_setting(EXHAUSTED_KEY, {"day": day, "buckets": sorted(buckets)})
 
 
 def publish_estimate(*, thumbnail: bool = True, captions: bool = True, playlist: bool = False) -> int:
@@ -136,26 +174,40 @@ def publish_estimate(*, thumbnail: bool = True, captions: bool = True, playlist:
         cost("playlistItems.insert") if playlist else 0)
 
 
+RESET = "Ela volta à meia-noite do horário do Pacífico."
+
+
 def status(now: datetime | None = None) -> dict[str, Any]:
-    """O que a tela mostra: gasto de hoje, limite, nível (ok, near, over) e quando zera."""
+    """O que a tela mostra: gasto de hoje por balde, limites, nível (ok, near, over) e quando zera.
+
+    `uploads_over` bloqueia o envio; `general_over` só avisa que capa, legendas e playlist vão falhar.
+    """
     day = pacific_day(now)
     with session_scope() as s:
         rows = [(r.method, r.calls, r.units) for r in s.query(YouTubeQuotaUsage).filter_by(day=day).all()]
     limit = daily_limit()
-    used = sum(units for method, _, units in rows if COSTS.get(method, (1, GENERAL))[1] == GENERAL)
+    up_limit = upload_limit()
+    used = sum(units for method, _, units in rows if bucket(method) == GENERAL)
     uploads = sum(calls for method, calls, _ in rows if method == "videos.insert")
-    exhausted = _setting(EXHAUSTED_KEY) == day
-    over = exhausted or used >= limit or uploads >= UPLOAD_LIMIT
-    near = not over and (used >= limit * NEAR_FRACTION or uploads >= UPLOAD_LIMIT * NEAR_FRACTION)
+    exhausted = _exhausted_buckets(day)
+    general_over = GENERAL in exhausted or used >= limit
+    uploads_over = UPLOADS in exhausted or uploads >= up_limit
+    over = general_over or uploads_over
+    near = not over and (used >= limit * NEAR_FRACTION or uploads >= up_limit * NEAR_FRACTION)
     reset = resets_at(now)
-    if exhausted:
-        message = "O Google avisou que a cota do YouTube de hoje acabou. Ela volta à meia-noite do horário do Pacífico."
-    elif uploads >= UPLOAD_LIMIT:
-        message = f"Os {UPLOAD_LIMIT} envios de vídeo do dia já foram usados. A cota volta à meia-noite do horário do Pacífico."
-    elif used >= limit:
-        message = "A cota do YouTube de hoje acabou. Ela volta à meia-noite do horário do Pacífico."
+    if UPLOADS in exhausted:
+        message = f"O Google avisou que a cota de envios de vídeo de hoje acabou. {RESET}"
+    elif uploads_over:
+        message = f"Os {up_limit} envios de vídeo do dia já foram usados. {RESET}"
+    elif GENERAL in exhausted:
+        message = ("O Google avisou que a cota geral do YouTube de hoje acabou: o vídeo ainda sobe, mas a capa, "
+                   f"as legendas e a playlist vão falhar. {RESET}")
+    elif general_over:
+        message = ("A cota geral do YouTube de hoje acabou: o vídeo ainda sobe, mas a capa, as legendas e a playlist "
+                   f"vão falhar. {RESET}")
     elif near:
-        message = f"Perto do limite: {used:,} de {limit:,} unidades usadas hoje.".replace(",", ".")
+        message = (f"Perto do limite: {used:,} de {limit:,} unidades e {uploads} de {up_limit:,} envios "
+                   "usados hoje.").replace(",", ".")
     else:
         message = None
     return {
@@ -166,8 +218,12 @@ def status(now: datetime | None = None) -> dict[str, Any]:
         "used": used,
         "remaining": max(0, limit - used),
         "uploads": uploads,
-        "upload_limit": UPLOAD_LIMIT,
-        "exhausted": exhausted,
+        "upload_limit": up_limit,
+        "custom_upload_limit": up_limit != UPLOAD_LIMIT,
+        "uploads_remaining": 0 if uploads_over else max(0, up_limit - uploads),
+        "exhausted": bool(exhausted),
+        "general_over": general_over,
+        "uploads_over": uploads_over,
         "level": "over" if over else "near" if near else "ok",
         "message": message,
         "publish_estimate": publish_estimate(),
@@ -177,11 +233,19 @@ def status(now: datetime | None = None) -> dict[str, Any]:
     }
 
 
+GENERAL_OVER_WARNING = ("a cota geral do YouTube de hoje acabou: o vídeo sobe, mas a capa, as legendas e a playlist "
+                        "devem falhar")
+
+
 def check_publish(estimate: int, now: datetime | None = None) -> list[str]:
-    """Antes de um envio: erro se a cota já acabou; aviso se o envio deve passar do limite."""
+    """Antes de um envio: erro só se a cota de envios de vídeo acabou; avisos se a cota geral não der conta."""
     info = status(now)
-    if info["level"] == "over":
+    if info["uploads_over"]:
         raise QuotaExhausted(info["message"])
+    if not estimate:  # sem capa, legendas nem playlist: a cota geral não importa
+        return []
+    if info["general_over"]:
+        return [GENERAL_OVER_WARNING]
     if info["used"] + estimate > info["limit"]:
         return [f"este envio gasta cerca de {estimate} unidades e restam {info['remaining']} hoje: "
                 "a capa, as legendas ou a playlist podem falhar"]

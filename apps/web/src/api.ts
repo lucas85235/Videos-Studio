@@ -752,7 +752,13 @@ export type YouTubeAccount = {
 
 /** GET /api/youtube/playlists */
 export type YouTubePlaylist = { id: string; title: string; privacy: string; count: number | null };
-export type YouTubePlaylists = { account_title: string; playlists: YouTubePlaylist[] };
+export type YouTubePlaylists = {
+  account_title: string;
+  playlists: YouTubePlaylist[];
+  /** O canal tem mais playlists do que o app lê (`max`): as que sobraram não aparecem. */
+  truncated?: boolean;
+  max?: number;
+};
 
 /** GET /api/youtube/quota: cota da YouTube Data API usada hoje (dia do Pacífico). */
 export type YouTubeQuota = {
@@ -764,7 +770,13 @@ export type YouTubeQuota = {
   remaining: number;
   uploads: number;
   upload_limit: number;
+  custom_upload_limit: boolean;
+  uploads_remaining: number;
   exhausted: boolean;
+  /** Cota geral (10.000) acabou: o vídeo sobe, mas capa, legendas e playlist falham. Só avisa. */
+  general_over: boolean;
+  /** Cota de envios de vídeo acabou: nenhum vídeo sobe hoje. Bloqueia o envio. */
+  uploads_over: boolean;
   level: 'ok' | 'near' | 'over';
   message: string | null;
   /** Unidades que um envio típico gasta (capa + legendas). */

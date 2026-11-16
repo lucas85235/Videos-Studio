@@ -147,3 +147,35 @@ def test_channel_slots_agenda_and_manual_posts(isolated_settings):
         assert not agenda["manual"]
         assert {i["id"] for i in agenda["recent"]} == {"pub_b", "pub_c", "pub_d"}
         assert client.post("/api/publications/nao-existe/published", json={}).status_code == 404
+
+
+def test_youtube_batch_respects_the_upload_quota(isolated_settings):
+    from studio.models import Channel
+    from studio.workers.publish import quota
+    from studio.workers.publish.schedule import plan_youtube_batch
+
+    with session_scope() as s:
+        s.add(Channel(id="chn_q", name="Fila", settings={"posting": {"timezone": "America/Sao_Paulo",
+                                                                     "slots": [{"weekdays": [0, 1, 2, 3, 4, 5, 6], "time": "18:00"}]}}))
+    final = {"langs": {"pt-BR": {"video": "outputs/x/pt-BR/video.mp4", "duration": 60}}, "preview_only_providers": []}
+    ids = []
+    for n in range(3):
+        doc = service.create_project(title=f"Vídeo {n}", style_id="misterios-short", topic="t", channel_id="chn_q")
+        service.update_settings(doc.id, {"last_final": final})
+        ids.append(doc.id)
+    items = [{"project_id": i, "lang": "pt-BR"} for i in ids]
+    submitted: list[str] = []
+
+    def fake_submit(kind: str, payload: dict, project_id: str) -> dict:
+        submitted.append(project_id)
+        return {"id": f"job_{len(submitted)}"}
+
+    quota.spend("videos.insert", calls=quota.UPLOAD_LIMIT - 2)  # restam 2 envios hoje
+    results = plan_youtube_batch(items, fake_submit)
+    assert submitted == ids[:2]
+    assert "cota de envios" in results[2]["error"] and "job_id" not in results[2]
+
+    quota.spend("videos.insert", calls=2)  # acabou: nada entra na fila
+    submitted.clear()
+    results = plan_youtube_batch(items[2:], fake_submit)
+    assert submitted == [] and "envios de vídeo" in results[0]["error"]

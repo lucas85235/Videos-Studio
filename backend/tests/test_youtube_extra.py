@@ -148,9 +148,11 @@ def test_quota_sums_per_day_and_warns_near_the_limit():
     quota.spend("captions.insert", calls=4, now=day1)  # 9650
     assert quota.check_publish(450, day1) and "restam 350" in quota.check_publish(450, day1)[0]
     quota.spend("captions.insert", now=day1)  # 10050
-    assert quota.status(day1)["level"] == "over"
-    with pytest.raises(quota.QuotaExhausted):
-        quota.check_publish(50, day1)
+    info = quota.status(day1)
+    assert info["level"] == "over" and info["general_over"] and not info["uploads_over"]
+    # sem a cota geral o vídeo ainda sobe: só avisa que capa, legendas e playlist vão falhar
+    assert "capa" in quota.check_publish(50, day1)[0]
+    assert quota.check_publish(0, day1) == []
 
     # depois da meia-noite do Pacífico começa do zero
     next_day = datetime(2026, 11, 16, 8, 0, tzinfo=UTC)
@@ -170,7 +172,15 @@ def test_quota_upload_limit_counts_calls_not_units():
     assert info["used"] == 0 and info["uploads"] == 90 and info["level"] == "near"
     quota.spend("videos.insert", calls=10, now=now)
     info = quota.status(now)
-    assert info["level"] == "over" and "100 envios" in info["message"]
+    assert info["level"] == "over" and info["uploads_over"] and "100 envios" in info["message"]
+    with pytest.raises(quota.QuotaExhausted):
+        quota.check_publish(0, now)
+    # projeto com mais envios liberados pelo Google
+    assert quota.set_upload_limit(200) == 200
+    info = quota.status(now)
+    assert info["upload_limit"] == 200 and info["custom_upload_limit"] and not info["uploads_over"]
+    assert info["uploads_remaining"] == 100 and quota.check_publish(0, now) == []
+    assert quota.set_upload_limit(None) == quota.UPLOAD_LIMIT
 
 
 def test_upload_thumbnail_and_captions_are_counted(tmp_path: Path):
@@ -203,8 +213,10 @@ def test_upload_thumbnail_and_captions_are_counted(tmp_path: Path):
     with pytest.raises(yt.YouTubeError, match="meia-noite do horário do Pacífico"):
         yt.upload_captions("VID", srt, "pt-BR", client)
     info = quota.status()
-    assert info["uploads"] == 1 and info["used"] == 450  # a chamada recusada também conta
-    assert info["exhausted"] is True and info["level"] == "over" and "Google avisou" in info["message"]
+    assert info["uploads"] == 1 and info["used"] == 51  # a chamada recusada conta 1 unidade, não 400
+    assert info["exhausted"] is True and info["general_over"] and "Google avisou" in info["message"]
+    # o quotaExceeded veio das legendas (cota geral): o envio de vídeo continua liberado
+    assert not info["uploads_over"] and quota.check_publish(450) == [quota.GENERAL_OVER_WARNING]
 
 
 # --------------------------------------------------------------------------------------------
@@ -393,14 +405,80 @@ def test_publish_job_uses_the_chosen_account_for_an_unlinked_project(isolated_se
 def test_publish_route_blocks_when_the_quota_is_over(isolated_settings, fake, sent):
     _global()
     pid = _rendered_project(isolated_settings, None)
-    quota.mark_exhausted()
+    quota.mark_exhausted(quota.UPLOADS)
     with TestClient(create_app()) as client:
         resp = client.post(f"/api/projects/{pid}/publish/youtube", json={"privacy": "private"})
         assert resp.status_code == 429 and "Pacífico" in resp.json()["detail"]
         info = client.get("/api/youtube/quota").json()
-        assert info["level"] == "over" and info["limit"] == 10_000
+        assert info["level"] == "over" and info["uploads_over"] and info["limit"] == 10_000
         assert client.put("/api/youtube/quota", json={"limit": 20_000}).json()["limit"] == 20_000
         assert client.put("/api/youtube/quota", json={"limit": 0}).status_code == 422
+        both = client.put("/api/youtube/quota", json={"upload_limit": 300}).json()
+        assert both["upload_limit"] == 300 and both["limit"] == 20_000  # mudar um não apaga o outro
+        assert client.put("/api/youtube/quota", json={"upload_limit": 0}).status_code == 422
+        reset = client.put("/api/youtube/quota", json={"limit": None, "upload_limit": None}).json()
+        assert reset["limit"] == 10_000 and reset["upload_limit"] == 100
         # conta escolhida que não existe: erro claro antes de criar o job
         bad = client.post(f"/api/projects/{pid}/publish/youtube", json={"privacy": "private", "account": "UCnada"})
         assert bad.status_code == 400 and "não está mais conectada" in bad.json()["detail"]
+
+
+# --------------------------------------------------------------------------------------------
+# Cota por balde, medidor que não derruba envio e lista de playlists cortada
+# --------------------------------------------------------------------------------------------
+
+
+def test_exhausted_is_per_bucket_and_reads_the_old_format():
+    from studio.models import AppSetting
+
+    now = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+    quota.mark_exhausted(quota.GENERAL, now)
+    info = quota.status(now)
+    assert info["general_over"] and not info["uploads_over"]
+    quota.mark_exhausted(quota.UPLOADS, now)
+    info = quota.status(now)
+    assert info["uploads_over"] and "envios de vídeo" in info["message"]
+    assert quota.status(datetime(2026, 11, 16, 12, 0, tzinfo=UTC))["exhausted"] is False
+    # formato antigo (só o dia): sem saber o balde, vale para os dois
+    with session_scope() as s:
+        s.get(AppSetting, quota.EXHAUSTED_KEY).value = "2026-11-15"
+    assert quota.status(now)["uploads_over"] and quota.status(now)["general_over"]
+
+
+def test_video_insert_quota_exceeded_blocks_uploads_only(tmp_path: Path):
+    _configure()
+    _global()
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"\x00" * 10)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(yt.TOKEN_URL):
+            return httpx.Response(200, json={"access_token": "at"})
+        return _error(403, "quotaExceeded", "quota")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(yt.YouTubeError):
+        yt.upload_video(video, snippet={"title": "T"}, status={"privacyStatus": "private"}, http=client)
+    info = quota.status()
+    assert info["uploads_over"] and not info["general_over"] and info["used"] == 0
+    with pytest.raises(quota.QuotaExhausted):
+        quota.check_publish(450)
+
+
+def test_meter_failure_never_breaks_a_youtube_call(fake: FakeYouTube, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    def locked(*args, **kwargs):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(quota, "spend", locked)
+    client = fake.client()
+    assert yt.add_to_playlist(client, "at", "PLc", "VID") == "ITEM1"  # o item entrou; o medidor só não contou
+
+
+def test_playlist_list_says_when_it_was_cut(fake: FakeYouTube, monkeypatch):
+    monkeypatch.setattr(yt, "PLAYLIST_PAGES", 1)
+    items, truncated = yt.list_playlists_page(fake.client(), "at")
+    assert truncated is True and [p["id"] for p in items] == ["PLa", "PLc"]
+    monkeypatch.setattr(yt, "PLAYLIST_PAGES", 4)
+    assert yt.list_playlists_page(fake.client(), "at")[1] is False
