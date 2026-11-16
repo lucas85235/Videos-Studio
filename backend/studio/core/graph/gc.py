@@ -1,6 +1,6 @@
 """Limpeza do cache de artefatos (marcar e varrer).
 
-Marca o que as últimas prévias/renders de cada projeto usam (manifesto `artifacts` do build; para builds
+Marca o que as últimas prévias/renders de cada projeto (e de cada ramo A/B aberto) usam (manifesto `artifacts` do build; para builds
 antigos sem manifesto, recalcula os blocos a partir da timeline salva) e varre:
 
 - blocos de render, vídeos finais, mixagens, narrações aceleradas (Modo B), camadas de parallax e imagens gradadas
@@ -26,7 +26,7 @@ from typing import Any
 
 from studio.config import get_settings
 from studio.db import session_scope
-from studio.models import Artifact, Project
+from studio.models import Artifact, Project, ProjectBranch
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +114,10 @@ def cache_sizes() -> dict[str, int]:
 
 
 def in_use() -> set[tuple[str, str]]:
-    """Artefatos usados pelas últimas prévias e renders de todos os projetos."""
+    """Artefatos usados pelas últimas prévias e renders de todos os projetos e dos ramos A/B abertos.
+
+    Ramo fechado não conta: o promovido já passou o resultado para a principal; mesclado e descartado não voltam.
+    """
     from studio.core.timeline import chunk_timeline
     from studio.media.render import renderer_version
 
@@ -124,6 +127,11 @@ def in_use() -> set[tuple[str, str]]:
         results = [
             (p.settings or {}).get(key)
             for p in s.query(Project).all()
+            for key in ("last_preview", "last_final")
+        ]
+        results += [
+            getattr(b, key)
+            for b in s.query(ProjectBranch).filter(ProjectBranch.status == "aberto").all()
             for key in ("last_preview", "last_final")
         ]
     for result in results:

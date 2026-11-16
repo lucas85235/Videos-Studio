@@ -12,13 +12,14 @@ from datetime import datetime
 from typing import Any
 
 from studio.config import get_settings
-from studio.core.project import service
+from studio.core.project import branches, service
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.media.real_media import EDITORIAL_WARNING
 from studio.models import Publication
 from studio.workers.business.monetization import description_links, fit_description
+from studio.workers.pipeline.build import branch_outputs_dir
 from studio.workers.publish.credits import credits_block, has_editorial
 from studio.workers.visual import thumbs as thumb_ab
 
@@ -84,13 +85,21 @@ def caption_for(platform: str, meta: dict[str, Any], fallback_title: str, credit
     return full if len(full) <= limit else text[:limit]
 
 
-def build_package(project_id: str, lang: str, platforms: list[str], planned_at: datetime | None = None) -> dict[str, Any]:
-    """Pacote para postar à mão em cada rede; `planned_at` entra na agenda como horário planejado."""
+def build_package(project_id: str, lang: str, platforms: list[str], planned_at: datetime | None = None,
+                  branch: str | None = None) -> dict[str, Any]:
+    """Pacote para postar à mão em cada rede; `planned_at` entra na agenda como horário planejado.
+
+    `branch`: ramo A/B ("b", "c"...) cujo vídeo final vai no pacote (padrão: a principal).
+    """
+    from studio.workers.analytics import ab_versions
+    from studio.workers.publish_tasks import branch_source
+
     settings = get_settings()
     row = service.get_project_row(project_id)
-    doc = service.get_doc(project_id)
+    doc, last = branch_source(project_id, branch, row)
+    on_branch = branch not in (None, branches.MAIN)
+    ab_tag = ab_versions.publication_tag(project_id, branch, lang)
     style = get_style(doc.style_id, doc.style_overrides)
-    last = row["settings"].get("last_final") or {}
     entry = (last.get("langs") or {}).get(lang)
     if entry and entry.get("dub_of") and not entry.get("video"):
         from studio.workers.publish_tasks import dub_track_message
@@ -101,16 +110,16 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
     preview_only = last.get("preview_only_providers") or []
     video = settings.data_dir / entry["video"]
     # Miniatura escolhida entre as do teste A/B (ADR 0003, bloco I); sem ela, a do build.
-    thumb_rel, thumb_note = thumb_ab.pick_thumbnail(row["settings"], lang, project_id)
+    thumb_rel, thumb_note = (None, None) if on_branch else thumb_ab.pick_thumbnail(row["settings"], lang, project_id)
     thumb_rel = thumb_rel or entry.get("thumbnail")
     thumb = settings.data_dir / thumb_rel if thumb_rel else None
-    variants = thumb_ab.existing_variants(row["settings"], lang)
+    variants = [] if on_branch else thumb_ab.existing_variants(row["settings"], lang)
     ab = (thumb_ab.ab_rule(row.get("channel_id") or doc.channel_id, thumb_ab.chosen_number(row["settings"], lang))
           if len(variants) >= 2 else None)
     srt = settings.data_dir / entry["srt"] if entry.get("srt") else None
     meta = doc.metadata.get(lang)
     meta_dict = meta.model_dump() if meta else {"title": doc.title, "description": "", "tags": [], "hashtags": []}
-    base = settings.outputs_dir / project_id / lang / "publicar"
+    base = branch_outputs_dir(settings.outputs_dir, project_id, branch) / lang / "publicar"
     credits = credits_block(doc, lang)  # mídia real: "Créditos das imagens" (vazio sem mídia)
     editorial = has_editorial(doc)
     links = description_links(project_id)  # links de afiliado (bloco D): vazio quando o projeto não liga
@@ -184,7 +193,7 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
         with session_scope() as s:
             s.add(Publication(id=pub_id, project_id=project_id, platform=platform, language=lang, driver="manual_helper",
                               status="package_ready", package_path=str(folder), scheduled_at=planned_at,
-                              details={"caption": caption, "url": UPLOAD_URLS.get(platform)}))
+                              details={"caption": caption, "url": UPLOAD_URLS.get(platform), **ab_tag}))
         results.append({"id": pub_id, "platform": platform, "folder": str(folder), "upload_url": UPLOAD_URLS.get(platform),
                         "caption": caption, "blocked": bool(preview_only),
                         **({"pinned_comment": links["pinned"], "affiliate_checklist": links["checklist"]}

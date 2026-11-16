@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from studio.config import get_settings
-from studio.core.project import service
+from studio.core.project import branches, service
 from studio.core.project.document import Metadata
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import Family
@@ -17,6 +17,7 @@ from studio.db import session_scope
 from studio.ids import new_id
 from studio.media.real_media import EDITORIAL_WARNING
 from studio.models import Channel, Publication
+from studio.workers.analytics import ab_versions
 from studio.workers.business.monetization import description_links, fit_description
 from studio.workers.jobs import JobContext, job
 from studio.workers.ops import pending
@@ -142,17 +143,30 @@ def dub_track_message(primary: str) -> str:
             "a faixa pelo pacote do Studio (aba Saída)")
 
 
+def branch_source(project_id: str, branch: str | None, row: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Documento e último vídeo final da principal ou de um ramo A/B (o vídeo tem que ser da cabeça do ramo)."""
+    if branch in (None, branches.MAIN):
+        return service.get_doc(project_id), row["settings"].get("last_final") or {}
+    info = branches.get_branch(project_id, branch)
+    last = info["last_final"] or {}
+    if last and last.get("version") != info["head"]:
+        raise ValueError(f"a versão {info['letter']} mudou depois do último render: renderize o vídeo final dela de novo")
+    return service.get_doc(project_id, info["head"]), last
+
+
 @job("publish_youtube")
 def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     """Envia o vídeo final de um idioma ao YouTube (privado, não listado, público ou agendado)."""
     project_id = ctx.project_id
     assert project_id
     row = service.get_project_row(project_id)
-    doc = service.get_doc(project_id)
+    # Ramo A/B ("versão B"): o documento e o vídeo final vêm da cabeça do ramo, não da principal.
+    branch = payload.get("branch") or None
+    doc, last = branch_source(project_id, branch, row)
+    on_branch = branch not in (None, branches.MAIN)
     style = get_style(doc.style_id, doc.style_overrides)
     lang = payload.get("lang") or doc.primary_language
     privacy = payload.get("privacy", "private")
-    last = row["settings"].get("last_final") or {}
     entry = (last.get("langs") or {}).get(lang)
     if entry and entry.get("dub_of") and not entry.get("video"):
         raise ValueError(dub_track_message(entry["dub_of"]))
@@ -201,8 +215,8 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
         if links["pinned"]:
             warnings.append(f"Fixe este comentário no vídeo:\n{links['pinned']}")
     warnings.extend(f"links de afiliado fora da descrição: {err}" for err in links["errors"])
-    # Miniatura escolhida entre as 3 do teste A/B (ADR 0003, bloco I); sem ela, a do build.
-    thumb_rel, thumb_note = thumb_ab.pick_thumbnail(row["settings"], lang, project_id)
+    # Miniatura escolhida entre as 3 do teste A/B (ADR 0003, bloco I); sem ela, a do build. O ramo usa a dele.
+    thumb_rel, thumb_note = (None, None) if on_branch else thumb_ab.pick_thumbnail(row["settings"], lang, project_id)
     thumb_rel = thumb_rel or entry.get("thumbnail")
     if thumb_note:
         warnings.append(thumb_note)
@@ -254,8 +268,12 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
         warnings.append("Faixas de áudio dos outros idiomas: envie pelo YouTube Studio (Idiomas → Dublagem) com o "
                         "pacote de faixas da aba Saída; a API do YouTube não aceita faixas extras.")
     url = f"https://youtu.be/{video_id}"
+    try:
+        ab_tag = ab_versions.publication_tag(project_id, branch, lang)
+    except Exception:  # noqa: BLE001 - ramo apagado no meio do envio: publica sem a marca
+        ab_tag = {}
     try:  # o vídeo já subiu: uma falha aqui não pode impedir o registro da publicação
-        thumbs_details = _thumbs_followup(project_id, row.get("channel_id") or doc.channel_id, row["settings"], lang,
+        thumbs_details = {} if on_branch else _thumbs_followup(project_id, row.get("channel_id") or doc.channel_id, row["settings"], lang,
                                           video_id, (meta.title or doc.title)[:100], privacy=privacy,
                                           publish_at=status.get("publishAt"), is_long=style.format.type == "long")
     except Exception as exc:  # noqa: BLE001
@@ -277,9 +295,18 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                          "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
                          **({"caption_langs": sorted(o for o, _ in dub_captions)} if dub_captions else {}),
                          "youtube_channel": yt.account_title(account), "playlist": playlist, **credits_details,
-                         **thumbs_details},
+                         **thumbs_details, **ab_tag},
             )
         )
+    if ab_tag:
+        try:  # A e B públicos no YouTube: abre o experimento de Desempenho (variável "versao")
+            ab_versions.sync_experiments(project_id)
+            if on_branch and not branches.get_branch(project_id, branch)["experiment_id"]:
+                reason = ab_versions.missing_reason(ab_versions.published_videos(project_id), ab_tag["versao"])
+                if reason:
+                    warnings.append(f"O experimento A/B ainda não abriu. {reason}")
+        except Exception as exc:  # noqa: BLE001 - o vídeo já subiu
+            warnings.append(f"Não deu para abrir o experimento A/B: {exc}")
     ctx.progress(1.0, "Agendado no YouTube" if privacy == "scheduled" else "Enviado ao YouTube")
     return {"video_id": video_id, "url": url, "privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings}
 

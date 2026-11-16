@@ -104,7 +104,36 @@ class ProjectVersion(Base):
     doc: Mapped[dict[str, Any]] = mapped_column(JSON)
     message: Mapped[str] = mapped_column(Text, default="")
     author: Mapped[str] = mapped_column(String(40), default="user")
+    branch: Mapped[str] = mapped_column(String(20), default="main")
+    """Ramo da versão: "main" (principal, a versão A) ou o nome de um ramo A/B ("b", "c"...)."""
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class ProjectBranch(Base):
+    """Ramo A/B de um projeto ("versão B do gancho"): uma linha de versões ao lado da principal.
+
+    A principal não tem linha aqui (a cabeça dela é `Project.current_version`). O ramo guarda a própria cabeça e os
+    últimos resultados da prévia e do vídeo final, que ficam em `outputs/<projeto>/ramos/<nome>/<idioma>`.
+    """
+
+    __tablename__ = "project_branches"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(20))
+    letter: Mapped[str] = mapped_column(String(4))
+    note: Mapped[str] = mapped_column(Text, default="")
+    base_number: Mapped[int] = mapped_column(Integer)
+    head_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="aberto")
+    """aberto | mesclado | promovido | descartado"""
+    last_preview: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    last_final: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    experiment_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class Artifact(Base):

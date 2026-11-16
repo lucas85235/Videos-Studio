@@ -259,11 +259,20 @@ def scenes_without_direction(doc: ProjectDoc) -> list[str]:
 DIRECTION_MISSING = "O estilo do projeto mudou e as cenas ficaram sem direção de arte: refaça as cenas antes de gerar as imagens."
 
 
+def branch_outputs_dir(outputs_dir: Path, project_id: str, branch: str | None) -> Path:
+    """Pasta de saída do projeto (principal) ou de um ramo A/B (`ramos/<nome>`), sem o idioma."""
+    base = outputs_dir / project_id
+    return base / "ramos" / branch if branch and branch != service.MAIN_BRANCH else base
+
+
 class Builder:
     def __init__(self, project_id: str, *, mode: Mode = "preview", langs: list[str] | None = None,
-                 version: int | None = None, sink: ProgressSink | None = None) -> None:
+                 version: int | None = None, sink: ProgressSink | None = None, branch: str | None = None) -> None:
         self.project_id = project_id
         self.mode = mode
+        self.version = version
+        # Ramo A/B: a saída vai para outputs/<projeto>/ramos/<nome>/<idioma> e não pisa na da principal.
+        self.branch = branch if branch and branch != service.MAIN_BRANCH else None
         self.doc: ProjectDoc = service.get_doc(project_id, version)
         self.style: StyleSpec = get_style(self.doc.style_id, self.doc.style_overrides)
         self.langs = langs or list(self.doc.languages)
@@ -355,7 +364,7 @@ class Builder:
         return result.usage.units, result.usage.unit_name, result.usage.cost_usd
 
     def outputs_dir(self, lang: str) -> Path:
-        path = self.settings.outputs_dir / self.project_id / lang
+        path = branch_outputs_dir(self.settings.outputs_dir, self.project_id, self.branch) / lang
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -1473,7 +1482,7 @@ class Builder:
         prévia depois do render (tradução editada, outro modo de entrega) regrava os arquivos comuns, e as legendas
         enviadas ao YouTube ou postas no pacote precisam bater com o MP4 e as faixas do último render final."""
         out_dir = self.outputs_dir(lang)
-        timeline_doc = {**timeline, "mix": mix_rel, "version": service.get_project_row(self.project_id)["current_version"]}
+        timeline_doc = {**timeline, "mix": mix_rel, "version": self.version or service.get_project_row(self.project_id)["current_version"]}
         timeline_text = json.dumps(timeline_doc, ensure_ascii=False)
         (out_dir / "timeline.json").write_text(timeline_text, encoding="utf-8")
         srt_path = out_dir / "legendas.srt"

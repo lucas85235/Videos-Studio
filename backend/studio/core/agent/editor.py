@@ -131,11 +131,20 @@ def _style_choices() -> str:
     return "; ".join(f"{item['style']['id']}: {item['style']['name']}" for item in list_styles())
 
 
-def propose_edit(project_id: str, instruction: str, *, scope_scene_ids: list[str] | None = None, lang: str | None = None) -> dict[str, Any]:
+def _doc_and_head(project_id: str, branch: str | None) -> tuple[ProjectDoc, int]:
+    """Documento e número da cabeça da principal ou de um ramo A/B."""
+    from studio.core.project import branches
+
+    head = branches.head_of(project_id, branch or branches.MAIN)
+    return service.get_doc(project_id, head), head
+
+
+def propose_edit(project_id: str, instruction: str, *, scope_scene_ids: list[str] | None = None, lang: str | None = None,
+                 branch: str | None = None) -> dict[str, Any]:
+    """Propõe operações para a instrução. Com `branch`, a proposta é sobre a cabeça do ramo A/B."""
     from studio.workers.pipeline.build import plan
 
-    row = service.get_project_row(project_id)
-    doc = service.get_doc(project_id)
+    doc, head = _doc_and_head(project_id, branch)
     lang = lang or doc.primary_language
     style = get_style(doc.style_id, doc.style_overrides)
     outline, scene_ids, segment_ids = numbered_outline(doc, lang)
@@ -171,15 +180,17 @@ Instrução do usuário: {instruction}"""
         "ops": [op.model_dump(mode="json") for op in ops],
         "estimate": estimate,
         "provider": provider_id,
-        "base_version": row["current_version"],
+        "base_version": head,
     }
 
 
-def apply_edit(project_id: str, raw_ops: list[dict[str, Any]], *, message: str, author: str = "ai-edit") -> int:
-    doc = service.get_doc(project_id)
+def apply_edit(project_id: str, raw_ops: list[dict[str, Any]], *, message: str, author: str = "ai-edit",
+               branch: str | None = None) -> int:
+    """Aplica as operações e salva uma versão nova (na principal, ou no ramo A/B `branch`)."""
+    doc, _ = _doc_and_head(project_id, branch)
     ops = parse_ops(raw_ops)
     new_doc = apply_ops(doc, ops, get_style(doc.style_id))
-    return service.commit(project_id, new_doc, message, author=author)
+    return service.commit(project_id, new_doc, message, author=author, branch=branch)
 
 
 STYLE_SYSTEM = """Você ajusta estilos de vídeo (StyleSpec) a partir de descrições em linguagem natural. Devolva apenas as

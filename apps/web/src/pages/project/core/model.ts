@@ -105,7 +105,7 @@ export const freshness = (detail: ProjectDetail): Freshness => {
   const lastPreviewAt = lastDoneAt(detail, (j) => j.kind === 'preview' || (j.kind === 'autopilot' && jobSteps(j).includes('preview')));
   const lastFinalAt = lastDoneAt(detail, (j) => j.kind === 'render' || (j.kind === 'autopilot' && jobSteps(j).includes('render')));
   const finalFresh = hasScenes && Boolean(outputs.final) && (!lastPreviewAt || lastFinalAt >= lastPreviewAt);
-  const approval = detail.versions.find((v) => v.message.startsWith('Prévia aprovada'));
+  const approval = detail.versions.find((v) => (!v.branch || v.branch === 'main') && v.message.startsWith('Prévia aprovada'));
   const approvedAt = approval?.created_at ? Date.parse(approval.created_at) : 0;
   const approvalAfterPreview = !lastPreviewAt || (!Number.isNaN(approvedAt) && approvedAt >= lastPreviewAt);
   const previewApprovedFresh = hasScenes && Boolean(outputs.preview) && doc.preview_approved && (finalFresh || approvalAfterPreview);

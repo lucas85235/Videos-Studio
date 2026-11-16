@@ -109,6 +109,13 @@ const hashString = (s: string) => {
  * resultado. Os arquivos de saída têm caminho fixo (timeline.json, <titulo>.mp4, thumbnail.jpg), então o
  * token entra na chave das consultas e como ?b= nas URLs para o navegador não mostrar a versão antiga.
  */
+/** O job mexeu na principal? Um `ab_build` só dos ramos (`branches` sem "main") não regrava a prévia dela. */
+export const buildsMain = (job: Job) => {
+  if (job.kind !== "ab_build") return true;
+  const branches = job.payload?.branches;
+  return !Array.isArray(branches) || branches.includes("main");
+};
+
 export const buildToken = (
   build: BuildResult | null | undefined,
   jobs: Job[],
@@ -116,7 +123,11 @@ export const buildToken = (
 ): string => {
   const lastDone = jobs
     .filter(
-      (j) => kinds.includes(j.kind) && j.status === "done" && j.finished_at,
+      (j) =>
+        kinds.includes(j.kind) &&
+        j.status === "done" &&
+        j.finished_at &&
+        buildsMain(j),
     )
     .map((j) => j.finished_at as string)
     .sort()
@@ -481,7 +492,13 @@ const isVisualVersion = (v: Version) =>
 const parseTime = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
 
 /** Jobs que regravam o timeline.json da prévia. */
-export const TIMELINE_JOB_KINDS = ["preview", "autopilot", "render"];
+export const TIMELINE_JOB_KINDS = ["preview", "autopilot", "render", "ab_build"];
+
+/** Versão da linha principal (A)? As versões dos ramos A/B ("b", "c"...) não mudam a prévia nem o vídeo da principal. */
+export const isMainVersion = (v: Version) => !v.branch || v.branch === "main";
+
+/** Só as versões da linha principal. */
+export const mainVersions = (versions: Version[]) => versions.filter(isMainVersion);
 
 /** Job concluído mais recente de um dos tipos. */
 export const lastDoneJob = (
@@ -495,6 +512,7 @@ export const lastDoneJob = (
         kinds.includes(j.kind) &&
         j.status === "done" &&
         j.finished_at &&
+        buildsMain(j) &&
         (!filter || filter(j)),
     )
     .sort((a, b) => parseTime(b.finished_at) - parseTime(a.finished_at))[0];
@@ -503,7 +521,7 @@ export const lastDoneJob = (
 const visualChangeSince = (detail: ProjectDetail, since: number) =>
   Number.isFinite(since) &&
   detail.versions.some(
-    (v) => isVisualVersion(v) && parseTime(v.created_at) > since,
+    (v) => isMainVersion(v) && isVisualVersion(v) && parseTime(v.created_at) > since,
   );
 
 /**
@@ -517,16 +535,17 @@ export const previewApproval = (
   detail: ProjectDetail,
   timelineVersion?: number,
 ): { stale: boolean; approved: boolean } => {
-  const { versions } = detail;
+  // Versões dos ramos A/B não mexem na prévia da principal (a numeração é a mesma, mas a linha é outra).
+  const versions = mainVersions(detail.versions);
   const hasPreview = Boolean(detail.outputs.preview);
   let stale = false;
   if (timelineVersion != null) {
     const newer = versions.filter((v) => v.number > timelineVersion);
-    const unlisted = Math.max(
-      0,
-      detail.project.current_version - timelineVersion - newer.length,
-    );
-    stale = newer.some(isVisualVersion) || unlisted > 0;
+    // A lista vem cortada (últimas versões): se ela não alcança a versão da prévia, pode faltar mudança no meio.
+    const oldest = detail.versions.reduce((m, v) => Math.min(m, v.number), Infinity);
+    const unlisted =
+      detail.project.current_version > timelineVersion && oldest > timelineVersion + 1;
+    stale = newer.some(isVisualVersion) || unlisted;
   } else if (hasPreview) {
     const last = lastDoneJob(detail, TIMELINE_JOB_KINDS);
     stale = Boolean(

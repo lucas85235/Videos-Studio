@@ -9,7 +9,7 @@ from studio.core.project.document import ProjectDoc
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.ids import new_id
-from studio.models import Project, ProjectVersion
+from studio.models import Project, ProjectBranch, ProjectVersion
 
 
 class ProjectNotFound(LookupError):
@@ -98,27 +98,48 @@ def get_doc(project_id: str, version: int | None = None) -> ProjectDoc:
         return ProjectDoc.model_validate(ver.doc)
 
 
-def commit(project_id: str, doc: ProjectDoc, message: str, author: str = "user") -> int:
-    """Salva uma nova versão do documento e a torna a atual. Retorna o número da versão."""
+MAIN_BRANCH = "main"
+
+
+class BranchNotOpen(ValueError):
+    """O ramo não existe ou já foi fechado (mesclado, promovido ou descartado)."""
+
+
+def commit(project_id: str, doc: ProjectDoc, message: str, author: str = "user", *, branch: str | None = None) -> int:
+    """Salva uma nova versão do documento. Retorna o número da versão.
+
+    Sem `branch` (ou com "main"), a versão vai para a linha principal e vira a atual. Com o nome de um ramo A/B aberto,
+    a versão vai para o ramo (o pai é a cabeça do ramo) e a principal não muda.
+    """
     if doc.id != project_id:
         raise ValueError("o documento pertence a outro projeto")
     data = doc.model_dump(mode="json")
+    on_branch = bool(branch) and branch != MAIN_BRANCH
     with session_scope() as s:
         row = s.get(Project, project_id)
         if row is None:
             raise ProjectNotFound(project_id)
+        ramo = None
+        if on_branch:
+            ramo = s.query(ProjectBranch).filter_by(project_id=project_id, name=branch).one_or_none()
+            if ramo is None or ramo.status != "aberto":
+                raise BranchNotOpen(f"o ramo {branch} não está aberto")
         last = s.query(ProjectVersion).filter_by(project_id=project_id).order_by(ProjectVersion.number.desc()).first()
         number = (last.number if last else 0) + 1
         s.add(
             ProjectVersion(
                 project_id=project_id,
                 number=number,
-                parent_number=row.current_version,
+                parent_number=ramo.head_number if ramo is not None else row.current_version,
                 doc=data,
                 message=message,
                 author=author,
+                branch=branch if on_branch else MAIN_BRANCH,
             )
         )
+        if ramo is not None:
+            ramo.head_number = number
+            return number
         row.current_version = number
         row.title = doc.title
         row.style_id = doc.style_id  # a op set_style_id troca o estilo pelo documento
@@ -134,6 +155,7 @@ def list_versions(project_id: str) -> list[dict[str, Any]]:
                 "parent": r.parent_number,
                 "message": r.message,
                 "author": r.author,
+                "branch": r.branch or MAIN_BRANCH,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
@@ -200,5 +222,6 @@ def delete_project(project_id: str) -> bool:
         if row is None:
             return False
         s.query(ProjectVersion).filter_by(project_id=project_id).delete()
+        s.query(ProjectBranch).filter_by(project_id=project_id).delete()
         s.delete(row)
         return True

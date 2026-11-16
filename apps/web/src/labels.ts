@@ -365,4 +365,5 @@ export const JOB_DONE_LABELS: LabelMap = {
   autopilot: 'Piloto automático concluído',
   publish_youtube: 'Vídeo enviado ao YouTube',
   publish_instagram: 'Reel publicado no Instagram',
+  ab_build: 'Versões A/B prontas',
 };
