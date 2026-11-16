@@ -374,7 +374,11 @@ export const EditPanel: React.FC<{
                     : "imagens novas"}
                 </Badge>
               ) : null}
-              {est.depth_model_mb ? (
+              {est.parallax_unavailable ? (
+                <Badge tone="warn">
+                  parallax vira Ken Burns: {est.parallax_unavailable}
+                </Badge>
+              ) : est.depth_model_mb ? (
                 <Badge>
                   parallax: baixa o modelo de profundidade ({est.depth_model_mb} MB)
                 </Badge>

@@ -540,7 +540,7 @@ def build_timeline(
             resolved = resolve_scene(doc, style, scene, lang, is_first=(index == 0 and k == 0))
             if resolved["motion"] == PARALLAX:
                 layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
-                if layers:
+                if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
                     resolved["parallax"] = {"layers": list(layers)}
                 else:
                     resolved["motion"] = PARALLAX_FALLBACK

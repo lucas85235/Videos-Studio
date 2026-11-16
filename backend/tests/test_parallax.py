@@ -123,6 +123,30 @@ def test_layer_thresholds_on_flat_map_stay_increasing():
     assert len(cuts) == 2 and cuts[0] < cuts[1]
 
 
+def test_flat_map_gives_a_single_opaque_layer(tmp_path):
+    # Mapa constante (imagem uniforme ou saída constante do modelo): nada de cópias meio transparentes.
+    image, _ = _disk_image()
+    paths = depth_mod.make_layers(image, np.zeros((180, 320), dtype=np.float32), tmp_path)
+    assert [p.name for p in paths] == ["layer0.jpg"]
+    with Image.open(paths[0]) as back:
+        diff = np.abs(np.asarray(back, dtype=np.float32) - np.asarray(image, dtype=np.float32)).mean()
+    assert diff < 5  # é a imagem original, não a cor média
+
+
+def test_far_plateau_is_never_half_transparent_in_front_layers(tmp_path):
+    # Metade da imagem no ponto mais longe (o percentil cortado zera o céu): o primeiro corte cairia em 0 e o céu
+    # ficaria com alfa 0,5 nas camadas da frente.
+    image, _ = _disk_image()
+    depth = np.zeros((180, 320), dtype=np.float32)
+    depth[:, 160:] = np.linspace(0, 1, 160, dtype=np.float32)[None, :]
+    paths = depth_mod.make_layers(image, depth, tmp_path)
+    assert len(paths) == 3
+    for path in paths[1:]:
+        with Image.open(path) as layer:
+            alpha = np.asarray(layer)[..., 3]
+        assert alpha[:, :140].max() < 5
+
+
 # ---------------------------------------------------------------------------------------------
 # Download do modelo (simulado)
 # ---------------------------------------------------------------------------------------------
@@ -161,6 +185,43 @@ def test_download_rejects_corrupted_file(isolated_settings, monkeypatch):
     assert not list(depth_mod.models_dir().glob("*.part"))
 
 
+def test_download_disk_error_cleans_up_and_is_unavailable(isolated_settings, monkeypatch):
+    monkeypatch.setattr(isolated_settings, "offline", False)
+    payload = b"x" * 3000
+    monkeypatch.setattr(depth_mod, "MODEL_SIZE", len(payload))
+    monkeypatch.setattr(depth_mod, "MODEL_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(depth_mod.httpx, "stream", _mock_stream(payload))
+
+    def full_disk(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(depth_mod.shutil, "move", full_disk)
+    with pytest.raises(depth_mod.DepthUnavailable, match="gravar"):
+        depth_mod.ensure_model()
+    assert not list(depth_mod.models_dir().glob("*.part"))
+
+
+def test_download_can_be_cancelled_between_chunks(isolated_settings, monkeypatch):
+    monkeypatch.setattr(isolated_settings, "offline", False)
+    payload = b"y" * (3 << 20)
+    monkeypatch.setattr(depth_mod, "MODEL_SIZE", len(payload))
+    monkeypatch.setattr(depth_mod, "MODEL_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(depth_mod.httpx, "stream", _mock_stream(payload))
+    seen: list[int] = []
+
+    class Stop(Exception):
+        pass
+
+    def on_chunk(done: int) -> None:
+        seen.append(done)
+        raise Stop
+
+    with pytest.raises(Stop):
+        depth_mod.ensure_model(on_chunk=on_chunk)
+    assert len(seen) == 1 and not depth_mod.model_ready()
+    assert not list(depth_mod.models_dir().glob("*.part"))
+
+
 def test_offline_never_downloads(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("não pode baixar no modo offline")
@@ -191,6 +252,21 @@ def _clips(doc: ProjectDoc) -> dict[str, NarrationClip]:
 
 def test_parallax_is_a_camera_move():
     assert "parallax" in CAMERA_MOVES
+
+
+def test_llms_are_not_offered_parallax():
+    # Storyboard e estilo gerado não escolhem parallax sozinhos (download de 99 MB e CPU por imagem).
+    from studio.core.styles.schema import AUTO_CAMERA_MOVES
+    from studio.workers.pipeline import authoring
+
+    assert "parallax" not in AUTO_CAMERA_MOVES and "parallax" not in authoring._MOTIONS
+
+
+def test_timeline_with_a_single_layer_falls_back_to_ken_burns():
+    doc = _doc("parallax")
+    timeline = build_timeline(doc, get_style("misterios-short"), "pt-BR", _clips(doc),
+                              {"scn_0": "a.jpg", "scn_1": "b.jpg"}, {"scn_0": ["cache/l0.jpg"]})
+    assert timeline["scenes"][0]["motion"] == "ken_burns_in" and "parallax" not in timeline["scenes"][0]
 
 
 def test_timeline_carries_layers_or_falls_back_to_ken_burns():
@@ -261,6 +337,29 @@ def test_build_makes_layers_and_reuses_cache(isolated_settings, synthetic_depth)
     again = _run("preview", project_id)
     assert again["generated"].get("depth", 0) == 0 and again["generated"].get("parallax", 0) == 0
     assert again["reused"].get("parallax", 0) >= 1
+
+
+def test_plan_says_why_parallax_is_unavailable(isolated_settings):
+    # Modo offline sem o modelo: o plano não promete download; diz que vira Ken Burns.
+    project_id, _ = _project_with_parallax()
+    result = plan(project_id, mode="preview")
+    assert "depth_model_mb" not in result and "offline" in result["parallax_unavailable"]
+
+
+def test_cached_layers_survive_without_model(isolated_settings, synthetic_depth, monkeypatch):
+    project_id, targets = _project_with_parallax()
+    _run("preview", project_id)
+    # Depois: o modelo some (pacote quebrado, arquivo apagado). As camadas guardadas continuam valendo.
+    depth_mod.set_estimator(None)
+    monkeypatch.setattr(depth_mod, "availability", lambda: (False, "pacote onnxruntime não instalado"))
+    doc = service.get_doc(project_id)
+    service.commit(project_id, doc, "de novo")
+    preview = _run("preview", project_id)
+    scenes = {s["id"]: s for s in _timeline(isolated_settings, preview)["scenes"]}
+    for sid in targets:
+        assert scenes[sid]["motion"] == "parallax" and len(scenes[sid]["parallax"]["layers"]) == depth_mod.LAYERS
+    assert not any("Parallax 2.5D" in w for w in preview["warnings"])
+    assert preview["reused"].get("parallax", 0) >= 1
 
 
 def test_build_without_model_falls_back_with_warning(isolated_settings):

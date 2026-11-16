@@ -49,7 +49,7 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 # Quantas camadas o renderer recebe (fundo + meio + frente).
 LAYERS = 3
-LAYERS_VERSION = 1
+LAYERS_VERSION = 2  # 2: cortes acima do ponto mais longe; mapa plano vira uma camada só
 
 
 class DepthUnavailable(RuntimeError):
@@ -81,19 +81,23 @@ def availability() -> tuple[bool, str]:
 _download_lock = threading.Lock()
 
 
-def ensure_model() -> Path:
-    """Baixa o modelo se faltar (uma vez só, conferindo tamanho e SHA-256). Devolve o caminho do .onnx."""
+def ensure_model(on_chunk: Callable[[int], None] | None = None) -> Path:
+    """Baixa o modelo se faltar (uma vez só, conferindo tamanho e SHA-256). Devolve o caminho do .onnx.
+
+    `on_chunk(bytes_baixados)` é chamado a cada pedaço: serve para mostrar o progresso e para cancelar (uma exceção
+    dele interrompe o download e apaga o arquivo parcial). Falha de rede ou de disco vira DepthUnavailable."""
     target = models_dir() / MODEL_FILE
     with _download_lock:
         if model_ready():
             return target
         if get_settings().offline:
             raise DepthUnavailable("o modelo de profundidade não foi baixado e o modo offline está ligado")
-        target.parent.mkdir(parents=True, exist_ok=True)
         part = target.with_suffix(".onnx.part")
         log.info("baixando o modelo de profundidade (%d MB)", MODEL_MB)
         digest = hashlib.sha256()
+        done = 0
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             with httpx.stream("GET", MODEL_URL, follow_redirects=True, timeout=httpx.Timeout(60, read=120)) as resp:
                 if resp.status_code != 200:
                     raise DepthUnavailable(f"o download do modelo de profundidade falhou ({resp.status_code})")
@@ -101,14 +105,34 @@ def ensure_model() -> Path:
                     for chunk in resp.iter_bytes(1 << 20):
                         fh.write(chunk)
                         digest.update(chunk)
+                        done += len(chunk)
+                        if on_chunk is not None:
+                            on_chunk(done)
+            if part.stat().st_size != MODEL_SIZE or digest.hexdigest() != MODEL_SHA256:
+                raise DepthUnavailable("o modelo de profundidade baixado veio corrompido; tente de novo")
+            shutil.move(str(part), target)
         except httpx.HTTPError as exc:
-            part.unlink(missing_ok=True)
+            _drop(part)
             raise DepthUnavailable(f"sem conexão para baixar o modelo de profundidade: {exc}") from exc
-        if part.stat().st_size != MODEL_SIZE or digest.hexdigest() != MODEL_SHA256:
-            part.unlink(missing_ok=True)
-            raise DepthUnavailable("o modelo de profundidade baixado veio corrompido; tente de novo")
-        shutil.move(str(part), target)
+        except OSError as exc:  # disco cheio, sem permissão, antivírus segurando o arquivo
+            _drop(part)
+            raise DepthUnavailable(f"não deu para gravar o modelo de profundidade: {exc}") from exc
+        except BaseException:  # corrompido, cancelado pelo usuário etc.: não deixa o arquivo parcial para trás
+            _drop(part)
+            raise
         return target
+
+
+def _drop(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        log.warning("não deu para apagar %s", path)
+
+
+def uses_model() -> bool:
+    """O estimador atual é o modelo de verdade (os testes trocam por um mapa sintético, que não baixa nada)."""
+    return _estimator is None or isinstance(_estimator, DepthEstimator)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -266,36 +290,56 @@ def fill_holes(rgb: np.ndarray, known: np.ndarray) -> np.ndarray:
     return rgb * known[..., None] + big * (1 - known[..., None])
 
 
+# Meia largura da borda suave entre camadas (em unidades de profundidade, 0..1).
+FEATHER = 0.04
+# Mapa com menos variação que isto é plano: não dá camadas (a cena fica com o Ken Burns).
+FLAT_SPREAD = 0.05
+
+
+def is_flat(depth: np.ndarray) -> bool:
+    return float(depth.max() - depth.min()) < FLAT_SPREAD
+
+
 def layer_thresholds(depth: np.ndarray, layers: int = LAYERS) -> list[float]:
-    """Cortes entre camadas pelos quantis da profundidade (cada camada fica com uma parte da imagem)."""
+    """Cortes entre camadas pelos quantis da profundidade (cada camada fica com uma parte da imagem).
+
+    O primeiro corte fica pelo menos uma borda suave acima do ponto mais longe, e cada corte seguinte duas bordas
+    acima do anterior: assim nenhum pixel no próprio corte fica meio transparente numa camada da frente (um fundo
+    plano, muito comum no percentil cortado, viraria um "fantasma" com metade da opacidade)."""
     qs = [k / layers for k in range(1, layers)]
     cuts = [float(np.quantile(depth, q)) for q in qs]
-    # Cortes iguais (mapa quase plano) viram cortes espaçados, senão as camadas somem.
     out: list[float] = []
     for c in cuts:
-        floor = (out[-1] + 0.02) if out else 0.0
-        out.append(min(0.98, max(c, floor)))
+        floor = (out[-1] + 2 * FEATHER) if out else float(depth.min()) + FEATHER
+        out.append(max(c, floor))
     return out
 
 
-def soft_mask(depth: np.ndarray, cut: float, feather: float = 0.04) -> np.ndarray:
+def soft_mask(depth: np.ndarray, cut: float, feather: float = FEATHER) -> np.ndarray:
     """1 onde a profundidade passa do corte (mais perto), com transição suave."""
     t = np.clip((depth - (cut - feather)) / (2 * feather), 0, 1)
     return (t * t * (3 - 2 * t)).astype(np.float32)
 
 
 def make_layers(image: Image.Image, depth: np.ndarray, out_dir: Path, layers: int = LAYERS) -> list[Path]:
-    """Corta a imagem em camadas (0 = fundo, opaca; as outras com transparência), na ordem de desenho."""
+    """Corta a imagem em camadas (0 = fundo, opaca; as outras com transparência), na ordem de desenho.
+
+    Mapa plano (imagem quase uniforme, saída constante do modelo): uma camada só, a imagem original; quem chama
+    trata menos de 2 camadas como "sem parallax" (Ken Burns)."""
     rgb_img = image.convert("RGB")
     w, h = rgb_img.size
     if depth.shape != (h, w):
         depth = np.asarray(Image.fromarray(depth.astype(np.float32)).resize((w, h), Image.Resampling.BILINEAR),
                            dtype=np.float32)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if is_flat(depth):
+        path = out_dir / "layer0.jpg"
+        rgb_img.save(path, quality=92)
+        return [path]
     rgb = np.asarray(rgb_img, dtype=np.float32)
     cuts = layer_thresholds(depth, layers)
     feather_px = max(1, min(w, h) // 360)
     masks = [np.ones_like(depth)] + [_smooth(soft_mask(depth, c), feather_px) for c in cuts]
-    out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for k in range(layers):
         # O que está na frente desta camada vira "buraco" a preencher (com folga: a borda suave não deixa halo).

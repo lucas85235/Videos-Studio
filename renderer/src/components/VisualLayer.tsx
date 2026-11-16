@@ -162,33 +162,60 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
 
   const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
 
+  const chroma = hasEffect(effects, 'chromatic');
+
   if (scene.motion === 'parallax' && layers.length > 1) {
-    // Camadas por profundidade: a gradação vale para o conjunto (uma cadeia de filtros só, no contêiner).
+    // Camadas por profundidade: a gradação vale para o conjunto (uma cadeia de filtros só). O filtro fica num
+    // invólucro sem recorte, que inclui as camadas escaladas além do quadro (bump): o desfoque nasce lá fora, e só o
+    // contêiner de fora recorta, como no caminho normal (filtro no contêiner recortado misturaria a borda com o vazio).
     const dir = side(1);
+    const stack = layers.map((src, i) => {
+      const lp = parallaxLayerPath(i, layers.length, z, dir, p);
+      const s = lp.scale * bump * entryScale;
+      const r = roomOf(s);
+      const lx = Math.max(-(1 - ox) * r, Math.min(ox * r, lp.dx));
+      const ly = Math.max(-(1 - oy) * r, Math.min(oy * r, lp.dy));
+      return (
+        <Img
+          key={src}
+          src={src}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            transformOrigin: origin,
+            transform: `scale(${s}) translate(${lx}%, ${ly}%)`,
+          }}
+        />
+      );
+    });
+    // Aberração cromática: a pilha repetida, tingida e deslocada de lado (como as duas cópias da imagem única).
+    const ghost = (shift: number, hue: number) => (
+      <AbsoluteFill
+        style={{
+          mixBlendMode: 'screen',
+          opacity: 0.32 * (chroma?.amount ?? 0),
+          transform: `translateX(${shift}px)`,
+          filter: `${filter} grayscale(1) sepia(1) saturate(6) hue-rotate(${hue}deg)`,
+        }}
+      >
+        {stack}
+      </AbsoluteFill>
+    );
+    const shift = chroma ? 4 + 6 * chroma.amount : 0;
     return (
-      <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000', filter: filter || undefined, transform: jitter ? `translateX(${jitter}px)` : undefined }}>
-        {layers.map((src, i) => {
-          const lp = parallaxLayerPath(i, layers.length, z, dir, p);
-          const s = lp.scale * bump * entryScale;
-          const r = roomOf(s);
-          const lx = Math.max(-(1 - ox) * r, Math.min(ox * r, lp.dx));
-          const ly = Math.max(-(1 - oy) * r, Math.min(oy * r, lp.dy));
-          return (
-            <Img
-              key={src}
-              src={src}
-              style={{
-                position: 'absolute',
-                inset: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-                transformOrigin: origin,
-                transform: `scale(${s}) translate(${lx}%, ${ly}%)`,
-              }}
-            />
-          );
-        })}
+      <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>
+        <AbsoluteFill style={{ transform: jitter ? `translateX(${jitter}px)` : undefined }}>
+          <AbsoluteFill style={{ filter: filter || undefined }}>{stack}</AbsoluteFill>
+          {chroma ? (
+            <>
+              {ghost(shift, -40)}
+              {ghost(-shift, 160)}
+            </>
+          ) : null}
+        </AbsoluteFill>
       </AbsoluteFill>
     );
   }
@@ -199,7 +226,6 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   ty = Math.max(-(1 - oy) * room, Math.min(oy * room, ty));
 
   const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
-  const chroma = hasEffect(effects, 'chromatic');
   const imgStyle: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', transform, transformOrigin: origin, filter };
   return (
     <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000' }}>

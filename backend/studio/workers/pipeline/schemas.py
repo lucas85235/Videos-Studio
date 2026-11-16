@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS
+from studio.core.styles.schema import AUTO_CAMERA_MOVES, GRADE_PRESETS, SCENE_KINDS, TRANSITIONS
 from studio.core.styles.visual import VISUAL_LANGUAGES
 from studio.media.audio import MOODS
 
@@ -210,7 +210,8 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
 - edit.shot_seconds.min / max (duração de cada cena; o storyboard corta a narração por frase nessa faixa)
 - edit.new_image_ratio (0.1–1): fração das cenas com imagem nova de IA (mínimo 3 por vídeo); o resto reaproveita
   imagem ou vira cartão
-- edit.camera: pesos por movimento ({", ".join(CAMERA_MOVES)})
+- edit.camera: pesos por movimento ({", ".join(AUTO_CAMERA_MOVES)}); parallax (2.5D, baixa um modelo de 99 MB) só
+  quando o pedido falar nele
 - edit.transitions: pesos por transição ({", ".join(TRANSITIONS)})
 - edit.transition_seconds, edit.zoom_strength (0–0.6)
 - edit.effects: lista de {{type, amount 0–1, preset?}}; tipos: grain, vignette, grade, scanlines, chromatic, vhs, light_leak,
