@@ -282,9 +282,33 @@ export type LangOutput = {
   chapters: { title: string; start: number }[];
   video?: string;
   thumbnail?: string;
+  /** Modo B: faixa de áudio deste idioma sobre o vídeo do idioma principal (sem vídeo próprio). */
+  dub_of?: string;
+  /** Modo B: maior aceleração aplicada à narração deste idioma (1 = nenhuma). */
+  max_tempo?: number;
+};
+
+/** Como os idiomas saem: um vídeo por idioma (Modo A) ou faixas de áudio no mesmo vídeo (Modo B, só YouTube). */
+export type LanguageDelivery = 'separate_videos' | 'multi_audio_track';
+
+/** Resumo do ajuste de tempo das faixas (Modo B). */
+export type DubSummary = {
+  primary: string;
+  max_speedup: number;
+  added_pause_s: number;
+  langs: Record<string, { max_tempo: number; stretched: number; longest_in: number; segments: number }>;
+};
+
+export type DubPackage = {
+  folder: string;
+  checklist: string;
+  langs: Record<string, { folder: string; files: Record<string, string>; duration?: number | null }>;
 };
 
 export type BuildResult = {
+  delivery?: LanguageDelivery;
+  dub?: DubSummary;
+  dub_package?: DubPackage;
   mode: 'preview' | 'final';
   langs: Record<string, LangOutput>;
   generated: Record<string, number>;
@@ -366,7 +390,7 @@ export type StyleSpec = {
   structure: string;
   tags: string[];
   format: { type: 'short' | 'long'; aspect: string; resolution: string; fps: number; duration: { target_s: number; min_s: number | null; max_s: number | null } };
-  languages: { primary: string; outputs: string[]; delivery: string };
+  languages: { primary: string; outputs: string[]; delivery: LanguageDelivery };
   script: { tone: string; structure: string[]; hook_max_s: number; fact_check: boolean; cta: string | null; banned_phrases: string[] };
   voice: { chain: string[]; voice: string | null; style_prompt: string | null; speed: number; gap_s: number; voice_profile: string | null; preview?: PreviewVoice };
   /** `languages`: linguagens visuais preferidas (a primeira dominante; vazio = livre). */

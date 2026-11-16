@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   Check,
   Download,
   Film,
@@ -23,6 +24,7 @@ import {
 } from "../../ui";
 import { formatDuration, nextStep } from "./core/model";
 import { FinalVoiceSummary } from "./delivery/AudioPanels";
+import { MultiTrackPanel } from "./delivery/MultiTrackPanel";
 import { tabOwnsAction } from "./core/NextStep";
 import {
   discardMetaDraft,
@@ -343,6 +345,15 @@ export const OutputTab: React.FC<
               </Notice>
             ) : null}
 
+            {entry?.dub_of && !entry.video ? (
+              <Notice tone="info" icon={AudioLines} title={`Faixa de áudio do vídeo em ${langLabel(entry.dub_of)}`}>
+                <p>
+                  Com as faixas no mesmo vídeo, {langLabel(lang)} não tem vídeo próprio: a faixa abaixo vai no
+                  YouTube Studio (veja Idiomas no YouTube, mais abaixo).
+                </p>
+                <audio controls preload="none" src={withBust(fileUrl(entry.mix), token)} className="mt-2 w-full" />
+              </Notice>
+            ) : null}
             {entry?.video ? (
               <>
                 <video
@@ -417,7 +428,7 @@ export const OutputTab: React.FC<
                   ) : null}
                 </div>
               </>
-            ) : renderJob ? null : (
+            ) : renderJob || entry?.dub_of ? null : (
               <Empty
                 icon={Film}
                 title="O vídeo final ainda não foi renderizado"
@@ -465,6 +476,8 @@ export const OutputTab: React.FC<
           />
         </div>
       </div>
+
+      <MultiTrackPanel detail={detail} busy={busy} />
 
       {/* 3. Publicar */}
       <div id={STEP_IDS.publish} tabIndex={-1} className="focus:outline-none">
