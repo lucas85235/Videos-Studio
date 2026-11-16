@@ -37,7 +37,16 @@ FAMILY_LABELS: dict[Family, str] = {
     Family.ai_video: "Vídeo IA",
 }
 
-FAMILIES_V1 = {Family.still_cinema, Family.motion_graphics, Family.analog, Family.ai_video}
+# Famílias que o renderer já desenha (as outras caem no modo imagens paradas).
+FAMILIES_V1 = {
+    Family.still_cinema,
+    Family.motion_graphics,
+    Family.analog,
+    Family.ai_video,
+    Family.illustrated_2d,
+    Family.handmade,
+    Family.screen_ui,
+}
 
 
 class Structure(StrEnum):
@@ -95,6 +104,16 @@ GRADE_PRESETS = (
     "blood-red",
     "night-green",
 )
+# Como a cena de imagem é desenhada: "plain" é a imagem com câmera; as outras são variações de família
+# (whiteboard: o traço vai sendo desenhado; collage: recorte de papel sobre textura; screen: dentro de uma
+# janela, celular ou feed, com cursor).
+TREATMENTS = ("plain", "whiteboard", "collage", "screen")
+# Tratamento de cada família quando o estilo não define `edit.treatments`.
+FAMILY_TREATMENTS: dict[Family, str] = {
+    Family.illustrated_2d: "whiteboard",
+    Family.handmade: "collage",
+    Family.screen_ui: "screen",
+}
 SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare")
 
 
@@ -297,6 +316,14 @@ class EditSpec(StrictModel):
     progress_color: str = "#FFD400"
     watermark: str | None = None
     zoom_strength: float = Field(default=0.12, ge=0, le=0.6)
+    treatments: dict[str, float] = {}
+    """Pesos do tratamento das cenas de imagem (ids de `TREATMENTS`). Vazio: automático pela família."""
+
+    @field_validator("treatments")
+    @classmethod
+    def _treatments(cls, value: dict[str, float]) -> dict[str, float]:
+        # Vazio vale (automático pela família); preenchido segue a regra dos outros sorteios.
+        return _validate_pool(value, TREATMENTS, "tratamento de cena") if value else value
 
     @field_validator("camera")
     @classmethod
@@ -395,6 +422,18 @@ class StyleSpec(StrictModel):
 
     def all_families(self) -> list[Family]:
         return self.families_mix or [self.family]
+
+
+def treatment_pool(style: StyleSpec) -> dict[str, float]:
+    """Pesos do tratamento das cenas de imagem: os do estilo ou, sem eles, um por família com variação
+    (família sem variação conta como "plain"). Só "plain" no resultado: imagem com câmera, como sempre."""
+    if style.edit.treatments:
+        return {k: v for k, v in style.edit.treatments.items() if v > 0}
+    pool: dict[str, float] = {}
+    for family in style.all_families():
+        key = FAMILY_TREATMENTS.get(family, "plain")
+        pool[key] = pool.get(key, 0.0) + 1.0
+    return pool
 
 
 # Formatos de conteúdo com alto risco de desmonetização/remoção (README §5.6).

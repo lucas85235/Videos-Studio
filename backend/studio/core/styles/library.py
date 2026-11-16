@@ -37,6 +37,9 @@ PRESET_ORDER = (
     "financas-negocios",
     "historias-narradas",
     "top10-listas",
+    "whiteboard-explicador",
+    "colagem-artesanal",
+    "interface-tela",
     "documentario-sombrio",
     "true-crime",
 )

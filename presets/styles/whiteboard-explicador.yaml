@@ -1,0 +1,83 @@
+id: whiteboard-explicador
+name: "Whiteboard Explicativo (Short)"
+description: "Explicações em 9:16 no estilo lousa branca: cada imagem vai sendo desenhada a traço de marcador, com legenda limpa e trilha leve."
+family: illustrated_2d
+families_mix: [illustrated_2d]
+structure: none
+tags: [explicativo, whiteboard, desenho, educacao, shorts]
+
+format:
+  type: short
+  aspect: "9:16"
+  resolution: 1080x1920
+  fps: 30
+  duration: { target_s: 50, min_s: 35, max_s: 59 }
+
+languages:
+  primary: pt-BR
+  outputs: [pt-BR]
+  delivery: separate_videos
+
+script:
+  tone: "didático e próximo, como quem explica desenhando na lousa: um conceito por vez, analogias simples e um exemplo concreto"
+  structure: [hook_pergunta, conceito, como_funciona, exemplo, conclusao, cta_loop]
+  hook_max_s: 3
+  fact_check: true
+  cta: "Siga para mais explicações desenhadas."
+  banned_phrases: ["neste vídeo", "não esqueça de se inscrever"]
+
+# Sem `chain`: usa a cadeia de voz padrão do app.
+voice:
+  voice: Achird
+  style_prompt: "Narre como um professor tranquilo e animado, ritmo médio, sem pressa."
+  speed: 1.0
+  gap_s: 0.2
+
+art:
+  bible: "desenho a traço de marcador preto sobre fundo branco liso, linhas firmes e simples, poucas sombras, um elemento principal por cena, visual de lousa branca"
+  banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo", "fundo colorido"]
+  languages: [line_art, flat_vector]
+  image_chain: [codex_cli]
+
+edit:
+  shot_seconds: { min: 2.5, max: 4.0 }
+  new_image_ratio: 0.6
+  camera: { static: 3, ken_burns_in: 2, drift: 1 }
+  transitions: { cut: 5, fade_black: 1 }
+  transition_seconds: 0.25
+  # Lousa: o traço é desenhado em toda cena de imagem.
+  treatments: { whiteboard: 1 }
+  effects: []
+  captions:
+    style: line
+    font: Montserrat
+    weight: 800
+    size: 66
+    color: "#111111"
+    highlight: "#1D4ED8"
+    stroke: 0
+    position: bottom
+    max_words_per_line: 4
+    uppercase: false
+    background: "#FFFFFFE6"
+  text_cards:
+    font: Anton
+    color: "#111111"
+    accent: "#1D4ED8"
+    background: "#F7F5EF"
+    animation: pop
+  progress_bar: true
+  progress_color: "#1D4ED8"
+  zoom_strength: 0.05
+
+audio:
+  music: { source: procedural, mood: calm, volume_db: -22, ducking: true }
+  sfx: { auto: true, pack: basic, volume_db: -12 }
+  loudness_lufs: -14
+
+thumbnail: { template: texto-centro, variations: 2, per_language: true, font: Anton, color: "#111111", accent: "#1D4ED8" }
+
+publish:
+  targets:
+    - { platform: youtube, driver: youtube_native, privacy: private }
+  ai_label: auto

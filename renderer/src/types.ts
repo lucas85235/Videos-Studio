@@ -89,7 +89,14 @@ export type TimelineScene = {
   credit?: string;
   /** Cartão de notícia (cena de imagem dona da notícia). Ausente: cena sem notícia. */
   news?: TimelineNews;
+  /**
+   * Variação de família da cena de imagem, sorteada pelo estilo (`edit.treatments`): traço de lousa, recorte de
+   * colagem ou dentro de uma tela. Ausente: a imagem com câmera de sempre.
+   */
+  treatment?: SceneTreatment;
 };
+
+export type SceneTreatment = 'whiteboard' | 'collage' | 'screen';
 
 export type EffectSpec = { type: string; amount: number; preset?: string | null; params?: Record<string, unknown> };
 

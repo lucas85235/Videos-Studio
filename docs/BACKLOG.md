@@ -32,7 +32,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Glossário por canal na tradução.
 
 ### Estilos e render
-- [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
+- [x] Ilustrado 2D (whiteboard), textura artesanal (colagem) e interface de tela (15/11/2026): variações da cena de imagem no renderer (`renderer/src/components/Treatments.tsx`), escolhidas pelo estilo em `edit.treatments` (vazio: automático pela família) e presets `whiteboard-explicador`, `colagem-artesanal` e `interface-tela`. Ficou de fora: bonecos palito e personagens animados (precisam de recorte/rig de personagem), vetorização do traço (vtracer) para o whiteboard desenhar o contorno real em vez da revelação por faixas, conversa estilo WhatsApp/screenlife com texto sincronizado à narração, e escolher o tratamento cena a cena na aba Cenas.
+- [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), 3D.
 - [ ] Parallax 2.5D com mapa de profundidade (Depth Anything V2 Small ou DA3, só licenças Apache).
 - [ ] Vídeo IA (image-to-video via fal.ai) em cenas-chave; o tipo de cena `video` existe no esquema, mas não tem gerador.
 - [ ] Estilo a partir de **vídeo de referência** (PySceneDetect/TransNetV2, paleta, ritmo).

@@ -73,7 +73,7 @@ def test_catalog_constants():
     assert CARD_KINDS <= set(SCENE_KINDS) and "image" not in CARD_KINDS
     assert set(visual.VISUAL_LANGUAGES) == {
         "key_art", "editorial", "render_3d", "flat_vector", "isometric", "ui_mockup", "painting", "archival",
-        "collage", "photo",
+        "collage", "photo", "line_art",
     }  # fmt: skip
     assert [k for k, v in visual.VISUAL_LANGUAGES.items() if v.photoreal] == ["photo"]
     assert "photo" not in visual.allowed_languages(False) and "photo" in visual.allowed_languages(True)

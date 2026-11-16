@@ -36,6 +36,7 @@ import {
   TEXT_ANIMATION_LABELS,
   THUMBNAIL_TEMPLATE_LABELS,
   TRANSITION_LABELS,
+  TREATMENT_LABELS,
   label,
   langLabel,
 } from '../labels';
@@ -90,6 +91,7 @@ import {
 type Detail = { style: StyleSpec; preset: boolean; warnings: string[] };
 
 const CAMERA = ['ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'drift', 'static'];
+const TREATMENTS = ['plain', 'whiteboard', 'collage', 'screen'];
 const TRANSITIONS = ['cut', 'flash', 'fade_black', 'glitch', 'light_leak', 'zoom_blur', 'film_burn', 'static_burst'];
 const STRUCTURES = ['none', 'top10', 'iceberg', 'tierlist', 'quiz', 'timeline', 'history_in_n', 'pov', 'series', 'would_you_rather'];
 const ANIMATIONS = ['fade_up', 'typewriter', 'pop', 'slide', 'flicker'];
@@ -128,7 +130,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof
 const getPath = (obj: unknown, path: string) => path.split('.').reduce<unknown>((cur, key) => (isObj(cur) ? cur[key] : undefined), obj);
 
 /** Objetos cujas chaves são escolhas do usuário (pesos, mapas): não recebem chaves da versão salva. */
-const OPEN_MAPS = new Set(['edit.camera', 'edit.transitions', 'art.sources_mix', 'script.speakers', 'script.words_per_minute']);
+const OPEN_MAPS = new Set(['edit.camera', 'edit.transitions', 'edit.treatments', 'art.sources_mix', 'script.speakers', 'script.words_per_minute']);
 
 /**
  * Completa as chaves ausentes com a versão salva (como o deep_merge do backend: listas e valores presentes ficam como estão).
@@ -1575,6 +1577,15 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                       labels={TRANSITION_LABELS}
                       value={style.edit.transitions}
                       onChange={(v) => set((s) => void (s.edit.transitions = v))}
+                    />
+                    <WeightsEditor
+                      legend="Tratamento das cenas de imagem"
+                      hint="Lousa desenha o traço, colagem vira recorte de papel e tela mostra a imagem numa janela, celular ou feed com cursor."
+                      options={TREATMENTS}
+                      labels={TREATMENT_LABELS}
+                      value={style.edit.treatments ?? {}}
+                      allowEmpty="Tudo desligado: automático pela família do estilo (Ilustrado 2D vira lousa, Textura artesanal vira colagem, Interface de tela vira tela; as outras ficam com a imagem com câmera)."
+                      onChange={(v) => set((s) => void (s.edit.treatments = v))}
                     />
                   </Fields>
                 </Section>

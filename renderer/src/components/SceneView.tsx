@@ -8,6 +8,7 @@ import { EffectsLayer } from './EffectsLayer';
 import { assetUrl, CreditChip, creditChipHalf, creditChipPlace, NewsCard } from './RealMedia';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
+import { isTreatment, TreatmentLayer } from './Treatments';
 import { VisualLayer } from './VisualLayer';
 
 type Props = {
@@ -137,6 +138,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const source = cardSource && support && !(news && sameName(news.outlet, cardSource)) ? cardSource : undefined;
   const stampDelay = Math.round(scene.card?.stamp_from ?? STAMP_DELAY);
   const sourceFrom = support === 'stamp' ? Math.max(0, stampDelay - SOURCE_FADE_IN) : 0;
+  // Variação de família (lousa, colagem, tela): só na cena de imagem com imagem e sem cartão de notícia.
+  const treatment = kind === 'image' && url && !news && isTreatment(scene.treatment) ? scene.treatment : undefined;
   const credit = scene.credit?.trim();
   const creditAt = credit ? creditChipPlace(width, height, headBox ? headBox.bottom / height : undefined) : null;
   // No vertical o chip fica no topo: a legenda de cima e o painel começam abaixo dele.
@@ -188,6 +191,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
       {kind === 'document' ? (
         <DocumentCard url={url} scene={scene} style={cards} filter={imageFilter(style.effects, scene.look)} />
+      ) : treatment && url ? (
+        <TreatmentLayer treatment={treatment} scene={scene} effects={style.effects} zoomStrength={style.zoomStrength} url={url} cards={cards} />
       ) : (
         <VisualLayer
           scene={scene}

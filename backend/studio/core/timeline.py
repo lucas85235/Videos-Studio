@@ -22,7 +22,7 @@ from studio.core.numbers import card_number, merge_number_words, notable_number_
 from studio.core.project.document import MediaRef, ProjectDoc, Scene
 from studio.core.project.media_edit import scene_label
 from studio.core.styles.library import pick_weighted
-from studio.core.styles.schema import GRADE_PRESETS, StyleSpec
+from studio.core.styles.schema import GRADE_PRESETS, StyleSpec, treatment_pool
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
 from studio.core.text import normalize_token, span_ranges, split_word_indices
 from studio.media.link_preview import _SEPARATORS as _HEADLINE_SEPARATORS
@@ -704,7 +704,22 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
         # O recorte da foto centra no sujeito: a câmera também (ele fica na mesma posição relativa).
         out["focus"] = pick(media.focus, FOCUS_POINTS)
     _real_media_keys(doc, scene, lang, out)
+    treatment = scene_treatment(doc, style, scene, has_news="news" in out)
+    if treatment != "plain":
+        out["treatment"] = treatment
     return out
+
+
+def scene_treatment(doc: ProjectDoc, style: StyleSpec, scene: Scene, *, has_news: bool = False) -> str:
+    """Variação de família da cena de imagem (whiteboard, colagem, tela), sorteada pelos pesos do estilo.
+    "plain" (imagem com câmera, sem chave na timeline) para os outros tipos de cena, para a cena com cartão
+    de notícia (o cartão já é o desenho dela) e para os estilos sem variação."""
+    if scene.kind != "image" or has_news:
+        return "plain"
+    pool = treatment_pool(style)
+    if not pool or set(pool) == {"plain"}:
+        return "plain"
+    return pick_weighted(pool, seed_from(doc.seed, scene.id, "treatment"))
 
 
 def image_framing(doc: ProjectDoc, scene: Scene) -> tuple[str | None, str | None]:

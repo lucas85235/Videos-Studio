@@ -56,6 +56,7 @@ VISUAL_LANGUAGES: dict[str, VisualLanguage] = {
     "painting": VisualLanguage("Pintura", "painterly digital painting, visible brushstrokes, cinematic composition"),
     "archival": VisualLanguage("Arquivo antigo", "archival documentary look, aged print with grain and paper texture, period-accurate details"),
     "collage": VisualLanguage("Colagem", "mixed-media paper collage, cut-out shapes, layered textures"),
+    "line_art": VisualLanguage("Traço de lousa", "hand-drawn black marker line drawing on plain white background, whiteboard sketch, bold clean outlines, minimal shading"),
     "photo": VisualLanguage("Foto realista", "realistic editorial photograph, natural light, shallow depth of field", photoreal=True),
 }
 
