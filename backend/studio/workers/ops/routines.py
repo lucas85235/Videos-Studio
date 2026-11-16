@@ -12,7 +12,9 @@ A manhã (`morning`), cada parte isolada (uma quebrada não derruba as outras):
 4. marcos dos vídeos longos (48 h, 7 dias, 28 dias no ar): pendência de análise, só se o marco foi atingido há menos de
    72 h (nada retroativo);
 5. radar de nichos (ADR 0003, bloco E), uma vez por semana ISO (`step_radar`);
-6. comentários novos dos canais cuja caixa de comentários já está em uso (`step_comments`).
+6. comentários novos dos canais cuja caixa de comentários já está em uso (`step_comments`);
+7. séries com piloto automático ligado (`step_series`): episódios novos até o estoque da série, parando no portão de
+   revisão do roteiro (nunca publica).
 """
 
 from __future__ import annotations
@@ -398,6 +400,13 @@ def step_comments(now: datetime) -> list[str]:
     return lines
 
 
+def step_series(now: datetime) -> list[str]:
+    """Séries com piloto ligado: cria os episódios que faltam no estoque de cada uma (workers/series/core.py)."""
+    from studio.workers.series import core
+
+    return core.run_autopilots(now=now)
+
+
 STEPS = (
     ("métricas", step_metrics),
     ("comentários", step_comments),
@@ -405,6 +414,7 @@ STEPS = (
     ("receita", step_revenue),
     ("marcos", step_milestones),
     ("radar", step_radar),
+    ("séries", step_series),
 )
 
 

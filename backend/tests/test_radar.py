@@ -611,7 +611,7 @@ def _wait_jobs() -> None:
 
 
 def test_passo_da_rotina_uma_vez_por_semana_e_pulo_com_15_ideias(monkeypatch):
-    assert routines.STEPS[-1] == ("radar", routines.step_radar)
+    assert ("radar", routines.step_radar) in routines.STEPS
     submitted: list[dict] = []
 
     def fake(ctx, payload):  # como o job real: marca a semana só no fim, quando dá certo

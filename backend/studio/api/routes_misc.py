@@ -278,6 +278,7 @@ def channel_slots(channel_id: str, count: int = 5) -> dict[str, Any]:
 @router.delete("/channels/{channel_id}")
 def delete_channel(channel_id: str) -> dict[str, Any]:
     from studio.workers.publish import youtube_channels
+    from studio.workers.series import core as series_core
 
     with session_scope() as s:
         row = s.get(Channel, channel_id)
@@ -286,6 +287,8 @@ def delete_channel(channel_id: str) -> dict[str, Any]:
         settings = dict(row.settings or {})
         s.delete(row)
     youtube_channels.channel_deleted(channel_id, settings)
+    # As séries do canal saem junto (cascade): fecha as pendências "série sem temas" que apontavam para elas.
+    series_core.discard_orphan_pendings()
     return {"deleted": True}
 
 

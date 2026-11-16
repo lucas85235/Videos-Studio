@@ -620,3 +620,48 @@ class YouTubeComment(Base):
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class Series(Base):
+    """Série de um canal com piloto automático (README §12: Series com estilo, cadência e autopilot).
+
+    O piloto cria episódios (projetos) a partir de uma lista de temas ou das ideias aprovadas do canal e roda cada um
+    só até o portão de revisão (roteiro e cenas esperam você). Nunca publica sozinho.
+    """
+
+    __tablename__ = "series"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # new_id("ser")
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    theme: Mapped[str] = mapped_column(Text, default="")  # tema da série (vai no briefing de cada episódio)
+    notes: Mapped[str] = mapped_column(Text, default="")  # instruções fixas: estrutura, bordão, chamada final
+    format: Mapped[str] = mapped_column(String(10), default="")  # short|long|"" (escolhe o estilo e filtra ideias)
+    style_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # vazio: o padrão do canal
+    cadence_days: Mapped[int] = mapped_column(Integer, default=7)  # um episódio a cada N dias
+    stock_target: Mapped[int] = mapped_column(Integer, default=2)  # episódios em produção ou prontos à frente
+    max_per_run: Mapped[int] = mapped_column(Integer, default=1)  # teto de episódios novos por rodada do piloto
+    source: Mapped[str] = mapped_column(String(10), default="list")  # list|ideas
+    topics: Mapped[list[str]] = mapped_column(JSON, default=list)  # fila de temas: o primeiro sai no próximo episódio
+    idea_filter: Mapped[str] = mapped_column(String(200), default="")  # palavra que a ideia precisa ter (opcional)
+    autopilot: Mapped[bool] = mapped_column(Boolean, default=False)  # a rotina da manhã cria episódios sozinha
+    active: Mapped[bool] = mapped_column(Boolean, default=True)  # pausada = nem a rotina nem o botão criam
+    last_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_run_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class SeriesEpisode(Base):
+    """Episódio da série: o projeto criado pelo piloto, com o tema e a ideia de onde veio."""
+
+    __tablename__ = "series_episodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    series_id: Mapped[str] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    project_id: Mapped[str] = mapped_column(String(32), index=True)  # sem FK: projeto apagado vira "apagado"
+    topic: Mapped[str] = mapped_column(Text, default="")
+    idea_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # job `autopilot` do episódio
+    origin: Mapped[str] = mapped_column(String(10), default="auto")  # auto (rotina) | manual (botão)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

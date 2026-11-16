@@ -29,6 +29,7 @@ from studio.api import (
     routes_projects,
     routes_publish,
     routes_radar,
+    routes_series,
     routes_shorts,
     routes_video,
     routes_visual,
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_shorts.router)
     app.include_router(routes_ops.router)
     app.include_router(routes_business.router)
+    app.include_router(routes_series.router)  # séries com piloto automático
     # Qualidade e pesquisa (ADR 0003)
     app.include_router(routes_radar.router)
     app.include_router(routes_factcheck.router)

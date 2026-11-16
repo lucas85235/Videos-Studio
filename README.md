@@ -160,7 +160,7 @@ Ver §10. **v1: YouTube + Instagram Reels + TikTok.** Depois: Threads, Facebook 
 - **P0** **Cadeia de provedores com fallback automático** e registro de qual provedor gerou cada asset.
 - **P1** Medidores de cota: YouTube (100 uploads/dia por projeto), limites por rede e uso do Codex.
 - **P1** Biblioteca de assets com **licença registrada por item**.
-- **P2** **Séries / piloto automático** até o portão de revisão.
+- **P2** **Séries / piloto automático** até o portão de revisão (feito: página Séries, ver docs/USO.md).
 
 ---
 

@@ -1,5 +1,6 @@
 /* Cliente do bloco C (ADR 0002): operação do canal (Hoje, pendências, rotinas, tempo por etapa, cópia do banco). */
 import { api, type Job } from './api';
+import type { SeriesToday } from './apiSeries';
 
 export type PendingStatus = 'aberta' | 'feita' | 'descartada';
 
@@ -116,6 +117,8 @@ export type Today = {
   waiting: WaitingItem[];
   pending: PendingTask[];
   stock: StockInfo[];
+  /** Séries ativas (falta quando o servidor ainda roda a versão anterior). */
+  series?: SeriesToday[];
   yesterday: Yesterday;
   routines: RoutinesState;
   time: { days: number; total_s: number; steps: VelocityStep[]; suggestions: string[] };

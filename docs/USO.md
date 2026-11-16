@@ -147,9 +147,19 @@ A página **Comentários** (grupo Gestão) lê os comentários de todos os víde
 - Se a resposta der "o YouTube não respondeu a tempo", ela pode ter sido publicada: confira em **Abrir no YouTube** antes de enviar de novo.
 - Em fios com muitas respostas o YouTube devolve só parte delas: se a resposta do canal não vier entre elas, o comentário continua em **Não respondidos** (marcar como lido tira de **Perguntas novas**, **Não lidos** e Hoje).
 
+### Séries com piloto automático
+
+Em **Séries**, cadastre uma série por canal: nome, tema, instruções fixas (bordão, estrutura), formato, estilo (vazio = o do canal), **cadência** (todo dia, toda semana...) e quantos **episódios em estoque** ela deve manter à frente.
+
+- **De onde vêm os temas**: uma **fila de temas** (um por linha; o primeiro vira o próximo episódio e sai da fila) ou as **ideias aprovadas** do canal (da nota mais alta para a mais baixa, no formato da série e, se quiser, só as que têm uma palavra).
+- **Rodar agora** cria os episódios que faltam no estoque (até o máximo por rodada); **+1 episódio** cria um a mais. Com o **piloto automático** ligado, a rotina da manhã faz isso sozinha.
+- Cada episódio vira um projeto com o briefing da série e roda o piloto do projeto **até o portão de revisão**: para em *Revisar o roteiro* (depois, nas cenas). **Nada é publicado sozinho**; o envio continua pela Agenda.
+- O estoque da série conta os episódios em produção, esperando revisão, prontos ou com falha; publicado ou apagado sai da conta. **Hoje** mostra o estoque de cada série e as revisões esperando você. Se a fila de temas acabar (ou não houver ideia aprovada), aparece uma pendência em Hoje.
+- **Pausar** a série impede a rotina e os botões de criar episódios. Apagar a série não apaga os projetos.
+
 ### Rotinas com o Vulto fechado
 
-As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, comentários novos, pendências de estoque, receita e marcos, radar semanal) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
+As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, comentários novos, pendências de estoque, receita e marcos, radar semanal e episódios das séries com piloto ligado) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\agendar-rotinas.ps1                 # ao entrar no Windows e todo dia às 08:00
