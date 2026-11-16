@@ -41,7 +41,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Desempenho: a aberração cromática desenha a imagem 3 vezes com a cadeia de filtros (só o preset terror-analog usa); avaliar uma passada única. O grão já usa texturas pré-geradas.
 - [ ] Várias faixas de música por vídeo, trocando por segmento (hoje vale a primeira faixa ativa; a biblioteca do usuário já funciona).
 - [ ] Biblioteca de músicas: evitar repetir a mesma faixa em vídeos seguidos do mesmo canal.
-- [ ] Imagens de referência/âncoras para consistência de personagens.
+- [x] **Personagens fixos com imagens âncora** (15/11/2026): cadastro no canal (botão "Personagens" em Canais) e no projeto ("Mais ações" → Personagens), com nome, outros nomes, descrição visual em inglês e até 3 imagens. O storyboard recebe a lista, marca as cenas onde a batida ou o prompt citam o personagem e troca o nome pela descrição (o nome nunca vai para o gerador de imagem). No build, a descrição do cadastro entra no prompt e as imagens âncora vão junto para o Codex (`codex exec -i`). Falta: testar com o Codex de verdade (não está instalado nesta máquina) e um gerador local com referência (Z-Image/FLUX com IP-Adapter ou edição), que hoje recebe só a descrição.
 - [ ] Verificador de novidade (impressões digitais visuais dos últimos vídeos).
 
 ### Produto

@@ -473,6 +473,26 @@ export type Channel = {
   /** Canal do YouTube ligado (login do Google ou link público). Tipos no bloco "Canais e YouTube", no fim. */
   youtube?: ChannelYouTube | null;
 };
+/** Personagem fixo (StyleBible do canal ou do projeto). O nome serve só para achar o personagem na narração: o
+ * prompt da imagem usa a descrição (`look`) e o gerador que aceita referência recebe as imagens âncora. */
+export type Character = {
+  id: string;
+  name: string;
+  aliases: string[];
+  /** Descrição visual fixa, em inglês. */
+  look: string;
+  /** Imagens âncora (até 3), caminhos relativos na pasta de dados (use com `fileUrl`). */
+  images: string[];
+};
+export type ProjectCharacters = {
+  channel_id: string | null;
+  project: Character[];
+  channel: Character[];
+  /** Os que valem no projeto: os do projeto e os do canal que o projeto não trocou (mesmo id). */
+  effective: Character[];
+};
+export const CHARACTER_MAX_IMAGES = 3;
+
 export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
 
 export type AgendaItem = {

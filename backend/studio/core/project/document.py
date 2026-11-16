@@ -6,6 +6,7 @@ blocos de render) não ficam aqui: ficam no cache endereçado por hash.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -270,6 +271,50 @@ class Entity(BaseModel):
     real: bool = False
     """Figura histórica ou lugar real: o prompt pode citar pelo nome. Ficção, marca, produto ou pessoa viva (o padrão):
     o nome não vai para o gerador de imagem, só a aparência."""
+    character: bool = False
+    """Personagem cadastrado pelo usuário (canal ou projeto, ver `Character`): a aparência e as imagens âncora vêm do
+    cadastro, e o personagem é do canal (aparece de frente, sem a regra de "sem rosto" do personagem oficial)."""
+
+
+# Imagens âncora: só as guardadas pelo app (o caminho vai para o gerador de imagem, que envia o arquivo).
+CHARACTER_IMAGE_RE = r"^library/characters/[0-9a-f]{16}\.jpg$"
+CHARACTER_MAX_IMAGES = 3
+
+
+class Character(BaseModel):
+    """Personagem fixo do canal ou do projeto (StyleBible): descrição visual e de 1 a 3 imagens âncora.
+
+    O nome e os apelidos servem só para achar o personagem na narração e no storyboard: o prompt da imagem usa a
+    descrição (`look`), nunca o nome (o nome puxa o personagem oficial ou é recusado pelo gerador)."""
+
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9_]*$")
+    name: str = Field(default="", max_length=80)
+    aliases: list[str] = []
+    """Outras formas de citar o personagem na narração ("o detetive", "Sam")."""
+    look: str = Field(default="", max_length=400)
+    """Descrição visual fixa, em inglês (entra no prompt das cenas onde ele aparece)."""
+    images: list[str] = []
+    """Imagens âncora (caminhos relativos em `library/characters/`), até `CHARACTER_MAX_IMAGES`."""
+
+    @field_validator("aliases")
+    @classmethod
+    def _aliases(cls, value: list[str]) -> list[str]:
+        clean = [" ".join(a.split())[:60] for a in value if a and a.strip()]
+        return list(dict.fromkeys(clean))[:8]
+
+    @field_validator("images")
+    @classmethod
+    def _images(cls, value: list[str]) -> list[str]:
+        if len(value) > CHARACTER_MAX_IMAGES:
+            raise ValueError(f"no máximo {CHARACTER_MAX_IMAGES} imagens por personagem")
+        for path in value:
+            if not re.match(CHARACTER_IMAGE_RE, path):
+                raise ValueError(f"imagem de personagem inválida: {path}")
+        return list(dict.fromkeys(value))
+
+    def names(self) -> list[str]:
+        """Nome e apelidos (as formas de achar o personagem no texto)."""
+        return [n for n in dict.fromkeys([self.name.strip(), *self.aliases]) if n]
 
 
 class ArtDirection(BaseModel):
@@ -353,6 +398,8 @@ class ProjectDoc(BaseModel):
     preview_approved: bool = False
     art: ArtDirection | None = None
     """Direção de arte do vídeo (vem do storyboard). None: projeto antigo, imagens compostas como antes."""
+    characters: list[Character] = []
+    """Personagens fixos do projeto (somam aos do canal; o mesmo id troca o do canal)."""
     storyboard_approved: bool = False
     """Cenas aprovadas no portão `gates.storyboard` (volta a False quando o storyboard roda de novo)."""
 

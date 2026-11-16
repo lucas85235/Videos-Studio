@@ -94,6 +94,14 @@ def store_image(data: bytes, project_id: str) -> StoredImage:
             return StoredImage(rel, width, height, _size_warnings(width, height))
         except (OSError, UnidentifiedImageError):
             pass  # arquivo estragado: grava de novo
+    image = _decode(data)
+    _save_jpeg(image, path, digest)
+    width, height = image.size
+    return StoredImage(rel, width, height, _size_warnings(width, height))
+
+
+def _decode(data: bytes, max_side: int = MAX_SIDE) -> Image.Image:
+    """A imagem enviada em RGB, girada pelo EXIF e com no máximo `max_side` px (recusa formato estranho e miniatura)."""
     try:
         with Image.open(io.BytesIO(data)) as im:
             if im.format not in ACCEPTED_FORMATS:
@@ -106,8 +114,13 @@ def store_image(data: bytes, project_id: str) -> StoredImage:
         raise MediaError(UNREADABLE) from exc
     if min(image.size) < MIN_SIDE:
         raise MediaError(f"Imagem pequena demais (mínimo {MIN_SIDE} px).")
-    if max(image.size) > MAX_SIDE:
-        image.thumbnail((MAX_SIDE, MAX_SIDE), Image.Resampling.LANCZOS)
+    if max(image.size) > max_side:
+        image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    return image
+
+
+def _save_jpeg(image: Image.Image, path: Path, digest: str) -> None:
+    """Grava em JPEG por um arquivo temporário (quem lê ao mesmo tempo nunca vê o arquivo pela metade)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{digest}.{uuid.uuid4().hex[:8]}.tmp")
     try:
@@ -115,8 +128,23 @@ def store_image(data: bytes, project_id: str) -> StoredImage:
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
-    width, height = image.size
-    return StoredImage(rel, width, height, _size_warnings(width, height))
+
+
+# Imagem âncora de personagem: vai junto para o gerador de imagem, então fica menor que a mídia do vídeo.
+CHARACTER_MAX_SIDE = 1536
+
+
+def store_character_image(data: bytes) -> str:
+    """Guarda a imagem âncora de um personagem (JPEG RGB, até `CHARACTER_MAX_SIDE`) e devolve o caminho relativo.
+    Os mesmos bytes reaproveitam o mesmo arquivo."""
+    if len(data) > UPLOAD_MAX_BYTES:
+        raise MediaError("O arquivo passa de 25 MB.")
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    rel = f"library/characters/{digest}.jpg"
+    path = get_settings().data_dir / rel
+    if not path.is_file():
+        _save_jpeg(_decode(data, CHARACTER_MAX_SIDE), path, digest)
+    return rel
 
 
 def resolve_fit(media: MediaRef, width: int, height: int) -> Literal["cover", "contain"]:

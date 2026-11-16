@@ -234,6 +234,7 @@ def describe_all() -> list[dict[str, Any]]:
                 "credentials": credentials.describe(info.id, info.credential_fields, info.env_vars) if info.credential_fields else None,
                 "notes": info.notes,
                 "cost_note": info.cost_note,
+                "accepts_references": info.accepts_references,
                 "quota_exhausted_today": quota_exhausted_today(info.id),
             }
         )

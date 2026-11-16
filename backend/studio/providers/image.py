@@ -137,6 +137,14 @@ def _codex_tail(output: str, limit: int = 600) -> str:
     return text[-limit:]
 
 
+def codex_reference_note(count: int) -> str:
+    """O papel das imagens anexadas (o guia do $imagegen pede para dizer o papel de cada imagem de entrada)."""
+    which = "A imagem anexada é a referência" if count == 1 else f"As {count} imagens anexadas são referências"
+    return (f"{which} de aparência do(s) personagem(ns) da descrição: mantenha rosto, cabelo, corpo, roupa e "
+            "proporções; não copie o fundo, a pose nem o enquadramento delas, e não edite a imagem anexada: crie uma "
+            "imagem nova. ")
+
+
 class CodexCLIImage(ImageProvider):
     info = ProviderInfo(
         id="codex_cli",
@@ -148,6 +156,7 @@ class CodexCLIImage(ImageProvider):
         notes="Usa a cota do plano ChatGPT (sem custo extra). Um job por vez; a imagem é detectada na pasta "
         "~/.codex/generated_images. Cota diária não publicada: ao esgotar, a cadeia segue.",
         cost_note="Incluído no ChatGPT Plus; não compre créditos para imagens (custam como a API)",
+        accepts_references=True,
     )
 
     timeout_s = 480
@@ -167,15 +176,17 @@ class CodexCLIImage(ImageProvider):
         gen_w, gen_h = generation_size(width, height)
         images_dir = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "generated_images"
         before = {p for p in images_dir.rglob("*.png")} if images_dir.exists() else set()
+        references = [Path(r) for r in references or [] if Path(r).is_file()]
         instruction = (
             "$imagegen Gere UMA imagem com a ferramenta de geração de imagens e não faça mais nada. "
             f"Tamanho {gen_w}x{gen_h}. Sem nenhum texto, letra, número ou marca d'água na imagem. "
-            f"Descrição: {prompt}"
+            + (codex_reference_note(len(references)) if references else "")
+            + f"Descrição: {prompt}"
         )
         env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}
         cmd = [codex, "exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "--ephemeral"]
-        for ref in references or []:
-            cmd += ["-i", str(ref)]
+        for ref in references:
+            cmd += ["-i", str(ref)]  # `codex exec --image/-i`: anexa a imagem à mensagem (pode repetir)
         cmd.append(instruction)
         started = time.time()
         with tempfile.TemporaryDirectory() as workdir:

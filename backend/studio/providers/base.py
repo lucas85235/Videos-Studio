@@ -50,6 +50,8 @@ class ProviderInfo:
     cost_note: str = ""
     deterministic: bool = False
     """Mesma entrada gera a mesma saída (não adianta tentar de novo no controle de qualidade)."""
+    accepts_references: bool = False
+    """Gerador de imagem que recebe imagens de referência junto do prompt (as imagens âncora dos personagens)."""
     hidden: bool = False
     """Não aparece em Configurações (ex.: o roteiro de regras, que só existe no modo offline dos testes)."""
 
