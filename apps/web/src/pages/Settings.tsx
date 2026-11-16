@@ -101,7 +101,7 @@ const LAST_RESORT = new Set(['windows_sapi', 'mock_tts', 'placeholder', 'estimat
 const OFFLINE_ONLY = new Set(['mock_llm']);
 
 /** Campos que não são segredo (aparecem enquanto digita). */
-const PLAIN_FIELDS = new Set(['contact']);
+const PLAIN_FIELDS = new Set(['contact', 'account_id', 'bucket', 'public_url']);
 
 const isReal = (p: Provider) => p.available && p.commercial_use && !p.quota_exhausted_today;
 
@@ -147,7 +147,10 @@ const readyState = (providers: Provider[] | undefined, kind: Kind, loading: bool
   const chain = DEFAULT_CHAIN[kind].map((id) => list.find((p) => p.id === id)).filter((p): p is Provider => Boolean(p));
   if (kind === 'publish') {
     const yt = chain[0];
-    return yt?.available ? { tone: 'good', value: yt.name, hint: 'Envio direto ativo' } : { tone: 'warn', value: 'Só postagem manual', hint: publishHint(yt) };
+    const buffer = list.find((p) => p.id === 'buffer');
+    if (yt?.available) return { tone: 'good', value: yt.name, hint: buffer?.available ? 'YouTube e Buffer (TikTok e Instagram) ativos' : 'Envio direto ativo' };
+    if (buffer?.available) return { tone: 'good', value: buffer.name, hint: 'TikTok e Instagram pelo Buffer; YouTube só manual' };
+    return { tone: 'warn', value: 'Só postagem manual', hint: publishHint(yt) };
   }
   const active = chain.find(isReal);
   const exhausted = chain.filter((p) => p.available && p.commercial_use && p.quota_exhausted_today);
@@ -362,7 +365,11 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
   const removable = (creds?.configured || masked.length > 0) && !creds?.from_env;
   const badge = chainBadge(p, kind);
   const reason =
-    kind === 'publish' ? (!p.credentials?.configured && p.credential_fields.length ? 'Falta conectar o YouTube: cole abaixo o ID e o segredo do cliente.' : publishHint(p)) : p.reason;
+    kind === 'publish' && p.id === 'youtube'
+      ? !p.credentials?.configured && p.credential_fields.length
+        ? 'Falta conectar o YouTube: cole abaixo o ID e o segredo do cliente.'
+        : publishHint(p)
+      : p.reason;
 
   const askClear = async () => {
     const realKind = contact ? null : p.kind === 'tts' ? 'a voz volta' : p.kind === 'image' ? 'as imagens voltam' : null;

@@ -35,6 +35,7 @@ import {
   useUnsavedMeta,
 } from "./delivery/MetadataSection";
 import {
+  BufferCard,
   ChannelSlotsRow,
   ManualPackageCard,
   type PickedSlot,
@@ -556,6 +557,17 @@ export const OutputTab: React.FC<
               unsavedMeta={metaDirty}
               finalStale={finalStale}
               pickedSlot={pickedSlot}
+            />
+            <BufferCard
+              detail={detail}
+              lang={lang}
+              hasVideo={Boolean(entry?.video)}
+              previewOnly={previewOnly}
+              busy={busy}
+              unsavedMeta={metaDirty}
+              finalStale={finalStale}
+              pickedSlot={pickedSlot}
+              duration={entry?.duration}
             />
           </div>
           <PublicationsList detail={detail} lang={lang} />

@@ -496,6 +496,8 @@ const YouTubeQueue: React.FC<{ items: YouTubeReady[]; total: number; loading: bo
 /* Página                                                              */
 /* ------------------------------------------------------------------ */
 
+const BUFFER_QUEUE_GROUP = 'Na fila do Buffer (sem horário ainda)';
+
 const publishedLabel = (item: AgendaItem) =>
   item.status === 'published'
     ? 'Publicado'
@@ -558,10 +560,11 @@ export const AgendaPage: React.FC = () => {
 
   const groups = new Map<string, AgendaItem[]>();
   for (const item of upcoming) {
-    const key = dayLabel(item.scheduled_at!);
+    // Post na fila do Buffer sem horário conhecido: grupo próprio, no fim.
+    const key = item.scheduled_at ? dayLabel(item.scheduled_at) : BUFFER_QUEUE_GROUP;
     groups.set(key, [...(groups.get(key) ?? []), item]);
   }
-  const next = upcoming[0]?.scheduled_at;
+  const next = upcoming.find((i) => i.scheduled_at)?.scheduled_at;
 
   // Com pacotes por postar, eles vêm primeiro (é o que pede ação); sem nenhum, a seção vazia desce.
   const manualSection = data ? (
@@ -680,7 +683,7 @@ export const AgendaPage: React.FC = () => {
           </div>
 
           <div id={SECTION.upcoming}>
-            <Section title="Próximas publicações" icon={CalendarClock} description="Vídeos já enviados ao YouTube, esperando o horário de publicação.">
+            <Section title="Próximas publicações" icon={CalendarClock} description="Vídeos já enviados ao YouTube ou ao Buffer, esperando o horário (ou a vez na fila do Buffer).">
               {groups.size === 0 ? (
                 <p className="text-sm text-muted">
                   {filter !== ALL && data.upcoming.length
@@ -702,7 +705,9 @@ export const AgendaPage: React.FC = () => {
                       <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
                         {items.map((item) => (
                           <li key={item.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
-                            <span className="w-12 shrink-0 text-sm font-semibold tabular-nums text-fg">{timeOf(item.scheduled_at!)}</span>
+                            <span className="w-12 shrink-0 text-sm font-semibold tabular-nums text-fg">
+                              {item.scheduled_at ? timeOf(item.scheduled_at) : 'Fila'}
+                            </span>
                             <div className="min-w-[12rem] flex-1">
                               <ItemTitle item={item} />
                             </div>

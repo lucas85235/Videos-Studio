@@ -6,7 +6,9 @@ import {
   FolderOpen,
   PackageOpen,
   Send,
+  RefreshCw,
   Sparkles,
+  X,
 } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -741,6 +743,392 @@ export const YouTubeCard: React.FC<{
 };
 
 /* ------------------------------------------------------------------ */
+/* Buffer (TikTok e Instagram Reels)                                    */
+/* ------------------------------------------------------------------ */
+
+type BufferStatus = {
+  api_key: boolean;
+  storage: boolean;
+  ready: boolean;
+  reason: string | null;
+  platforms: string[];
+  /** Perfil usado da última vez pelo canal do projeto, por rede. */
+  remembered: Record<string, string>;
+};
+
+type BufferChannel = {
+  id: string;
+  service: string;
+  name: string;
+  organization: string;
+  disconnected: boolean;
+  locked: boolean;
+  queue_paused: boolean;
+};
+
+const BUFFER_PLATFORMS = ["tiktok", "instagram"];
+
+const BUFFER_MODES: Record<string, string> = {
+  queue: "Fila do Buffer",
+  next: "Primeiro da fila",
+  now: "Publicar agora",
+  scheduled: "Horário marcado",
+};
+
+const BUFFER_DONE = new Set(["failed", "canceled"]);
+
+/** Limites do TikTok e do Reel pelo Buffer (central de ajuda do Buffer); o mesmo que `buffer.VIDEO_LIMITS`. */
+const BUFFER_LIMITS: Record<string, { name: string; maxS: number }> = {
+  tiktok: { name: "TikTok", maxS: 10 * 60 },
+  instagram: { name: "Reels do Instagram", maxS: 15 * 60 },
+};
+const VERTICAL = new Set(["9:16", "4:5"]);
+
+/** Avisos de vídeo fora do que o TikTok ou o Reel aceitam: o Buffer só confere na hora de publicar. */
+const bufferFormatWarnings = (
+  platforms: string[],
+  aspect: string | undefined,
+  duration: number | null | undefined,
+): string[] => {
+  const out: string[] = [];
+  if (aspect && !VERTICAL.has(aspect))
+    out.push(
+      `O vídeo é ${aspect}; TikTok e Reels esperam vídeo vertical (9:16) e podem recusar ou cortar.`,
+    );
+  for (const pl of platforms) {
+    const lim = BUFFER_LIMITS[pl];
+    if (lim && duration && duration > lim.maxS)
+      out.push(
+        `O vídeo tem ${(duration / 60).toFixed(1).replace(".", ",")} min; o ${lim.name} aceita até ${lim.maxS / 60} min pelo Buffer.`,
+      );
+  }
+  return out;
+};
+
+export const BufferCard: React.FC<{
+  detail: ProjectDetail;
+  lang: string;
+  hasVideo: boolean;
+  previewOnly: string[];
+  busy: boolean;
+  unsavedMeta: boolean;
+  finalStale: boolean;
+  pickedSlot: PickedSlot;
+  /** Duração do vídeo final deste idioma (s). */
+  duration?: number | null;
+}> = ({
+  detail,
+  lang,
+  hasVideo,
+  previewOnly,
+  busy,
+  unsavedMeta,
+  finalStale,
+  pickedSlot,
+  duration,
+}) => {
+  const { doc } = detail;
+  const client = useQueryClient();
+  const confirm = useConfirm();
+  const { toast } = useToast();
+  const status = useQuery({
+    queryKey: ["buffer-status", doc.id],
+    queryFn: () =>
+      api.get<BufferStatus>(
+        `/api/buffer/status?project_id=${encodeURIComponent(doc.id)}`,
+      ),
+  });
+  const ready = Boolean(status.data?.ready);
+  const channels = useQuery({
+    queryKey: ["buffer-channels"],
+    queryFn: () =>
+      api.get<{ channels: BufferChannel[] }>("/api/buffer/channels"),
+    enabled: ready,
+    // Cada busca gasta 1 + N pedidos da cota da API do Buffer (600 por dia no plano grátis).
+    staleTime: 30 * 60_000,
+    gcTime: 60 * 60_000,
+  });
+  const [platforms, setPlatforms] = useState<string[]>(BUFFER_PLATFORMS);
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [mode, setMode] = useState("queue");
+  const [when, setWhen] = useState("");
+  useEffect(() => {
+    if (!pickedSlot) return;
+    setMode("scheduled");
+    setWhen(pickedSlot.value);
+  }, [pickedSlot]);
+
+  const list = channels.data?.channels ?? [];
+  const usable = (service: string) =>
+    list.filter((c) => c.service === service && !c.disconnected && !c.locked);
+  /** Perfil escolhido: o da tela, o lembrado pelo canal, ou o único da rede. */
+  const channelFor = (service: string) => {
+    const options = usable(service);
+    const chosen = picked[service] ?? status.data?.remembered?.[service];
+    if (chosen && options.some((c) => c.id === chosen)) return chosen;
+    return options.length === 1 ? options[0].id : "";
+  };
+  const active = platforms.filter((pl) => usable(pl).length > 0);
+  const formatWarnings = bufferFormatWarnings(
+    active,
+    detail.style?.format.aspect,
+    duration,
+  );
+
+  const publish = useMutation({
+    mutationFn: async () => {
+      for (const platform of active) {
+        const id = channelFor(platform);
+        await api.post(`/api/projects/${doc.id}/publish/buffer`, {
+          lang,
+          platform,
+          buffer_channel_id: id,
+          buffer_channel_name: list.find((c) => c.id === id)?.name ?? "",
+          mode,
+          publish_at:
+            mode === "scheduled" && when ? new Date(when).toISOString() : null,
+        });
+      }
+    },
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: ["project", doc.id] }),
+        client.invalidateQueries({ queryKey: ["buffer-status", doc.id] }),
+        client.invalidateQueries({ queryKey: ["agenda"] }),
+        client.invalidateQueries({ queryKey: ["channel-slots"] }),
+      ]).then(() =>
+        toast({
+          tone: "info",
+          title: "Envio ao Buffer iniciado",
+          description:
+            "O vídeo sobe ao R2 e o post é criado no Buffer. O progresso aparece aqui.",
+        }),
+      ),
+  });
+
+  const job = findActiveJob(
+    detail,
+    ["publish_buffer"],
+    (j) => String(j.payload?.lang ?? doc.primary_language) === lang,
+  );
+  const testOnly = previewOnly.length > 0;
+  const missingChannel = active.find((pl) => !channelFor(pl));
+  const block = !hasVideo
+    ? "Renderize o vídeo final deste idioma primeiro."
+    : job
+      ? null
+      : testOnly
+        ? "Este render usou voz ou imagens de teste: o Buffer publica como público."
+        : busy
+          ? "Aguarde a tarefa em andamento terminar."
+          : unsavedMeta
+            ? UNSAVED_META_BLOCK
+            : !active.length
+              ? "Escolha pelo menos uma rede com perfil conectado no Buffer."
+              : missingChannel
+                ? `Escolha o perfil do ${label(PLATFORM_LABELS, missingChannel)}.`
+                : mode === "scheduled" && !when
+                  ? "Escolha a data e a hora do agendamento."
+                  : mode === "scheduled" && !isFutureLocal(when)
+                    ? "O horário do agendamento precisa estar no futuro."
+                    : null;
+
+  const send = async () => {
+    if (formatWarnings.length) {
+      const ok = await confirm({
+        title: "Enviar um vídeo fora do formato do TikTok ou do Reels?",
+        description: `${formatWarnings.join(" ")} O Buffer só confere o vídeo na hora de publicar, então a falha pode aparecer só depois.`,
+        confirmLabel: "Enviar assim mesmo",
+      });
+      if (!ok) return;
+    }
+    if (finalStale) {
+      const ok = await confirm({
+        title: "Enviar um vídeo desatualizado?",
+        description:
+          "Houve mudanças no projeto depois deste render. O post usa o vídeo atual, sem essas mudanças. Para incluí-las, renderize de novo antes.",
+        confirmLabel: "Enviar assim mesmo",
+      });
+      if (!ok) return;
+    }
+    const repeated = active.filter((pl) =>
+      detail.publications.some(
+        (p) =>
+          p.driver === "buffer" &&
+          p.language === lang &&
+          p.platform === pl &&
+          !BUFFER_DONE.has(p.status),
+      ),
+    );
+    if (repeated.length) {
+      const ok = await confirm({
+        title: `Já há post no Buffer para ${repeated.map((pl) => label(PLATFORM_LABELS, pl)).join(", ")}. Criar outro?`,
+        description:
+          "Cada envio cria um post novo no Buffer (e mais um vídeo na rede quando ele sair).",
+        confirmLabel: "Criar outro post",
+      });
+      if (!ok) return;
+    }
+    publish.mutate();
+  };
+
+  const s = status.data;
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <h3 className="font-display text-[15px] font-semibold text-fg">
+          TikTok e Instagram pelo Buffer
+        </h3>
+        <p className="mt-0.5 text-[13px] text-muted">
+          O vídeo fica numa URL pública do Cloudflare R2 até o post sair e é
+          apagado depois. A fila e o horário ficam no Buffer: o computador pode
+          estar desligado.
+        </p>
+      </div>
+      {!s ? (
+        status.error ? (
+          <ErrorBox error={status.error} />
+        ) : (
+          <p className="text-[13px] text-subtle">Verificando o Buffer…</p>
+        )
+      ) : !s.ready ? (
+        <div className="flex flex-col gap-2 text-[13px] text-muted">
+          <p>
+            {s.api_key
+              ? "Falta configurar o Cloudflare R2 (onde o vídeo fica até o Buffer publicar)."
+              : "Cole a chave de API do Buffer e configure o Cloudflare R2 em Configurações, na parte de Publicação."}
+          </p>
+          <Link
+            to="/configuracoes"
+            className={`${buttonClass({ size: "sm" })} self-start`}
+          >
+            Abrir Configurações
+          </Link>
+        </div>
+      ) : channels.error ? (
+        <ErrorBox error={channels.error} />
+      ) : !channels.data ? (
+        <p className="text-[13px] text-subtle">Buscando os perfis do Buffer…</p>
+      ) : !list.length ? (
+        <p className="text-[13px] text-muted">
+          Nenhum perfil de TikTok ou Instagram conectado no Buffer. Conecte em
+          buffer.com e volte aqui.
+        </p>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-2">
+            {BUFFER_PLATFORMS.map((pl) => {
+              const options = usable(pl);
+              const on = platforms.includes(pl) && options.length > 0;
+              const chosen = channelFor(pl);
+              const paused = list.find((c) => c.id === chosen)?.queue_paused;
+              return (
+                <li key={pl} className="flex flex-wrap items-end gap-2">
+                  <Checkbox
+                    checked={on}
+                    disabled={!options.length}
+                    onChange={(v) =>
+                      setPlatforms((prev) =>
+                        v ? [...prev, pl] : prev.filter((x) => x !== pl),
+                      )
+                    }
+                    label={label(PLATFORM_LABELS, pl)}
+                    description={
+                      !options.length
+                        ? "Sem perfil conectado no Buffer."
+                        : paused
+                          ? "A fila deste perfil está pausada no Buffer."
+                          : undefined
+                    }
+                  />
+                  {on && options.length > 1 ? (
+                    <Field label="Perfil" className="min-w-44">
+                      <Select
+                        value={chosen}
+                        onChange={(e) =>
+                          setPicked((prev) => ({ ...prev, [pl]: e.target.value }))
+                        }
+                      >
+                        <option value="">Escolha…</option>
+                        {options.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                            {c.organization ? ` (${c.organization})` : ""}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  ) : on && options[0] ? (
+                    <span className="text-[13px] text-muted">
+                      {options[0].name}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label="Quando" className="min-w-40">
+              <Select value={mode} onChange={(e) => setMode(e.target.value)}>
+                {Object.entries(BUFFER_MODES).map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {mode === "scheduled" ? (
+              <Field label="Data e hora">
+                <Input
+                  type="datetime-local"
+                  value={when}
+                  min={nowLocalInput()}
+                  invalid={Boolean(when) && !isFutureLocal(when)}
+                  onChange={(e) => setWhen(e.target.value)}
+                />
+              </Field>
+            ) : null}
+          </div>
+          {testOnly ? (
+            <Notice tone="warn" title="Render com voz ou imagens de teste">
+              O Buffer publica como público. Configure provedores comerciais e
+              renderize de novo.{" "}
+              <Link to="/configuracoes" className={LINK}>
+                Configurar provedores
+              </Link>
+            </Notice>
+          ) : null}
+          {formatWarnings.length ? (
+            <Notice tone="warn" title="Formato fora do que TikTok e Reels aceitam">
+              {formatWarnings.join(" ")} O Buffer só confere na hora de
+              publicar: o post pode falhar horas ou dias depois.
+            </Notice>
+          ) : null}
+          {job ? <JobProgress job={job} title="Enviando ao Buffer" /> : null}
+          <div className="flex flex-col gap-1">
+            <Button
+              variant="secondary"
+              icon={Send}
+              className="self-start"
+              disabled={Boolean(block) || Boolean(job)}
+              busy={publish.isPending}
+              onClick={send}
+            >
+              Enviar ao Buffer
+            </Button>
+            <p className="text-xs text-subtle">
+              {block ??
+                "A legenda é a mesma do pacote manual (com hashtags e créditos) e o rótulo de IA segue o estilo."}
+            </p>
+          </div>
+        </>
+      )}
+      <ErrorBox error={publish.error} />
+    </Card>
+  );
+};
+
+/* ------------------------------------------------------------------ */
 /* Outras redes (pacote manual)                                         */
 /* ------------------------------------------------------------------ */
 
@@ -945,6 +1333,15 @@ type PubDetails = Publication["details"] & {
   publish_at?: string | null;
   published_at?: string;
   warnings?: string[];
+  buffer_channel_name?: string;
+  tracking?: boolean;
+  r2_deleted?: boolean;
+  r2_left?: boolean;
+  cleanup_error?: string;
+  /** Até quando o vídeo de um post que falhou fica no R2. */
+  keep_until?: string;
+  /** A criação do post ficou sem resposta do Buffer. */
+  uncertain?: boolean;
 };
 
 const STATUS: Record<string, { label: string; tone: BadgeTone }> = {
@@ -953,6 +1350,7 @@ const STATUS: Record<string, { label: string; tone: BadgeTone }> = {
   package_ready: { label: "Pacote pronto", tone: "neutral" },
   published: { label: "Postado", tone: "good" },
   failed: { label: "Falhou", tone: "bad" },
+  canceled: { label: "Cancelado", tone: "neutral" },
 };
 
 const PublicationRow: React.FC<{
@@ -962,11 +1360,18 @@ const PublicationRow: React.FC<{
 }> = ({ pub, projectId, testOnly }) => {
   const client = useQueryClient();
   const d = pub.details as PubDetails;
-  const st = STATUS[pub.status] ?? {
+  const manual = pub.driver === "manual_helper";
+  const viaBuffer = pub.driver === "buffer";
+  const st = (viaBuffer && pub.status === "uploaded"
+    ? { label: "Na fila do Buffer", tone: "info" as BadgeTone }
+    : STATUS[pub.status]) ?? {
     label: "Em andamento",
     tone: "neutral" as BadgeTone,
   };
-  const manual = pub.driver === "manual_helper";
+  // Falhou, mas o vídeo ainda está no R2: dá para tentar de novo pelo Buffer (ou cancelar e apagar).
+  const failedHeld =
+    viaBuffer && pub.status === "failed" && Boolean(d.tracking) && !d.r2_deleted && !d.r2_left;
+  const confirm = useConfirm();
   const platformName =
     pub.platform === "youtube" && manual
       ? "YouTube (manual)"
@@ -982,8 +1387,26 @@ const PublicationRow: React.FC<{
     },
   });
 
+  const cancelBuffer = useMutation({
+    mutationFn: () => api.post(`/api/publications/${pub.id}/buffer/cancel`),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["project", projectId] });
+      client.invalidateQueries({ queryKey: ["agenda"] });
+    },
+  });
+  const askCancel = async () => {
+    const ok = await confirm({
+      title: `Cancelar o post no ${platformName}?`,
+      description:
+        "O post é apagado do Buffer e o vídeo sai do R2. Isso não pode ser desfeito; para postar de novo, envie outra vez.",
+      confirmLabel: "Cancelar post",
+      tone: "danger",
+    });
+    if (ok) cancelBuffer.mutate();
+  };
+
   let when = pub.created_at
-    ? `${pub.driver === "youtube_native" ? "enviado" : "criado"} ${formatRelative(pub.created_at)}`
+    ? `${pub.driver === "youtube_native" || viaBuffer ? "enviado" : "criado"} ${formatRelative(pub.created_at)}`
     : "";
   if (pub.status === "scheduled" && d.publish_at)
     when = `para ${formatWhen(d.publish_at)}`;
@@ -996,6 +1419,11 @@ const PublicationRow: React.FC<{
         <span className="font-medium text-fg">{platformName}</span>
         <Badge tone={st.tone}>{st.label}</Badge>
         {testOnly ? <Badge tone="bad">Só para teste</Badge> : null}
+        {viaBuffer ? (
+          <Badge title={d.buffer_channel_name || undefined}>
+            Buffer{d.buffer_channel_name ? ` · ${d.buffer_channel_name}` : ""}
+          </Badge>
+        ) : null}
         {pub.driver === "youtube_native" &&
         d.privacy &&
         pub.status !== "scheduled" ? (
@@ -1008,6 +1436,20 @@ const PublicationRow: React.FC<{
       </div>
       {pub.error ? (
         <p className="text-[13px] text-red-300">{pub.error}</p>
+      ) : null}
+      {failedHeld && d.keep_until ? (
+        <p className="text-xs text-amber-200">
+          {d.uncertain
+            ? `O vídeo fica no R2 até ${formatWhen(d.keep_until)}. Se o post estiver na fila do Buffer, ele sai normalmente até lá.`
+            : `O vídeo fica no R2 até ${formatWhen(d.keep_until)}: tentar de novo pelo Buffer só funciona até lá. Depois, envie outra vez pelo Vulto.`}
+        </p>
+      ) : null}
+      {viaBuffer && d.cleanup_error ? (
+        <p className="text-xs text-amber-200">
+          {d.r2_left
+            ? d.cleanup_error
+            : `O vídeo ainda está no R2 (nova tentativa na próxima conferência): ${d.cleanup_error}`}
+        </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-1">
         {manual && pub.package_path ? (
@@ -1053,6 +1495,19 @@ const PublicationRow: React.FC<{
             Marcar como postado
           </Button>
         ) : null}
+        {viaBuffer &&
+        (pub.status === "scheduled" || pub.status === "uploaded" || failedHeld) ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={X}
+            busy={cancelBuffer.isPending}
+            onClick={askCancel}
+            aria-label={`Cancelar post (${platformName})`}
+          >
+            Cancelar post
+          </Button>
+        ) : null}
         {pub.url ? (
           <a
             href={pub.url}
@@ -1070,7 +1525,7 @@ const PublicationRow: React.FC<{
           </a>
         ) : null}
       </div>
-      <ErrorBox error={open.error ?? markPosted.error} />
+      <ErrorBox error={open.error ?? markPosted.error ?? cancelBuffer.error} />
     </li>
   );
 };
@@ -1094,11 +1549,37 @@ export const PublicationsList: React.FC<{
         p.created_at != null &&
         Date.parse(p.created_at) >= renderedAt));
   const others = detail.publications.length - items.length;
+  const client = useQueryClient();
+  const tracking = items.some(
+    (p) => p.driver === "buffer" && (p.details as PubDetails).tracking,
+  );
+  const syncBuffer = useMutation({
+    mutationFn: () => api.post("/api/buffer/sync"),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["project", detail.doc.id] });
+      client.invalidateQueries({ queryKey: ["agenda"] });
+    },
+  });
   return (
     <Card className="flex flex-col gap-3">
-      <h3 className="font-display text-[15px] font-semibold text-fg">
-        Publicações deste projeto
-      </h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-display text-[15px] font-semibold text-fg">
+          Publicações deste projeto
+        </h3>
+        {tracking ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={RefreshCw}
+            busy={syncBuffer.isPending}
+            onClick={() => syncBuffer.mutate()}
+            title="Com o app aberto, o Vulto confere sozinho de 10 em 10 minutos"
+          >
+            Conferir no Buffer
+          </Button>
+        ) : null}
+      </div>
+      <ErrorBox error={syncBuffer.error} />
       {items.length ? (
         <ul className="flex flex-col gap-2">
           {items.map((p) => (

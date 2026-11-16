@@ -1,4 +1,5 @@
-"""Rotas de publicação no YouTube (conexão e vínculo de canais por OAuth e envio de vídeos)."""
+"""Rotas de publicação: YouTube (conexão e vínculo de canais por OAuth e envio de vídeos) e Buffer (TikTok e
+Instagram, com o vídeo numa URL pública do Cloudflare R2)."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from studio.db import session_scope
 from studio.models import Channel
 from studio.workers.finalcheck.report import preflight
 from studio.workers.jobs import get_runner
-from studio.workers.publish import quota, youtube_channels
+from studio.workers.publish import buffer, buffer_flow, quota, r2, youtube_channels
 from studio.workers.publish import youtube as yt
 
 router = APIRouter(prefix="/api", tags=["publicação"])
@@ -263,3 +264,91 @@ def publish_youtube(project_id: str, body: YouTubePublishRequest) -> dict[str, A
     except quota.QuotaExhausted as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     return get_runner().submit("publish_youtube", body.model_dump(), project_id)
+
+
+# --------------------------------------------------------------------------------------------
+# Buffer (TikTok e Instagram) com os vídeos no Cloudflare R2
+# --------------------------------------------------------------------------------------------
+
+
+def _buffer_ready() -> tuple[bool, str]:
+    return buffer.BufferPublisher().availability()
+
+
+@router.get("/buffer/status")
+def buffer_status(project_id: str | None = None) -> dict[str, Any]:
+    """Se o Buffer e o R2 estão configurados e, com `project_id`, os perfis usados da última vez pelo canal."""
+    ok, reason = _buffer_ready()
+    out: dict[str, Any] = {
+        "api_key": bool(buffer.api_key()),
+        "storage": r2.configured(),
+        "ready": ok,
+        "reason": None if ok else reason,
+        "platforms": list(buffer.PLATFORMS),
+        "remembered": {},
+    }
+    if project_id:
+        try:
+            channel_id = service.get_project_row(project_id)["channel_id"]
+        except service.ProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="projeto não encontrado") from exc
+        out["remembered"] = buffer_flow.remembered_channels(channel_id)
+    return out
+
+
+@router.get("/buffer/channels")
+def buffer_channels() -> dict[str, Any]:
+    """Perfis de TikTok e Instagram conectados na conta do Buffer."""
+    try:
+        return {"channels": buffer.list_channels()}
+    except buffer.BufferError as exc:
+        raise HTTPException(status_code=400 if exc.code != "NETWORK" else 502, detail=str(exc)) from exc
+
+
+class BufferPublishRequest(BaseModel):
+    lang: str | None = None
+    platform: str
+    buffer_channel_id: str = Field(min_length=1, max_length=64)
+    buffer_channel_name: str = Field(default="", max_length=200)
+    mode: str = "queue"  # queue | now | next | scheduled
+    publish_at: str | None = None
+
+
+@router.post("/projects/{project_id}/publish/buffer")
+def publish_buffer(project_id: str, body: BufferPublishRequest) -> dict[str, Any]:
+    try:
+        service.get_project_row(project_id)
+    except service.ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="projeto não encontrado") from exc
+    ok, reason = _buffer_ready()
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+    if body.platform not in buffer.PLATFORMS:
+        raise HTTPException(status_code=400, detail="o Buffer publica aqui só no TikTok e no Instagram")
+    if body.mode not in buffer.MODES:
+        raise HTTPException(status_code=400, detail="modo inválido (use queue, now, next ou scheduled)")
+    if body.mode == "scheduled" and not body.publish_at:
+        raise HTTPException(status_code=400, detail="informe a data e a hora do agendamento")
+    return get_runner().submit("publish_buffer", body.model_dump(), project_id)
+
+
+@router.post("/buffer/sync")
+def buffer_sync() -> dict[str, Any]:
+    """Confere agora os posts pendentes no Buffer (e apaga do R2 os vídeos dos que já saíram)."""
+    try:
+        return buffer_flow.sync(force=True)
+    except buffer.BufferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/publications/{publication_id}/buffer/cancel")
+def buffer_cancel(publication_id: str) -> dict[str, Any]:
+    """Apaga o post do Buffer que ainda não saiu e o vídeo dele no R2."""
+    try:
+        return buffer_flow.cancel(publication_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="publicação do Buffer não encontrada") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (buffer.BufferError, r2.R2Error) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

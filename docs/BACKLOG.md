@@ -25,9 +25,12 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 ## Funcionalidades planejadas (README), ainda não feitas
 
 ### Publicação
-- [ ] **Driver do Buffer** (TikTok e Instagram pelo plano grátis, API e MCP). Ficou de fora porque a API atual do Buffer precisa ser conferida na documentação oficial e testada com uma conta; hoje há o pacote manual por rede.
-- [ ] Hospedagem das URLs públicas que o Buffer e o Instagram exigem (Cloudflare R2).
+- [x] **Driver do Buffer** (TikTok e Instagram Reels) pela API GraphQL pública conferida em developers.buffer.com (15/11/2026): perfis conectados, post com vídeo (fila, agora, primeiro da fila ou horário marcado), rótulo de IA, acompanhamento do post e cancelamento. Testado só com a API simulada.
+- [x] Hospedagem das URLs públicas no **Cloudflare R2** (S3 com assinatura SigV4 feita com httpx), com o vídeo apagado depois que o post sai, falha ou é cancelado.
 - [x] YouTube: playlists (escolher ou criar no envio, playlist padrão por canal), medidor de cota (custos da documentação oficial, dia do Pacífico, aviso a partir de 80%, envio bloqueado quando acaba; Configurações › Publicação) e várias contas (cada canal vinculado publica no seu; projeto sem canal vinculado escolhe a conta no envio) (15/11/2026). Testado só com a API simulada. Ficou de fora: posição do vídeo na playlist (exige ordem manual na playlist), playlist por idioma e o gasto de cota de outros programas no mesmo projeto do Google Cloud (a API não informa o saldo; o app conta só as chamadas dele).
+- [ ] **Testar o Buffer com uma conta real**: confirmar se o TikTok está liberado no plano grátis, se o Reel sai sozinho e se a URL `r2.dev` aguenta (a Cloudflare recomenda domínio próprio fora de testes).
+- [ ] Buffer: reabastecer a fila sozinho (hoje cada envio é pedido na tela), capa escolhida (`thumbnailOffset`; hoje vale a padrão do Buffer), MCP do Buffer para agentes e outras redes do Buffer (Threads, Facebook, YouTube Shorts).
+- [ ] Buffer: a conferência dos posts roda só com o app aberto; se o vídeo ficar muito tempo no R2 (app fechado), ele é apagado na próxima vez que o app abrir e conferir.
 - [ ] Driver nativo do Instagram (Standard Access) e teste de visibilidade pública.
 
 ### Voz e idiomas

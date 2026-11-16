@@ -31,6 +31,7 @@ SCHEDULED = "scheduled"  # agendado no YouTube (sai sozinho)
 UPLOADED = "uploaded"  # enviado (privado, não listado ou público)
 PACKAGE_READY = "package_ready"  # pacote manual pronto, falta postar
 PUBLISHED = "published"  # postado à mão e marcado como feito
+QUEUED = "queued"  # na fila do Buffer, sem horário conhecido (só na agenda; no banco é `uploaded` com driver buffer)
 
 
 class Slot(BaseModel):
@@ -146,8 +147,10 @@ def channel_slots(channel_id: str, count: int = 5) -> dict[str, Any]:
 def _item(pub: Publication, project: Project, channels: dict[str, str], now: datetime) -> dict[str, Any]:
     scheduled = _aware(pub.scheduled_at) if pub.scheduled_at else None
     status = pub.status
-    if status == SCHEDULED and scheduled and scheduled <= now:
-        status = PUBLISHED  # o YouTube publicou no horário agendado
+    if status == SCHEDULED and scheduled and scheduled <= now and pub.driver != "buffer":
+        status = PUBLISHED  # o YouTube publicou no horário agendado (o Buffer é conferido pela sincronização)
+    elif status == UPLOADED and pub.driver == "buffer":
+        status = QUEUED  # no Buffer, `uploaded` quer dizer "na fila, ainda não saiu" (no YouTube, já está no ar)
     details = pub.details or {}
     return {
         "id": pub.id,
@@ -183,7 +186,9 @@ def agenda(days_back: int = 14, now: datetime | None = None) -> dict[str, Any]:
         stamp = item["scheduled_at"] or item["published_at"] or item["created_at"]
         return _aware(datetime.fromisoformat(stamp)) if stamp else since
 
-    upcoming = sorted((i for i in items if i["status"] == SCHEDULED), key=when)
+    # Agendados primeiro (por horário); posts na fila do Buffer sem horário, no fim.
+    upcoming = sorted((i for i in items if i["status"] in (SCHEDULED, QUEUED)),
+                      key=lambda i: (i["scheduled_at"] is None, when(i)))
     manual = sorted((i for i in items if i["status"] == PACKAGE_READY), key=lambda i: (i["scheduled_at"] is None, when(i)))
     recent = sorted(
         (i for i in items if i["status"] in (UPLOADED, PUBLISHED) and when(i) >= since),
