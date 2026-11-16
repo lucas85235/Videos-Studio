@@ -19,6 +19,7 @@ dependencies = [
     "tzdata>=2024.1",
     "kokoro-onnx>=0.6.1",
     "num2words>=0.5.13",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
