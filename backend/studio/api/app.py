@@ -17,6 +17,7 @@ from studio.api import (
     routes_audio,
     routes_business,
     routes_checks,
+    routes_comments,
     routes_factcheck,
     routes_media,
     routes_misc,
@@ -74,6 +75,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_audio.router)
     app.include_router(routes_checks.router)
     app.include_router(routes_visual.router)
+    # Caixa de comentários do YouTube
+    app.include_router(routes_comments.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

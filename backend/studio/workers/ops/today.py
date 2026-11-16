@@ -1,7 +1,8 @@
 """Resumo do dia (origem: `resumo` de estudio/rotinas.py do canais) para GET /api/today.
 
 - `waiting`: o que só você pode fazer, calculado na hora (revisões, pacotes manuais a postar, YouTube com token
-  falhando, oferta de afiliado sem conferência recente, escopo do Analytics faltando);
+  falhando, oferta de afiliado sem conferência recente, escopo do Analytics faltando, perguntas sem resposta na caixa
+  de comentários e caixa de comentários sem a permissão do YouTube);
 - `pending`: pendências abertas (à mão ou das rotinas);
 - `stock`: estoque de cada canal com mínimo;
 - `yesterday`: o que saiu ontem e os jobs que falharam;
@@ -72,6 +73,13 @@ def waiting(now: datetime | None = None) -> list[dict[str, Any]]:
         if ((settings.get("analytics") or {}).get("scope")) == "missing":
             out.append(_item("analytics", f"Vincular de novo o YouTube do {name} para ler retenção e duração média",
                              "/canais", cid))
+        if ((settings.get("comments") or {}).get("state")) == "sem_escopo":
+            out.append(_item("comments", f"Vincular de novo o YouTube do {name} para responder comentários pelo Vulto",
+                             "/canais", cid))
+    for q in _open_questions():
+        plural = "pergunta sem resposta" if q["count"] == 1 else "perguntas sem resposta"
+        out.append(_item("comments", f"Responder {q['count']} {plural} nos comentários do {q['name']}",
+                         f"/comentarios?canal={q['channel_id']}&filtro=perguntas", q["channel_id"]))
     names = {cid: name for cid, name, _ in channels}
     for _, cid, name, checked in offers:
         try:
@@ -84,6 +92,16 @@ def waiting(now: datetime | None = None) -> list[dict[str, Any]]:
         out.append(_item("offer", f"Conferir a oferta {name} do {names.get(cid, cid)} (vendedor, estoque e preço): "
                                   f"{when}", "/dinheiro", cid))
     return out
+
+
+def _open_questions() -> list[dict[str, Any]]:
+    from studio.workers.comments.inbox import open_questions
+
+    try:
+        return open_questions()
+    except Exception as exc:  # noqa: BLE001 - a caixa de comentários não derruba o resumo
+        log.debug("perguntas dos comentários não lidas: %s", exc)
+        return []
 
 
 def yesterday(now: datetime | None = None) -> dict[str, Any]:

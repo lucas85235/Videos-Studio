@@ -319,3 +319,12 @@ def mock_factcheck(ctx: dict[str, Any]) -> dict[str, Any]:
             "note": "checagem offline (regras)",
         })
     return {"items": items}
+
+
+def mock_comment_reply(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Resposta offline a um comentário: agradece e, se for pergunta, diz que vai conferir."""
+    author = str(ctx.get("author") or "").strip().lstrip("@")
+    hello = f"Valeu, {author}!" if author else "Valeu pelo comentário!"
+    if ctx.get("question"):
+        return {"reply": f"{hello} Boa pergunta: vou conferir direitinho e trago a resposta num próximo vídeo."}
+    return {"reply": f"{hello} Que bom que curtiu o vídeo."}

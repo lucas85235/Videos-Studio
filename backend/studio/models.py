@@ -544,3 +544,37 @@ class QualityReport(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # medidas brutas do bloco
     contact_sheet: Mapped[str] = mapped_column(String(300), default="")  # folha de contato (relativa)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class YouTubeComment(Base):
+    """Fio de comentários de um vídeo do canal, lido pelo `commentThreads.list` (caixa de comentários).
+
+    O id é o do fio no YouTube. `read`, `suggestion` e a resposta enviada pelo app são só do Vulto: ler de novo os
+    comentários não apaga o que você marcou nem a sugestão.
+    """
+
+    __tablename__ = "youtube_comments"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)  # id do fio (commentThread)
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"), index=True)
+    youtube_channel_id: Mapped[str] = mapped_column(String(40), default="")
+    video_id: Mapped[str] = mapped_column(String(40), default="", index=True)
+    video_title: Mapped[str] = mapped_column(String(300), default="")
+    comment_id: Mapped[str] = mapped_column(String(100), default="")  # comentário principal (parentId da resposta)
+    author: Mapped[str] = mapped_column(String(200), default="")
+    author_channel_id: Mapped[str] = mapped_column(String(40), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    like_count: Mapped[int] = mapped_column(Integer, default=0)
+    reply_count: Mapped[int] = mapped_column(Integer, default=0)
+    can_reply: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_question: Mapped[bool] = mapped_column(Boolean, default=False)
+    answered: Mapped[bool] = mapped_column(Boolean, default=False)  # o canal já respondeu (no YouTube ou pelo app)
+    read: Mapped[bool] = mapped_column(Boolean, default=False)
+    suggestion: Mapped[str] = mapped_column(Text, default="")
+    suggestion_provider: Mapped[str] = mapped_column(String(60), default="")
+    reply_text: Mapped[str] = mapped_column(Text, default="")  # resposta enviada pelo app
+    reply_id: Mapped[str] = mapped_column(String(100), default="")
+    replied_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
