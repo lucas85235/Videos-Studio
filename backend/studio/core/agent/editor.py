@@ -49,7 +49,7 @@ operações pequenas sobre o documento do projeto, e o app regenera só o que mu
 - 'summary' descreve em português, em uma ou duas frases, o que será feito.
 
 Valores válidos: movimentos de câmera ken_burns_in, ken_burns_out, pan_left, pan_right, pan_up, pan_down, punch_zoom, drift,
-static, zoom_to (aproxima do foco da cena); transições cut, flash, fade_black, glitch, light_leak, zoom_blur, film_burn, static_burst; tipos de cena image,
+static, zoom_to (aproxima do foco da cena), parallax (2.5D pela profundidade da imagem); transições cut, flash, fade_black, glitch, light_leak, zoom_blur, film_burn, static_burst; tipos de cena image,
 text, title, count, document, quote; grade (set_scene_look.grade) """ + ", ".join(GRADE_PRESETS) + """;
 climas da música (set_music.mood) """ + ", ".join(MOODS) + """.
 """ + STYLE_FIELDS_HELP

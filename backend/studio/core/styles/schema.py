@@ -64,6 +64,7 @@ CAMERA_MOVES = (
     "drift",
     "static",
     "zoom_to",  # aproxima do foco da cena (Scene.focus); feito para imagem reaproveitada
+    "parallax",  # 2.5D: camadas pelo mapa de profundidade (studio.media.depth); sem o modelo vira ken_burns_in
 )
 TRANSITIONS = ("cut", "flash", "fade_black", "glitch", "light_leak", "zoom_blur", "film_burn", "static_burst")
 EFFECTS = (
