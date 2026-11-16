@@ -135,6 +135,10 @@ def _build(ctx: JobContext, payload: dict[str, Any], mode: str) -> dict[str, Any
     result = builder.run()
     service.update_settings(project_id, {f"last_{mode}": result})
     service.set_status(project_id, "preview_ready" if mode == "preview" else "rendered")
+    # Rotina: com limite de espaço e limpeza automática ligados, o cache volta ao limite depois do build.
+    from studio.core.graph import gc
+
+    gc.auto_clean(exclude_job=ctx.job_id)
     return result
 
 

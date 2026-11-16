@@ -30,6 +30,7 @@ import { useProviders } from '../shell/data';
 import {
   Badge,
   Button,
+  Checkbox,
   ErrorBox,
   Field,
   formatBytes,
@@ -649,7 +650,15 @@ type CacheReport = {
   freed_total: number;
   kept_in_use: number;
   labels: Record<string, string>;
+  old_versions: boolean;
+  limit: number | null;
+  total_after: number;
+  over_limit: boolean;
+  legacy_projects: string[];
+  policy: CachePolicy;
 };
+
+type CachePolicy = { limit_gb: number; old_versions: boolean; auto: boolean };
 
 const KIND_SIZE_LABEL: Record<string, string> = {
   tts: 'Narrações',
@@ -674,9 +683,15 @@ const StorageSection: React.FC = () => {
   const client = useQueryClient();
   const confirm = useConfirm();
   const { toast } = useToast();
-  const report = useQuery({ queryKey: ['cache-report'], queryFn: () => api.get<CacheReport>('/api/maintenance/cache'), staleTime: 60_000 });
+  // Prévia com ou sem narrações e imagens de versões antigas (custam cota para refazer: só com a caixa marcada).
+  const [oldVersions, setOldVersions] = useState(false);
+  const report = useQuery({
+    queryKey: ['cache-report', oldVersions],
+    queryFn: () => api.get<CacheReport>(`/api/maintenance/cache?old_versions=${oldVersions}`),
+    staleTime: 60_000,
+  });
   const clean = useMutation({
-    mutationFn: () => api.post<CacheReport>('/api/maintenance/cache/clean'),
+    mutationFn: () => api.post<CacheReport>('/api/maintenance/cache/clean', { old_versions: oldVersions }),
     onSuccess: (result) => {
       toast({ tone: 'good', title: `Cache limpo: ${formatBytes(result.freed_total)} liberados` });
       client.invalidateQueries({ queryKey: ['cache-report'] });
@@ -727,7 +742,11 @@ const StorageSection: React.FC = () => {
                 );
               })}
           </ul>
-          <p className="text-[13px] text-subtle">Narrações, imagens e os vídeos prontos em “outputs” não são tocados.</p>
+          <p className="text-[13px] text-subtle">
+            {fresh.old_versions || fresh.limit != null
+              ? 'Narrações e imagens que as versões atuais e as publicações usam ficam, e os vídeos prontos em “outputs” não são tocados.'
+              : 'Narrações, imagens e os vídeos prontos em “outputs” não são tocados.'}
+          </p>
         </div>
       ),
       confirmLabel: 'Limpar cache',
@@ -741,7 +760,7 @@ const StorageSection: React.FC = () => {
       <Section
         title="Armazenamento"
         icon={HardDrive}
-        description="Narrações e imagens nunca são apagadas (custam cota para refazer), e nada criado nas últimas 24 h é tocado. Os vídeos prontos em “outputs” ficam."
+        description="O que as versões atuais e as publicações usam nunca sai, nem nada usado nas últimas 24 h. Narrações e imagens (custam cota para refazer) só saem com a opção de versões antigas ou pelo limite de espaço. Os vídeos prontos em “outputs” ficam."
         actions={
           <>
             <Button size="sm" variant="ghost" icon={RotateCw} onClick={() => report.refetch()} busy={report.isFetching && !clean.isPending}>
@@ -753,6 +772,12 @@ const StorageSection: React.FC = () => {
           </>
         }
       >
+        <Checkbox
+          label="Incluir narrações e imagens de versões antigas"
+          description="Apaga as que nenhuma versão atual nem publicação usa. Se um dia voltar a uma versão antiga, elas são geradas de novo (gasta cota)."
+          checked={oldVersions}
+          onChange={setOldVersions}
+        />
         {report.isLoading ? <Skeleton className="h-20" /> : null}
         {data ? (
           <>
@@ -808,6 +833,25 @@ const StorageSection: React.FC = () => {
             ) : null}
           </>
         ) : null}
+        {data?.legacy_projects.length && (data.old_versions || data.limit != null) ? (
+          <p className="flex items-start gap-1.5 text-[13px] text-amber-200">
+            <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <span>
+              Narrações e imagens ficam até você refazer a prévia destes projetos (o último build é de antes do controle do que cada versão usa):{' '}
+              {data.legacy_projects.join(', ')}.
+            </span>
+          </p>
+        ) : null}
+        {data?.over_limit && data.limit != null ? (
+          <p className="flex items-start gap-1.5 text-[13px] text-amber-200">
+            <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <span>
+              Mesmo depois da limpeza o cache fica com {formatBytes(data.total_after)}, acima do limite de {formatBytes(data.limit)}: o resto está em uso
+              pelas versões atuais e publicações ou foi usado nas últimas 24 h.
+            </span>
+          </p>
+        ) : null}
+        {data ? <CachePolicyForm policy={data.policy} /> : null}
         {clean.data ? (
           <p role="status" className="flex items-center gap-1.5 text-[13px] text-emerald-300">
             <CircleCheck size={14} aria-hidden="true" />
@@ -817,6 +861,69 @@ const StorageSection: React.FC = () => {
         <ErrorBox error={report.error ?? clean.error} onClose={clean.error ? () => clean.reset() : undefined} />
       </Section>
     </div>
+  );
+};
+
+/** Limite de espaço e limpeza automática (roda depois de cada build e ao abrir o app). */
+const CachePolicyForm: React.FC<{ policy: CachePolicy }> = ({ policy }) => {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const [limit, setLimit] = useState(policy.limit_gb ? String(policy.limit_gb) : '');
+  const [auto, setAuto] = useState(policy.auto);
+  const [oldVersions, setOldVersions] = useState(policy.old_versions);
+  useEffect(() => {
+    setLimit(policy.limit_gb ? String(policy.limit_gb) : '');
+    setAuto(policy.auto);
+    setOldVersions(policy.old_versions);
+  }, [policy.limit_gb, policy.auto, policy.old_versions]);
+  const parsed = limit.trim() === '' ? 0 : Number(limit.replace(',', '.'));
+  const invalid = !Number.isFinite(parsed) || parsed < 0;
+  const limitGb = invalid ? 0 : parsed;
+  const autoOn = auto && limitGb > 0;
+  const changed = limitGb !== policy.limit_gb || autoOn !== policy.auto || oldVersions !== policy.old_versions;
+  const save = useMutation({
+    mutationFn: () => api.put<CachePolicy>('/api/maintenance/cache/policy', { limit_gb: limitGb, auto: autoOn, old_versions: oldVersions }),
+    onSuccess: (saved) => {
+      toast({ tone: 'good', title: saved.limit_gb ? `Limite do cache: ${saved.limit_gb} GB` : 'Cache sem limite de espaço' });
+      client.invalidateQueries({ queryKey: ['cache-report'] });
+    },
+  });
+  return (
+    <form
+      className="flex flex-col gap-3 rounded-lg border border-line bg-canvas p-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!invalid) save.mutate();
+      }}
+    >
+      <div className="text-[13px] font-medium text-fg">Limite de espaço</div>
+      <Field
+        label="Tamanho máximo do cache (GB)"
+        hint="Passou disso, a limpeza apaga pelo último uso o que não está protegido: primeiro renders e mixagens, e só depois narrações e imagens. Vazio = sem limite."
+        error={invalid ? 'Use um número maior ou igual a zero.' : undefined}
+      >
+        <Input inputMode="decimal" placeholder="sem limite" value={limit} invalid={invalid} onChange={(e) => setLimit(e.target.value)} className="max-w-40" />
+      </Field>
+      <Checkbox
+        label="Limpar sozinho quando passar do limite"
+        description="Roda depois de cada prévia ou render e ao abrir o app, só quando não há outras tarefas na fila. Para agendar no Windows: videos-studio clean --auto."
+        checked={autoOn}
+        disabled={limitGb <= 0}
+        onChange={setAuto}
+      />
+      <Checkbox
+        label="Na limpeza sozinha, incluir narrações e imagens de versões antigas"
+        checked={oldVersions}
+        disabled={!autoOn}
+        onChange={setOldVersions}
+      />
+      <div>
+        <Button size="sm" type="submit" disabled={!changed || invalid} busy={save.isPending}>
+          Salvar limite
+        </Button>
+      </div>
+      <ErrorBox error={save.error} onClose={save.error ? () => save.reset() : undefined} />
+    </form>
   );
 };
 

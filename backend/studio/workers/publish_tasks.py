@@ -149,7 +149,9 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,
                          "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
-                         "youtube_channel": yt.account_title(account), **credits_details},
+                         "youtube_channel": yt.account_title(account), **credits_details,
+                         # o que o vídeo usou: a limpeza do cache não apaga (core/graph/gc.py)
+                         "artifacts": list(last.get("artifacts") or []), "version": row.get("current_version")},
             )
         )
     ctx.progress(1.0, "Agendado no YouTube" if privacy == "scheduled" else "Enviado ao YouTube")

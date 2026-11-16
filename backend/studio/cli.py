@@ -16,8 +16,14 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--open", action="store_true", help="abre o navegador")
     serve.add_argument("--reload", action="store_true", help="recarrega ao editar o código (desenvolvimento)")
     sub.add_parser("check", help="verifica FFmpeg, Node, renderer e provedores")
-    clean = sub.add_parser("clean", help="limpa renders antigos e sobras do cache (narração e imagens ficam)")
+    clean = sub.add_parser("clean", help="limpa renders antigos e sobras do cache (narração e imagens só com --versoes-antigas ou pelo limite)")
     clean.add_argument("--dry-run", action="store_true", help="só mostra o que seria apagado")
+    clean.add_argument("--versoes-antigas", action="store_true",
+                       help="também apaga narrações e imagens que só versões antigas usavam")
+    clean.add_argument("--limite-gb", type=float, default=None,
+                       help="apaga pelo último uso até o cache caber neste tamanho (padrão: o salvo em Configurações)")
+    clean.add_argument("--auto", action="store_true",
+                       help="rotina agendada: segue a política salva em Configurações e só limpa se passou do limite")
     sub.add_parser("voz-local", help="baixa o modelo da voz local da prévia (Kokoro, ~350 MB, uma vez só)")
     args = parser.parse_args(argv)
 
@@ -38,13 +44,31 @@ def main(argv: list[str] | None = None) -> None:
         from studio.db import init_db
 
         init_db()
-        report = gc.collect(dry_run=args.dry_run)
+        policy = gc.get_policy()
+        if args.auto:
+            if not policy.auto or policy.limit_bytes is None:
+                print("Limpeza automática desligada em Configurações (ou sem limite de espaço). Nada a fazer.")
+                return
+            if gc.busy_jobs():
+                print("Há tarefas em andamento; a limpeza fica para a próxima.")
+                return
+            old_versions, limit = policy.old_versions, policy.limit_bytes
+        else:
+            old_versions = args.versoes_antigas
+            limit = int(args.limite_gb * gc.GB) if args.limite_gb else policy.limit_bytes
+        report = gc.collect(dry_run=args.dry_run, old_versions=old_versions, limit_bytes=limit)
         mb = 1024 * 1024
         print(f"Cache: {sum(report.sizes.values()) / mb:.1f} MB")
         for category, size in sorted(report.freed.items(), key=lambda kv: -kv[1]):
             print(f"  {gc.CATEGORY_LABELS.get(category, category)}: {report.removed[category]} itens, {size / mb:.1f} MB")
         verb = "seriam liberados" if args.dry_run else "liberados"
         print(f"{sum(report.freed.values()) / mb:.1f} MB {verb}; {report.kept_in_use} artefatos em uso preservados.")
+        if report.legacy_projects and (old_versions or limit is not None):
+            print("Narrações e imagens não foram tocadas: refaça a prévia destes projetos (build antigo, sem "
+                  f"manifesto): {', '.join(report.legacy_projects)}")
+        if limit is not None and report.total_after > limit:
+            print(f"O cache ainda passa do limite ({report.total_after / mb:.0f} MB de {limit / mb:.0f} MB): o resto "
+                  "está em uso ou foi criado nas últimas 24 h.")
     elif args.command == "voz-local":
         from studio.providers import kokoro
 

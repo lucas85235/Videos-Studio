@@ -23,9 +23,15 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    import threading
+
+    from studio.core.graph import gc
     from studio.workers.jobs import get_runner
 
     get_runner().recover()
+    # Rotina: ao abrir o app, se o cache passou do limite (e a limpeza automática está ligada), limpa em segundo
+    # plano. Com tarefas na fila ela não roda; o próximo build tenta de novo.
+    threading.Thread(target=gc.auto_clean, name="limpeza-cache", daemon=True).start()
     yield
     from studio.media.render import get_render_client
 

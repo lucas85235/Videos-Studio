@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from studio.config import get_settings
 from studio.db import session_scope
 from studio.models import Artifact
+
+# Gravar o último uso a cada leitura custaria uma escrita por narração/imagem; basta a precisão de minutos.
+TOUCH_EVERY = timedelta(minutes=10)
+
+
+def _stale(last: datetime | None, now: datetime) -> bool:
+    if last is None:
+        return True
+    last = last if last.tzinfo else last.replace(tzinfo=UTC)
+    return now - last > TOUCH_EVERY
 
 
 class ArtifactStore:
@@ -34,9 +45,14 @@ class ArtifactStore:
             if row is None or row.status != "done":
                 return None
             output = dict(row.output or {})
-        for rel in output.get("files", []):
-            if not self.abs(rel).exists():
-                return None
+            missing = any(not self.abs(rel).exists() for rel in output.get("files", []))
+            now = datetime.now(UTC)
+            if not missing and _stale(row.last_used_at, now):
+                # Só o último uso: `updated_at` continua dizendo quando o conteúdo mudou.
+                s.query(Artifact).filter_by(id=row.id).update(
+                    {"last_used_at": now, "updated_at": row.updated_at}, synchronize_session=False)
+        if missing:
+            return None
         self.touched.add((kind, input_hash))
         return output
 
@@ -51,6 +67,7 @@ class ArtifactStore:
             row.provider = provider
             row.cost_usd = cost
             row.error = None
+            row.last_used_at = datetime.now(UTC)
         self.touched.add((kind, input_hash))
 
     def fail(self, kind: str, input_hash: str, error: str) -> None:

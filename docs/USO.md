@@ -171,7 +171,7 @@ Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** col
 | Sintoma | O que fazer |
 |---|---|
 | Render lento | VHS, desfoque de bordas e aberração cromática custam caro (o grão é leve). Teste com menos efeitos no estilo. Deixe o notebook na tomada e no modo de desempenho. |
-| Disco enchendo | Configurações → *Armazenamento* → **Limpar agora** (ou `uv run videos-studio clean`). Apaga renders e mixagens sem uso; narrações, imagens e os vídeos em *outputs* ficam. |
+| Disco enchendo | Configurações → *Armazenamento* → **Limpar cache** (ou `uv run videos-studio clean`). Apaga renders e mixagens sem uso; narrações, imagens e os vídeos em *outputs* ficam. Marque *Incluir narrações e imagens de versões antigas* (ou `clean --versoes-antigas`) para apagar também as que nenhuma versão atual nem publicação usa. Para não se preocupar: defina um *Limite de espaço* e ligue *Limpar sozinho* (roda depois de cada build e ao abrir o app; para agendar no Windows, `uv run videos-studio clean --auto`). |
 | "provedores de teste" na prévia | Configure o Gemini (voz) e o Codex (imagens) e gere a prévia de novo: o app troca sozinho os itens de prévia. |
 | A voz lê instruções ou repete frases | Atualize o app (versão de 14/11/2026 em diante) e gere a prévia de novo: as narrações antigas não são reaproveitadas. Se o aviso continuar em algum trecho, ajuste uma palavra dele na aba Roteiro: só aquela narração é refeita. |
 | "nenhum provedor de llm funcionou: claude_code…" | O Claude Code não está logado ou o limite do plano acabou. Rode `claude auth login` (ou espere o limite voltar) e gere de novo. |
