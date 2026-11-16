@@ -193,7 +193,11 @@ def build_package(project_id: str, lang: str, platforms: list[str], planned_at: 
         with session_scope() as s:
             s.add(Publication(id=pub_id, project_id=project_id, platform=platform, language=lang, driver="manual_helper",
                               status="package_ready", package_path=str(folder), scheduled_at=planned_at,
-                              details={"caption": caption, "url": UPLOAD_URLS.get(platform), **ab_tag}))
+                              details={"caption": caption, "url": UPLOAD_URLS.get(platform),
+                                       # o que o vídeo usou: a limpeza do cache não apaga (core/graph/gc.py)
+                                       "artifacts": list(last.get("artifacts") or []),
+                                       "version": row.get("current_version"),
+                                       **ab_tag}))  # no ramo A/B, a marca traz a versão da cabeça do ramo
         results.append({"id": pub_id, "platform": platform, "folder": str(folder), "upload_url": UPLOAD_URLS.get(platform),
                         "caption": caption, "blocked": bool(preview_only),
                         **({"pinned_comment": links["pinned"], "affiliate_checklist": links["checklist"]}

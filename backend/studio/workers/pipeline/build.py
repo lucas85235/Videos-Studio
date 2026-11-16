@@ -594,14 +594,18 @@ class Builder:
         wer, ref = min((word_error_rate(r, said, lang), r) for r in (text, spoken) if r)
         return {"wer": wer, "ref": ref, "heard": [w.to_dict() for w in heard]}
 
-    def alignment(self, seg_id: str, lang: str, tts_hash: str, tts_out: dict[str, Any]) -> list[Word]:
-        text = self.doc.segment(seg_id).text_for(lang)
-        chain = registry.resolve_chain("align", None)
-        inputs = {"tts": tts_hash, "text": text, "chain": chain, "from_tts": bool(tts_out.get("words")),
+    def align_inputs(self, seg_id: str, lang: str, tts_hash: str, tts_out: dict[str, Any]) -> dict[str, Any]:
+        inputs = {"tts": tts_hash, "text": self.doc.segment(seg_id).text_for(lang),
+                  "chain": registry.resolve_chain("align", None), "from_tts": bool(tts_out.get("words")),
                   "heard": bool(tts_out.get("heard")), "v": 2}
-        spoken = tts_out.get("spoken") if tts_out.get("spoken_map") is not None else None
-        if spoken:
+        if _spoken_text(tts_out):
             inputs["spoken"] = True
+        return inputs
+
+    def alignment(self, seg_id: str, lang: str, tts_hash: str, tts_out: dict[str, Any]) -> list[Word]:
+        inputs = self.align_inputs(seg_id, lang, tts_hash, tts_out)
+        text, chain = inputs["text"], inputs["chain"]
+        spoken = _spoken_text(tts_out)
         h = hash_obj(inputs)
         cached = self.store.lookup("align", h)
         if cached and not (not tts_out.get("words") and not tts_out.get("heard") and self._better_available(chain, cached.get("provider"))):
@@ -706,12 +710,8 @@ class Builder:
             return []
         return characters_mod.reference_images(visual, self.characters, self.settings.data_dir)
 
-    def cached_image(self, inputs: dict[str, Any],
-                     scene: Scene | None = None) -> tuple[str, dict[str, Any] | None]:
-        """Chave da imagem e o que já existe no cache (também com a chave antiga). Entre as guardadas, prefere a
-        que pode ir para o canal: uma imagem de teste guardada depois não esconde a imagem boa. A cena dirigida
-        também acha a imagem gerada com o prompt de antes (`legacy_directed_prompt`); a imagem nova vai na chave nova."""
-        h = image_key(inputs)
+    def image_keys(self, inputs: dict[str, Any], scene: Scene | None = None) -> list[str]:
+        """Todas as chaves de cache em que a imagem desta cena pode estar (a atual primeiro, depois as antigas)."""
         variants = [inputs]
         visual = scene.visual if scene is not None else None
         if visual is not None and visual.type != "stock" and visual.language and self.doc.art is not None:
@@ -722,8 +722,16 @@ class Builder:
                 variants.append({**inputs, "prompt": old})
         keys = [k for v in variants for k in (
             image_key(v), *(hash_obj({**v, "chain": chain}) for chain in (inputs["chain"], *_LEGACY_IMAGE_CHAINS)))]
+        return list(dict.fromkeys(keys))
+
+    def cached_image(self, inputs: dict[str, Any],
+                     scene: Scene | None = None) -> tuple[str, dict[str, Any] | None]:
+        """Chave da imagem e o que já existe no cache (também com a chave antiga). Entre as guardadas, prefere a
+        que pode ir para o canal: uma imagem de teste guardada depois não esconde a imagem boa. A cena dirigida
+        também acha a imagem gerada com o prompt de antes (`legacy_directed_prompt`); a imagem nova vai na chave nova."""
+        h = image_key(inputs)
         found = None
-        for key in dict.fromkeys(keys):
+        for key in self.image_keys(inputs, scene):
             cached = self.store.lookup("image", key)
             if cached and cached.get("commercial", True):
                 return h, cached
@@ -1678,10 +1686,14 @@ def timeline_to_srt(timeline: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None = None,
-         mode: Mode = "final") -> dict[str, Any]:
-    """Estimativa do que um build vai gerar: no modo "final", o que a renderização grava com a voz final; no
-    "preview", o que a prévia refaz depois de uma edição (a narração da prévia sai da voz local, sem cota)."""
+def _spoken_text(tts_out: dict[str, Any]) -> str | None:
+    """Texto falado que a voz recebeu ("dois mil e vinte e cinco" no lugar de "2025"), quando há mapa de volta."""
+    return tts_out.get("spoken") if tts_out.get("spoken_map") is not None else None
+
+
+def _bare_builder(project_id: str, mode: Mode, doc: ProjectDoc | None = None,
+                  langs: list[str] | None = None) -> Builder:
+    """Builder só para fazer contas (plano, chaves de cache): não grava nada nem chama provedores."""
     builder = Builder.__new__(Builder)
     builder.project_id = project_id
     builder.mode = mode
@@ -1697,7 +1709,40 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
     builder.stats = BuildStats()
     builder.warnings = []
     builder._pronunciation = None
-    missing_tts =[{"segment_id": seg_id, "lang": lang, "chars": chars}
+    return builder
+
+
+def current_artifact_keys(project_id: str, doc: ProjectDoc | None = None) -> set[tuple[str, str]]:
+    """(tipo, hash) das narrações, alinhamentos e imagens que a versão atual do projeto (ou `doc`, ex.: a cabeça de
+    um ramo A/B) usa, na prévia e no vídeo final, existam ou não no cache. A limpeza do cache protege essas chaves
+    mesmo sem build salvo (ex.: render que gravou as narrações pagas e falhou depois). Só faz contas: não marca o
+    último uso nem chama provedores."""
+    keys: set[tuple[str, str]] = set()
+    doc = doc or service.get_doc(project_id)
+    modes: tuple[Mode, ...] = ("preview", "final")
+    for mode in modes:
+        builder = _bare_builder(project_id, mode, doc)
+        for lang in builder.langs:
+            for seg in doc.segments:
+                inputs = builder.narration_inputs(seg.id, lang)
+                tts_hash = hash_obj(inputs)
+                keys.add(("tts", tts_hash))
+                tts_out = builder.store.peek("tts", tts_hash)
+                if tts_out is not None:
+                    keys.add(("align", hash_obj(builder.align_inputs(seg.id, lang, tts_hash, tts_out))))
+        for scene in doc.ordered_scenes():
+            inputs = builder.image_inputs(scene)
+            if inputs is not None:
+                keys.update(("image", key) for key in builder.image_keys(inputs, scene))
+    return keys
+
+
+def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None = None,
+         mode: Mode = "final") -> dict[str, Any]:
+    """Estimativa do que um build vai gerar: no modo "final", o que a renderização grava com a voz final; no
+    "preview", o que a prévia refaz depois de uma edição (a narração da prévia sai da voz local, sem cota)."""
+    builder = _bare_builder(project_id, mode, doc, langs)
+    missing_tts = [{"segment_id": seg_id, "lang": lang, "chars": chars}
                    for seg_id, lang, chars in builder.narrations_to_record()]
     missing_images = []
     # Cenas dirigidas sem direção (estilo trocado): o build recusa até as cenas serem refeitas, então não entram.

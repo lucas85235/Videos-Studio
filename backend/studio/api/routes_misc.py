@@ -584,21 +584,58 @@ def lut_file(name: str) -> Response:
 # --------------------------------------------------------------------------------------------
 
 
-@router.get("/maintenance/cache")
-def cache_report() -> dict[str, Any]:
-    """Quanto o cache ocupa e quanto a limpeza liberaria (não apaga nada)."""
+class CachePolicyBody(BaseModel):
+    limit_gb: float = Field(default=0, ge=0, le=100_000)
+    old_versions: bool = False
+    auto: bool = False
+
+
+class CacheCleanBody(BaseModel):
+    old_versions: bool = False
+
+
+def _cache_report(dry_run: bool, old_versions: bool) -> dict[str, Any]:
     from studio.core.graph import gc
 
-    return gc.collect(dry_run=True).to_dict()
+    policy = gc.get_policy()
+    report = gc.collect(dry_run=dry_run, old_versions=old_versions, limit_bytes=policy.limit_bytes).to_dict()
+    return {**report, "policy": policy.to_dict()}
+
+
+@router.get("/maintenance/cache")
+def cache_report(old_versions: bool = False) -> dict[str, Any]:
+    """Quanto o cache ocupa e quanto a limpeza liberaria (não apaga nada). Com `old_versions`, a prévia inclui
+    narrações e imagens de versões antigas; o limite de espaço salvo também entra na conta."""
+    return _cache_report(True, old_versions)
 
 
 @router.post("/maintenance/cache/clean")
-def cache_clean() -> dict[str, Any]:
+def cache_clean(body: CacheCleanBody | None = None) -> dict[str, Any]:
     from studio.core.graph import gc
 
-    if any(j["status"] in ("queued", "running") for j in list_jobs(limit=200)):
+    if gc.busy_jobs():
         raise HTTPException(status_code=409, detail="há tarefas em andamento; espere terminarem para limpar o cache")
-    return gc.collect(dry_run=False).to_dict()
+    return _cache_report(False, bool(body and body.old_versions))
+
+
+@router.get("/maintenance/cache/policy")
+def cache_policy() -> dict[str, Any]:
+    from studio.core.graph import gc
+
+    return gc.get_policy().to_dict()
+
+
+@router.put("/maintenance/cache/policy")
+def set_cache_policy(body: CachePolicyBody) -> dict[str, Any]:
+    from studio.core.graph import gc
+
+    limit_gb = round(body.limit_gb, 2)  # a validação vale para o valor gravado (0,004 vira 0 = sem limite)
+    if body.limit_gb > 0 and limit_gb <= 0:
+        raise HTTPException(status_code=422, detail="o menor limite de espaço é 0,01 GB (ou 0 para sem limite)")
+    if body.auto and limit_gb <= 0:
+        raise HTTPException(status_code=422, detail="defina um limite de espaço para a limpeza automática")
+    policy = gc.CachePolicy(limit_gb=limit_gb, old_versions=body.old_versions, auto=body.auto)
+    return gc.set_policy(policy).to_dict()
 
 
 # --------------------------------------------------------------------------------------------

@@ -295,7 +295,10 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                          "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
                          **({"caption_langs": sorted(o for o, _ in dub_captions)} if dub_captions else {}),
                          "youtube_channel": yt.account_title(account), "playlist": playlist, **credits_details,
-                         **thumbs_details, **ab_tag},
+                         **thumbs_details,
+                         # o que o vídeo usou: a limpeza do cache não apaga (core/graph/gc.py)
+                         "artifacts": list(last.get("artifacts") or []), "version": row.get("current_version"),
+                         **ab_tag},  # no ramo A/B, a marca traz a versão da cabeça do ramo
             )
         )
     if ab_tag:

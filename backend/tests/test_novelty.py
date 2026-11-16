@@ -382,6 +382,7 @@ def test_final_render_adds_novelty_warnings(monkeypatch):
 
     class Ctx:
         project_id = current
+        job_id = "job_teste"
 
     monkeypatch.setattr(tasks, "Builder", FakeBuilder)
     result = tasks._build(Ctx(), {}, "final")

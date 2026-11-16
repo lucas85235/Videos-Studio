@@ -56,9 +56,15 @@ async def _buffer_watch() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    import threading
+
+    from studio.core.graph import gc
     from studio.workers.jobs import get_runner
 
     get_runner().recover()
+    # Rotina: ao abrir o app, se o cache passou do limite (e a limpeza automática está ligada), limpa em segundo
+    # plano. Com tarefas na fila ela não roda; o próximo build tenta de novo.
+    threading.Thread(target=gc.auto_clean, name="limpeza-cache", daemon=True).start()
     from studio.workers.ops.routines import start_routines, stop_routines
 
     start_routines()  # rotinas automáticas (só agem com workers_enabled)
