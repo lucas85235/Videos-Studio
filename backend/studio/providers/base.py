@@ -7,6 +7,7 @@ transitória, o próximo da cadeia assume (README §8).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -32,6 +33,26 @@ class TransientError(ProviderError):
 
 class Refused(ProviderError):
     """O modelo recusou a tarefa (política). A cadeia segue para o próximo."""
+
+
+class NoBalance(ProviderError):
+    """A conta do serviço ficou sem saldo (recarregável a qualquer hora). A cadeia **não** segue: os outros modelos da
+    mesma conta falhariam igual. O provedor também não fica marcado como "cota esgotada hoje": depois de recarregar,
+    funciona de novo."""
+
+
+class Billed(ProviderError):
+    """O serviço aceitou o pedido (e pode ter cobrado), mas o resultado não chegou. A cadeia **não** segue: o próximo
+    modelo cobraria de novo. Quem chamou conta `cost_usd` como gasto e guarda `meta` (ex.: o request_id)."""
+
+    def __init__(self, message: str, *, cost_usd: float, meta: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.cost_usd = cost_usd
+        self.meta = meta or {}
+
+
+class Stopped(Billed):
+    """O usuário cancelou durante a espera. `cost_usd` é zero quando o pedido saiu da fila antes de começar."""
 
 
 @dataclass(frozen=True)
@@ -99,6 +120,15 @@ class TTSResult:
 @dataclass
 class ImageResult:
     path: Path
+    usage: Usage
+    model: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class VideoResult:
+    path: Path
+    seconds: float
     usage: Usage
     model: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
@@ -172,4 +202,22 @@ class ImageProvider(Provider):
 
 class AlignProvider(Provider):
     def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
+        raise NotImplementedError
+
+
+class VideoProvider(Provider):
+    """Image-to-video: anima uma imagem (o primeiro quadro) por alguns segundos (README §8.5)."""
+
+    def clip_seconds(self, seconds: float) -> int:
+        """Duração que o modelo aceita mais perto de `seconds` (cada modelo tem a sua lista)."""
+        return max(1, round(seconds))
+
+    def price(self, seconds: float) -> float:
+        """Preço em US$ de um clipe de `seconds` (já arredondado por `clip_seconds`). Sem chamada paga."""
+        return 0.0
+
+    def animate(self, *, image: Path, prompt: str, seconds: int, out_dir: Path,
+                should_stop: Callable[[], bool] | None = None) -> VideoResult:
+        """Gera o clipe. `should_stop` diz se o usuário cancelou (o provedor que espera na fila consulta a cada volta e
+        levanta `Stopped`)."""
         raise NotImplementedError

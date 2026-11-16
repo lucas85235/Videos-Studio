@@ -14,7 +14,7 @@ from studio.models import Channel
 from studio.providers import media_search
 from studio.workers.analytics import lessons as lessons_mod
 from studio.workers.jobs import JobContext, job
-from studio.workers.pipeline import authoring
+from studio.workers.pipeline import authoring, video_clips
 from studio.workers.pipeline.build import Builder
 
 log = logging.getLogger(__name__)
@@ -201,6 +201,21 @@ def run_preview(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
 @job("render")
 def run_render(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     return _build(ctx, payload, "final")
+
+
+@job("video_clips")
+def run_video_clips(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """Gera o vídeo IA das cenas-chave, sem passar do valor confirmado pelo usuário (`max_cost_usd`)."""
+    project_id = ctx.project_id
+    assert project_id
+    max_cost = float(payload.get("max_cost_usd") or 0.0)
+    builder = Builder(project_id, mode="preview", sink=ctx)
+    ctx.progress(0.0, "Gerando os clipes de vídeo IA")
+    result = video_clips.generate(builder, max_cost)
+    if not result["generated"] and not result["reused"] and result["errors"]:
+        raise RuntimeError("nenhum clipe de vídeo IA saiu:\n- " + "\n- ".join(result["errors"][:10]))
+    ctx.progress(1.0, "Clipes prontos: atualize a prévia para ver")
+    return result
 
 
 @job("autopilot")

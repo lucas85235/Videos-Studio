@@ -123,6 +123,10 @@ export type TimelineScene = {
    * (com transparência), caminhos relativos como `src`. Ausente: a cena usa o Ken Burns.
    */
   parallax?: { layers: string[] };
+  /** Vídeo IA pronto da cena-chave (caminho relativo do clipe): toca no lugar da imagem. Ausente: a imagem. */
+  video?: string;
+  /** Duração do clipe em segundos (para cobrir a cena: um pouco mais lento e, se faltar, o último quadro). */
+  video_seconds?: number;
 };
 
 export type SceneTreatment = 'whiteboard' | 'collage' | 'screen';

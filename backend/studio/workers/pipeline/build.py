@@ -61,7 +61,7 @@ from studio.models import Channel
 from studio.providers import kokoro, registry
 from studio.providers.align import map_to_script, narration_problems, word_error_rate
 from studio.providers.base import Word
-from studio.workers.pipeline import dubbing
+from studio.workers.pipeline import dubbing, video_clips
 from studio.workers.pipeline.lighting import names_light, strip_light
 
 log = logging.getLogger(__name__)
@@ -1269,24 +1269,25 @@ class Builder:
             raise BuildError("falhas na geração:\n- " + "\n- ".join(lines[:20]))
         resolve_reused_images(doc, images)
         layers = self.parallax(images)
+        videos = video_clips.build_clips(self, images)  # só do cache: o build nunca gera vídeo IA (é pago)
         if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
             self.warnings.append(EDITORIAL_WARNING)
 
         results: dict[str, Any] = {}
         extra: dict[str, Any] = {}
         if self.multi_track:
-            results, extra = self._run_multi_track(tts_out, images, layers)
+            results, extra = self._run_multi_track(tts_out, images, layers, videos)
         for lang in [] if self.multi_track else self.langs:
             self._check()
-            clips: dict[str, NarrationClip] = {}
+            narration: dict[str, NarrationClip] = {}
             hashes: dict[str, str] = {}
             for seg in doc.segments:
                 h, out = tts_out[(seg.id, lang)]
                 words = self.alignment(seg.id, lang, h, out)
-                clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=out["duration"], words=words)
+                narration[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=out["duration"], words=words)
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
-            timeline = build_timeline(doc, self.style, lang, clips, images, layers)
+            timeline = build_timeline(doc, self.style, lang, narration, images, layers, videos)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")
@@ -1377,7 +1378,8 @@ class Builder:
 
     def _run_multi_track(self, tts_out: dict[tuple[str, str], tuple[str, dict[str, Any]]],
                          images: dict[str, str | None],
-                         layers: dict[str, list[str]] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+                         layers: dict[str, list[str]] | None = None,
+                         videos: dict[str, dict[str, Any]] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         """Uma imagem (a do idioma principal) e uma faixa de áudio por idioma, todas com a mesma duração.
 
         O tempo de cada segmento é o da narração principal, esticado só quando outro idioma não cabe nem acelerado
@@ -1409,7 +1411,7 @@ class Builder:
             clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=fits[seg.id].slot, words=words)
             hashes[seg.id] = h
             self._tick("Alinhamento das palavras")
-        timeline = build_timeline(doc, self.style, primary, clips, images, layers)
+        timeline = build_timeline(doc, self.style, primary, clips, images, layers, videos)
         self.warnings += timeline.pop("warnings", [])
         starts = {n["segment_id"]: n["start"] for n in timeline["narration"]}
         placed = [
@@ -1596,6 +1598,14 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
             result["parallax_unavailable"] = depth_reason
         elif not depth_mod.model_ready():
             result["depth_model_mb"] = depth_mod.MODEL_MB
+    # Vídeo IA (só quando há cena marcada): a prévia e a renderização não geram clipe; aqui só o aviso do que falta.
+    marked = video_clips.video_scenes(builder.doc)
+    if marked:
+        missing_clips = [s.id for s in marked if video_clips.blocked_reason(builder.doc, s) is None
+                         and video_clips.cached_clip(builder, s, video_clips.known_image(builder, s)) is None]
+        result["video_scenes"] = [s.id for s in marked]
+        if missing_clips:
+            result["video_missing"] = missing_clips
     return result
 
 

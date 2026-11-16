@@ -467,9 +467,11 @@ def build_timeline(
     narration: dict[str, NarrationClip],
     images: dict[str, str | None],
     parallax: dict[str, list[str]] | None = None,
+    clips: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Monta a timeline completa de um idioma (em quadros). `parallax`: camadas por cena (fundo → frente) para o
-    movimento "parallax"; cena com parallax sem camadas (ou sem imagem) cai no Ken Burns."""
+    movimento "parallax"; cena com parallax sem camadas (ou sem imagem) cai no Ken Burns. `clips`: vídeo IA pronto
+    por cena ({"path", "seconds"})."""
     fps = style.format.fps
     if not doc.segments:
         raise TimelineError("o projeto não tem roteiro")
@@ -556,6 +558,12 @@ def build_timeline(
                     "words": [{"text": w.text, "from": frame(w.start) - f0, "to": frame(w.end) - f0} for w in scene_words],
                 }
             )
+            clip = (clips or {}).get(scene.id)
+            if clip:
+                # Só na cena com clipe pronto: as outras geram o mesmo dict (e o mesmo hash de bloco) de antes.
+                resolved["video"] = clip["path"]
+                if clip.get("seconds"):
+                    resolved["video_seconds"] = round(float(clip["seconds"]), 3)
             _spoken_timing(resolved, scene, raw_words, lang, f0, frame, fps)
             scenes_out.append(resolved)
             sfx.extend(_scene_sfx(style, scene, resolved, s0, fps, first=(index == 0 and k == 0)))

@@ -52,6 +52,7 @@ import {
 } from './core/model';
 import { RealMediaPanel } from './RealMediaPanel';
 import { StoryboardReview } from './StoryboardReview';
+import { SceneVideoControl, VideoClipsPanel } from './VideoClipsPanel';
 import type { TabNavigation } from './types';
 
 const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'zoom_to', 'drift', 'static', 'parallax'];
@@ -123,6 +124,16 @@ const SceneThumb: React.FC<{
   onOpen: (src: string) => void;
 }> = ({ scene, index, src, primaryLang, short, loading, reuseNumber, mediaAsset, onOpen }) => {
   const box = `relative overflow-hidden rounded-lg border border-line bg-canvas ${short ? 'aspect-[9/16] w-28 shrink-0' : 'aspect-video w-full'}`;
+  // A cena-chave de vídeo IA mostra a imagem (o primeiro quadro do clipe), como a cena de imagem.
+  const isImage = scene.kind === 'image' || scene.kind === 'video';
+  const videoBadge =
+    scene.kind === 'video' ? (
+      <span className="pointer-events-none absolute right-1 top-1">
+        <Badge tone="accent" title="Vídeo IA: a imagem é o primeiro quadro do clipe">
+          Vídeo IA
+        </Badge>
+      </span>
+    ) : null;
   const realBadge = (
     <span className="pointer-events-none absolute left-1 top-1">
       <Badge tone="info" title="Mídia real (no lugar da imagem de IA)">
@@ -130,7 +141,7 @@ const SceneThumb: React.FC<{
       </Badge>
     </span>
   );
-  if (mediaAsset && scene.kind === 'image') {
+  if (mediaAsset && isImage) {
     return (
       <button type="button" className={`${box} group`} onClick={() => onOpen(mediaAsset)} aria-label={`Ampliar a mídia real da cena ${index}`}>
         <img src={fileUrl(mediaAsset)} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]" loading="lazy" />
@@ -138,15 +149,16 @@ const SceneThumb: React.FC<{
       </button>
     );
   }
-  if (src && !(mediaAsset && scene.kind !== 'image')) {
+  if (src && !(mediaAsset && !isImage)) {
     return (
       <button type="button" className={`${box} group`} onClick={() => onOpen(src)} aria-label={`Ampliar a imagem da cena ${index}`}>
         <img src={fileUrl(src)} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]" loading="lazy" />
+        {videoBadge}
       </button>
     );
   }
   const overlay = scene.overlay_text?.[primaryLang] ?? Object.values(scene.overlay_text ?? {})[0] ?? '';
-  if (scene.kind !== 'image') {
+  if (!isImage) {
     const card = resolveCard(scene.card, primaryLang, primaryLang);
     const big = card.value || (card.items?.length ? card.items.map((i) => i.value || i.label).join(' × ') : '') || overlay || scene.number;
     return (
@@ -566,6 +578,13 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
       {reuseInfo}
       <CardSummary scene={scene} primaryLang={primaryLang} />
       <RealMediaPanel scene={scene} index={index} doc={doc} projectId={projectId} disabled={scene.locked || run.isPending} blockedReason={blockedReason} />
+      <SceneVideoControl
+        projectId={projectId}
+        scene={scene}
+        index={index}
+        disabled={disabled}
+        hasMedia={Boolean(mediaAsset) || Boolean(scene.visual.media)}
+      />
       {directed.length ? <p className="text-xs text-subtle">{directed.join(' · ')}</p> : null}
       {showPrompt ? promptBlock : null}
       {short ? null : <div className="grid grid-cols-1 gap-2 @md:grid-cols-3">{selects}</div>}
@@ -743,6 +762,7 @@ export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   return (
     <div className="flex flex-col gap-6">
       <StoryboardReview detail={detail} busy={busy} numbers={numbers} onShowScene={showScene} />
+      <VideoClipsPanel projectId={doc.id} disabled={Boolean(blockedReason) || busy} onShowScene={showScene} />
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-card/95 px-3 py-2.5 backdrop-blur-md">
         <MonitorPlay size={16} aria-hidden="true" className="shrink-0 text-muted" />
         <div className="min-w-0 flex-1 text-sm" role="status">

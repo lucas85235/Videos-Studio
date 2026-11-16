@@ -27,6 +27,7 @@ from studio.api import (
     routes_publish,
     routes_radar,
     routes_shorts,
+    routes_video,
     routes_visual,
 )
 from studio.config import REPO_ROOT, get_settings
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_checks.router)
     app.include_router(routes_visual.router)
     app.include_router(routes_import.router)
+    app.include_router(routes_video.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

@@ -33,6 +33,7 @@ from studio.providers.tts import (
     Qwen3LocalTTS,
     WindowsSapiTTS,
 )
+from studio.providers.video import MockVideo, kling_3_turbo, kling_turbo
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ _register(
     PlaceholderImage(),
     FasterWhisperAligner(),
     EstimateAligner(),
+    kling_turbo(),
+    kling_3_turbo(),
+    MockVideo(),
 )
 
 
@@ -82,12 +86,14 @@ DEV_FALLBACKS: dict[str, list[str]] = {
     "tts": ["windows_sapi", "mock_tts"],
     "image": ["placeholder"],
     "align": ["estimate"],
+    "video": [],  # sem vídeo IA a cena fica com a imagem e o movimento de câmera (nada é gerado nem cobrado)
 }
 OFFLINE_ONLY: dict[str, list[str]] = {
     "llm": ["mock_llm"],
     "tts": ["mock_tts"],
     "image": ["placeholder"],
     "align": ["estimate"],
+    "video": ["mock_video"],
 }
 # Voz da prévia: local e grátis, para conferir o conteúdo antes de gastar a cota da voz final (README §8.4).
 PREVIEW_TTS_CHAIN: list[str] = ["kokoro_local"]
@@ -96,6 +102,7 @@ DEFAULT_CHAINS: dict[str, list[str]] = {
     "tts": ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"],
     "image": ["codex_cli"],
     "align": ["faster_whisper"],
+    "video": ["fal_kling_turbo", "fal_kling_3"],
 }
 
 

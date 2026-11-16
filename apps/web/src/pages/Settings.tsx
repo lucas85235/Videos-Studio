@@ -10,6 +10,7 @@ import {
   Cpu,
   Eraser,
   FileText,
+  Film,
   FolderOpen,
   HardDrive,
   Image,
@@ -53,15 +54,17 @@ import { ImportCanaisSection } from './ops/ImportCanais';
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
 type Costs = { by_provider: { provider: string; kind: string; units: number; cost_usd: number; calls: number }[]; total_usd: number };
 
-const KINDS = ['llm', 'tts', 'image', 'align', 'publish'] as const;
+const KINDS = ['llm', 'tts', 'image', 'video', 'align', 'publish'] as const;
 type Kind = (typeof KINDS)[number];
 
-const KIND_ICON: Record<Kind, LucideIcon> = { llm: FileText, tts: AudioLines, image: Image, align: Captions, publish: Upload };
+const KIND_ICON: Record<Kind, LucideIcon> = { llm: FileText, tts: AudioLines, image: Image, video: Film, align: Captions, publish: Upload };
 
 const KIND_DESCRIPTION: Record<Kind, string> = {
   llm: 'Escreve roteiros, traduções, títulos e as edições pedidas ao agente. Usa o Claude da sua conta (Claude Code logado).',
   tts: 'Gera a narração. A voz grátis vem da chave do Gemini (Google AI Studio). Sem um provedor real, a voz sai em modo prévia (voz do Windows).',
   image: 'Gera as imagens das cenas. As imagens vêm do Codex (ChatGPT Plus). Sem um provedor real, as imagens saem em modo prévia (procedurais).',
+  video:
+    'Opcional e pago por segundo: anima a imagem das poucas cenas-chave que você marcar (aba Cenas), sempre com o custo mostrado e confirmado antes. Sem chave, as cenas ficam com a imagem e o movimento de câmera.',
   align: 'Sincroniza cada palavra da legenda com a narração.',
   publish: 'Envia os vídeos e agenda as publicações.',
 };
@@ -95,6 +98,7 @@ const DEFAULT_CHAIN: Record<Kind, string[]> = {
   llm: ['claude_code'],
   tts: ['gemini_tts', 'google_chirp3hd', 'qwen3_tts_local'],
   image: ['codex_cli'],
+  video: ['fal_kling_turbo', 'fal_kling_3'],
   align: ['faster_whisper'],
   publish: ['youtube'],
 };

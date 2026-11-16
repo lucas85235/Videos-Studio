@@ -586,6 +586,20 @@ O YouTube aceita faixas de áudio dubladas no mesmo vídeo, somando views e insc
 - **Local não é viável para produção** em 8 GB/60 W: Wan 2.2 5B a 720p pede 24 GB; HunyuanVideo 1.5 pede 14 GB; o LTX-2.5 é enorme. Experimentos com Wan2GP a 480p levam ~2 min por clipe de 2–3 s, com muitos descartes.
 - **Produção**: fal.ai (Kling, Veo, Seedance) só em cenas-chave + **Ken Burns/parallax** nas imagens.
 - **Parallax 2.5D** (feito em 15/11/2026): movimento de câmera `parallax`, escolhível nos pesos de câmera do estilo ou em cada cena. O backend estima a profundidade com o **Depth Anything V2 Small** (Apache-2.0; Base/Large são CC-BY-NC e ficam de fora) em ONNX pelo `onnxruntime` (já vem com o `kokoro-onnx`), só na CPU (~2 s por imagem). O modelo (`onnx-community/depth-anything-v2-small`, `onnx/model.onnx`, 99 MB, commit fixado) é baixado na primeira cena com parallax para `<dados>/models/depth-anything-v2-small`, com conferência de tamanho e SHA-256. A imagem vira 3 camadas (fundo opaco, meio e frente com borda suave); o "buraco" atrás de cada camada da frente é preenchido com as cores em volta. Cache no grafo: `depth` (mapa, pelo hash do arquivo da imagem e do modelo) e `parallax` (camadas, pelo hash da imagem e do mapa; a limpeza do cache pode apagar as sem uso). No Remotion, cada camada aproxima e anda de lado mais quanto mais perto está. Sem o modelo (sem `onnxruntime`, modo offline, sem internet, disco cheio ou download corrompido) a cena usa o Ken Burns e o build avisa uma vez; camadas já guardadas no cache continuam valendo, e o plano da prévia já diz o motivo. O download mostra o andamento e pode ser cancelado. Mapa plano (imagem uniforme) não vira camadas: Ken Burns. O storyboard e o estilo gerado por IA não escolhem parallax sozinhos (só o usuário ou o editor a pedido dele), e cenas `document` não usam parallax. A gradação, o desfoque e a aberração cromática valem para o conjunto das camadas. Mídia real só usa parallax quando a cena pede (o sorteio dela fica nos movimentos calmos).
+- **Como funciona no app** (15/11/2026): na aba Cenas, "Animar com vídeo IA" marca a cena (tipo `video`); o storyboard
+  sugere as batidas com movimento (`video_motion`) e "Marcar as sugeridas" aplica. A imagem da cena é o primeiro quadro.
+  O painel "Vídeo IA nas cenas-chave" mostra o custo do que falta (e o pior caso, se o primeiro modelo falhar) e só gera
+  depois da confirmação; o job para antes de passar do valor confirmado. A prévia e o vídeo final **nunca** geram clipe:
+  usam os que estão no cache (chave: o arquivo da imagem, o movimento e a duração) e, sem clipe, a cena fica com a
+  imagem e o movimento de câmera. Cadeia padrão (`art.video_chain`): Kling 2.5 Turbo Pro (US$ 0,35 por 5 s) → Kling 3
+  Turbo Standard (US$ 0,112/s), pela fila assíncrona do fal.ai, com a chave `FAL_KEY` ou a do cofre. Limite por vídeo
+  (`art.video_scenes`): 2 no Short e 6 no longo. Cena com mídia real não é animada.
+  Cobrança: cada cena paga no máximo um pedido. Depois que a fila do fal.ai aceita, uma falha do nosso lado (tempo
+  limite, rede, download) não passa para o outro modelo: o resultado é buscado de novo pelo mesmo pedido e, se não vier,
+  o preço conta no gasto (e nos custos do app). Só o pedido cancelado ainda na fila não conta. Sem saldo, o job para
+  sem marcar o fal.ai como esgotado no dia (recarregou, funciona); 429 espera e tenta de novo. Cancelar o job cancela
+  o pedido na fila. Clipe pago só sai de imagem final (a imagem procedural de teste é recusada) e o clipe de teste do
+  modo offline deixa de valer quando há gerador de verdade.
 
 ### 8.6 Regras de operação do notebook
 - Jobs pesados **ligado na tomada**, no modo de desempenho da Samsung.

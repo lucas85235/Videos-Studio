@@ -443,6 +443,9 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
             scene = _scene(doc, op.scene_id)
             if op.kind not in SCENE_KINDS:
                 raise OpError(f"tipo de cena inválido: {op.kind}")
+            if op.kind == "video" and scene.kind != "video":
+                # Vídeo IA tem limite por vídeo e custo confirmado: só pelo botão da cena (rota do vídeo IA).
+                raise OpError("para animar a cena com vídeo IA, use \"Animar com vídeo IA\" na aba Cenas")
             scene.kind = op.kind  # type: ignore[assignment]
             if op.number is not None:
                 scene.number = op.number

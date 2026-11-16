@@ -253,6 +253,7 @@ export const PROVIDER_KIND_LABELS: LabelMap = {
   llm: 'Roteiro (IA de texto)',
   tts: 'Voz',
   image: 'Imagens',
+  video: 'Vídeo IA',
   align: 'Sincronia das legendas',
   publish: 'Publicação',
 };
