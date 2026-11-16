@@ -9,7 +9,7 @@ import { TODAY_KEY } from './today/shared';
 
 const FILTERS: { id: CommentFilter; label: string }[] = [
   { id: 'nao_respondidos', label: 'Não respondidos' },
-  { id: 'perguntas', label: 'Perguntas' },
+  { id: 'perguntas', label: 'Perguntas novas' },
   { id: 'nao_lidos', label: 'Não lidos' },
   { id: 'todos', label: 'Todos' },
 ];
@@ -25,6 +25,8 @@ const STATE_TEXT: Record<InboxState['state'], string> = {
 };
 
 const KEY = ['comments'] as const;
+const PAGE = 100;
+const MAX = 500; // limite da rota
 
 /** Avisos por canal: falta de permissão pede novo vínculo, como em Desempenho. */
 const InboxNotices: React.FC<{ states: InboxState[] }> = ({ states }) => {
@@ -40,7 +42,7 @@ const InboxNotices: React.FC<{ states: InboxState[] }> = ({ states }) => {
             <Link to="/canais" className="font-medium underline">
               Vincule o canal de novo em Canais
             </Link>{' '}
-            para ler e responder comentários pelo Vulto ({missing.map((s) => s.name).join(', ')}). O acesso atual não tem a permissão de comentários do YouTube.
+            para responder comentários pelo Vulto ({missing.map((s) => s.name).join(', ')}). A leitura continua; o acesso atual não tem a permissão de responder.
           </p>
         ) : null}
         {others.map((s) => (
@@ -180,6 +182,8 @@ export const CommentsPage: React.FC = () => {
   const filterParam = params.get('filtro');
   const filter: CommentFilter = isFilter(filterParam) ? filterParam : 'nao_respondidos';
   const videoId = params.get('video') ?? '';
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => setLimit(PAGE), [channelId, filter, videoId]);
 
   const setParam = (key: string, value: string) =>
     setParams(
@@ -195,8 +199,9 @@ export const CommentsPage: React.FC = () => {
 
   const channels = useQuery({ queryKey: ['channels'], queryFn: () => api.get<Channel[]>('/api/channels') });
   const list = useQuery({
-    queryKey: [...KEY, channelId, filter, videoId],
-    queryFn: () => commentsApi.list({ channelId: channelId || null, filter, videoId: videoId || null }),
+    queryKey: [...KEY, channelId, filter, videoId, limit],
+    queryFn: () => commentsApi.list({ channelId: channelId || null, filter, videoId: videoId || null, limit }),
+    placeholderData: (prev) => prev,
   });
   const changed = () => {
     client.invalidateQueries({ queryKey: KEY });
@@ -214,7 +219,7 @@ export const CommentsPage: React.FC = () => {
     },
   });
   const readAll = useMutation({
-    mutationFn: () => commentsApi.markAllRead(channelId || null, filter),
+    mutationFn: () => commentsApi.markAllRead(channelId || null, filter, videoId || null),
     onSuccess: (res) => {
       changed();
       toast({ tone: 'info', title: res.changed ? `${res.changed} marcado(s) como lido(s)` : 'Nada para marcar' });
@@ -301,9 +306,17 @@ export const CommentsPage: React.FC = () => {
             </ul>
           )}
           {data.total > data.items.length ? (
-            <p className="text-[13px] text-muted">
-              Mostrando {data.items.length} de {data.total}. Marque os já vistos como lidos ou use os filtros para ver o resto.
-            </p>
+            <div className="flex flex-wrap items-center gap-3 text-[13px] text-muted">
+              <span>
+                Mostrando {data.items.length} de {data.total}.
+                {limit >= MAX ? ' Use os filtros (canal, vídeo) para ver o resto.' : ''}
+              </span>
+              {limit < MAX ? (
+                <Button size="sm" variant="ghost" onClick={() => setLimit((n) => Math.min(MAX, n + PAGE))} busy={list.isFetching}>
+                  Carregar mais
+                </Button>
+              ) : null}
+            </div>
           ) : null}
         </div>
       ) : null}

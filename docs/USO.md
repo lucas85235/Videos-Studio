@@ -100,13 +100,14 @@ No cartão do canal:
 A página **Comentários** (grupo Gestão) lê os comentários de todos os vídeos dos canais vinculados com o login do Google (o link público não lê comentários).
 
 - **Ler comentários novos** traz até 300 comentários por canal, os mais novos primeiro (1 unidade de cota a cada 100). Depois da primeira leitura, a rotina da manhã lê sozinha os novos.
-- Filtros: **Não respondidos** (o canal ainda não respondeu), **Perguntas** (tem "?" ou começa com como, qual, onde, por que…), **Não lidos** e **Todos**; dá para filtrar por vídeo.
+- Filtros: **Não respondidos** (o canal ainda não respondeu), **Perguntas novas** (perguntas sem resposta, ainda não lidas e que aceitam resposta: tem "?" ou começa com pergunta clara, como "por que", "qual", "como faz"), **Não lidos** e **Todos**; dá para filtrar por vídeo. A lista mostra 100 por vez (**Carregar mais** traz o resto, até 500).
 - **Sugerir resposta**: o Claude escreve uma resposta curta no tom da persona do canal (Canais › Persona), no idioma do comentário, sem inventar fatos. Você edita à vontade.
 - **Responder no YouTube** pede confirmação e só então publica a resposta em nome do canal (50 unidades de cota). A resposta é pública.
-- **Marcar como lido** fica só no Vulto (o YouTube não tem isso). Perguntas sem resposta e não lidas aparecem em **Hoje › Esperando você**; ler ou responder tira de lá.
+- **Marcar como lido** fica só no Vulto (o YouTube não tem isso). As mesmas **Perguntas novas** aparecem em **Hoje › Esperando você**; ler ou responder tira de lá. **Marcar todos como lidos** vale só para o canal, filtro e vídeo escolhidos.
 - A linha de cota mostra quanto os comentários gastaram hoje e o total que o Vulto contou (a cota de 10.000 unidades por dia é do projeto do Google Cloud, dividida entre todos os canais).
-- Se aparecer "sem permissão de comentários", vincule o canal de novo em Canais (a permissão `youtube.force-ssl` já vem no login do Vulto; o aviso só aparece se o acesso foi dado sem ela).
-- Em fios com muitas respostas o YouTube devolve só parte delas: se a resposta do canal não vier entre elas, o comentário aparece como não respondido até você marcar como lido.
+- Se aparecer "sem permissão de comentários", vincule o canal de novo em Canais (a permissão `youtube.force-ssl` já vem no login do Vulto; o aviso aparece se ela foi desmarcada na tela do Google). A leitura continua; só a resposta fica bloqueada, sem gastar cota. Acesso vencido ou revogado aparece como "sem acesso ao YouTube".
+- Se a resposta der "o YouTube não respondeu a tempo", ela pode ter sido publicada: confira em **Abrir no YouTube** antes de enviar de novo.
+- Em fios com muitas respostas o YouTube devolve só parte delas: se a resposta do canal não vier entre elas, o comentário continua em **Não respondidos** (marcar como lido tira de **Perguntas novas**, **Não lidos** e Hoje).
 
 ### Rotinas com o Vulto fechado
 

@@ -118,12 +118,19 @@ def _use(monkeypatch: pytest.MonkeyPatch, google: Google) -> None:
 
 
 @pytest.mark.parametrize("text", ["Como faz isso?", "qual o nome da música", "Alguém sabe onde fica.",
-                                  "Where is this place", "¿Dónde queda eso", "Legal. Quando sai a parte 2"])
+                                  "Where is this place", "¿Dónde queda eso", "Legal. Quando sai a parte 2",
+                                  "Por que ele fugiu", "Como vocês acharam isso", "Can you make part 2",
+                                  "How did they survive", "Quem é o narrador"])
 def test_is_question_true(text: str):
     assert inbox.is_question(text)
 
 
-@pytest.mark.parametrize("text", ["", "Vídeo incrível", "Comovente demais", "Qualidade top", "first"])
+@pytest.mark.parametrize("text", ["", "Vídeo incrível", "Comovente demais", "Qualidade top", "first",
+                                  # exclamações e afirmações que começam com palavra de pergunta
+                                  "Que vídeo incrível!", "Como sempre, ótimo conteúdo", "Quando vi o título já cliquei",
+                                  "Pode crer, mandou bem", "Quem viu até o fim deixa o like",
+                                  "Existe coisa melhor que isso kkk", "Can't wait for part 2", "What a video!",
+                                  "Won't stop watching", "Quanto mais assisto, melhor fica"])
 def test_is_question_false(text: str):
     assert not inbox.is_question(text)
 
@@ -371,12 +378,147 @@ def test_routes_end_to_end(monkeypatch: pytest.MonkeyPatch):
     assert res.json()["quota"]["comments"] == 51
 
     assert client.post("/api/comments/read", json={"ids": ["th_2"]}).json() == {"changed": 1}
-    assert client.post("/api/comments/read-all", json={"channel_id": "ch_a"}).json() == {"changed": 1}
+    assert client.post("/api/comments/read-all", json={"channel_id": "ch_a", "video_id": "outro"}).json() == {"changed": 0}
+    assert client.post("/api/comments/read-all", json={"channel_id": "ch_a", "video_id": "vid1"}).json() == {"changed": 1}
 
     _use(monkeypatch, Google(insert_status=403))
     res = client.post("/api/comments/th_2/reply", json={"text": "Oi", "confirm": True})
     assert res.status_code == 403 and "vincule de novo" in res.json()["detail"]
+    yt.set_comment_scope(yt.channel_key(YT_ID), True)  # vinculou de novo com a permissão
     _use(monkeypatch, Google(insert_status=400, error_body={"error": {"code": 400, "message": "x",
                                                                       "errors": [{"reason": "commentTextTooLong"}]}}))
     res = client.post("/api/comments/th_2/reply", json={"text": "Oi", "confirm": True})
     assert res.status_code == 502 and "longa demais" in res.json()["detail"]
+
+
+# --------------------------------------------------------------------------------------------
+# Correções da revisão: rotina, escopo, 401, envio incerto, filtro igual a Hoje, lido por vídeo
+# --------------------------------------------------------------------------------------------
+
+
+def test_morning_retries_channels_after_transient_error(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    _use(monkeypatch, Google())
+    inbox.refresh("ch_a", now=NOW)
+    quota = {"error": {"code": 403, "message": "quota", "errors": [{"reason": "quotaExceeded"}]}}
+    _use(monkeypatch, Google(list_status=403, error_body=quota))
+    lines = routines.step_comments(NOW)
+    assert inbox.channel_states("ch_a")[0]["state"] == "erro" and "cota" in lines[0]
+    google = Google()
+    _use(monkeypatch, google)
+    routines.step_comments(NOW)  # manhã seguinte: lê de novo e volta a "ok"
+    assert len(google.lists) == 1 and inbox.channel_states("ch_a")[0]["state"] == "ok"
+
+
+def test_unauthorized_is_sem_token_not_scope(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    body = {"error": {"code": 401, "message": "Invalid Credentials", "errors": [{"reason": "authError"}]}}
+    _use(monkeypatch, Google(list_status=401, error_body=body))
+    res = inbox.refresh("ch_a", now=NOW)["channels"][0]
+    assert res["state"] == "sem_token" and "venceu ou foi revogado" in res["error"]
+    assert not [w for w in waiting(NOW) if w["kind"] == "comments"]  # não pede a permissão de comentários
+
+
+def test_scope_unchecked_at_link_reads_but_refuses_reply_without_spending(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    info = {"channel_id": YT_ID, "vulto_channel_id": "ch_a"}
+    yt._note_comment_scope(info, f"{yt.READONLY_SCOPE} {yt.ANALYTICS_SCOPE}")  # desmarcou youtube.force-ssl
+    assert info["warnings"] and not yt.has_comment_scope(yt.channel_key(YT_ID))
+    google = Google()
+    _use(monkeypatch, google)
+    res = inbox.refresh("ch_a", now=NOW)["channels"][0]
+    assert res["state"] == "sem_escopo" and res["new"] == 3  # a leitura funciona, o aviso fica
+    assert any("responder comentários" in w["text"] for w in waiting(NOW) if w["kind"] == "comments")
+    with pytest.raises(inbox.ScopeMissing):
+        inbox.reply("th_1", "Oi", now=NOW)
+    assert google.inserts == [] and inbox.quota_today()["comments"] == 1  # recusou sem gastar 50
+    assert inbox.channel_states("ch_a")[0]["state"] == "sem_escopo"
+
+    # Vincular de novo com a permissão limpa o aviso na hora.
+    yt.save_channel_token(YT_ID, "rt2", "Canal")
+    yt._note_comment_scope({"channel_id": YT_ID, "vulto_channel_id": "ch_a"}, f"{yt.SCOPES} {yt.READONLY_SCOPE}")
+    assert inbox.channel_states("ch_a")[0]["state"] == "ok"
+    assert not any("Vincular" in w["text"] for w in waiting(NOW) if w["kind"] == "comments")
+
+
+def test_reply_403_scope_survives_next_read_and_relink_clears(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    _use(monkeypatch, Google())
+    inbox.refresh("ch_a", now=NOW)
+    _use(monkeypatch, Google(insert_status=403))
+    with pytest.raises(inbox.ScopeMissing):
+        inbox.reply("th_1", "Oi", now=NOW)
+    google = Google()
+    _use(monkeypatch, google)
+    assert inbox.refresh("ch_a", now=NOW)["channels"][0]["state"] == "sem_escopo"  # a leitura não apaga o aviso
+    assert routines.step_comments(NOW) == [] and len(google.lists) == 2  # e a rotina segue lendo o canal
+    yt.save_channel_token(YT_ID, "rt2", "Canal")  # vínculo novo troca o token
+    yt._note_comment_scope({"channel_id": YT_ID, "vulto_channel_id": "ch_a"}, f"{yt.SCOPES} {yt.READONLY_SCOPE}")
+    assert inbox.refresh("ch_a", now=NOW)["channels"][0]["state"] == "ok"
+
+
+def test_reply_success_clears_old_error_state(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    _use(monkeypatch, Google())
+    inbox.refresh("ch_a", now=NOW)
+    inbox._save_state("ch_a", state=inbox.ERRO, error="cota")
+    inbox.reply("th_1", "Oi", now=NOW)
+    assert inbox.channel_states("ch_a")[0]["state"] == "ok"
+
+
+def test_reply_timeout_counts_quota_and_warns_it_may_be_published(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    _use(monkeypatch, Google())
+    inbox.refresh("ch_a", now=NOW)
+    google = Google()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and str(request.url).startswith(f"{yt.API}/comments"):
+            raise httpx.ReadTimeout("tempo esgotado", request=request)
+        return google(request)
+
+    monkeypatch.setattr(yt, "new_client", lambda timeout=60: httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(yt.YouTubeError, match="pode ter sido publicada"):
+        inbox.reply("th_1", "Oi", now=NOW)
+    assert inbox.quota_today()["comments"] == 1 + inbox.REPLY_COST
+
+    def offline(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and str(request.url).startswith(f"{yt.API}/comments"):
+            raise httpx.ConnectError("sem rede", request=request)
+        return google(request)
+
+    monkeypatch.setattr(yt, "new_client", lambda timeout=60: httpx.Client(transport=httpx.MockTransport(offline)))
+    with pytest.raises(yt.YouTubeError, match="não foi enviada"):
+        inbox.reply("th_1", "Oi", now=NOW)
+    assert inbox.quota_today()["comments"] == 1 + inbox.REPLY_COST  # nada saiu: não conta
+
+
+def test_list_timeout_counts_the_failed_page():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("tempo esgotado", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http, pytest.raises(yt.YouTubeError) as err:
+        inbox.fetch_threads(http, "at", YT_ID)
+    assert err.value.units == 1 and inbox.quota_today()["comments"] == 1
+
+
+def test_questions_filter_matches_today_count(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    threads = [_comment("1", "@a", "Por que isso?"), _comment("2", "@b", "Qual a fonte?", when="2026-11-14T09:00:00Z"),
+               _comment("3", "@c", "Onde fica?", can_reply=False, when="2026-11-14T08:00:00Z")]
+    _use(monkeypatch, Google(threads))
+    inbox.refresh("ch_a", now=NOW)
+    inbox.mark_read(["th_2"])
+    listed = inbox.list_comments("ch_a", "perguntas")
+    (item,) = [w for w in waiting(NOW) if w["kind"] == "comments"]
+    assert [c["id"] for c in listed["items"]] == ["th_1"] and listed["counts"]["perguntas"] == 1
+    assert item["text"].startswith("Responder 1 pergunta")
+
+
+def test_mark_all_read_respects_video(monkeypatch: pytest.MonkeyPatch):
+    _channel()
+    threads = [_comment("1", "@a", "Top"), _comment("2", "@b", "Show", video="vid2")]
+    _use(monkeypatch, Google(threads))
+    inbox.refresh("ch_a", now=NOW)
+    assert inbox.mark_all_read("ch_a", "todos", "vid1") == 1
+    assert [c["id"] for c in inbox.list_comments("ch_a", "nao_lidos")["items"]] == ["th_2"]

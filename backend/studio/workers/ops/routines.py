@@ -378,19 +378,20 @@ def step_radar(now: datetime) -> list[str]:
 
 
 def step_comments(now: datetime) -> list[str]:
-    """Lê os comentários novos dos canais cuja caixa de comentários já foi usada (já leram uma vez e o acesso estava
-    ok). Custa 1 a 3 unidades de cota por canal; perguntas sem resposta aparecem em Hoje."""
+    """Lê os comentários novos dos canais cuja caixa de comentários já foi usada (`inbox.in_use`), qualquer que seja o
+    último estado: uma falha passageira (cota do dia, rede, token) é tentada de novo na manhã seguinte, como a coleta de
+    métricas. Custa 1 a 3 unidades de cota por canal; perguntas sem resposta aparecem em Hoje."""
     from studio.workers.comments import inbox
 
     with session_scope() as s:
         ids = [c.id for c in s.query(Channel).order_by(Channel.name).all()
-               if _has_youtube(c.settings) and ((c.settings or {}).get("comments") or {}).get("state") == inbox.OK]
+               if _has_youtube(c.settings) and inbox.in_use(c.settings)]
     if not ids:
         return []
     lines: list[str] = []
     for cid in ids:
         res = inbox.refresh(cid, now=now)["channels"][0]
-        if res.get("state") != inbox.OK:
+        if res.get("state") not in (inbox.OK, inbox.SEM_ESCOPO):  # sem escopo lê normalmente; o aviso fica em Hoje
             lines.append(f"comentários do {res['name']}: {res.get('error') or res.get('state')}")
         elif res.get("new"):
             lines.append(f"{res['new']} comentário(s) novo(s) no {res['name']}")

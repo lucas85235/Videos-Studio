@@ -3,15 +3,19 @@
 - Leitura: `commentThreads.list` com `allThreadsRelatedToChannelId` (fios de todos os vídeos do canal), `part=snippet,
   replies`, 100 por página, do mais novo para o mais antigo. Custa 1 unidade de cota por página.
 - Resposta: `comments.insert` com `snippet.parentId` = comentário principal do fio. Custa 50 unidades e exige o escopo
-  `youtube.force-ssl`, que já está nos escopos do Vulto desde o primeiro envio. Token sem ele (403
-  insufficientPermissions) não é erro mudo: o canal fica "sem escopo" e a tela (e Hoje) pedem para vincular de novo,
-  como faz a coleta de métricas.
+  `youtube.force-ssl`, que já está nos escopos do Vulto desde o primeiro envio. Na tela de consentimento a pessoa pode
+  desmarcar esse escopo (a leitura segue pelo `youtube.readonly`): o vínculo guarda no token se ele veio
+  (`yt.has_comment_scope`), e sem ele, ou depois de um 403 insufficientPermissions, o canal fica "sem escopo": a tela
+  (e Hoje) pedem para vincular de novo e a resposta é recusada antes de gastar cota. Um 401 é acesso vencido ou
+  revogado ("sem token"), não falta de escopo.
 - A resposta só sai depois de você confirmar na tela (`confirm=True`); a IA só sugere o texto, no tom da persona do
   canal, e nada vai ao YouTube sem você.
 - "Lido", a sugestão e a resposta enviada ficam só no Vulto (a API não tem "marcar como lido").
 - "Respondido": o canal tem resposta no fio (entre as respostas que a API devolve junto, ou enviada pelo app). Num fio
   com muitas respostas a API devolve só parte delas; se a do canal não estiver entre elas, o fio aparece como não
-  respondido até você marcar como lido.
+  respondido (marcar como lido tira o fio de "Perguntas", de "Não lidos" e de Hoje, mas não de "Não respondidos").
+- "Perguntas" (o filtro e a pendência de Hoje usam a mesma regra, `_query`): pergunta sem resposta, ainda não lida e
+  que aceita resposta.
 
 Toda chamada soma a cota gasta no medidor do YouTube (`ProviderUsage`/`CostEntry`, provedor "youtube", tipo
 "comentarios"). A cota é por projeto do Google Cloud: todos os canais dividem as 10.000 unidades do dia.
@@ -53,21 +57,43 @@ class ScopeMissing(yt.YouTubeError):
     """O token do canal não tem o escopo `youtube.force-ssl` (vincular de novo resolve)."""
 
 
+class TokenInvalid(yt.YouTubeError):
+    """401 do YouTube: o acesso do canal venceu ou foi revogado (vincular de novo resolve)."""
+
+
+SCOPE_MESSAGE = "o acesso do canal não tem a permissão de comentários; vincule de novo em Canais"
+
+
 # --------------------------------------------------------------------------------------------
 # Perguntas
 # --------------------------------------------------------------------------------------------
 
+# Sem "?", só conta começo de frase que pergunta de verdade. Palavras que também abrem exclamação ou afirmação
+# ("Que vídeo!", "Como sempre", "Quando vi", "Pode crer", "What a video", "Can't wait") só contam com o verbo da
+# pergunta logo depois. O fim `(?![\w'’])` evita casar "can" em "can't".
 _QUESTION_START = re.compile(
-    r"^\s*(como|quando|onde|aonde|por ?que|porque|qual|quais|quem|quanto|quantos|quantas|o que|oq|vc sabe|voc[eê] sabe|"
-    r"algu[eé]m sabe|tem como|d[aá] pra|da para|existe|ser[aá] que|pode|poderia|"
-    r"how|what|why|when|where|who|which|can|could|is there|are there|do you|does|did|will|would|"
-    r"c[oó]mo|qu[eé]|cu[aá]ndo|d[oó]nde|por qu[eé]|cu[aá]l|qui[eé]n|cu[aá]nto)\b",
+    r"^\s*(?:"
+    # português
+    r"por ?qu[eê]|pq|qual|quais|quantos|quantas|quanto (?:custa|tempo|vale|dura|ganha|tem|[eé])|onde|aonde|"
+    r"o que (?:[eé]|significa|aconteceu|acontece|voc[eê]s? acha|vcs? acha)|"
+    r"como (?:faz|fa[cç]o|fazer|faria|funciona|consigo|consegue|posso|pode|eu|vcs?|voc[eê]s?|se faz)|"
+    r"quando (?:vai|vem|sai|lan[cç]a|tem|ser[aá]|[eé] que|chega)|quem (?:[eé]|sabe|foi|fez|canta|narra)|"
+    r"algu[eé]m sabe|vcs? sabe|voc[eê]s? sabe|tem como|d[aá] pra|da para|ser[aá] que|"
+    r"pode(?:ria)? (?:me|nos|fazer|falar|explicar|dizer|mostrar|indicar)|"
+    # inglês
+    r"why|which|how (?:do|does|did|can|could|to|much|many|long|is|are|was|were|old)|"
+    r"what (?:is|are|was|were|does|do|did|if|about|happened)|where (?:is|are|was|do|does|did|can)|"
+    r"when (?:is|are|was|does|do|did|will)|who (?:is|was|are|did|does|made)|"
+    r"(?:can|could|will|would|do|does|did) (?:you|i|we|someone|anyone|he|she|they|it|this)|is there|are there|"
+    # espanhol
+    r"por qu[eé]|cu[aá]l|cu[aá]les|cu[aá]nto|d[oó]nde|c[oó]mo (?:se|hago|puedo|funciona)|qui[eé]n (?:es|sabe)"
+    r")(?![\w'’])",
     re.IGNORECASE,
 )
 
 
 def is_question(text: str) -> bool:
-    """Pergunta: tem "?" (inclusive o "¿" do espanhol) ou alguma frase começa com palavra de pergunta."""
+    """Pergunta: tem "?" (inclusive o "¿" do espanhol) ou alguma frase começa com pergunta clara."""
     if not text:
         return False
     if "?" in text or "¿" in text:
@@ -131,8 +157,10 @@ def _message(resp: httpx.Response) -> str:
 def _error(resp: httpx.Response, action: str) -> yt.YouTubeError:
     """Erro do YouTube em texto simples. Escopo faltando vira `ScopeMissing`."""
     reasons = _reasons(resp)
-    if resp.status_code == 401 or reasons & _SCOPE_REASONS:
-        return ScopeMissing("o acesso do canal não tem a permissão de comentários; vincule de novo em Canais")
+    if reasons & _SCOPE_REASONS:  # 403 insufficientPermissions
+        return ScopeMissing(SCOPE_MESSAGE)
+    if resp.status_code == 401:  # token inválido, vencido ou revogado
+        return TokenInvalid("o acesso do canal ao YouTube venceu ou foi revogado; vincule de novo em Canais")
     if reasons & _QUOTA_REASONS:
         return yt.YouTubeError("a cota do YouTube de hoje acabou; tente de novo amanhã")
     if "commentsDisabled" in reasons:
@@ -175,6 +203,8 @@ def fetch_threads(http: httpx.Client, token: str, youtube_id: str, *, max_pages:
         try:
             resp = http.get(f"{yt.API}/commentThreads", params=params, headers={"Authorization": f"Bearer {token}"})
         except httpx.HTTPError as exc:
+            if not _never_sent(exc):  # o pedido pode ter chegado ao Google: conta na cota
+                units += LIST_COST
             _spend(units)
             raise _with_units(yt.YouTubeError(f"sem resposta do YouTube: {exc}"), units) from exc
         units += LIST_COST  # a chamada conta na cota mesmo quando dá erro
@@ -195,6 +225,11 @@ def fetch_threads(http: httpx.Client, token: str, youtube_id: str, *, max_pages:
     return items, units
 
 
+def _never_sent(exc: httpx.HTTPError) -> bool:
+    """Falha antes de o pedido sair (sem conexão): o YouTube não recebeu nada."""
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
 def insert_reply(http: httpx.Client, token: str, parent_id: str, text: str) -> dict[str, Any]:
     """comments.insert (50 unidades): responde ao comentário principal `parent_id`."""
     body = {"snippet": {"parentId": parent_id, "textOriginal": text}}
@@ -202,7 +237,13 @@ def insert_reply(http: httpx.Client, token: str, parent_id: str, text: str) -> d
         resp = http.post(f"{yt.API}/comments", params={"part": "snippet"}, json=body,
                          headers={"Authorization": f"Bearer {token}"})
     except httpx.HTTPError as exc:
-        raise yt.YouTubeError(f"sem resposta do YouTube: {exc}") from exc
+        if _never_sent(exc):
+            raise yt.YouTubeError(f"sem conexão com o YouTube; a resposta não foi enviada ({exc})") from exc
+        # O pedido saiu e a resposta não voltou (tempo esgotado, conexão caiu): o YouTube pode ter publicado.
+        _spend(REPLY_COST)
+        raise yt.YouTubeError(
+            "o YouTube não respondeu a tempo e a resposta pode ter sido publicada. Confira em “Abrir no YouTube” "
+            "antes de enviar de novo, para não responder duas vezes") from exc
     _spend(REPLY_COST)
     if resp.status_code not in (200, 201):
         raise _error(resp, "enviar a resposta")
@@ -324,6 +365,35 @@ def _save_state(channel_id: str, **state: Any) -> dict[str, Any]:
         return dict(current)
 
 
+def in_use(settings: dict[str, Any] | None) -> bool:
+    """A caixa do canal já foi usada: leu uma vez (`last_run`) ou tentou e caiu num estado que se corrige sozinho ou
+    com novo vínculo. Canal ligado só pelo link público, sem leitura, fica de fora."""
+    state = (settings or {}).get("comments") or {}
+    return bool(state.get("last_run")) or state.get("state") in (OK, ERRO, SEM_TOKEN, SEM_ESCOPO)
+
+
+def after_link(channel_id: str, has_scope: bool) -> None:
+    """Canal vinculado de novo em Canais: o aviso antigo da caixa ("sem escopo", "sem token", "erro") não vale mais.
+    Com a permissão de comentários, volta a "ok" (ou a "nunca lido", se nunca leu); sem ela, fica "sem escopo"."""
+    with session_scope() as s:
+        channel = s.get(Channel, channel_id)
+        if channel is None:
+            return
+        settings = dict(channel.settings or {})
+        current = dict(settings.get("comments") or {})
+        if not current and has_scope:
+            return  # nunca usou a caixa: nada a limpar
+        if not has_scope:
+            current.update(state=SEM_ESCOPO, error=SCOPE_MESSAGE)
+        elif current.get("last_run"):
+            current.update(state=OK, error="")
+        else:
+            current.pop("state", None)
+            current.pop("error", None)
+        settings["comments"] = current
+        channel.settings = settings
+
+
 def store_threads(channel_id: str, youtube_id: str, items: list[dict[str, Any]], now: datetime) -> dict[str, int]:
     """Grava os fios. O que é só do Vulto (lido, sugestão, resposta pelo app) não muda; um fio que ganhou resposta do
     canal no YouTube passa a respondido. Devolve quantos são novos e quantos foram atualizados."""
@@ -382,7 +452,7 @@ def refresh_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
                             checked_at=now.isoformat())
         return {**base, **saved}
     try:
-        token, _ = _token(http, channel_id)
+        token, account = _token(http, channel_id)
     except yt.YouTubeError as exc:
         state = PUBLICO if link.get("source") == "public" else SEM_TOKEN
         saved = _save_state(channel_id, state=state, error=str(exc), checked_at=now.isoformat())
@@ -393,11 +463,17 @@ def refresh_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
     except ScopeMissing as exc:
         saved = _save_state(channel_id, state=SEM_ESCOPO, error=str(exc), checked_at=now.isoformat())
         return {**base, "units": getattr(exc, "units", 0), **saved}
+    except TokenInvalid as exc:
+        saved = _save_state(channel_id, state=SEM_TOKEN, error=str(exc), checked_at=now.isoformat())
+        return {**base, "units": getattr(exc, "units", 0), **saved}
     except yt.YouTubeError as exc:
         saved = _save_state(channel_id, state=ERRO, error=str(exc), checked_at=now.isoformat())
         return {**base, "units": getattr(exc, "units", 0), **saved}
     counts = store_threads(channel_id, youtube_id, items, now)
-    saved = _save_state(channel_id, state=OK, error="", last_run=now.isoformat(), checked_at=now.isoformat())
+    # A leitura usa youtube.readonly; responder exige youtube.force-ssl. Sem ele (desmarcado no consentimento ou
+    # recusado numa resposta), a leitura dá certo mas o canal segue "sem escopo" até vincular de novo.
+    state, error = (OK, "") if yt.has_comment_scope(account) else (SEM_ESCOPO, SCOPE_MESSAGE)
+    saved = _save_state(channel_id, state=state, error=error, last_run=now.isoformat(), checked_at=now.isoformat())
     return {**base, **counts, "units": units, **saved}
 
 
@@ -428,6 +504,7 @@ def refresh(channel_id: str | None = None, *, http: httpx.Client | None = None,
 
 
 def _query(s: Any, channel_id: str | None, flt: str, video_id: str | None):
+    """Filtros da lista. "perguntas" é a mesma regra da pendência de Hoje (`open_questions`)."""
     q = s.query(YouTubeComment)
     if channel_id:
         q = q.filter(YouTubeComment.channel_id == channel_id)
@@ -436,7 +513,8 @@ def _query(s: Any, channel_id: str | None, flt: str, video_id: str | None):
     if flt == "nao_respondidos":
         q = q.filter(YouTubeComment.answered.is_(False))
     elif flt == "perguntas":
-        q = q.filter(YouTubeComment.is_question.is_(True), YouTubeComment.answered.is_(False))
+        q = q.filter(YouTubeComment.is_question.is_(True), YouTubeComment.answered.is_(False),
+                     YouTubeComment.read.is_(False), YouTubeComment.can_reply.is_(True))
     elif flt == "nao_lidos":
         q = q.filter(YouTubeComment.read.is_(False))
     return q
@@ -489,24 +567,24 @@ def mark_read(ids: list[str], read: bool = True) -> int:
         return len(rows)
 
 
-def mark_all_read(channel_id: str | None = None, flt: str = "todos") -> int:
+def mark_all_read(channel_id: str | None = None, flt: str = "todos", video_id: str | None = None) -> int:
+    """Marca como lidos os comentários do canal, filtro e vídeo escolhidos (o que está na tela)."""
     if flt not in FILTERS:
         raise ValueError(f"filtro inválido: {flt}")
     with session_scope() as s:
-        rows = _query(s, channel_id, flt, None).filter(YouTubeComment.read.is_(False)).all()
+        rows = _query(s, channel_id, flt, video_id).filter(YouTubeComment.read.is_(False)).all()
         for row in rows:
             row.read = True
         return len(rows)
 
 
 def open_questions() -> list[dict[str, Any]]:
-    """Perguntas sem resposta e ainda não lidas, por canal (para a página Hoje)."""
+    """Perguntas por canal para a página Hoje: a mesma regra do filtro "perguntas" (o link abre a mesma lista)."""
     with session_scope() as s:
+        sub = _query(s, None, "perguntas", None).subquery()
         rows = (
-            s.query(Channel.id, Channel.name, func.count(YouTubeComment.id))
-            .join(YouTubeComment, YouTubeComment.channel_id == Channel.id)
-            .filter(YouTubeComment.is_question.is_(True), YouTubeComment.answered.is_(False),
-                    YouTubeComment.read.is_(False), YouTubeComment.can_reply.is_(True))
+            s.query(Channel.id, Channel.name, func.count(sub.c.id))
+            .join(sub, sub.c.channel_id == Channel.id)
             .group_by(Channel.id, Channel.name)
             .order_by(Channel.name)
             .all()
@@ -587,18 +665,31 @@ def reply(comment_id: str, text: str, *, http: httpx.Client | None = None, now: 
         if not row.can_reply:
             raise ValueError("o YouTube não deixa responder este comentário")
         channel_id, parent_id = row.channel_id, row.comment_id
+        channel = s.get(Channel, channel_id)
+        prev_state = (((channel.settings or {}).get("comments") or {}) if channel else {}).get("state")
     own = http is None
     client = http or yt.new_client()
     try:
-        token, _ = _token(client, channel_id)
+        account = yt.account_for_channel(channel_id)
+        if not yt.has_comment_scope(account):  # recusa antes de gastar 50 unidades
+            _save_state(channel_id, state=SEM_ESCOPO, error=SCOPE_MESSAGE, checked_at=now.isoformat())
+            raise ScopeMissing(SCOPE_MESSAGE)
+        token = yt.access_token(client, account)
         try:
             created = insert_reply(client, token, parent_id, text)
         except ScopeMissing as exc:
+            # Fica no token: a próxima leitura não volta para "ok" até vincular de novo (o vínculo troca o token).
+            yt.set_comment_scope(account, False)
             _save_state(channel_id, state=SEM_ESCOPO, error=str(exc), checked_at=now.isoformat())
+            raise
+        except TokenInvalid as exc:
+            _save_state(channel_id, state=SEM_TOKEN, error=str(exc), checked_at=now.isoformat())
             raise
     finally:
         if own:
             client.close()
+    if prev_state in (SEM_ESCOPO, SEM_TOKEN, ERRO):  # a resposta saiu: o acesso está bom
+        _save_state(channel_id, state=OK, error="", checked_at=now.isoformat())
     with session_scope() as s:
         row = s.get(YouTubeComment, comment_id)
         if row is None:  # apagado enquanto enviava: a resposta já está no YouTube

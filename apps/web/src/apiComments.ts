@@ -62,12 +62,15 @@ const query = (params: Record<string, string | null | undefined>) => {
 };
 
 export const commentsApi = {
-  list: (opts: { channelId?: string | null; filter: CommentFilter; videoId?: string | null }) =>
-    api.get<CommentsPage>(`/api/comments${query({ channel_id: opts.channelId, filter: opts.filter, video_id: opts.videoId })}`),
+  list: (opts: { channelId?: string | null; filter: CommentFilter; videoId?: string | null; limit?: number }) =>
+    api.get<CommentsPage>(
+      `/api/comments${query({ channel_id: opts.channelId, filter: opts.filter, video_id: opts.videoId, limit: opts.limit ? String(opts.limit) : null })}`,
+    ),
   refresh: (channelId: string | null) => api.post<RefreshResult>('/api/comments/refresh', { channel_id: channelId }),
   markRead: (ids: string[], read = true) => api.post<{ changed: number }>('/api/comments/read', { ids, read }),
-  markAllRead: (channelId: string | null, filter: CommentFilter) =>
-    api.post<{ changed: number }>('/api/comments/read-all', { channel_id: channelId, filter }),
+  /** Marca como lidos os comentários do canal, filtro e vídeo escolhidos (o que está na tela). */
+  markAllRead: (channelId: string | null, filter: CommentFilter, videoId: string | null) =>
+    api.post<{ changed: number }>('/api/comments/read-all', { channel_id: channelId, filter, video_id: videoId }),
   suggest: (id: string) => api.post<YouTubeComment>(`/api/comments/${encodeURIComponent(id)}/suggest`),
   /** Envia a resposta ao YouTube. Só chamar depois da confirmação do usuário. */
   reply: (id: string, text: string) =>

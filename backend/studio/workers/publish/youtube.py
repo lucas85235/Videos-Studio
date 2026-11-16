@@ -231,6 +231,7 @@ def _finish(code: str, pending: dict[str, str], http: httpx.Client | None) -> di
 
             info = youtube_channels.link_from_oauth(client, tokens["access_token"], refresh, target)
             _note_revenue_scope(info, str(tokens.get("scope") or ""), pending.get("revenue") == "1")
+            _note_comment_scope(info, str(tokens.get("scope") or ""))
             return info
         channel = _get(client, f"{API}/channels", tokens["access_token"], params={"part": "snippet", "mine": "true"})
         items = channel.get("items") or []
@@ -290,6 +291,42 @@ def set_revenue_scope(youtube_id: str, enabled: bool, *, denied: bool = False) -
         return
     data["revenue_scope"] = "1" if enabled else ("negado" if denied else "")
     credentials.set_credential(channel_key(youtube_id), data)
+
+
+COMMENT_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
+
+
+def _note_comment_scope(info: dict[str, Any], granted: str) -> None:
+    """Guarda no token do canal se o escopo de responder comentários (`youtube.force-ssl`) veio no vínculo (a pessoa
+    pode desmarcá-lo no consentimento; ler comentários segue pelo `youtube.readonly`). Também zera o aviso da caixa de
+    comentários do canal do Vulto: o vínculo novo resolve "sem escopo" e "sem token"."""
+    youtube_id = str(info.get("channel_id") or "")
+    if not youtube_id or not granted.strip():  # sem a lista de escopos: fica como antes (não sabido = permitido)
+        return
+    ok = COMMENT_SCOPE in granted.split()
+    set_comment_scope(channel_key(youtube_id), ok)
+    if not ok:
+        info.setdefault("warnings", []).append(
+            "a permissão de comentários não foi autorizada; dá para ler os comentários, mas não responder pelo Vulto")
+    vulto_id = str(info.get("vulto_channel_id") or "")
+    if vulto_id:
+        from studio.workers.comments import inbox
+
+        inbox.after_link(vulto_id, ok)
+
+
+def set_comment_scope(account_key: str, enabled: bool) -> None:
+    data = dict(credentials.get_credential(account_key))
+    if not data.get("refresh_token"):
+        return
+    data["comment_scope"] = "1" if enabled else "negado"
+    credentials.set_credential(account_key, data)
+
+
+def has_comment_scope(account_key: str) -> bool:
+    """O token pode responder comentários. Token vinculado antes desta marca (sem a informação) conta como sim; o
+    primeiro 403 insufficientPermissions marca como negado."""
+    return credentials.get_credential(account_key).get("comment_scope") != "negado"
 
 
 def has_revenue_scope(account_key: str) -> bool:

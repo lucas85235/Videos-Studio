@@ -53,11 +53,12 @@ def mark_read(body: ReadBody) -> dict[str, int]:
 class ReadAllBody(BaseModel):
     channel_id: str | None = None
     filter: Filter = "todos"
+    video_id: str | None = None
 
 
 @router.post("/comments/read-all")
 def mark_all_read(body: ReadAllBody) -> dict[str, int]:
-    return {"changed": inbox.mark_all_read(body.channel_id or None, body.filter)}
+    return {"changed": inbox.mark_all_read(body.channel_id or None, body.filter, body.video_id or None)}
 
 
 @router.post("/comments/{comment_id}/suggest")
