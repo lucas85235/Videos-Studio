@@ -759,6 +759,7 @@ const STATUS: Record<string, { label: string; tone: BadgeTone }> = {
   scheduled: { label: "Agendado", tone: "info" },
   package_ready: { label: "Pacote pronto", tone: "neutral" },
   published: { label: "Postado", tone: "good" },
+  processing: { label: "Processando no Instagram", tone: "info" },
   failed: { label: "Falhou", tone: "bad" },
 };
 
@@ -788,9 +789,19 @@ const PublicationRow: React.FC<{
       client.invalidateQueries({ queryKey: ["agenda"] });
     },
   });
+  const instagram = pub.driver === "instagram_native";
+  // Reel que ficou processando além da espera: retoma o mesmo envio (não cria outro post).
+  const resume = useMutation({
+    mutationFn: () =>
+      api.post(`/api/projects/${projectId}/publish/instagram`, {
+        publication_id: pub.id,
+      }),
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: ["project", projectId] }),
+  });
 
   let when = pub.created_at
-    ? `${pub.driver === "youtube_native" ? "enviado" : "criado"} ${formatRelative(pub.created_at)}`
+    ? `${pub.driver === "youtube_native" || instagram ? "enviado" : "criado"} ${formatRelative(pub.created_at)}`
     : "";
   if (pub.status === "scheduled" && d.publish_at)
     when = `para ${formatWhen(d.publish_at)}`;
@@ -860,6 +871,17 @@ const PublicationRow: React.FC<{
             Marcar como postado
           </Button>
         ) : null}
+        {instagram && pub.status === "processing" ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={Send}
+            busy={resume.isPending}
+            onClick={() => resume.mutate()}
+          >
+            Tentar publicar de novo
+          </Button>
+        ) : null}
         {pub.url ? (
           <a
             href={pub.url}
@@ -867,17 +889,21 @@ const PublicationRow: React.FC<{
             rel="noreferrer"
             className={buttonClass({ variant: "ghost", size: "sm" })}
             aria-label={
-              pub.driver === "youtube_native"
+              pub.driver === "youtube_native" || instagram
                 ? undefined
                 : `Ver post (${platformName})`
             }
           >
             <ExternalLink size={14} aria-hidden="true" />
-            {pub.driver === "youtube_native" ? "Ver no YouTube" : "Ver post"}
+            {pub.driver === "youtube_native"
+              ? "Ver no YouTube"
+              : instagram
+                ? "Ver no Instagram"
+                : "Ver post"}
           </a>
         ) : null}
       </div>
-      <ErrorBox error={open.error ?? markPosted.error} />
+      <ErrorBox error={open.error ?? markPosted.error ?? resume.error} />
     </li>
   );
 };

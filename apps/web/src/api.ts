@@ -341,7 +341,7 @@ export type Publication = {
   status: string;
   package_path: string | null;
   url: string | null;
-  details: { caption?: string; url?: string };
+  details: { caption?: string; url?: string; container_id?: string; video_url?: string; account?: string };
   error: string | null;
   created_at: string | null;
 };
@@ -686,6 +686,7 @@ export const JOB_LABELS: Record<string, string> = {
   render: 'Render final',
   autopilot: 'Piloto automático',
   publish_youtube: 'Envio ao YouTube',
+  publish_instagram: 'Publicação no Instagram',
 };
 
 /* ------------------------------------------------------------------ */
@@ -751,4 +752,50 @@ export type ChannelSuggestion = {
   identity: string;
   reason: string;
   provider: string;
+};
+
+/* ------------------------------------------------------------------ */
+/* Instagram nativo (Reels pela API oficial)                           */
+/* ------------------------------------------------------------------ */
+
+/** Conta profissional conectada (o token fica só no servidor). */
+export type InstagramAccount = {
+  user_id: string;
+  username: string;
+  account_type: string;
+  expires_at: string | null;
+  /** Token colado do painel: a validade é estimada em 60 dias. */
+  expires_estimated: boolean;
+};
+
+/** native: publica pela API oficial; manual: usa o pacote manual. */
+export type InstagramDriver = 'native' | 'manual';
+
+/** GET /api/instagram/status (com project_id vêm os campos do projeto). */
+export type InstagramStatus = {
+  app_configured: boolean;
+  accounts: InstagramAccount[];
+  redirect_uri: string;
+  default_redirect_uri: string;
+  public_base_url: string;
+  channel_id?: string | null;
+  driver?: InstagramDriver;
+  channel_user_id?: string | null;
+  ready?: boolean;
+  account?: InstagramAccount | null;
+  reason?: string | null;
+};
+
+/** GET /api/instagram/accounts/:id */
+export type InstagramAccountDetail = InstagramAccount & {
+  limit: { used: number; total: number; window_s: number };
+};
+
+/** POST /api/instagram/link */
+export type InstagramLinkStart = { auth_url: string; state: string; redirect_uri: string };
+/** GET /api/instagram/link/:state */
+export type InstagramLinkStatus = {
+  status: 'pending' | 'done' | 'error' | 'unknown';
+  username?: string;
+  error?: string;
 };

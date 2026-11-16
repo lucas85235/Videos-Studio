@@ -87,6 +87,24 @@ No cartão do canal:
 - **Desvincular**: apaga só o acesso daquele canal; os dados trazidos ficam. **Remover link** tira também os dados do YouTube do canal.
 - Selo **Acesso expirado**: o Google recusou o acesso (tela de consentimento em "Testing" expira em 7 dias). Clique em **Vincular de novo**.
 
+### Instagram direto pela API oficial (Reels)
+
+Opcional: sem isso, o Instagram vai pelo pacote manual. Precisa de conta **profissional** (Empresa ou Criador de conteúdo).
+
+1. Em https://developers.facebook.com crie um app do tipo **Empresa** e adicione o produto **Instagram** (API com login do Instagram). Em "Instagram › API setup with Instagram business login", copie o **ID** e o **segredo do app do Instagram** para **Configurações › Publicação › Instagram (API oficial)**.
+2. Conecte a conta em **Configurações › Contas do Instagram**, de um destes jeitos:
+   - **Entrar com o Instagram**: cadastre o endereço de retorno em "Valid OAuth Redirect URIs" do app (o padrão é `http://127.0.0.1:8765/api/instagram/callback`). Se a Meta exigir https, cadastre um endereço seu (ex.: `https://localhost/`), salve-o nas opções e, depois do login, **cole o endereço final** da página no campo que aparece.
+   - **Token do painel**: em "Generate token", entre com a conta e cole o token. Ele vale 60 dias; o app renova sozinho ao publicar (a Meta só renova tokens com mais de 24 h).
+3. O Instagram **baixa o vídeo de uma URL pública https** (o app roda só neste computador). Suba o MP4 final para um lugar público e cole o link direto do arquivo na hora de publicar, ou configure o **endereço público dos vídeos**: se você espelha a pasta de dados do Vulto num endereço https (ex.: um bucket), o app junta o caminho do vídeo (`outputs/…`) a esse endereço. A capa (JPEG) vai junto quando esse endereço existe.
+4. Na aba 4 do projeto, cartão **Instagram (Reels)**: escolha **API oficial** ou **Pacote manual** (com canal, a escolha fica salva no canal, assim como a conta, quando há mais de uma) e clique em **Publicar Reel**.
+
+O que saber:
+- Publica **na hora, como público**: a API não agenda nem faz post privado. Render com voz ou imagens de teste fica bloqueado.
+- Com o app da Meta em **modo de desenvolvimento**, o post só aparece para quem tem papel no app (teste num navegador deslogado).
+- Limite da Meta: **50 posts por conta a cada 24 h** (o app confere antes de enviar e mostra o uso em Configurações). Vídeo de 3 s a 15 min, até 300 MB; legenda até 2.200 caracteres e 30 hashtags.
+- O app consulta o processamento uma vez por minuto por até 5 min (como pede a Meta). Se passar disso, a publicação fica **Processando** e o botão **Tentar publicar de novo** retoma o mesmo envio (vale por 24 h).
+- **Rótulo de IA**: vai pela API (`is_ai_generated`) quando o estilo é fotorrealista ou usa vídeo IA. Se a API recusar, o app publica sem ele e avisa para marcar no celular.
+
 ### Agenda e horários de postagem
 
 - Em **Canais**, defina os **horários de postagem** de cada canal (dias da semana, hora e fuso; ex.: seg/qua/sex 18:00, America/Sao_Paulo).

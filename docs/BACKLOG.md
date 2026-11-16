@@ -19,7 +19,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] **Driver do Buffer** (TikTok e Instagram pelo plano grátis, API e MCP). Ficou de fora porque a API atual do Buffer precisa ser conferida na documentação oficial e testada com uma conta; hoje há o pacote manual por rede.
 - [ ] Hospedagem das URLs públicas que o Buffer e o Instagram exigem (Cloudflare R2).
 - [ ] YouTube: playlists, medidor de cota, várias contas/canais. (Títulos traduzidos no mesmo vídeo já funcionam.)
-- [ ] Driver nativo do Instagram (Standard Access) e teste de visibilidade pública.
+- [x] **Driver nativo do Instagram** (API com login do Instagram, Reels): login OAuth ou token do painel da Meta, token de 60 dias no cofre com renovação automática, envio por URL pública (informada na hora ou montada pelo "endereço público dos vídeos"), espera do processamento com retomada, limite de 50 posts/24 h, rótulo de IA (`is_ai_generated`) e escolha por canal entre API oficial e pacote manual (15/11/2026). Testado só com a API simulada.
+- [ ] **Instagram: teste real** com conta profissional e app da Meta: login com o endereço local (a Meta pode exigir https; aí cola-se o endereço final), primeiro Reel, rótulo de IA aceito ou não e **visibilidade pública** num navegador deslogado (em modo de desenvolvimento o post só aparece para quem tem papel no app). Sem hospedagem no repo, a URL pública do vídeo ainda é por sua conta (ver item do R2 acima).
 
 ### Voz e idiomas
 - [x] **Whisper local** instalado e no instalador (`--extra asr`): confere cada narração. Roda na CPU porque faltam as DLLs do CUDA 12 (cuBLAS/cuDNN); instalar o CUDA 12 deixaria mais rápido.

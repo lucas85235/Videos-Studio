@@ -259,7 +259,7 @@ def run_publish_instagram(ctx: JobContext, payload: dict[str, Any]) -> dict[str,
         except ig.ContainerPending as exc:
             pub_id = save_instagram(project_id, lang, publication_id, status="processing", external_id=container,
                                     url=None, details={**details, "container_id": container, "warnings": warnings},
-                                    error=str(exc))
+                                    error=None)  # não é erro: a tela mostra "Processando" e o botão de retomar
             ctx.progress(1.0, "Ainda processando no Instagram")
             return {"pending": True, "container_id": container, "publication_id": pub_id, "message": str(exc),
                     "warnings": warnings}

@@ -68,6 +68,10 @@ const jobToast = (client: QueryClient, job: Job): ToastOptions | null => {
   const onProject = projectPath !== null && window.location.pathname === projectPath;
   const action = projectPath && !onProject ? { label: 'Abrir projeto', to: projectPath } : undefined;
   const kind = JOB_LABELS[job.kind] ?? 'Tarefa';
+  if (job.status === 'done' && job.kind === 'publish_instagram' && (job.result as { pending?: boolean } | null)?.pending) {
+    // O Instagram ainda processava o vídeo ao fim da espera: o post sai quando o usuário retomar.
+    return { tone: 'warn', title: 'Instagram ainda processando o vídeo', description: 'Use "Tentar publicar de novo" em Publicações deste projeto daqui a alguns minutos.', action };
+  }
   if (job.status === 'done') {
     return { tone: 'good', title: JOB_DONE_LABELS[job.kind] ?? `${kind}: concluído`, description: title ?? undefined, action };
   }

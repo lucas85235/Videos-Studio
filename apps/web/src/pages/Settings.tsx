@@ -25,6 +25,7 @@ import {
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api, LANGUAGES, type LibraryMusic, MOOD_LABELS, type Provider } from '../api';
+import { InstagramSection } from '../instagram';
 import { CREDENTIAL_FIELD_LABELS, label, PROVIDER_KIND_LABELS } from '../labels';
 import { useProviders } from '../shell/data';
 import {
@@ -144,7 +145,10 @@ const readyState = (providers: Provider[] | undefined, kind: Kind, loading: bool
   const chain = DEFAULT_CHAIN[kind].map((id) => list.find((p) => p.id === id)).filter((p): p is Provider => Boolean(p));
   if (kind === 'publish') {
     const yt = chain[0];
-    return yt?.available ? { tone: 'good', value: yt.name, hint: 'Envio direto ativo' } : { tone: 'warn', value: 'Só postagem manual', hint: publishHint(yt) };
+    const insta = list.find((p) => p.id === 'instagram' && p.available);
+    if (yt?.available) return { tone: 'good', value: yt.name, hint: insta ? 'Envio direto ativo (YouTube e Instagram)' : 'Envio direto ativo' };
+    if (insta) return { tone: 'good', value: insta.name, hint: `Envio direto só no Instagram. ${publishHint(yt)}` };
+    return { tone: 'warn', value: 'Só postagem manual', hint: publishHint(yt) };
   }
   const active = chain.find(isReal);
   const exhausted = chain.filter((p) => p.available && p.commercial_use && p.quota_exhausted_today);
@@ -359,7 +363,11 @@ const ProviderCard: React.FC<{ p: Provider; kind: Kind }> = ({ p, kind }) => {
   const removable = (creds?.configured || masked.length > 0) && !creds?.from_env;
   const badge = chainBadge(p, kind);
   const reason =
-    kind === 'publish' ? (!p.credentials?.configured && p.credential_fields.length ? 'Falta conectar o YouTube: cole abaixo o ID e o segredo do cliente.' : publishHint(p)) : p.reason;
+    kind === 'publish' && p.id === 'youtube'
+      ? !p.credentials?.configured && p.credential_fields.length
+        ? 'Falta conectar o YouTube: cole abaixo o ID e o segredo do cliente.'
+        : publishHint(p)
+      : p.reason;
 
   const askClear = async () => {
     const realKind = contact ? null : p.kind === 'tts' ? 'a voz volta' : p.kind === 'image' ? 'as imagens voltam' : null;
@@ -1084,6 +1092,7 @@ export const SettingsPage: React.FC = () => {
             <React.Fragment key={kind}>
               <ProviderSection kind={kind} providers={providers.data.filter((p) => p.kind === kind)} />
               {kind === 'tts' ? <VoiceSamplesSection /> : null}
+              {kind === 'publish' ? <InstagramSection /> : null}
             </React.Fragment>
           ))
         ) : providers.error ? (
