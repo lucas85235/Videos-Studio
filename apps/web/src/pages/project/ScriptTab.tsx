@@ -550,6 +550,8 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   const missing = lang !== doc.primary_language ? doc.segments.length - translatedCount(lang) : 0;
   // Narração traduzida, mas cartões e sobreposições de cenas criadas depois ainda só no idioma principal.
   const screenMissing = lang !== doc.primary_language && !missing ? screenTextsMissing(doc, lang) : 0;
+  // Termos do glossário do canal que a tradução deste idioma não respeitou (o servidor confere a cada abertura).
+  const glossaryWarnings = (detail.glossary_warnings ?? []).filter((w) => w.lang === lang);
   const conflicts = Object.entries(liveDrafts).filter(([key, d]) => {
     const { lang: l, segmentId } = parseScriptDraftKey(key);
     const seg = doc.segments.find((s) => s.id === segmentId);
@@ -691,6 +693,27 @@ export const ScriptTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
               ) : null}
             </div>
             <ErrorBox error={jobError('strip')} title="Não foi possível traduzir" />
+          </div>
+        ) : null}
+        {glossaryWarnings.length ? (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-100">
+            <TriangleAlert size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-amber-200" />
+            <div className="flex min-w-0 flex-col gap-1">
+              <span>
+                A tradução para {langLabel(lang)} não seguiu o glossário do canal em {glossaryWarnings.length === 1 ? '1 ponto' : `${glossaryWarnings.length} pontos`}. Corrija o
+                texto aqui (o aviso some ao salvar) ou ajuste o glossário em Canais.
+              </span>
+              <ul className="flex flex-col gap-0.5 text-[13px] text-amber-100/90">
+                {glossaryWarnings.map((w, i) => (
+                  <li key={i}>
+                    {w.kind === 'segment'
+                      ? `Trecho ${doc.segments.findIndex((s) => s.id === w.id) + 1}`
+                      : `Texto de tela da cena ${doc.scenes.findIndex((s) => s.id === w.id) + 1}`}
+                    : “{w.term}” devia aparecer como “{w.expected}”.
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
         ) : null}
 

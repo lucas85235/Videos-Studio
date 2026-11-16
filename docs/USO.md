@@ -152,6 +152,12 @@ Se ainda sobrar problema, a prévia mostra um aviso com o trecho. Sem o Whisper,
 
 A voz do Gemini recebe **só o texto**: o tom vem da voz escolhida no estilo, e a velocidade do estilo é aplicada no áudio. Quando a instrução de estilo ia junto, o Gemini a lia em voz alta ou repetia o texto em 5 de 6 testes. Para experimentar com instrução mesmo assim, defina `VS_GEMINI_TTS_STYLE=1` antes de iniciar (a conferência continua ativa).
 
+### Pronúncia
+
+A voz local da prévia (Kokoro) e a voz do Windows leem mal o texto cru. Para elas, o app escreve por extenso só no texto que vai para a voz: números ("2025", "R$ 2 milhões", "30%", "24h", "1º"), datas e horas ("15/11/2026", "14h30"), graus ("30°C"), siglas que não dá para ler ("FBI" → "éfe bê í"; "ONU" e "NASA" ficam), símbolos ("&", "@perfil", "#tag") e palavras comuns em inglês ("YouTube", "streaming", "app"). A legenda e os cartões continuam exatamente como no roteiro. As vozes de API (Gemini, ElevenLabs, Chirp) recebem o texto como está, porque já fazem isso bem.
+
+Para nomes e termos que a voz erra, use **Canais › editar canal › Pronúncia**: "termo → como falar" (ex.: "Nvidia" → "envídia"), para todos os idiomas ou só um. Essa lista vale para **todas** as vozes do canal e passa na frente das trocas automáticas. Sigla (termo todo em maiúsculas, como "PIB") só troca quando aparece em maiúsculas. Ao mudar a lista, só os trechos que têm o termo são gravados de novo.
+
 ### Música
 
 - **Procedural** (padrão): o app gera a trilha. Climas leves: neutro (o padrão), animado, inspirador, lo-fi, corporativo leve, curioso / divertido, calmo, épico e pulso. Climas sombrios: mistério, tensão, terror e sombrio (drone). O andamento e os acordes variam de vídeo para vídeo. Sem direitos autorais, mas simples.
@@ -163,6 +169,8 @@ A voz do Gemini recebe **só o texto**: o tom vem da voz escolhida no estilo, e 
 ## 8. Vários idiomas
 
 Marque os idiomas no novo projeto (o primeiro é o principal). Depois do roteiro aprovado, o piloto automático traduz por segmento e narra cada idioma. Cada idioma gera o seu próprio vídeo (modo A). O modo de várias faixas de áudio no mesmo vídeo (modo B) está no backlog.
+
+**Glossário do canal** (Canais › editar canal › *Glossário da tradução*): termos que não se traduzem (nome do canal, marcas) ou que têm tradução fixa por idioma (ex.: "canal dark" → "faceless channel" em inglês). Os termos que aparecem no roteiro vão no pedido de tradução. Depois de traduzir, a aba **Roteiro** do idioma mostra um aviso quando um termo não foi respeitado; corrija o texto ali (o aviso some ao salvar) ou ajuste o glossário.
 
 Ao enviar ao YouTube, a opção **Incluir título e descrição traduzidos** coloca os títulos dos outros idiomas no mesmo vídeo (o YouTube mostra a versão no idioma de quem assiste). Deixe desmarcada se cada idioma vai ganhar o próprio vídeo ou canal, para os vídeos não competirem entre si.
 

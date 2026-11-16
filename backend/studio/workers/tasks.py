@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from studio.config import get_settings
+from studio.core.glossary import GlossaryEntry, glossary_of
 from studio.core.project import service
 from studio.core.styles.library import get_style
 from studio.db import session_scope
@@ -28,6 +29,15 @@ def _channel_info(channel_id: str | None) -> dict[str, Any]:
             return {}
         return {"name": row.name or "", "niche": row.niche or "", "persona": row.persona or "",
                 "style_bible": dict(row.style_bible or {})}
+
+
+def channel_glossary(channel_id: str | None) -> list[GlossaryEntry]:
+    """Glossário de tradução do canal (vazio sem canal)."""
+    if not channel_id:
+        return []
+    with session_scope() as s:
+        row = s.get(Channel, channel_id)
+        return glossary_of(row.settings) if row is not None else []
 
 
 def _gates(project_id: str) -> dict[str, Any]:
@@ -103,14 +113,21 @@ def run_translate(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     screen_only = bool(payload.get("screen_only"))
     doc = service.get_doc(project_id)
     targets = targets or [lang for lang in doc.languages if lang != doc.primary_language]
+    glossary = channel_glossary(doc.channel_id)
     done = []
     for index, lang in enumerate(targets):
         ctx.progress(index / max(1, len(targets)), f"Traduzindo para {authoring.lang_name(lang)}")
-        doc, _provider = authoring.translate(doc, lang, screen_only=screen_only, project_id=project_id, job_id=ctx.job_id)
+        doc, _provider = authoring.translate(doc, lang, screen_only=screen_only, project_id=project_id, job_id=ctx.job_id,
+                                             glossary=glossary)
         done.append(lang)
     message = f"{'Tradução dos textos de tela' if screen_only else 'Tradução'}: {', '.join(done)}"
     version = service.commit(project_id, doc, message, author="ai") if done else None
-    return {"version": version, "langs": done}
+    result: dict[str, Any] = {"version": version, "langs": done}
+    # Conferência do glossário: o aviso aparece no roteiro (o detalhe do projeto refaz a conta a cada abertura).
+    issues = authoring.glossary_issues(doc, glossary, done)
+    if issues:
+        result["glossary_warnings"] = [f"{i['lang']} · {i['id']}: {i['message']}" for i in issues]
+    return result
 
 
 @job("metadata")

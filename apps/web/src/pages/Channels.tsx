@@ -28,9 +28,11 @@ import {
   type ChannelTokenStatus,
   type ChannelYouTube,
   fileUrl,
+  type GlossaryEntry,
   LANGUAGES,
   type PostingPlan,
   type PostingSlot,
+  type PronunciationEntry,
   type StyleItem,
   TIMEZONES,
   WEEKDAYS,
@@ -60,6 +62,7 @@ import {
   useConfirm,
   useToast,
 } from '../ui';
+import { cleanGlossary, cleanPronunciation, GlossaryEditor, halfFilledPronunciation, PronunciationEditor } from './ChannelSpeech';
 import { chipClass, Sheet } from './ops/common';
 import { browserZone, sameOffsetAsBrowser, whenIn, zoneCity, zoneLabel } from './ops/zones';
 import { Notice } from './project/delivery/shared';
@@ -73,6 +76,8 @@ type Form = {
   posting: PostingPlan;
   /** Identidade visual: `style_bible.identidade` do canal. */
   identity: string;
+  pronunciation: PronunciationEntry[];
+  glossary: GlossaryEntry[];
 };
 
 const blank = (): Form => ({
@@ -83,6 +88,8 @@ const blank = (): Form => ({
   default_style_id: null,
   posting: { timezone: browserZone, slots: [] },
   identity: '',
+  pronunciation: [],
+  glossary: [],
 });
 
 const identityOf = (c: Channel) => (typeof c.style_bible?.identidade === 'string' ? c.style_bible.identidade : '');
@@ -95,6 +102,8 @@ const formOf = (c: Channel): Form => ({
   default_style_id: c.default_style_id,
   posting: c.posting,
   identity: identityOf(c),
+  pronunciation: c.pronunciation ?? [],
+  glossary: c.glossary ?? [],
 });
 
 /** Corpo do POST/PUT: a identidade vai dentro do `style_bible` (as outras chaves dele ficam como estão). */
@@ -110,6 +119,8 @@ const bodyOf = (f: Form, base: Channel | undefined) => {
     default_style_id: f.default_style_id,
     posting: f.posting,
     style_bible: bible,
+    pronunciation: cleanPronunciation(f.pronunciation),
+    glossary: cleanGlossary(f.glossary),
   };
 };
 
@@ -931,9 +942,10 @@ export const ChannelsPage: React.FC = () => {
 
   const nameMissing = !form.name.trim();
   const badTime = form.posting.slots.some((s) => !validTime(s.time));
+  const badPronunciation = halfFilledPronunciation(form.pronunciation);
   const submit = () => {
     setTried(true);
-    if (nameMissing || badTime) {
+    if (nameMissing || badTime || badPronunciation) {
       // Depois do render com os erros: leva o foco (e a rolagem) até o primeiro campo inválido.
       window.setTimeout(() => document.querySelector<HTMLElement>('dialog[open] [aria-invalid="true"]')?.focus(), 0);
       return;
@@ -1037,9 +1049,13 @@ export const ChannelsPage: React.FC = () => {
             <>
               {/* Erro do servidor perto do botão (o corpo do painel pode estar rolado para baixo). */}
               <ErrorBox error={save.error} title="Não foi possível salvar o canal" onClose={() => save.reset()} className="w-full" />
-              {tried && (nameMissing || badTime) ? (
+              {tried && (nameMissing || badTime || badPronunciation) ? (
                 <p role="alert" className="w-full text-[13px] text-red-300">
-                  {nameMissing ? 'Dê um nome ao canal.' : 'Preencha a hora de todos os horários (ou remova os vazios).'}
+                  {nameMissing
+                    ? 'Dê um nome ao canal.'
+                    : badTime
+                      ? 'Preencha a hora de todos os horários (ou remova os vazios).'
+                      : 'Complete as linhas da pronúncia (termo e como falar) ou remova as incompletas.'}
                 </p>
               ) : null}
               <Button onClick={() => void closeSheet()}>Cancelar</Button>
@@ -1140,6 +1156,15 @@ export const ChannelsPage: React.FC = () => {
           <div className="border-t border-line pt-4">
             <PostingEditor value={form.posting} onChange={(posting) => setForm({ ...form, posting })} />
             {tried && badTime ? <p className="mt-2 text-[13px] text-red-300">Preencha a hora de todos os horários (ou remova os vazios).</p> : null}
+          </div>
+          <div className="flex flex-col gap-4 border-t border-line pt-4">
+            <PronunciationEditor
+              value={form.pronunciation}
+              languages={form.languages}
+              invalid={tried}
+              onChange={(pronunciation) => setForm({ ...form, pronunciation })}
+            />
+            <GlossaryEditor value={form.glossary} languages={form.languages} onChange={(glossary) => setForm({ ...form, glossary })} />
           </div>
         </Sheet>
       ) : null}

@@ -28,8 +28,8 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] Voz do Gemini com estilo: hoje vai só o texto (a instrução vazava). Testar de novo quando o Google atualizar o modelo de TTS (`VS_GEMINI_TTS_STYLE=1`).
 - [ ] Clonagem da sua voz: assistente de gravação, Applio/RVC e Qwen3-TTS local (o adapter `qwen3_tts_local` é só um marcador).
 - [ ] **Modo B multi-idioma** (várias faixas de áudio no mesmo vídeo): tradução com orçamento de duração, time-stretch e pacote para o YouTube Studio.
-- [ ] Normalização de números e estrangeirismos para TTS local.
-- [ ] Glossário por canal na tradução.
+- [x] Normalização para a voz local (15/11/2026): números com moeda, escala, porcentagem, unidade e ordinal, datas, horas, graus, siglas, símbolos e estrangeirismos comuns viram texto falado só para o Kokoro/voz do Windows; a legenda continua com o roteiro. Dicionário de pronúncia por canal (vale para todas as vozes). Ficou de fora: algarismos romanos ("Dom Pedro II" fica como está), milhar separado por espaço ("2 000", comum em francês), soletração de siglas fora do português e concordância de gênero fora do pt (ex.: "uno" no lugar de "un" em espanhol).
+- [x] Glossário por canal na tradução (15/11/2026): termos que não se traduzem ou com tradução fixa por idioma, editados em Canais, vão no pedido de tradução e são conferidos depois (aviso na aba Roteiro). A conferência só avisa; não corrige a tradução sozinha nem traduz de novo.
 
 ### Estilos e render
 - [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
