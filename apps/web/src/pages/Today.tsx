@@ -6,6 +6,7 @@ import { ErrorBox, Page, PageHeader, Skeleton } from '../ui';
 import { StatTile } from './ops/common';
 import { PendingSection } from './today/Pending';
 import { RoutinesSection } from './today/Routines';
+import { SeriesSection } from './today/SeriesToday';
 import { TODAY_KEY } from './today/shared';
 import { StockSection, YesterdaySection } from './today/StockYesterday';
 import { TimeSpentSection } from './today/TimeSpent';
@@ -71,6 +72,7 @@ export const TodayPage: React.FC = () => {
               <YesterdaySection data={data.yesterday} />
             </div>
           </div>
+          {data.series?.length ? <SeriesSection items={data.series} /> : null}
           <RoutinesSection state={data.routines} />
           <TimeSpentSection />
         </div>

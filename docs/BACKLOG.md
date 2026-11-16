@@ -60,7 +60,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [x] **Analytics básico**: métricas por vídeo (coleta do YouTube + lançamento à mão), experimentos com a regra calibrada do canais e lições (onda 1, 15/11/2026).
 - [x] Outlier finder: aba "Vídeos fora da curva" do Radar, vídeo vira ideia (onda 2, 15/11/2026).
 - [ ] Caixa de comentários.
-- [ ] Séries com piloto automático agendado.
+- [x] Séries com piloto automático agendado (página **Séries**): tema, instruções, formato, estilo, cadência e estoque por série; episódios de uma fila de temas ou das ideias aprovadas do canal; a rotina da manhã completa o estoque e cada episódio para no roteiro esperando revisão (nunca publica). Ficou de fora: agendar a publicação do episódio pronto na cadência da série (hoje a cadência só mede a cobertura do estoque; o envio continua pela Agenda) e gerar temas novos por LLM quando a fila acaba (hoje vira pendência em Hoje).
 
 ### Gestão de canal (ADR 0002)
 

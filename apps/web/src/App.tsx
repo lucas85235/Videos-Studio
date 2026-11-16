@@ -21,6 +21,7 @@ const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ defaul
 const AgendaPage = lazy(() => import('./pages/Agenda').then((m) => ({ default: m.AgendaPage })));
 // Gestão de canal (ADR 0002)
 const TodayPage = lazy(() => import('./pages/Today').then((m) => ({ default: m.TodayPage })));
+const SeriesPage = lazy(() => import('./pages/Series').then((m) => ({ default: m.SeriesPage })));
 const IdeasPage = lazy(() => import('./pages/Ideas').then((m) => ({ default: m.IdeasPage })));
 const AnalyticsPage = lazy(() => import('./pages/Analytics').then((m) => ({ default: m.AnalyticsPage })));
 const MoneyPage = lazy(() => import('./pages/Money').then((m) => ({ default: m.MoneyPage })));
@@ -221,6 +222,7 @@ export const App: React.FC = () => {
                 <Route path="/agenda" element={<AgendaPage />} />
                 <Route path="/hoje" element={<TodayPage />} />
                 <Route path="/ideias" element={<IdeasPage />} />
+                <Route path="/series" element={<SeriesPage />} />
                 <Route path="/desempenho" element={<AnalyticsPage />} />
                 <Route path="/dinheiro" element={<MoneyPage />} />
                 <Route path="/radar" element={<RadarPage />} />

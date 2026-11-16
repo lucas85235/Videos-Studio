@@ -9,6 +9,7 @@ import {
   Palette,
   Plus,
   Radar,
+  Repeat,
   Settings,
   Sun,
   Tv,
@@ -32,6 +33,7 @@ const PRODUCTION: NavDef[] = [
   { to: '/hoje', label: 'Hoje', icon: Sun, match: (p) => p.startsWith('/hoje') },
   { to: '/', label: 'Projetos', icon: Clapperboard, match: (p) => p === '/' || p.startsWith('/projetos') },
   { to: '/ideias', label: 'Ideias', icon: Lightbulb, match: (p) => p.startsWith('/ideias') },
+  { to: '/series', label: 'Séries', icon: Repeat, match: (p) => p.startsWith('/series') },
   { to: '/agenda', label: 'Agenda', icon: CalendarClock, match: (p) => p.startsWith('/agenda') },
 ];
 const MANAGEMENT: NavDef[] = [
