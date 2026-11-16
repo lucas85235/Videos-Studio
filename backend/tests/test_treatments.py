@@ -114,7 +114,70 @@ def test_screen_treatment_changes_block_key_but_plain_styles_keep_old_scenes():
 
 def test_scene_with_news_card_keeps_plain():
     doc = _doc("interface-tela", n=2)
-    style = get_style("interface-tela", {"edit": {"treatments": {"screen": 1, "plain": 0}}})  # mescla com os pesos do preset
+    style = get_style("interface-tela", {"edit": {"treatments": {"screen": 1, "plain": 0}}})  # troca os pesos do preset
     scene = doc.scenes[0]
     assert scene_treatment(doc, style, scene) == "screen"
     assert scene_treatment(doc, style, scene, has_news=True) == "plain"
+
+
+def test_first_whiteboard_scene_starts_drawn_and_quick():
+    _, _, timeline = _timeline("whiteboard-explicador")
+    first, *rest = timeline["scenes"]
+    assert first["treatment"] == "whiteboard" and first["treatment_quick"] is True
+    assert all("treatment_quick" not in s for s in rest)
+    # colagem e tela já mostram a imagem logo: sem a marca
+    _, _, collage = _timeline("colagem-artesanal", {"edit": {"treatments": {"collage": 1}}})
+    assert "treatment_quick" not in collage["scenes"][0]
+
+
+def test_scene_reusing_previous_image_continues_the_treatment():
+    doc = _doc("whiteboard-explicador", n=6)
+    # scn_1 e scn_2 reaproveitam a imagem de scn_0 (cadeia); scn_4 reaproveita scn_3
+    doc.scenes[1].visual.reuse_of = "scn_0"
+    doc.scenes[2].visual.reuse_of = "scn_1"
+    doc.scenes[4].visual.reuse_of = "scn_3"
+    images = {"scn_0": "a.png", "scn_1": "a.png", "scn_2": "a.png", "scn_3": "b.png", "scn_4": "b.png", "scn_5": "c.png"}
+    style = get_style("whiteboard-explicador")
+    scenes = build_timeline(doc, style, "pt-BR", _clips(doc), images)["scenes"]
+    by_id = {s["id"]: s for s in scenes}
+    assert "treatment_continue" not in by_id["scn_0"]
+    assert by_id["scn_1"]["treatment_continue"] == by_id["scn_0"]["seed"]
+    assert by_id["scn_2"]["treatment_continue"] == by_id["scn_0"]["seed"]  # a semente de quem começou
+    assert "treatment_continue" not in by_id["scn_3"]
+    assert by_id["scn_4"]["treatment_continue"] == by_id["scn_3"]["seed"]
+    assert "treatment_continue" not in by_id["scn_5"]
+
+
+def test_reused_image_with_other_treatment_starts_fresh():
+    doc = _doc("colagem-artesanal", n=2)
+    doc.scenes[1].visual.reuse_of = "scn_0"
+    images = {"scn_0": "a.png", "scn_1": "a.png"}
+    style = get_style("colagem-artesanal", {"edit": {"treatments": {"plain": 1}}})
+    scenes = build_timeline(doc, style, "pt-BR", _clips(doc), images)["scenes"]
+    assert all("treatment" not in s and "treatment_continue" not in s for s in scenes)
+
+
+def test_project_override_replaces_treatment_weights():
+    # vazio volta ao automático pela família (handmade + still_cinema: 1 × 1), não aos pesos 4 × 1 do preset
+    assert treatment_pool(get_style("colagem-artesanal", {"edit": {"treatments": {}}})) == {"collage": 1.0, "plain": 1.0}
+    assert treatment_pool(get_style("colagem-artesanal", {"edit": {"treatments": {"screen": 1}}})) == {"screen": 1}
+    assert treatment_pool(get_style("whiteboard-explicador", {"edit": {"treatments": {"plain": 1}}})) == {"plain": 1}
+    # os outros mapas continuam mesclados
+    merged = get_style("colagem-artesanal", {"edit": {"camera": {"static": 9}}})
+    assert merged.edit.camera["static"] == 9 and len(merged.edit.camera) > 1
+
+
+def test_set_style_op_on_one_treatment_weight_keeps_the_others():
+    from studio.core.project.ops import OpError, SetStyle, apply_op
+
+    base = get_style("colagem-artesanal")
+    doc = _doc("colagem-artesanal", n=1)
+    apply_op(doc, SetStyle(path="edit.treatments.collage", value=0), base)
+    assert doc.style_overrides["edit"]["treatments"] == {"collage": 0, "plain": 1}
+    assert treatment_pool(get_style("colagem-artesanal", doc.style_overrides)) == {"plain": 1}
+    apply_op(doc, SetStyle(path="edit.treatments", value={}), base)
+    assert treatment_pool(get_style("colagem-artesanal", doc.style_overrides)) == {"collage": 1.0, "plain": 1.0}  # handmade + still_cinema
+    # tirar o único tratamento do preset da lousa continua inválido (com mensagem)
+    board = _doc("whiteboard-explicador", n=1)
+    with pytest.raises(OpError):
+        apply_op(board, SetStyle(path="edit.treatments.whiteboard", value=0), get_style("whiteboard-explicador"))

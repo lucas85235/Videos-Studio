@@ -94,6 +94,13 @@ export type TimelineScene = {
    * colagem ou dentro de uma tela. Ausente: a imagem com câmera de sempre.
    */
   treatment?: SceneTreatment;
+  /** Primeira cena do vídeo na lousa: começa com parte do desenho pronta e desenha rápido (o gancho não fica em branco). */
+  treatment_quick?: boolean;
+  /**
+   * A cena mostra a mesma imagem da anterior com o mesmo tratamento: continua dela (desenho pronto, recorte já na mesa,
+   * aparelho já em cena), com a semente da cena que começou (mesma moldura e posição). Ausente: entra do zero.
+   */
+  treatment_continue?: number;
 };
 
 export type SceneTreatment = 'whiteboard' | 'collage' | 'screen';

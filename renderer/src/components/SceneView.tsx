@@ -192,7 +192,15 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       {kind === 'document' ? (
         <DocumentCard url={url} scene={scene} style={cards} filter={imageFilter(style.effects, scene.look)} />
       ) : treatment && url ? (
-        <TreatmentLayer treatment={treatment} scene={scene} effects={style.effects} zoomStrength={style.zoomStrength} url={url} cards={cards} />
+        <TreatmentLayer
+          treatment={treatment}
+          scene={scene}
+          effects={style.effects}
+          zoomStrength={style.zoomStrength}
+          transitionFrames={style.transitionFrames}
+          url={url}
+          cards={cards}
+        />
       ) : (
         <VisualLayer
           scene={scene}

@@ -13,7 +13,7 @@
 
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
-import { imageFilter } from '../look';
+import { hasEffect, imageFilter } from '../look';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type SceneTreatment, type TextCardStyle, type TimelineScene } from '../types';
 
 export type TreatmentProps = {
@@ -22,6 +22,7 @@ export type TreatmentProps = {
   zoomStrength: number;
   url: string;
   cards: TextCardStyle;
+  transitionFrames: number;
 };
 
 const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
@@ -39,6 +40,9 @@ const focusXY = (focus: string | undefined): [number, number] => {
   return [x, y];
 };
 
+/** Semente da moldura: a da cena que começou o tratamento quando esta continua dela (mesma posição e aparelho). */
+const layoutSeed = (scene: TimelineScene) => (typeof scene.treatment_continue === 'number' ? scene.treatment_continue : scene.seed);
+
 /** Zoom lento da imagem dentro da moldura (não usa o pan: a moldura já mexe). `static` fica quase parado. */
 const innerScale = (motion: string, z: number, p: number) => {
   if (motion === 'static') return 1 + z * 0.1;
@@ -55,10 +59,23 @@ const useProgress = (scene: TimelineScene) => {
 // ---------------------------------------------------------------------------------------------
 // Whiteboard
 
-/** Quadros do desenho: ~60% da cena, entre 0,8 s e 4 s, e sempre alguns quadros de imagem pronta no fim. */
-export const drawFrames = (durationInFrames: number, fps: number) => {
-  const wanted = Math.min(fps * 4, Math.max(fps * 0.8, durationInFrames * 0.6));
+/**
+ * Quadros do desenho: ~60% da cena, entre 0,8 s e 4 s, e sempre alguns quadros de imagem pronta no fim. `quick`
+ * (primeira cena do vídeo): no máximo 1,2 s.
+ */
+export const drawFrames = (durationInFrames: number, fps: number, quick = false) => {
+  const wanted = Math.min(fps * (quick ? 1.2 : 4), Math.max(fps * 0.8, durationInFrames * 0.6));
   return Math.max(1, Math.round(Math.min(wanted, durationInFrames - Math.min(8, durationInFrames * 0.2))));
+};
+
+/** Onde o traço começa na primeira cena: ela já abre com parte do desenho (o primeiro quadro não fica em branco). */
+export const QUICK_START = 0.3;
+
+/** Progresso do desenho no quadro: a continuação já vem pronta; a primeira cena começa em `QUICK_START`. */
+export const drawProgress = (frame: number, total: number, opts: { quick?: boolean; cont?: boolean } = {}) => {
+  if (opts.cont) return 1;
+  const from = opts.quick ? QUICK_START : 0;
+  return interpolate(frame, [0, total], [from, 1], { ...clamp, easing: Easing.inOut(Easing.sin) });
 };
 
 /** Faixas (linhas do traço) da lousa: mais no vertical, para o traço ter a mesma grossura. */
@@ -130,20 +147,23 @@ const Whiteboard: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, ur
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const p = useProgress(scene);
-  const total = drawFrames(scene.durationInFrames, fps);
-  const q = interpolate(frame, [0, total], [0, 1], { ...clamp, easing: Easing.inOut(Easing.sin) });
-  const { d, tip } = revealPath(q, width, height, scene.seed);
-  // A cor entra depois do desenho; até lá, traço em tons de cinza.
-  const color = interpolate(frame, [total, total + Math.round(fps * 0.5)], [0, 1], clamp);
+  const cont = typeof scene.treatment_continue === 'number';
+  const seed = layoutSeed(scene);
+  const total = drawFrames(scene.durationInFrames, fps, scene.treatment_quick);
+  const q = drawProgress(frame, total, { quick: scene.treatment_quick, cont });
+  const { d, tip } = revealPath(q, width, height, seed);
+  // A cor entra depois do desenho; até lá, traço em tons de cinza. Na continuação, já colorido.
+  const color = cont ? 1 : interpolate(frame, [total, total + Math.round(fps * 0.5)], [0, 1], clamp);
   const base = imageFilter(effects, scene.look);
   const filter = `${base} grayscale(${1 - color}) contrast(${1.15 - 0.15 * color})`.trim();
   const scale = 1 + (innerScale(scene.motion, zoomStrength, p) - 1) * 0.5;
   const unit = Math.min(width, height);
   // A caneta sai pela direita/baixo quando termina.
-  const away = interpolate(frame, [total, total + 10], [0, 1], { ...clamp, easing: Easing.in(Easing.quad) });
-  const last = revealPath(Math.min(1, q - 1e-4), width, height, scene.seed).tip ?? [width * 0.9, height * 0.9];
+  const away = cont ? 1 : interpolate(frame, [total, total + 10], [0, 1], { ...clamp, easing: Easing.in(Easing.quad) });
+  const last = revealPath(Math.min(1, q - 1e-4), width, height, seed).tip ?? [width * 0.9, height * 0.9];
   const pen = tip ?? last;
-  const bob = Math.sin(frame * 1.7 + scene.seed) * unit * 0.004;
+  const bob = Math.sin(frame * 1.7 + seed) * unit * 0.004;
+  const origin = FOCUS_ORIGIN[(scene.focus ?? 'center') as FocusPoint] ?? '50% 50%';
   return (
     <AbsoluteFill style={{ backgroundColor: '#FBFBF8', overflow: 'hidden' }}>
       <AbsoluteFill
@@ -151,10 +171,10 @@ const Whiteboard: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, ur
       />
       {/* multiply no grupo de fora: o branco da imagem vira o branco da lousa (o clip-path isola o que está dentro) */}
       <AbsoluteFill
-        style={{ transform: `scale(${scale})`, transformOrigin: FOCUS_ORIGIN[(scene.focus ?? 'center') as FocusPoint] ?? '50% 50%', mixBlendMode: 'multiply' }}
+        style={{ transform: `scale(${scale})`, transformOrigin: origin, mixBlendMode: 'multiply' }}
       >
         <AbsoluteFill style={{ clipPath: `path('${d}')` }}>
-          <Img src={url} style={{ width: '100%', height: '100%', objectFit: 'cover', filter }} />
+          <Img src={url} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: origin, filter }} />
         </AbsoluteFill>
       </AbsoluteFill>
       {away < 1 ? (
@@ -212,22 +232,35 @@ const Tape: React.FC<{ x: number; y: number; w: number; h: number; angle: number
   />
 );
 
+/**
+ * Tamanho do recorte: largo no vertical, alto no horizontal, e nunca mais largo que 86% do quadro (no 1:1 a conta do
+ * horizontal passaria da tela, e a borda rasgada e a fita sairiam cortadas).
+ */
+export const collageSize = (width: number, height: number) => {
+  if (height > width) {
+    const w = width * 0.84;
+    return { w, h: Math.min(height * 0.62, w * 1.2) };
+  }
+  const w = Math.min(width * 0.86, height * 0.78 * 1.3);
+  return { w, h: Math.min(height * 0.78, w / 1.3) };
+};
+
 const Collage: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, cards }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const p = useProgress(scene);
   const step = stopMotionStep(frame, fps);
   const held = step * Math.max(1, Math.round(fps / 8)); // quadro "segurado" da pose
-  const seed = `${scene.seed}-collage`;
+  const seed = `${layoutSeed(scene)}-collage`;
+  const cont = typeof scene.treatment_continue === 'number';
   const vertical = height > width;
-  // Tamanho do recorte: largo no vertical, alto no horizontal.
-  const w = vertical ? width * 0.84 : height * 0.78 * 1.3;
-  const h = vertical ? Math.min(height * 0.62, w * 1.2) : height * 0.78;
+  const { w, h } = collageSize(width, height);
   const baseAngle = (random(`${seed}-ang`) > 0.5 ? 1 : -1) * (1.5 + random(`${seed}-angm`) * 2.5);
   const offX = (random(`${seed}-ox`) - 0.5) * width * 0.04;
   const offY = (vertical ? -height * 0.04 : 0) + (random(`${seed}-oy`) - 0.5) * height * 0.03;
   // Entrada: cai sobre a mesa, em poses (sem interpolar entre elas).
-  const drop = spring({ frame: held, fps, config: { damping: 13, stiffness: 140, mass: 0.7 } });
+  // Na continuação o recorte já está na mesa.
+  const drop = cont ? 1 : spring({ frame: held, fps, config: { damping: 13, stiffness: 140, mass: 0.7 } });
   const lift = 1 - drop;
   // Tremor da pose: pequeno, para a imagem continuar legível.
   const jx = (random(`${seed}-jx-${step}`) - 0.5) * width * 0.004;
@@ -238,6 +271,7 @@ const Collage: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, 
   const border = Math.min(w, h) * 0.035;
   const inner = innerScale(scene.motion, zoomStrength * 0.6, p);
   const filter = imageFilter(effects, scene.look);
+  const [fx, fy] = focusXY(scene.focus);
   // Papel colorido rasgado atrás do recorte, na cor de destaque do estilo.
   const backAngle = -baseAngle * 1.8;
   const unit = Math.min(width, height);
@@ -272,7 +306,18 @@ const Collage: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, 
         <div style={{ position: 'absolute', inset: 0, backgroundColor: '#F7F2E7', clipPath: tornPolygon(`${seed}-edge`, 0, 1.4) }} />
         {/* imagem recortada, com o mesmo rasgo um pouco para dentro */}
         <div style={{ position: 'absolute', inset: border, overflow: 'hidden', clipPath: tornPolygon(`${seed}-cut`, 0, 0.8) }}>
-          <Img src={url} style={{ width: '100%', height: '100%', objectFit: 'cover', transform: `scale(${inner})`, filter: filter || undefined }} />
+          <Img
+            src={url}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              objectPosition: `${fx * 100}% ${fy * 100}%`,
+              transform: `scale(${inner})`,
+              transformOrigin: `${fx * 100}% ${fy * 100}%`,
+              filter: filter || undefined,
+            }}
+          />
           {/* textura de papel por cima da foto (leve) */}
           <AbsoluteFill style={{ backgroundImage: PAPER_TEXTURE, mixBlendMode: 'multiply', opacity: 0.35 }} />
         </div>
@@ -359,9 +404,11 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const p = useProgress(scene);
   const unit = Math.min(width, height);
   const vertical = height > width;
-  const variant = screenVariant(scene.seed, width, height);
+  const cont = typeof scene.treatment_continue === 'number';
+  const variant = screenVariant(layoutSeed(scene), width, height);
   const filter = imageFilter(effects, scene.look);
-  const enter = spring({ frame, fps, config: { damping: 16, stiffness: 120, mass: 0.8 } });
+  // Na continuação o aparelho já está em cena.
+  const enter = cont ? 1 : spring({ frame, fps, config: { damping: 16, stiffness: 120, mass: 0.8 } });
   const [fx, fy] = focusXY(scene.focus);
 
   // Moldura do aparelho e retângulo do conteúdo (a imagem).
@@ -402,8 +449,10 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const actionsY = media.y + media.h + content.h * 0.025;
   const heartAt: [number, number] = [media.x + content.w * 0.06 + icon * 0.5, actionsY + icon * 0.5];
   const target: [number, number] = variant === 'feed' ? heartAt : [media.x + media.w * fx, media.y + media.h * fy];
-  const start: [number, number] = [width * 1.04, height * (vertical ? 0.86 : 0.95)];
-  const cur = cursorPath(frame, dur, start, target);
+  // Na continuação o cursor já está na tela, perto do alvo, e só anda até ele.
+  const start: [number, number] = cont ? [target[0] + unit * 0.12, target[1] + unit * 0.09] : [width * 1.04, height * (vertical ? 0.86 : 0.95)];
+  const path = cursorPath(frame, dur, start, target);
+  const cur = cont ? { ...path, visible: true } : path;
   // Depois do clique na janela/celular, a imagem aproxima do ponto clicado.
   const clickZoom = variant === 'feed' ? 0 : interpolate(frame, [dur * 0.55, dur * 0.8], [0, 1], { ...clamp, easing: Easing.out(Easing.cubic) });
   const inner = innerScale(scene.motion, zoomStrength * 0.6, p) * (1 + clickZoom * 0.12);
@@ -425,7 +474,17 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const image = (
     <Img
       src={url}
-      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: `scale(${inner})`, transformOrigin: `${fx * 100}% ${fy * 100}%`, filter: filter || undefined }}
+      style={{
+        width: '100%',
+        height: '100%',
+        objectFit: 'cover',
+        // O recorte (celular/feed num vídeo horizontal mostra uma faixa estreita da imagem) fica no foco da cena: com
+        // `objectPosition` igual ao foco, o ponto do foco cai em `fx`/`fy` do conteúdo, onde o cursor aponta.
+        objectPosition: `${fx * 100}% ${fy * 100}%`,
+        transform: `scale(${inner})`,
+        transformOrigin: `${fx * 100}% ${fy * 100}%`,
+        filter: filter || undefined,
+      }}
     />
   );
 
@@ -586,8 +645,35 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
 
 const VIEWS: Record<SceneTreatment, React.FC<TreatmentProps>> = { whiteboard: Whiteboard, collage: Collage, screen: Screen };
 
+/**
+ * Entrada que mexe no quadro (a mesma do VisualLayer): `zoom_blur` aproxima e desfoca nos primeiros quadros, `glitch`
+ * treme; o efeito `vhs` treme sempre. Sem isso a transição sorteada viraria corte seco nas cenas com tratamento.
+ */
+export const treatmentEntry = (transition: string, frame: number, transitionFrames: number, seed: number, effects: EffectSpec[]) => {
+  const tf = Math.max(1, transitionFrames);
+  let scale = 1;
+  let blur = 0;
+  if (transition === 'zoom_blur' && frame < tf) {
+    const k = 1 - frame / tf;
+    scale = 1 + 0.14 * k;
+    blur = 10 * k;
+  }
+  let jitter = 0;
+  if (transition === 'glitch' && frame < tf) jitter = (random(`${seed}-g-${frame}`) - 0.5) * 60;
+  const vhs = hasEffect(effects, 'vhs');
+  if (vhs) jitter += (random(`${seed}-v-${frame}`) - 0.5) * 6 * vhs.amount;
+  return { scale, blur, jitter };
+};
+
 /** Fundo da cena de imagem desenhado pelo tratamento (whiteboard, colagem ou tela). */
 export const TreatmentLayer: React.FC<TreatmentProps & { treatment: SceneTreatment }> = ({ treatment, ...props }) => {
+  const frame = useCurrentFrame();
   const View = VIEWS[treatment];
-  return <View {...props} />;
+  const { scale, blur, jitter } = treatmentEntry(props.scene.transition, frame, props.transitionFrames, props.scene.seed, props.effects);
+  if (scale === 1 && blur === 0 && jitter === 0) return <View {...props} />;
+  return (
+    <AbsoluteFill style={{ transform: `translateX(${jitter}px) scale(${scale})`, filter: blur ? `blur(${blur}px)` : undefined }}>
+      <View {...props} />
+    </AbsoluteFill>
+  );
 };

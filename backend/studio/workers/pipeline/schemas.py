@@ -213,7 +213,9 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
   imagem ou vira cartão
 - edit.camera: pesos por movimento ({", ".join(CAMERA_MOVES)})
 - edit.transitions: pesos por transição ({", ".join(TRANSITIONS)})
-- edit.treatments: pesos do tratamento das cenas de imagem ({", ".join(TREATMENTS)}); vazio = automático pela família
+- edit.treatments: pesos do tratamento das cenas de imagem ({", ".join(TREATMENTS)}); vazio = automático pela família;
+  no projeto o mapa é trocado por inteiro (não mescla com o do estilo): {{}} volta ao automático, {{"plain": 1}} tira as
+  variações; um peso solto (edit.treatments.collage) parte dos pesos atuais
 - edit.transition_seconds, edit.zoom_strength (0–0.6)
 - edit.effects: lista de {{type, amount 0–1, preset?}}; tipos: grain, vignette, grade, scanlines, chromatic, vhs, light_leak,
   film_scratches, halftone, duotone, sepia, blur_edges, flicker, dust; presets de grade: {", ".join(GRADE_PRESETS)}
