@@ -174,16 +174,30 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
 /**
  * Filtro SVG da aberração cromática: desloca o vermelho para um lado e o azul para o outro, mantém o verde e mistura
  * com a imagem original pela intensidade. Tudo em sRGB (sem conversão para RGB linear, mais rápido).
+ *
+ * O deslocamento deixa uma faixa vazia de `shift` px na borda da imagem; ali entra a imagem sem deslocar (feMerge
+ * com a SourceGraphic por baixo), senão o vermelho sumiria numa borda e o azul na outra (faixa ciano/amarela quando
+ * a borda da imagem encosta no quadro: câmera parada, fim de pan, foco perto da borda).
+ *
+ * A intensidade começa em 0 e fica perto do visual antigo (cópias coloridas com opacidade 0,32 × intensidade).
  */
 const ChromaticFilter: React.FC<{ id: string; amount: number; shift: number }> = ({ id, amount, shift }) => {
-  const mix = Math.min(1, 0.3 + 0.7 * amount);
+  const mix = Math.min(1, Math.max(0, 0.35 * amount));
   return (
     <svg width={0} height={0} style={{ position: 'absolute' }} aria-hidden="true">
       <defs>
         <filter id={id} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
-          <feOffset in="SourceGraphic" dx={shift} dy={0} result="rDesloc" />
+          <feOffset in="SourceGraphic" dx={shift} dy={0} result="rSo" />
+          <feMerge result="rDesloc">
+            <feMergeNode in="SourceGraphic" />
+            <feMergeNode in="rSo" />
+          </feMerge>
           <feColorMatrix in="rDesloc" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r" />
-          <feOffset in="SourceGraphic" dx={-shift} dy={0} result="bDesloc" />
+          <feOffset in="SourceGraphic" dx={-shift} dy={0} result="bSo" />
+          <feMerge result="bDesloc">
+            <feMergeNode in="SourceGraphic" />
+            <feMergeNode in="bSo" />
+          </feMerge>
           <feColorMatrix in="bDesloc" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b" />
           <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g" />
           <feComposite in="r" in2="g" operator="arithmetic" k1={0} k2={1} k3={1} k4={0} result="rg" />

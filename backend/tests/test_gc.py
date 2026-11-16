@@ -107,3 +107,19 @@ def test_build_records_manifest(isolated_settings):
     report = gc.collect(dry_run=True)
     assert report.kept_in_use == len(result["artifacts"])
     assert "mix" not in report.removed
+
+
+def test_collect_sweeps_unused_lut_images(isolated_settings):
+    """Imagens gradadas por LUT são baratas de refazer: as sem uso saem, as do último build ficam."""
+    settings = isolated_settings
+    doc = service.create_project(title="LUT", style_id="misterios-short", topic="teste")
+    service.update_settings(doc.id, {"last_preview": {"artifacts": ["lut:lutuse"], "langs": {}}})
+    _artifact(settings, "lut", "lutuse")
+    _artifact(settings, "lut", "lutold")                              # intensidade antiga, sem uso: sai
+    _artifact(settings, "lut", "lutnew", when=datetime.now(UTC))      # recente (build em andamento): fica
+
+    report = gc.collect(dry_run=False)
+    assert report.removed.get("lut") == 1
+    assert "lut" in report.to_dict()["labels"]
+    assert not _exists("lut", "lutold") and not (settings.cache_dir / "lut" / "lu" / "lutold").exists()
+    assert _exists("lut", "lutuse") and _exists("lut", "lutnew")

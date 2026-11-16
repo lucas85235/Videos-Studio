@@ -138,7 +138,7 @@ O novo projeto já vem com *Curiosidades e Explicativo (Short)* marcado. Se o pr
 
 - **Duplicar e ajustar**: abra um preset, dê um id para a cópia e edite no formulário (ou no JSON completo).
 - **Criar por descrição**: em Estilos, descreva (ex.: "documentário de jornal antigo, lento, sépia, máquina de escrever") e escolha um estilo base. O app mostra as mudanças aplicadas e as rejeitadas.
-- **LUT de cor (.cube)**: no editor, em *Efeitos de imagem*, ligue **LUT de cor** e escolha um dos prontos (azul-petróleo e laranja, filme desbotado, noite fria, âmbar quente, processo cruzado, preto e branco contrastado) ou clique em **Enviar .cube** para usar o seu (fica em `data/library/luts`). A intensidade mistura o LUT com a cor original. O LUT é aplicado nas imagens no build (fica em cache) e aparece na prévia do vídeo; vídeos de cena (mídia real em vídeo) ficam sem LUT por enquanto.
+- **LUT de cor (.cube)**: no editor, em *Efeitos de imagem*, ligue **LUT de cor** e escolha um dos prontos (azul-petróleo e laranja, filme desbotado, noite fria, âmbar quente, processo cruzado, preto e branco contrastado) ou clique em **Enviar .cube** para usar o seu (fica em `data/library/luts`). A intensidade mistura o LUT com a cor original. O LUT é aplicado nas imagens no build (fica em cache) e aparece na prévia do vídeo; vídeos de cena (mídia real em vídeo) ficam sem LUT por enquanto (o build avisa). Um .cube com nome repetido é guardado como `nome-2.cube`, sem mudar a cor dos estilos que usam o antigo.
 - Famílias prontas na v1: imagens paradas (Ken Burns), motion graphics (cartões, tipografia cinética, documentos, contagem) e analógico (VHS, glitch, scanlines). As demais estão no backlog.
 
 ### Conferência da narração

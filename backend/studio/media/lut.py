@@ -28,8 +28,11 @@ LUT_VERSION = 1
 BUILTIN_SIZE = 33
 MAX_FILE_BYTES = 12 * 1024 * 1024
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
-_ROWS_PER_BLOCK = 256  # aplica em faixas de linhas: memória limitada mesmo em imagens grandes
-_FILE_NAME = re.compile(r"^[\w\- .()]{1,80}\.cube$", re.IGNORECASE)
+# Aplica em faixas de ~128 mil pixels (não em número fixo de linhas): a memória fica em poucos MB por imagem, seja
+# 1080p ou 4K, e as 4 imagens em paralelo do build não somam centenas de MB.
+_PIXELS_PER_BLOCK = 131072
+_FILE_NAME = re.compile(r"^[\w\- .()]{1,80}\.cube$")
+_UNSAFE_CHARS = re.compile(r"[^\w\- .()]+")
 
 
 class LutError(ValueError):
@@ -79,14 +82,23 @@ def parse_cube(text: str) -> Lut:
     dmax: tuple[float, ...] = (1.0, 1.0, 1.0)
     rows: list[tuple[float, ...]] = []
     for line_no, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.strip()
+        if stripped[:5].upper() == "TITLE" and stripped[5:6] in (" ", "	", '"'):
+            # O título vem antes de cortar comentários: `TITLE "Look #2"` tem um # que faz parte do nome.
+            rest = stripped[5:].strip()
+            if rest.startswith('"'):
+                end = rest.find('"', 1)
+                rest = rest[1:end] if end > 0 else rest[1:]
+            else:
+                rest = rest.split("#", 1)[0].strip()
+            title = rest[:120]
+            continue
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
         parts = line.split()
         key = parts[0].upper()
-        if key == "TITLE":
-            title = line[5:].strip().strip('"')[:120]
-        elif key in ("LUT_3D_SIZE", "LUT_1D_SIZE"):
+        if key in ("LUT_3D_SIZE", "LUT_1D_SIZE"):
             if rows:
                 raise LutError(f"linha {line_no}: {key} precisa vir antes dos dados")
             if dim:
@@ -175,11 +187,12 @@ def apply_to_array(rgb: np.ndarray, lut: Lut, amount: float = 1.0) -> np.ndarray
     """Imagem uint8 (H, W, 3) gradada pelo LUT, misturada com a original pela intensidade (0..1)."""
     amount = float(np.clip(amount, 0.0, 1.0))
     out = np.empty_like(rgb)
-    for top in range(0, rgb.shape[0], _ROWS_PER_BLOCK):
-        block = rgb[top : top + _ROWS_PER_BLOCK].astype(np.float32) / 255.0
+    rows = max(1, _PIXELS_PER_BLOCK // max(1, rgb.shape[1]))
+    for top in range(0, rgb.shape[0], rows):
+        block = rgb[top : top + rows].astype(np.float32) / 255.0
         graded = apply_lut(block, lut)
         mixed = block + (graded - block) * amount
-        out[top : top + _ROWS_PER_BLOCK] = np.clip(mixed * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        out[top : top + rows] = np.clip(mixed * 255.0 + 0.5, 0, 255).astype(np.uint8)
     return out
 
 
@@ -190,7 +203,12 @@ def grade_image(src: Path, dst_dir: Path, lut: Lut, amount: float) -> Path:
     with Image.open(src) as opened:
         # O navegador gira pela orientação EXIF; o arquivo novo sai sem EXIF, então gira antes.
         img = ImageOps.exif_transpose(opened)
-        alpha = img.getchannel("A") if img.mode in ("RGBA", "LA") or "transparency" in img.info else None
+        alpha = None
+        # Transparência por canal alfa (RGBA, LA, PA) ou por cor/índice transparente (tRNS em P, RGB, L): converte
+        # para RGBA antes, porque P/RGB/L não têm canal "A".
+        if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+            img = img.convert("RGBA")
+            alpha = img.getchannel("A")
         rgb = np.asarray(img.convert("RGB"))
     out = Image.fromarray(apply_to_array(rgb, lut, amount), "RGB")
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -308,17 +326,49 @@ def luts_dir() -> Path:
 
 
 def safe_name(name: str) -> str:
-    """Nome de arquivo .cube aceito (sem pastas); LutError se não servir."""
+    """Nome de arquivo .cube aceito (sem pastas), sempre com a extensão em minúsculas; LutError se não servir."""
     name = Path(name.replace("\\", "/")).name.strip()
-    if not name.lower().endswith(".cube"):
-        name = f"{name}.cube"
+    if name.lower().endswith(".cube"):
+        name = name[:-5]
+    name = f"{name}.cube"
     if not _FILE_NAME.match(name):
         raise LutError("nome de arquivo inválido: use letras, números, espaço, hífen ou sublinhado e termine em .cube")
     return name
 
 
+def clean_upload_name(name: str) -> str:
+    """Nome de um .cube enviado, limpo: caracteres fora do permitido viram '-' (ex.: 'Kodak 2383 [D65].cube' →
+    'Kodak 2383 -D65-.cube'), no máximo 80 caracteres antes do .cube."""
+    stem = Path(name.replace("\\", "/")).name.strip()
+    if stem.lower().endswith(".cube"):
+        stem = stem[:-5]
+    stem = _UNSAFE_CHARS.sub("-", stem).strip(" .")[:80].strip(" .") or "lut"
+    return f"{stem}.cube"
+
+
+def _free_name(name: str) -> str:
+    """Nome que ainda não existe na biblioteca: 'nome.cube', 'nome-2.cube', 'nome-3.cube'..."""
+    folder = luts_dir()
+    taken = {p.name.lower() for p in folder.iterdir()}
+    if name.lower() not in taken:
+        return name
+    stem = name[:-5][:76]
+    n = 2
+    while f"{stem}-{n}.cube".lower() in taken:
+        n += 1
+    return f"{stem}-{n}.cube"
+
+
 def user_lut_path(name: str) -> Path:
-    return luts_dir() / safe_name(name)
+    """Caminho do .cube na biblioteca. Um arquivo copiado à mão como 'Filme.CUBE' também é achado (o nome é
+    normalizado para '.cube' e, fora do Windows, o sistema de arquivos diferencia maiúsculas)."""
+    path = luts_dir() / safe_name(name)
+    if not path.exists():
+        wanted = path.name.lower()
+        for other in path.parent.iterdir():
+            if other.name.lower() == wanted:
+                return other
+    return path
 
 
 def _read_user(path: Path) -> Lut:
@@ -343,19 +393,25 @@ def load_lut(preset: str) -> Lut:
     return _read_user_cached(str(path), stat.st_mtime, stat.st_size)
 
 
-def save_user_lut(name: str, data: bytes) -> tuple[str, Lut]:
-    """Valida e grava um .cube enviado. Devolve o nome final e o LUT lido."""
+def save_user_lut(name: str, data: bytes, *, replace: bool = False) -> tuple[str, Lut]:
+    """Valida e grava um .cube enviado. Devolve o nome final e o LUT lido.
+
+    O nome é limpo (caracteres estranhos viram '-'). Se já existe um LUT com esse nome, grava como 'nome-2.cube'
+    (os estilos que usam o antigo não mudam de cor), a não ser que `replace` peça para substituir."""
     if len(data) > MAX_FILE_BYTES:
         raise LutError("arquivo .cube grande demais (máx. 12 MB)")
-    final = safe_name(name)
+    final = safe_name(clean_upload_name(name))
     lut = parse_cube(data.decode("utf-8-sig", errors="replace"))
+    if not replace:
+        final = _free_name(final)
     (luts_dir() / final).write_bytes(data)
     return final, lut
 
 
 def list_user_luts() -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
-    for path in sorted(luts_dir().glob("*.cube"), key=lambda p: p.name.lower()):
+    found = [p for p in luts_dir().iterdir() if p.is_file() and p.suffix.lower() == ".cube"]
+    for path in sorted(found, key=lambda p: p.name.lower()):
         item: dict[str, object] = {"name": path.name, "bytes": path.stat().st_size}
         try:
             lut = _read_user(path)

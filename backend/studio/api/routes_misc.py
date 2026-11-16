@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -437,13 +438,14 @@ def luts() -> dict[str, Any]:
 
 
 @router.post("/luts")
-def upload_lut(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
-    """Guarda um .cube na biblioteca (library/luts) depois de conferir que ele lê."""
+def upload_lut(file: Annotated[UploadFile, File()], replace: bool = False) -> dict[str, Any]:
+    """Guarda um .cube na biblioteca (library/luts) depois de conferir que ele lê. O nome é limpo; nome repetido
+    vira 'nome-2.cube', a não ser com ?replace=true (aí substitui, e os estilos que usam o nome mudam de cor)."""
     from studio.media import lut
 
     data = file.file.read(lut.MAX_FILE_BYTES + 1)
     try:
-        name, parsed = lut.save_user_lut(file.filename or "lut.cube", data)
+        name, parsed = lut.save_user_lut(file.filename or "lut.cube", data, replace=replace)
     except lut.LutError as exc:
         raise HTTPException(status_code=422, detail=f"LUT inválido: {exc}") from exc
     return {"name": name, "title": parsed.title, "size": parsed.size, "dim": parsed.dim, "bytes": len(data)}
@@ -488,8 +490,12 @@ def lut_file(name: str) -> Response:
 
     parsed = _load_lut_or_http(name)
     filename = name if name.lower().endswith(".cube") else f"{name}.cube"
+    # Cabeçalho HTTP é latin-1: nome com acento ou outro alfabeto vai em filename* (RFC 6266/5987), com um
+    # nome só ASCII em filename= para navegadores antigos.
+    fallback = "".join(c if c.isascii() and c.isprintable() and c not in '"\\' else "_" for c in filename)
+    disposition = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
     return Response(lut.write_cube(parsed), media_type="text/plain; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+                    headers={"Content-Disposition": disposition})
 
 
 # --------------------------------------------------------------------------------------------

@@ -15,7 +15,7 @@ import json
 import logging
 import shutil
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -243,6 +243,7 @@ class Builder:
         self.settings = get_settings()
         self.stats = BuildStats()
         self.warnings: list[str] = []
+        self.lut_graded: dict[str, str] = {}  # imagem original → versão com o LUT do estilo (lut_images)
         self.music_used: dict[str, Any] | None = None
         self._done = 0
         self._total = 1
@@ -644,9 +645,12 @@ class Builder:
             self.stats.noncommercial.add(provider.info.id)
         return rel
 
-    def lut_images(self, images: dict[str, str | None]) -> dict[str, str | None]:
+    def lut_images(self, images: dict[str, str | None], extra: Iterable[str] = ()) -> dict[str, str | None]:
         """Imagens das cenas com o LUT do estilo aplicado (efeito "lut"), em cache por imagem + LUT + intensidade.
-        Sem LUT, devolve as mesmas. LUT que sumiu da biblioteca vira aviso e o vídeo sai sem ele."""
+        Sem LUT, devolve as mesmas. LUT que sumiu da biblioteca vira aviso e o vídeo sai sem ele.
+
+        `extra` são outras imagens que aparecem no vídeo (a foto do cartão de notícia): ficam gradadas em
+        `self.lut_graded` (original → gradada). Cena de vídeo fica sem LUT, com aviso (a cor dela destoa)."""
         effect = next((e for e in self.style.edit.effects if e.type == "lut" and e.amount > 0), None)
         if effect is None or not effect.preset:
             return images
@@ -671,11 +675,20 @@ class Builder:
             self.stats.hit("lut", False)
             return out_rel
 
-        todo = sorted({rel for rel in images.values()
+        videos = sum(1 for rel in images.values() if rel and not rel.lower().endswith(lut_mod.IMAGE_EXTS))
+        if videos:
+            self.warnings.append(f"LUT de cor não é aplicado em cenas de vídeo ({videos} "
+                                 f"{'cena' if videos == 1 else 'cenas'}): a cor delas fica diferente das imagens.")
+        todo = sorted({rel for rel in [*images.values(), *extra]
                        if rel and rel.lower().endswith(lut_mod.IMAGE_EXTS) and self.store.abs(rel).is_file()})
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for rel, future in [(rel, pool.submit(grade, rel)) for rel in todo]:
-                self._check()
+            futures = [(rel, pool.submit(grade, rel)) for rel in todo]
+            for rel, future in futures:
+                if self.sink.cancelled():
+                    # Cancela o que ainda não começou: o `with` só espera as (no máximo 4) imagens em andamento.
+                    for _, f in futures:
+                        f.cancel()
+                    raise BuildCancelled("cancelado pelo usuário")
                 try:
                     done[rel] = future.result()
                 except Exception as exc:  # noqa: BLE001 - imagem ilegível fica sem LUT, o vídeo segue
@@ -683,7 +696,17 @@ class Builder:
                     self.warnings.append(f"LUT de cor não aplicado em uma imagem: {exc}")
         if todo:
             self._tick("Cor (LUT) aplicada")
+        self.lut_graded = done
         return {sid: done.get(rel, rel) if rel else rel for sid, rel in images.items()}
+
+    def _lut_news_photos(self, timeline: dict[str, Any]) -> None:
+        """Troca a foto do cartão de notícia pela versão com LUT (gradada em lut_images)."""
+        if not self.lut_graded:
+            return
+        for scene in timeline.get("scenes", []):
+            news = scene.get("news")
+            if isinstance(news, dict) and news.get("image") in self.lut_graded:
+                news["image"] = self.lut_graded[news["image"]]
 
     def music(self, duration: float) -> tuple[str, dict[str, Any]] | None:
         music_spec = self.style.audio.music
@@ -976,8 +999,11 @@ class Builder:
         if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
             self.warnings.append(EDITORIAL_WARNING)
 
-        # LUT do estilo: a timeline mostra as imagens já gradadas (a thumbnail continua com as originais).
-        timeline_images = self.lut_images(images)
+        # LUT do estilo: a timeline mostra as imagens já gradadas (a thumbnail continua com as originais), inclusive
+        # a foto do cartão de notícia (que usa a original da mídia, não a versão enquadrada da cena).
+        news_photos = [m.asset for s in scenes if s.kind == "image" and (m := s.visual.media) is not None
+                       and m.kind == "news" and m.asset]
+        timeline_images = self.lut_images(images, news_photos)
 
         results: dict[str, Any] = {}
         for lang in self.langs:
@@ -991,6 +1017,7 @@ class Builder:
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
             timeline = build_timeline(doc, self.style, lang, clips, timeline_images)
+            self._lut_news_photos(timeline)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")

@@ -270,3 +270,116 @@ def test_previa_com_lut_aponta_a_timeline_para_as_imagens_gradadas(isolated_sett
     assert images and all(src.startswith("cache/lut/") for src in images)
     assert any(e["type"] == "lut" for e in timeline["style"]["effects"])
     assert final["result"]["generated"].get("lut", 0) >= 1
+
+
+# --------------------------------------------------------------------------------------------
+# Correções da revisão
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mode", "fundo", "transparente"),
+    [("P", 0, 0), ("RGB", (10, 20, 30), (10, 20, 30)), ("L", 40, 40)],
+)
+def test_grade_image_com_transparencia_trns(tmp_path, mode, fundo, transparente):
+    # PNG com transparência por cor/índice (tRNS): P, RGB e L não têm canal "A".
+    src = tmp_path / f"logo-{mode}.png"
+    img = Image.new(mode, (8, 8), fundo)
+    if mode == "P":
+        img.putpalette([0, 0, 0, 255, 0, 0] + [0] * 762)
+        img.putpixel((4, 4), 1)
+    else:
+        img.putpixel((4, 4), (200, 50, 50) if mode == "RGB" else 200)
+    img.save(src, transparency=transparente)
+    out = lut_mod.grade_image(src, tmp_path / f"out-{mode}", builtin_lut("warm-amber"), 1.0)
+    with Image.open(out) as graded:
+        assert out.suffix == ".png" and graded.mode == "RGBA"
+        assert graded.getpixel((0, 0))[3] == 0 and graded.getpixel((4, 4))[3] == 255
+
+
+def test_faixas_por_pixels_dao_o_mesmo_resultado_em_imagem_larga():
+    rgb = (np.random.default_rng(4).random((7, 50_000, 3)) * 255).astype(np.uint8)  # faixas de 2 linhas
+    lut = builtin_lut("teal-orange")
+    out = lut_mod.apply_to_array(rgb, lut, 1.0)
+    direto = np.clip(apply_lut(rgb.astype(np.float32) / 255.0, lut) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    assert np.array_equal(out, direto)
+
+
+def test_titulo_com_cerquilha():
+    lut = parse_cube('TITLE "Look #2"\nLUT_3D_SIZE 2\n' + "\n".join(
+        f"{r} {g} {b}" for b in (0, 1) for g in (0, 1) for r in (0, 1)))
+    assert lut.title == "Look #2"
+    assert parse_cube(write_cube(lut)).title == "Look #2"
+    sem_aspas = parse_cube("TITLE Simples # nota\nLUT_1D_SIZE 2\n0 0 0\n1 1 1\n")
+    assert sem_aspas.title == "Simples"
+
+
+def test_nomes_de_arquivo_enviados(isolated_settings):
+    assert lut_mod.safe_name("Filme.CUBE") == "Filme.cube"
+    assert lut_mod.clean_upload_name("Kodak 2383 [D65].cube") == "Kodak 2383 -D65-.cube"
+    assert lut_mod.clean_upload_name("LogC+Rec709.CUBE") == "LogC-Rec709.cube"
+    assert lut_mod.clean_upload_name("../a/b/Meu, Look's.cube") == "Meu- Look-s.cube"
+    cube = _cube_from(lambda c: c, size=2).encode()
+    first, _ = lut_mod.save_user_lut("Filme.CUBE", cube)
+    second, _ = lut_mod.save_user_lut("filme.cube", cube)
+    third, _ = lut_mod.save_user_lut("Filme.cube", cube, replace=True)
+    assert (first, second, third) == ("Filme.cube", "filme-2.cube", "Filme.cube")
+    assert sorted(u["name"] for u in lut_mod.list_user_luts()) == ["Filme.cube", "filme-2.cube"]
+    # Arquivo copiado à mão com extensão maiúscula aparece e carrega.
+    (lut_mod.luts_dir() / "Manual.CUBE").write_bytes(cube)
+    assert "Manual.CUBE" in [u["name"] for u in lut_mod.list_user_luts()]
+    assert lut_mod.load_lut("Manual.CUBE").size == 2
+
+
+def test_rota_baixa_cube_com_nome_unicode(isolated_settings):
+    from studio.api.app import create_app
+
+    client = TestClient(create_app())
+    cube = _cube_from(lambda c: c, size=2)
+    sent = client.post("/api/luts", files={"file": ("Kőszeg [noite].cube", cube.encode(), "text/plain")})
+    assert sent.status_code == 200, sent.text
+    name = sent.json()["name"]
+    assert name == "Kőszeg -noite-.cube"
+    again = client.post("/api/luts", files={"file": ("Kőszeg [noite].cube", cube.encode(), "text/plain")})
+    assert again.json()["name"] == "Kőszeg -noite--2.cube"
+    got = client.get(f"/api/luts/{name}/file.cube")
+    assert got.status_code == 200
+    disposition = got.headers["content-disposition"]
+    assert "filename*=UTF-8''K%C5%91szeg%20-noite-.cube" in disposition and 'filename="K_szeg -noite-.cube"' in disposition
+
+
+def test_build_avisa_video_e_grada_foto_do_cartao(isolated_settings):
+    builder = _builder_with_lut(isolated_settings, "cold-night")
+    folder = isolated_settings.data_dir / "uploads"
+    Image.new("RGB", (16, 16), (90, 140, 200)).save(folder / "noticia.png")
+    out = builder.lut_images({"s1": "uploads/a.jpg", "s2": "uploads/clip.mp4"}, ["uploads/noticia.png"])
+    assert out["s2"] == "uploads/clip.mp4"
+    assert any("cenas de vídeo (1 cena)" in w for w in builder.warnings)
+    graded = builder.lut_graded["uploads/noticia.png"]
+    assert graded.startswith("cache/lut/") and graded != out["s1"]
+    timeline = {"scenes": [{"id": "s3", "news": {"outlet": "X", "image": "uploads/noticia.png"}}, {"id": "s4"}]}
+    builder._lut_news_photos(timeline)
+    assert timeline["scenes"][0]["news"]["image"] == graded
+
+
+def test_cancelar_durante_o_lut_nao_espera_todas_as_imagens(isolated_settings, monkeypatch):
+    from studio.workers.pipeline.build import BuildCancelled
+
+    builder = _builder_with_lut(isolated_settings, "teal-orange")
+    folder = isolated_settings.data_dir / "uploads"
+    images = {}
+    for i in range(12):
+        Image.new("RGB", (8, 8), (i * 20, 100, 50)).save(folder / f"i{i}.jpg")
+        images[f"s{i}"] = f"uploads/i{i}.jpg"
+    calls = []
+    real = lut_mod.grade_image
+
+    def contado(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(lut_mod, "grade_image", contado)
+    monkeypatch.setattr(builder.sink, "cancelled", lambda: len(calls) >= 1)
+    with pytest.raises(BuildCancelled):
+        builder.lut_images(images)
+    assert len(calls) < len(images)  # as que ainda não tinham começado foram canceladas
