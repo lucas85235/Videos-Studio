@@ -33,7 +33,10 @@ class FakeMeta:
         self.quota_used = quota_used
         self.media_bodies: list[dict[str, list[str]]] = []
         self.refuse_ai_label = False
-        self.head_status = 200
+        self.file_status: dict[str, int] = {}  # status por pedaço da URL (padrão 200)
+        self.file_types: dict[str, str] = {}  # content-type por pedaço da URL (padrão pela extensão)
+        self.ai_refusal_msg = "Invalid parameter is_ai_generated"
+        self.publish_error: dict | None = None
 
     def form(self, request: httpx.Request) -> dict[str, list[str]]:
         return parse_qs(request.content.decode())
@@ -42,8 +45,13 @@ class FakeMeta:
         self.calls.append(request)
         url = str(request.url)
         path = request.url.path
-        if request.method == "HEAD":
-            return httpx.Response(self.head_status)
+        if request.url.host not in ("graph.instagram.com", "api.instagram.com"):
+            # Arquivo público (vídeo ou capa): o app pede só o primeiro byte com GET.
+            assert request.method == "GET" and request.headers.get("Range") == "bytes=0-0", url
+            status = next((v for k, v in self.file_status.items() if k in url), 200)
+            ctype = next((v for k, v in self.file_types.items() if k in url),
+                         "image/jpeg" if url.endswith(".jpg") else "video/mp4")
+            return httpx.Response(status, headers={"content-type": ctype}, content=b"x")
         if url.startswith(ig.TOKEN_URL):
             body = self.form(request)
             assert body["grant_type"] == ["authorization_code"]
@@ -67,13 +75,15 @@ class FakeMeta:
             body = self.form(request)
             self.media_bodies.append(body)
             if self.refuse_ai_label and "is_ai_generated" in body:
-                return httpx.Response(400, json={"error": {"message": "Invalid parameter is_ai_generated", "code": 100}})
+                return httpx.Response(400, json={"error": {"message": self.ai_refusal_msg, "code": 100}})
             return httpx.Response(200, json={"id": "CONT1"})
         if path.endswith("/CONT1"):
             status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
             return httpx.Response(200, json={"status_code": status, "status": "Error: formato" if status == "ERROR" else ""})
         if path.endswith("/178/media_publish"):
             assert self.form(request)["creation_id"] == ["CONT1"]
+            if self.publish_error is not None:
+                return httpx.Response(400, json={"error": self.publish_error})
             return httpx.Response(200, json={"id": "MEDIA9"})
         if path.endswith("/MEDIA9"):
             return httpx.Response(200, json={"permalink": "https://www.instagram.com/reel/abc/"})
@@ -242,8 +252,9 @@ def test_publish_reel_with_public_base_url(isolated_settings, meta: FakeMeta, mo
     assert final["result"]["url"] == "https://www.instagram.com/reel/abc/"
     body = meta.media_bodies[0]
     assert body["media_type"] == ["REELS"]
-    assert body["video_url"] == [f"https://cdn.exemplo.dev/vulto/outputs/{pid}/pt-BR/o%20farol.mp4"]
-    assert body["cover_url"] == [f"https://cdn.exemplo.dev/vulto/outputs/{pid}/pt-BR/capa.jpg"]
+    # O endereço público espelha só outputs/: o caminho vai sem "outputs/".
+    assert body["video_url"] == [f"https://cdn.exemplo.dev/vulto/{pid}/pt-BR/o%20farol.mp4"]
+    assert body["cover_url"] == [f"https://cdn.exemplo.dev/vulto/{pid}/pt-BR/capa.jpg"]
     assert body["share_to_feed"] == ["false"]
     assert body["is_ai_generated"] == ["true"]
     assert body["caption"] == ["O farol\n\nResumo.\n\n#misterio #farol"]
@@ -273,9 +284,9 @@ def test_publish_needs_a_public_url_and_a_commercial_render(isolated_settings, m
     assert final["status"] == "failed" and "URL pública" in final["error"]
     final = _run(pid, {"video_url": "http://inseguro.exemplo.dev/v.mp4"})
     assert final["status"] == "failed" and "https://" in final["error"]
-    meta.head_status = 403
+    meta.file_status = {"privado": 404}
     final = _run(pid, {"video_url": "https://privado.exemplo.dev/v.mp4"})
-    assert final["status"] == "failed" and "403" in final["error"]
+    assert final["status"] == "failed" and "404" in final["error"]
     test_pid = _rendered(isolated_settings, preview_only=["windows_sapi"])
     final = _run(test_pid, {"video_url": "https://arquivos.exemplo.dev/reel.mp4"})
     assert final["status"] == "failed" and "prévia" in final["error"]
@@ -377,3 +388,183 @@ def test_callback_page_finishes_login(meta: FakeMeta):
         assert page.status_code == 200 and "@vulto.br" in page.text
         denied = client.get("/api/instagram/callback?error=access_denied&error_description=negado")
         assert denied.status_code == 400 and "negado" in denied.text
+
+
+# ------------------------------------------------------------------------------------------------
+# Correções da revisão
+# ------------------------------------------------------------------------------------------------
+
+
+def test_public_address_mirrors_only_outputs():
+    ig.set_options(public_base_url="https://cdn.exemplo.dev/vulto")
+    assert ig.public_url_for("outputs/prj_1/pt-BR/v.mp4") == "https://cdn.exemplo.dev/vulto/prj_1/pt-BR/v.mp4"
+    assert ig.public_url_for("outputs\\prj_1\\capa.jpg") == "https://cdn.exemplo.dev/vulto/prj_1/capa.jpg"
+    # Nada fora de outputs/ vira URL (o cofre e a chave mestra moram na raiz da pasta de dados).
+    for rel in ("studio.db", ".master.key", "cache/x.mp4", "outputs/../studio.db", "outputs"):
+        assert ig.public_url_for(rel) == ""
+
+
+def test_secrets_never_show_in_httpx_logs(meta: FakeMeta, caplog: pytest.LogCaptureFixture):
+    import logging
+
+    _app()
+    caplog.set_level(logging.INFO, logger="httpx")
+    with httpx.Client(transport=httpx.MockTransport(meta)) as client:
+        ig.exchange_long_lived(client, "curto")
+        _account(age=timedelta(days=20), left=timedelta(days=40))
+        ig.access_token(client, "178")
+    text = caplog.text
+    assert "refresh_access_token" in text  # o log continua, só sem os segredos
+    for secret in ("segredo", "curto", "longo"):
+        assert f"={secret}" not in text
+    assert "client_secret=***" in text and "access_token=***" in text
+
+
+def test_callback_requires_state_but_pasted_code_may_omit_it(meta: FakeMeta):
+    _app()
+    ig._pending.clear()  # logins pendentes de outros testes
+    channel_id = _channel()
+    state = ig.start_link("http://local", channel_id)["state"]
+    with TestClient(create_app()) as client:
+        page = client.get("/api/instagram/callback?code=CODE1")
+        assert page.status_code == 400
+        assert ig.link_status(state)["status"] == "pending" and not ig.get_account("178")
+        with pytest.raises(ig.InstagramError, match="desconhecido"):
+            ig.finish_oauth("CODE1", None)  # sem permissão explícita, não adivinha o pendente
+        resp = client.post("/api/instagram/link/code", json={"text": "CODE1#_"})
+        assert resp.status_code == 200, resp.text
+    assert ig.link_status(state)["status"] == "done"
+
+
+def test_url_check_uses_ranged_get_and_warns_instead_of_blocking(meta: FakeMeta):
+    client = ig.new_client()
+    assert ig.check_public_url(client, "https://bucket.exemplo.dev/v.mp4?X-Amz-Signature=abc") == []
+    meta.file_status = {"assinada": 403}
+    notes = ig.check_public_url(client, "https://assinada.exemplo.dev/v.mp4")
+    assert notes and "403" in notes[0]
+    meta.file_types = {"drive": "text/html; charset=utf-8"}
+    notes = ig.check_public_url(client, "https://drive.exemplo.dev/compartilhar")
+    assert notes and "text/html" in notes[0]
+    meta.file_status = {"sumiu": 404}
+    with pytest.raises(ig.InstagramError, match="404"):
+        ig.check_public_url(client, "https://sumiu.exemplo.dev/v.mp4")
+
+
+def test_signed_url_answering_403_still_publishes(isolated_settings, meta: FakeMeta):
+    _account()
+    meta.file_status = {"r2": 403}
+    pid = _rendered(isolated_settings)
+    final = _run(pid, {"video_url": "https://r2.exemplo.dev/reel.mp4?X-Amz-Signature=abc"})
+    assert final["status"] == "done", final["error"]
+    assert any("403" in w for w in final["result"]["warnings"])
+
+
+def test_cover_only_from_public_address_and_dropped_when_missing(isolated_settings, meta: FakeMeta):
+    _account()
+    ig.set_options(public_base_url="https://cdn.exemplo.dev/vulto")
+    pid = _rendered(isolated_settings)
+    # Vídeo colado de outro host: a capa não é montada pelo endereço público.
+    final = _run(pid, {"video_url": "https://outro.exemplo.dev/reel.mp4"})
+    assert final["status"] == "done", final["error"]
+    assert "cover_url" not in meta.media_bodies[-1]
+    # Vídeo pelo endereço público, mas a capa não foi enviada para lá: publica sem ela, com aviso.
+    meta.file_status = {"capa.jpg": 404}
+    final = _run(pid, {})
+    assert final["status"] == "done", final["error"]
+    assert "cover_url" not in meta.media_bodies[-1]
+    assert any("capa deixada de fora" in w for w in final["result"]["warnings"])
+
+
+def test_ai_label_refusal_with_translated_message_still_retries(isolated_settings, meta: FakeMeta,
+                                                                monkeypatch: pytest.MonkeyPatch):
+    _account()
+    meta.refuse_ai_label = True
+    meta.ai_refusal_msg = "Parâmetro inválido"
+    monkeypatch.setattr(publish_tasks, "ai_label", lambda style: True)
+    pid = _rendered(isolated_settings)
+    final = _run(pid, {"video_url": "https://arquivos.exemplo.dev/reel.mp4"})
+    assert final["status"] == "done", final["error"]
+    assert len(meta.media_bodies) == 2 and "is_ai_generated" not in meta.media_bodies[1]
+
+
+def test_estimated_expiry_refreshes_on_first_use_after_a_day(meta: FakeMeta):
+    client = ig.new_client()
+    now = datetime.now(UTC)
+    data = {"access_token": "longo", "user_id": "178", "username": "vulto.br", "expires_estimated": "1",
+            "refreshed_at": (now - timedelta(hours=2)).isoformat(), "expires_at": (now + timedelta(days=59)).isoformat()}
+    credentials.set_credential(ig.account_key("178"), data)
+    assert ig.access_token(client, "178") == "longo"  # menos de 24 h: a Meta não renova
+    credentials.set_credential(ig.account_key("178"), {**data, "refreshed_at": (now - timedelta(days=2)).isoformat()})
+    assert ig.access_token(client, "178") == "renovado"
+    assert not ig.get_account("178").get("expires_estimated")
+
+
+def test_failure_after_finished_keeps_container_and_resume_uses_same_account(
+        isolated_settings, meta: FakeMeta, monkeypatch: pytest.MonkeyPatch):
+    from studio.api import routes_instagram
+
+    monkeypatch.setattr(routes_instagram, "get_runner", lambda: _InlineRunner())
+    channel_id = _channel()
+    _account("178", "vulto.br")
+    pid = _rendered(isolated_settings, channel_id=channel_id)
+    meta.publish_error = {"message": "limite", "code": 9, "error_subcode": 2207042}
+    final = _run(pid, {"video_url": "https://arquivos.exemplo.dev/reel.mp4"})
+    assert final["status"] == "failed" and "limite" in final["error"]
+    with session_scope() as s:
+        pub = s.query(Publication).filter_by(project_id=pid).one()
+        assert pub.status == "processing" and pub.error
+        assert pub.details["container_id"] == "CONT1" and pub.details["user_id"] == "178"
+        pub_id = pub.id
+    # O canal passa a ter duas contas sem escolha: a retomada usa a conta que criou o envio.
+    _account("200", "outra")
+    meta.publish_error = None
+    with TestClient(create_app()) as client:
+        # Publicar de novo, sem retomar, criaria outro Reel.
+        dup = client.post(f"/api/projects/{pid}/publish/instagram", json={"lang": "pt-BR"})
+        assert dup.status_code == 409
+        resp = client.post(f"/api/projects/{pid}/publish/instagram", json={"publication_id": pub_id})
+        assert resp.status_code == 200, resp.text
+        job = get_job(resp.json()["id"])
+        assert job and job["status"] == "done", job and job["error"]
+    assert len(meta.media_bodies) == 1
+    with session_scope() as s:
+        pub = s.get(Publication, pub_id)
+        assert pub.status == "published" and pub.external_id == "MEDIA9" and pub.error is None
+
+
+def test_resume_with_disconnected_account_says_so(isolated_settings, meta: FakeMeta):
+    _account("178")
+    meta.statuses = ["IN_PROGRESS"]
+    pid = _rendered(isolated_settings)
+    final = _run(pid, {"video_url": "https://arquivos.exemplo.dev/reel.mp4"})
+    pub_id = final["result"]["publication_id"]
+    _account("200", "outra")
+    ig.forget_account("178")
+    final = _run(pid, {"container_id": "CONT1", "publication_id": pub_id, "user_id": "178", "lang": "pt-BR"})
+    assert final["status"] == "failed" and "não está mais conectada" in final["error"]
+
+
+def test_resume_of_already_published_container_does_not_publish_again(isolated_settings, meta: FakeMeta):
+    _account()
+    meta.statuses = ["IN_PROGRESS"]
+    pid = _rendered(isolated_settings)
+    pub_id = _run(pid, {"video_url": "https://arquivos.exemplo.dev/reel.mp4"})["result"]["publication_id"]
+    meta.statuses = ["PUBLISHED"]
+    final = _run(pid, {"container_id": "CONT1", "publication_id": pub_id, "user_id": "178", "lang": "pt-BR"})
+    assert final["status"] == "done", final["error"]
+    assert not [c for c in meta.calls if c.url.path.endswith("/media_publish")]
+    with session_scope() as s:
+        assert s.get(Publication, pub_id).status == "published"
+
+
+def test_cancel_during_wait_keeps_the_publication_resumable(isolated_settings, meta: FakeMeta,
+                                                            monkeypatch: pytest.MonkeyPatch):
+    _account()
+    meta.statuses = ["IN_PROGRESS"]
+    pid = _rendered(isolated_settings)
+    monkeypatch.setattr("studio.workers.jobs.JobContext.cancelled", lambda self: True)
+    final = _run(pid, {"video_url": "https://arquivos.exemplo.dev/reel.mp4"})
+    assert final["status"] in ("canceled", "failed")
+    with session_scope() as s:
+        pub = s.query(Publication).filter_by(project_id=pid).one()
+        assert pub.status == "processing" and pub.details["container_id"] == "CONT1"

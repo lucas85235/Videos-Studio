@@ -3,6 +3,7 @@ e publicação de Reels."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -13,7 +14,7 @@ from studio.api.routes_publish import _page
 from studio.config import get_settings
 from studio.core.project import service
 from studio.db import session_scope
-from studio.models import Channel, Job
+from studio.models import Channel, Job, Publication
 from studio.workers.jobs import get_runner
 from studio.workers.publish import instagram as ig
 
@@ -105,7 +106,9 @@ def instagram_link_code(body: CodeBody) -> dict[str, Any]:
     """Termina o login colando o endereço final (quando o retorno cadastrado no app não é o local do Vulto)."""
     try:
         code, state = ig.parse_pasted(body.text)
-        return ig.finish_oauth(code, state or body.state)
+        # Prefere o state do endereço colado ou o que a tela mandou; sem nenhum, aceita o único login pendente
+        # (é o usuário colando o código na própria tela do Vulto, não uma página de fora).
+        return ig.finish_oauth(code, state or body.state, allow_single_pending=True)
     except ig.InstagramError as exc:
         raise _bad(exc) from exc
 
@@ -113,8 +116,9 @@ def instagram_link_code(body: CodeBody) -> dict[str, Any]:
 @router.get("/instagram/callback", include_in_schema=False)
 def instagram_callback(code: str | None = None, state: str | None = None, error: str | None = None,
                        error_description: str | None = None) -> HTMLResponse:
-    if error or not code:
-        return _page("Conexão cancelada", error_description or error or "sem código", status_code=400)
+    if error or not code or not state:
+        # Sem state não dá para saber se o login foi aberto pelo Vulto (proteção contra CSRF de login).
+        return _page("Conexão cancelada", error_description or error or "sem código ou sem state", status_code=400)
     try:
         info = ig.finish_oauth(code, state)
     except ig.InstagramError as exc:
@@ -191,10 +195,20 @@ def publish_instagram(project_id: str, body: InstagramPublishBody) -> dict[str, 
         channel_id = service.get_project_row(project_id)["channel_id"]
     except service.ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail="projeto não encontrado") from exc
-    try:
-        ig.account_for_channel(channel_id)
-    except ig.InstagramError as exc:
-        raise _bad(exc) from exc
+    if not body.publication_id:
+        lang = body.lang or service.get_doc(project_id).primary_language
+        with session_scope() as s:
+            pending = (
+                s.query(Publication)
+                .filter(Publication.project_id == project_id, Publication.driver == "instagram_native",
+                        Publication.language == lang, Publication.status == "processing",
+                        Publication.created_at >= datetime.now(UTC) - timedelta(hours=24))  # o envio vale 24 h
+                .first()
+            )
+            if pending is not None:
+                # Publicar de novo criaria outro envio e, ao retomar o antigo, dois Reels iguais.
+                raise HTTPException(status_code=409, detail="já há um Reel deste idioma esperando o Instagram: "
+                                    "use Retomar envio em vez de publicar de novo")
     for url in (body.video_url, body.cover_url):
         if url and not url.strip().startswith("https://"):
             raise HTTPException(status_code=400, detail="as URLs do vídeo e da capa precisam começar com https://")
@@ -205,13 +219,18 @@ def publish_instagram(project_id: str, body: InstagramPublishBody) -> dict[str, 
             raise HTTPException(status_code=409, detail="já há uma publicação no Instagram em andamento neste projeto")
     payload = body.model_dump()
     if body.publication_id:
-        from studio.models import Publication
-
         with session_scope() as s:
             pub = s.get(Publication, body.publication_id)
             if pub is None or pub.project_id != project_id or pub.driver != "instagram_native":
                 raise HTTPException(status_code=404, detail="publicação não encontrada")
             if pub.status != "processing" or not (pub.details or {}).get("container_id"):
                 raise HTTPException(status_code=400, detail="esta publicação não está esperando o Instagram")
-            payload.update(container_id=pub.details["container_id"], lang=pub.language)
+            # Retoma com a conta que criou o envio (o canal pode ter mudado de conta depois).
+            payload.update(container_id=pub.details["container_id"], lang=pub.language,
+                           user_id=pub.details.get("user_id") or None)
+    else:
+        try:
+            ig.account_for_channel(channel_id)
+        except ig.InstagramError as exc:
+            raise _bad(exc) from exc
     return get_runner().submit("publish_instagram", payload, project_id)

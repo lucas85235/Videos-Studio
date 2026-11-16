@@ -31,11 +31,14 @@ const DRIVER_OPTIONS: { id: InstagramDriver; label: string }[] = [
   { id: "manual", label: "Pacote manual" },
 ];
 
-/** URL que o servidor monta com o endereço público das opções (só para mostrar). */
-const autoUrl = (base: string, rel: string | undefined) =>
-  base && rel
-    ? `${base}/${rel.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/")}`
-    : "";
+/** URL que o servidor monta com o endereço público das opções (só para mostrar). O endereço espelha só a
+ * pasta outputs, então o caminho vai sem o "outputs/" do começo; arquivos fora dela não viram URL. */
+const autoUrl = (base: string, rel: string | undefined) => {
+  if (!base || !rel) return "";
+  const parts = rel.replace(/\\/g, "/").split("/").filter((p) => p && p !== ".");
+  if (parts.length < 2 || parts[0] !== "outputs" || parts.includes("..")) return "";
+  return `${base}/${parts.slice(1).map(encodeURIComponent).join("/")}`;
+};
 
 export const InstagramCard: React.FC<{
   detail: ProjectDetail;
@@ -72,13 +75,27 @@ export const InstagramCard: React.FC<{
     if (doc.channel_id) saveChannel.mutate({ driver: value });
   };
 
+  // Envio deste idioma que ficou esperando o Instagram (tempo esgotado, falha depois de criar ou cancelado):
+  // retomar publica o mesmo envio; publicar de novo criaria um segundo Reel igual.
+  const pending = detail.publications.find(
+    (p) =>
+      p.driver === "instagram_native" &&
+      p.language === lang &&
+      p.status === "processing" &&
+      Boolean(p.details?.container_id),
+  );
   const publish = useMutation({
     mutationFn: () =>
-      api.post(`/api/projects/${projectId}/publish/instagram`, {
-        lang,
-        video_url: videoUrl.trim() || null,
-        share_to_feed: shareToFeed,
-      }),
+      api.post(
+        `/api/projects/${projectId}/publish/instagram`,
+        pending
+          ? { publication_id: pending.id }
+          : {
+              lang,
+              video_url: videoUrl.trim() || null,
+              share_to_feed: shareToFeed,
+            },
+      ),
     onSuccess: () =>
       client
         .invalidateQueries({ queryKey: ["project", projectId] })
@@ -108,7 +125,11 @@ export const InstagramCard: React.FC<{
   const typedUrl = videoUrl.trim();
   const block = !entry?.video
     ? "Renderize o vídeo final deste idioma primeiro."
-    : testOnly
+    : pending
+      ? job || busy
+        ? "Aguarde a tarefa em andamento terminar."
+        : null
+      : testOnly
       ? "Este render usou voz ou imagens de teste e o Instagram não tem post privado."
       : job
         ? null
@@ -125,6 +146,16 @@ export const InstagramCard: React.FC<{
                   : null;
 
   const send = async () => {
+    if (pending) {
+      const ok = await confirm({
+        title: "Retomar o envio ao Instagram?",
+        description:
+          "Este Reel já foi enviado e ficou esperando o Instagram. Retomar publica o mesmo envio (vale 24 h), sem criar outro post.",
+        confirmLabel: "Retomar envio",
+      });
+      if (ok) publish.mutate();
+      return;
+    }
     const ok = await confirm({
       title: alreadySent
         ? "Publicar outra cópia no Instagram?"
@@ -253,7 +284,9 @@ export const InstagramCard: React.FC<{
                   busy={publish.isPending}
                   onClick={send}
                 >
-                  {alreadySent
+                  {pending
+                    ? "Retomar envio"
+                    : alreadySent
                     ? "Publicar outra cópia"
                     : multi
                       ? `Publicar Reel (${langLabel(lang)})`
@@ -261,7 +294,9 @@ export const InstagramCard: React.FC<{
                 </Button>
                 <p className="text-xs text-subtle">
                   {block ??
-                    "Publica na hora. Limite da Meta: 50 posts por conta a cada 24 h."}
+                    (pending
+                      ? `Há um envio esperando o Instagram${pending.error ? ` (${pending.error})` : ""}.`
+                      : "Publica na hora. Limite da Meta: 50 posts por conta a cada 24 h.")}
                 </p>
               </div>
             </>

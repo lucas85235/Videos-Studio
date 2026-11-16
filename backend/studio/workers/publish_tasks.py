@@ -188,7 +188,7 @@ def instagram_entry(project_id: str, lang: str) -> tuple[dict[str, Any], dict[st
 
 
 def instagram_video_url(entry: dict[str, Any], given: str | None) -> str:
-    """URL pública do vídeo: a informada na hora ou o endereço público das opções + o caminho na pasta de dados."""
+    """URL pública do vídeo: a informada na hora ou o endereço público das opções + o caminho dentro de outputs/."""
     url = (given or "").strip() or ig.public_url_for(entry.get("video") or "")
     if not url:
         raise ValueError("informe a URL pública do vídeo (o Instagram baixa o arquivo de lá) ou configure o endereço "
@@ -198,29 +198,47 @@ def instagram_video_url(entry: dict[str, Any], given: str | None) -> str:
     return url
 
 
+def _resume_account(payload: dict[str, Any], channel_id: str | None) -> str:
+    """Conta que criou o envio retomado (não a escolha atual do canal, que pode ter mudado)."""
+    user_id = str(payload.get("user_id") or "")
+    if not user_id:  # envio antigo, sem a conta gravada
+        return ig.account_for_channel(channel_id)
+    if not ig.get_account(user_id).get("access_token"):
+        raise ig.InstagramError(f"a conta do Instagram que criou este envio ({user_id}) não está mais conectada; "
+                                "conecte-a de novo em Configurações para retomar")
+    return user_id
+
+
 @job("publish_instagram")
 def run_publish_instagram(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     """Publica o vídeo final de um idioma como Reel: cria o envio, espera o processamento e publica.
 
-    Com `container_id` (e `publication_id`), retoma um envio que ficou processando além do tempo de espera."""
+    A publicação é gravada como "processing" logo depois de criar o envio, com o container e a conta; qualquer
+    falha depois disso (rede, limite, app fechado, cancelamento) deixa o botão de retomar. Com `container_id` (e
+    `publication_id`), retoma esse envio com a mesma conta."""
     project_id = ctx.project_id
     assert project_id
     doc = service.get_doc(project_id)
     lang = payload.get("lang") or doc.primary_language
     row, entry = instagram_entry(project_id, lang)
-    user_id = ig.account_for_channel(row.get("channel_id") or doc.channel_id)
-    username = ig.get_account(user_id).get("username", "")
+    channel_id = row.get("channel_id") or doc.channel_id
     resume = str(payload.get("container_id") or "")
+    user_id = _resume_account(payload, channel_id) if resume else ig.account_for_channel(channel_id)
+    username = ig.get_account(user_id).get("username", "")
     publication_id = str(payload.get("publication_id") or "")
     warnings: list[str] = []
-    details: dict[str, Any] = {"account": username}
+    details: dict[str, Any] = {"account": username, "user_id": user_id}
+    typed_cover = ""
     if not resume:
         style = get_style(doc.style_id, doc.style_overrides)
         ig.check_video(get_settings().data_dir / entry["video"], entry.get("duration"))
-        video_url = instagram_video_url(entry, payload.get("video_url"))
+        typed_video = str(payload.get("video_url") or "").strip()
+        video_url = instagram_video_url(entry, typed_video)
         thumb = str(entry.get("thumbnail") or "")
-        cover_url = str(payload.get("cover_url") or "").strip()
-        if not cover_url and thumb.lower().endswith((".jpg", ".jpeg")):
+        typed_cover = str(payload.get("cover_url") or "").strip()
+        cover_url = typed_cover
+        # Capa pelo endereço público só quando o vídeo também veio de lá (vídeo colado de outro host: sem capa).
+        if not cover_url and not typed_video and thumb.lower().endswith((".jpg", ".jpeg")):
             cover_url = ig.public_url_for(thumb)
         meta = doc.metadata.get(lang) or Metadata(title=doc.title)
         caption = ig.fit_caption(caption_for("instagram", meta.model_dump(), doc.title, credits_block(doc, lang)))
@@ -229,53 +247,103 @@ def run_publish_instagram(ctx: JobContext, payload: dict[str, Any]) -> dict[str,
             details["editorial"] = True
         details.update(video_url=video_url, cover_url=cover_url or None, caption=caption, ai_label=ai_label(style),
                        share_to_feed=bool(payload.get("share_to_feed", True)))
+
+    container = resume
+
+    def save(status: str, error: str | None, **extra: Any) -> str:
+        nonlocal publication_id
+        publication_id = save_instagram(
+            project_id, lang, publication_id, status=status, external_id=extra.pop("external_id", container),
+            url=extra.pop("url", None), details={**details, "container_id": container, "warnings": warnings, **extra},
+            error=error,
+        )
+        return publication_id
+
     with ig.new_client(120) as client:
         ctx.progress(0.02, "Conferindo a conta do Instagram")
         token = ig.access_token(client, user_id)
-        limit = ig.publishing_limit(client, user_id, token)
-        if limit["used"] >= limit["total"]:
-            raise ig.RateLimited(f"a conta já publicou {limit['used']} dos {limit['total']} posts permitidos pela API "
-                                 "nas últimas 24 h; tente mais tarde")
-        if resume:
-            container = resume
-        else:
+        if not resume:
+            limit = ig.publishing_limit(client, user_id, token)
+            if limit["used"] >= limit["total"]:
+                raise ig.RateLimited(f"a conta já publicou {limit['used']} dos {limit['total']} posts permitidos "
+                                     "pela API nas últimas 24 h; tente mais tarde")
             ctx.progress(0.05, "Conferindo a URL do vídeo")
-            ig.check_public_url(client, details["video_url"])
+            warnings.extend(ig.check_public_url(client, details["video_url"]))
+            if details["cover_url"]:
+                try:
+                    cover_notes = ig.check_public_url(client, details["cover_url"], "da capa", ("image/",))
+                except ig.InstagramError as exc:
+                    cover_notes = [str(exc)]
+                    details["cover_url"] = None  # capa que não responde: publica sem ela
+                if cover_notes and not typed_cover:
+                    details["cover_url"] = None  # capa montada sozinha com problema: melhor um quadro do vídeo
+                if details["cover_url"] is None:
+                    warnings.append(f"capa deixada de fora ({cover_notes[0]}); o Instagram usa um quadro do vídeo")
+                else:
+                    warnings.extend(cover_notes)
             ctx.progress(0.08, "Enviando o Reel ao Instagram")
-            container, extra = ig.create_container(
-                client, user_id, token, video_url=details["video_url"], caption=details["caption"],
-                share_to_feed=details["share_to_feed"], cover_url=details["cover_url"] or "",
-                ai_generated=bool(details["ai_label"]),
-            )
+            try:
+                container, extra = ig.create_container(
+                    client, user_id, token, video_url=details["video_url"], caption=details["caption"],
+                    share_to_feed=details["share_to_feed"], cover_url=details["cover_url"] or "",
+                    ai_generated=bool(details["ai_label"]),
+                )
+            except ig.RateLimited:
+                raise
+            except ig.InstagramError as exc:
+                if not details["cover_url"] or exc.code != 100:
+                    raise
+                # Recusa de parâmetro com capa: tenta sem a capa (campo opcional) antes de desistir.
+                details["cover_url"] = None
+                container, extra = ig.create_container(
+                    client, user_id, token, video_url=details["video_url"], caption=details["caption"],
+                    share_to_feed=details["share_to_feed"], ai_generated=bool(details["ai_label"]),
+                )
+                warnings.append(f"o Instagram recusou a capa ({exc}); o Reel vai com um quadro do vídeo")
             if extra:
                 warnings.extend(extra)
                 details["ai_label"] = False
+            # Grava já: se algo falhar daqui em diante, o mesmo envio pode ser retomado (vale 24 h).
+            save("processing", None)
         try:
-            ig.wait_container(
+            state = ig.wait_container(
                 client, container, token, interval_s=ig.POLL_INTERVAL_S, timeout_s=ig.POLL_TIMEOUT_S, sleep=ig.pause,
                 on_tick=lambda p: ctx.progress(0.1 + p * 0.8, "O Instagram está processando o vídeo"),
                 cancelled=ctx.cancelled,
             )
         except ig.ContainerPending as exc:
-            pub_id = save_instagram(project_id, lang, publication_id, status="processing", external_id=container,
-                                    url=None, details={**details, "container_id": container, "warnings": warnings},
-                                    error=None)  # não é erro: a tela mostra "Processando" e o botão de retomar
+            pub_id = save("processing", None)  # não é erro: a tela mostra "Processando" e o botão de retomar
             ctx.progress(1.0, "Ainda processando no Instagram")
             return {"pending": True, "container_id": container, "publication_id": pub_id, "message": str(exc),
                     "warnings": warnings}
-        except ig.InstagramError as exc:
-            if publication_id:
-                save_instagram(project_id, lang, publication_id, status="failed", external_id=container, url=None,
-                               details={}, error=str(exc))
+        except (ig.Cancelled, ig.RateLimited) as exc:
+            save("processing", str(exc))  # o envio continua válido: mantém o botão de retomar
             raise
+        except ig.InstagramError as exc:
+            if "expirou ou foi revogado" in str(exc):
+                save("processing", str(exc))  # conectar a conta de novo e retomar ainda funciona
+            else:
+                save("failed", str(exc))  # ERROR ou EXPIRED: o envio não serve mais
+            raise
+        except Exception as exc:  # falha inesperada: dá para tentar de novo
+            save("processing", str(exc))
+            raise
+        if state == "PUBLISHED":
+            # Um media_publish anterior funcionou, mas a resposta se perdeu: não publica de novo.
+            warnings.append("o Instagram já tinha publicado este envio; confira o Reel no perfil")
+            pub_id = save("published", None, published_at=datetime.now(UTC).isoformat())
+            ctx.progress(1.0, "Já estava publicado no Instagram")
+            return {"media_id": None, "url": None, "publication_id": pub_id, "warnings": warnings}
         ctx.progress(0.92, "Publicando o Reel")
-        media_id = ig.publish_container(client, user_id, token, container)
+        try:
+            media_id = ig.publish_container(client, user_id, token, container)
+        except Exception as exc:
+            # Limite, rede etc.: o envio continua FINISHED e válido por 24 h; o botão de retomar publica depois.
+            save("processing", str(exc))
+            raise
         url = ig.permalink(client, media_id, token)
-    pub_id = save_instagram(
-        project_id, lang, publication_id, status="published", external_id=media_id, url=url or None,
-        details={**details, "container_id": container, "warnings": warnings, "published_at": datetime.now(UTC).isoformat()},
-        error=None,
-    )
+    pub_id = save("published", None, external_id=media_id, url=url or None,
+                  published_at=datetime.now(UTC).isoformat())
     ctx.progress(1.0, "Publicado no Instagram")
     return {"media_id": media_id, "url": url, "publication_id": pub_id, "warnings": warnings}
 

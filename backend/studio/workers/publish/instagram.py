@@ -17,7 +17,9 @@ Documentação oficial conferida em 15/11/2026 (developers.facebook.com/docs/ins
 
 O Instagram baixa o vídeo de uma URL pública (o app roda só neste computador). O repositório ainda não hospeda
 arquivos (Cloudflare R2 está no backlog), então a URL é informada na hora de publicar ou montada com o
-"endereço público" das opções + o caminho do vídeo dentro da pasta de dados (você sobe a pasta para lá).
+"endereço público" das opções + o caminho do vídeo dentro de `outputs/`. O endereço público espelha SÓ a pasta
+`outputs/` (os vídeos e capas finais), nunca a pasta de dados inteira: ela guarda `studio.db` (o cofre) e, sem
+keyring, `.master.key`.
 
 Contas: cada conta profissional conectada tem o próprio token no cofre (`instagram_account:<user_id>`). Um canal
 do Vulto pode escolher a conta e o jeito de publicar (`Channel.settings["instagram"]`: user_id, username, driver).
@@ -25,6 +27,8 @@ do Vulto pode escolher a conta e o jeito de publicar (`Channel.settings["instagr
 
 from __future__ import annotations
 
+import logging
+import re
 import secrets
 import threading
 import time
@@ -73,11 +77,20 @@ RATE_LIMIT_SUBCODES = {2207042}
 
 
 class InstagramError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: int | None = None, subcode: int | None = None,
+                 api_message: str = "") -> None:
+        super().__init__(message)
+        self.code = code  # código da Graph API (100 = parâmetro inválido)
+        self.subcode = subcode
+        self.api_message = api_message  # error.message (técnica), além do texto traduzido para o usuário
 
 
 class RateLimited(InstagramError):
     """Limite de chamadas ou de posts da conta (tente mais tarde)."""
+
+
+class Cancelled(InstagramError):
+    """O job foi cancelado durante a espera; o envio continua válido e pode ser retomado."""
 
 
 class ContainerPending(InstagramError):
@@ -111,6 +124,33 @@ class InstagramPublisher(Provider):
         if app_configured():
             return False, "app configurado; falta conectar a conta do Instagram"
         return False, "configure o app do Instagram ou cole um token gerado no painel da Meta"
+
+
+# O httpx registra em INFO a URL inteira de cada chamada. A troca e a renovação de token levam o segredo do app e
+# o token na query string (é como a Meta pede), então mascaramos esses campos em qualquer log do httpx.
+_SECRET_PARAMS = re.compile(r"(?<![\w])((?:client_secret|access_token|refresh_token|fb_exchange_token|code)=)[^&\s\"']+")
+
+
+class _MaskSecrets(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            text = record.getMessage()
+        except Exception:  # noqa: BLE001 - log malformado: deixa passar como está
+            return True
+        masked = _SECRET_PARAMS.sub(r"\1***", text)
+        if masked != text:
+            record.msg, record.args = masked, ()
+        return True
+
+
+def _install_log_mask() -> None:
+    for name in ("httpx", "httpcore"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, _MaskSecrets) for f in logger.filters):
+            logger.addFilter(_MaskSecrets())
+
+
+_install_log_mask()
 
 
 def pause(seconds: float) -> None:
@@ -174,26 +214,36 @@ def set_options(redirect_uri: str | None = None, public_base_url: str | None = N
 # --------------------------------------------------------------------------------------------
 
 
-def _error_of(resp: httpx.Response) -> tuple[str, int | None, int | None]:
+def _int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _error_of(resp: httpx.Response) -> tuple[str, int | None, int | None, str]:
+    """Mensagem para o usuário, código, subcódigo e a mensagem técnica (error.message)."""
     try:
         err = resp.json().get("error") or {}
     except ValueError:
-        return resp.text[:300], None, None
+        return resp.text[:300], None, None, ""
     if not isinstance(err, dict):
-        return str(err)[:300], None, None
-    msg = err.get("error_user_msg") or err.get("message") or resp.text[:300]
-    return str(msg), err.get("code"), err.get("error_subcode")
+        return str(err)[:300], None, None, ""
+    technical = str(err.get("message") or "")
+    msg = err.get("error_user_msg") or technical or resp.text[:300]
+    return str(msg), _int(err.get("code")), _int(err.get("error_subcode")), technical
 
 
 def _raise_for(resp: httpx.Response, action: str) -> None:
     if resp.status_code < 400:
         return
-    msg, code, sub = _error_of(resp)
+    msg, code, sub, technical = _error_of(resp)
+    extra: dict[str, Any] = {"code": code, "subcode": sub, "api_message": technical}
     if resp.status_code == 429 or code in RATE_LIMIT_CODES or sub in RATE_LIMIT_SUBCODES:
-        raise RateLimited(f"limite do Instagram atingido ao {action}; tente de novo mais tarde ({msg})")
+        raise RateLimited(f"limite do Instagram atingido ao {action}; tente de novo mais tarde ({msg})", **extra)
     if code == 190:
-        raise InstagramError("o acesso à conta do Instagram expirou ou foi revogado; conecte a conta de novo")
-    raise InstagramError(f"erro do Instagram ao {action} ({resp.status_code}): {msg}")
+        raise InstagramError("o acesso à conta do Instagram expirou ou foi revogado; conecte a conta de novo", **extra)
+    raise InstagramError(f"erro do Instagram ao {action} ({resp.status_code}): {msg}", **extra)
 
 
 def _call(http: httpx.Client, method: str, url: str, action: str, **kwargs: Any) -> dict[str, Any]:
@@ -321,7 +371,13 @@ def _refresh_due(data: dict[str, str], now: datetime) -> bool:
         expires = datetime.fromisoformat(data.get("expires_at") or "")
     except ValueError:
         return True
-    return now - refreshed >= REFRESH_MIN_AGE and expires - now <= REFRESH_WHEN_LEFT
+    if now - refreshed < REFRESH_MIN_AGE:
+        return False
+    # Token colado com validade estimada: pode ter sido gerado bem antes da colagem. Renova no primeiro uso
+    # depois de 24 h, para a data passar a ser a real.
+    if data.get("expires_estimated") == "1":
+        return True
+    return expires - now <= REFRESH_WHEN_LEFT
 
 
 def access_token(http: httpx.Client, user_id: str) -> str:
@@ -407,9 +463,12 @@ def parse_pasted(text: str) -> tuple[str, str | None]:
     return code, state
 
 
-def finish_oauth(code: str, state: str | None, http: httpx.Client | None = None) -> dict[str, Any]:
+def finish_oauth(code: str, state: str | None, http: httpx.Client | None = None, *,
+                 allow_single_pending: bool = False) -> dict[str, Any]:
+    """Termina o login. Sem `state`, só aceita o único login pendente quando `allow_single_pending` (código colado
+    à mão na tela do Vulto); o retorno pelo navegador sempre exige o state (proteção contra CSRF de login)."""
     with _lock:
-        if state is None and len(_pending) == 1:
+        if state is None and allow_single_pending and len(_pending) == 1:
             state = next(iter(_pending))
         pending = _pending.pop(state or "", None)
         if pending is not None:
@@ -513,11 +572,17 @@ def account_for_channel(channel_id: str | None) -> str:
 
 
 def public_url_for(rel_path: str) -> str:
-    """URL pública de um arquivo da pasta de dados, pelo endereço público das opções (vazio sem ele)."""
+    """URL pública de um arquivo de `outputs/`, pelo endereço público das opções (vazio sem ele).
+
+    O endereço público espelha só a pasta `outputs/`: o caminho usado é o relativo a ela. Arquivos fora de
+    `outputs/` (como `studio.db` ou `.master.key`) nunca viram URL."""
     base = options()["public_base_url"]
     if not base or not rel_path:
         return ""
-    return f"{base}/{quote(rel_path.replace(chr(92), '/'))}"
+    parts = [p for p in rel_path.replace(chr(92), "/").split("/") if p not in ("", ".")]
+    if len(parts) < 2 or parts[0] != "outputs" or ".." in parts:
+        return ""
+    return f"{base}/{quote('/'.join(parts[1:]))}"
 
 
 def check_video(path: Path | None, duration: float | None) -> None:
@@ -542,16 +607,27 @@ def fit_caption(text: str) -> str:
     return " ".join(kept)[:CAPTION_MAX]
 
 
-def check_public_url(http: httpx.Client, url: str) -> None:
-    """Confere se a URL responde de fora antes de mandar ao Instagram (erro mais claro que o da Meta)."""
+def check_public_url(http: httpx.Client, url: str, what: str = "do vídeo",
+                     kinds: tuple[str, ...] = ("video/",)) -> list[str]:
+    """Confere se a URL responde de fora antes de mandar ao Instagram (erro mais claro que o da Meta).
+
+    Pede só o primeiro byte com GET (`Range: bytes=0-0`), que é como o Instagram baixa: URLs pré-assinadas de
+    S3/R2 são assinadas para GET e recusam HEAD. 403/405/501 viram aviso (o Instagram decide); 404 e outros erros
+    bloqueiam. Uma página HTML no lugar do arquivo (link de compartilhamento) também vira aviso."""
     try:
-        resp = http.head(url, follow_redirects=True)
+        with http.stream("GET", url, headers={"Range": "bytes=0-0"}, follow_redirects=True) as resp:
+            status = resp.status_code
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
     except httpx.HTTPError as exc:
-        raise InstagramError(f"a URL do vídeo não respondeu ({exc}); ela precisa estar pública na internet") from exc
-    if resp.status_code in (405, 501):  # servidor sem HEAD: deixa o Instagram tentar
-        return
-    if resp.status_code >= 400:
-        raise InstagramError(f"a URL do vídeo respondeu {resp.status_code}; ela precisa estar pública na internet")
+        raise InstagramError(f"a URL {what} não respondeu ({exc}); ela precisa estar pública na internet") from exc
+    if status in (403, 405, 501):
+        return [f"a URL {what} respondeu {status} ao teste do app; o Instagram vai tentar baixar mesmo assim"]
+    if status >= 400:
+        raise InstagramError(f"a URL {what} respondeu {status}; ela precisa estar pública na internet")
+    if ctype and not ctype.startswith(kinds) and ctype not in ("application/octet-stream", "binary/octet-stream"):
+        return [f"a URL {what} devolveu '{ctype}' em vez do arquivo; use o link direto (não a página de "
+                "compartilhamento), senão o Instagram recusa"]
+    return []
 
 
 def publishing_limit(http: httpx.Client, user_id: str, token: str) -> dict[str, int]:
@@ -581,7 +657,9 @@ def create_container(http: httpx.Client, user_id: str, token: str, *, video_url:
     except RateLimited:
         raise
     except InstagramError as exc:
-        if not ai_generated or "is_ai_generated" not in str(exc):
+        # A mensagem para o usuário vem traduzida e nem sempre cita o campo: qualquer recusa de parâmetro
+        # (code 100) com o rótulo ligado tenta de novo sem ele.
+        if not ai_generated or not (exc.code == 100 or "is_ai_generated" in f"{exc} {exc.api_message}"):
             raise
         params.pop("is_ai_generated")
         data = _call(http, "POST", f"{API}/{user_id}/media", "criar o Reel", data=params, headers=_auth(token))
@@ -613,7 +691,7 @@ def wait_container(http: httpx.Client, container_id: str, token: str, *, interva
         if waited >= timeout_s:
             raise ContainerPending(container_id)
         if cancelled and cancelled():
-            raise InstagramError("cancelado")
+            raise Cancelled("cancelado: o envio continua no Instagram e pode ser retomado por 24 h")
         sleep(interval_s)
         waited += interval_s
         if on_tick:

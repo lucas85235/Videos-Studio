@@ -67,7 +67,10 @@ const AccountRow: React.FC<{ account: InstagramAccount }> = ({ account }) => {
       {account.expires_at ? (
         <p className="text-xs text-subtle">
           Acesso válido até {formatWhen(account.expires_at)}
-          {account.expires_estimated ? ' (estimado)' : ''}. O app renova sozinho ao publicar; se passar de 60 dias sem uso, conecte de novo.
+          {account.expires_estimated
+            ? ' (estimativa: conta 60 dias a partir de quando o token foi colado; a data real aparece depois da primeira renovação, no primeiro uso após 24 h)'
+            : ''}
+          . O app renova sozinho ao publicar; se passar de 60 dias sem uso, conecte de novo.
         </p>
       ) : null}
       {detail.error ? <p className="text-xs text-amber-200">Não deu para ler o limite: {String((detail.error as Error).message ?? detail.error)}</p> : null}
@@ -220,9 +223,9 @@ const OptionsBlock: React.FC<{ status: InstagramStatus }> = ({ status }) => {
       </Field>
       <Field
         label="Endereço público dos vídeos (opcional)"
-        hint="O Instagram baixa o vídeo de uma URL pública. Se você sobe a pasta de dados do Vulto para um endereço https (ex.: um bucket), cole aqui o endereço da raiz: o app junta o caminho do vídeo (outputs/…). Sem isso, informe a URL na hora de publicar."
+        hint="O Instagram baixa o vídeo de uma URL pública. Se você sobe a pasta outputs do Vulto (só os MP4 e JPG finais) para um endereço https (ex.: um bucket), cole aqui o endereço que corresponde a ela: o app junta o caminho do vídeo dentro de outputs. Nunca suba a pasta de dados inteira: ela guarda studio.db e .master.key (o cofre com os seus tokens). Sem isso, informe a URL na hora de publicar."
       >
-        <Input value={base} onChange={(e) => setBase(e.target.value)} placeholder="https://arquivos.seudominio.com/vulto" />
+        <Input value={base} onChange={(e) => setBase(e.target.value)} placeholder="https://arquivos.seudominio.com/vulto-outputs" />
       </Field>
       <Button type="submit" size="sm" className="self-start" disabled={!dirty} busy={save.isPending}>
         Salvar opções

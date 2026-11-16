@@ -341,7 +341,14 @@ export type Publication = {
   status: string;
   package_path: string | null;
   url: string | null;
-  details: { caption?: string; url?: string; container_id?: string; video_url?: string; account?: string };
+  details: {
+    caption?: string;
+    url?: string;
+    container_id?: string;
+    video_url?: string;
+    account?: string;
+    user_id?: string;
+  };
   error: string | null;
   created_at: string | null;
 };

@@ -22,6 +22,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # O httpx registra em INFO a URL inteira de cada chamada, e algumas APIs (Instagram) levam segredo e token na
+    # query string. Só avisos e erros do httpx vão para o log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     from studio.config import get_settings
 
     settings = get_settings()
