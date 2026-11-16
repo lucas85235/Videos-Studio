@@ -20,13 +20,29 @@ from studio.events import bus
 log = logging.getLogger(__name__)
 
 
+BUFFER_WATCH_S = 10 * 60
+
+
+async def _buffer_watch() -> None:
+    """De 10 em 10 minutos confere os posts pendentes no Buffer e apaga do R2 os vídeos dos que já saíram."""
+    from studio.workers.publish import buffer_flow
+
+    while True:
+        await asyncio.sleep(BUFFER_WATCH_S)
+        await asyncio.to_thread(buffer_flow.sync_quietly)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     from studio.workers.jobs import get_runner
 
     get_runner().recover()
+    settings = get_settings()
+    watcher = asyncio.create_task(_buffer_watch()) if settings.workers_enabled and not settings.offline else None
     yield
+    if watcher is not None:
+        watcher.cancel()
     from studio.media.render import get_render_client
 
     get_render_client().shutdown()

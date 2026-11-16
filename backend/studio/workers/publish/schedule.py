@@ -144,8 +144,8 @@ def channel_slots(channel_id: str, count: int = 5) -> dict[str, Any]:
 def _item(pub: Publication, project: Project, channels: dict[str, str], now: datetime) -> dict[str, Any]:
     scheduled = _aware(pub.scheduled_at) if pub.scheduled_at else None
     status = pub.status
-    if status == SCHEDULED and scheduled and scheduled <= now:
-        status = PUBLISHED  # o YouTube publicou no horário agendado
+    if status == SCHEDULED and scheduled and scheduled <= now and pub.driver != "buffer":
+        status = PUBLISHED  # o YouTube publicou no horário agendado (o Buffer é conferido pela sincronização)
     details = pub.details or {}
     return {
         "id": pub.id,
