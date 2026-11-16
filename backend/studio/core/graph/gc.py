@@ -3,7 +3,7 @@
 Marca o que as últimas prévias/renders de cada projeto usam (manifesto `artifacts` do build; para builds
 antigos sem manifesto, recalcula os blocos a partir da timeline salva) e varre:
 
-- blocos de render, vídeos finais e mixagens que nenhum projeto usa mais (refazê-los é só tempo de máquina);
+- blocos de render, vídeos finais, mixagens e narrações aceleradas (Modo B) que nenhum projeto usa mais (refazê-los é só tempo de máquina);
 - registros com falha, registros cujos arquivos sumiram e pastas sem registro;
 - bundles de versões antigas do renderer e temporários.
 
@@ -28,13 +28,14 @@ from studio.models import Artifact, Project
 
 log = logging.getLogger(__name__)
 
-SWEEP_KINDS = ("chunk", "final", "mix")
+SWEEP_KINDS = ("chunk", "final", "mix", "dub")
 GRACE = timedelta(hours=24)
 
 CATEGORY_LABELS = {
     "chunk": "blocos de render sem uso",
     "final": "vídeos finais sem uso (cópias do cache)",
     "mix": "mixagens sem uso",
+    "dub": "narrações aceleradas sem uso (faixas de idioma)",
     "failed": "artefatos com falha",
     "missing": "registros sem arquivo",
     "orphan": "pastas sem registro",

@@ -21,7 +21,7 @@ from studio.models import Channel
 from studio.providers.registry import ChainFailed
 from studio.workers.jobs import get_runner, list_jobs
 from studio.workers.pipeline.build import DIRECTION_MISSING, plan, scenes_without_direction
-from studio.workers.publish.package import build_package, list_publications
+from studio.workers.publish.package import build_dub_package, build_package, list_publications
 
 router = APIRouter(prefix="/api/projects", tags=["projetos"])
 
@@ -318,6 +318,54 @@ def publish_package(project_id: str, body: PackageRequest) -> dict[str, Any]:
         return build_package(project_id, body.lang or doc.primary_language, body.platforms, body.planned_at)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class DeliveryRequest(BaseModel):
+    delivery: Literal["separate_videos", "multi_audio_track"]
+
+
+@router.put("/{project_id}/delivery")
+def set_delivery(project_id: str, body: DeliveryRequest) -> dict[str, Any]:
+    """Como os idiomas saem: um vídeo por idioma (Modo A) ou várias faixas de áudio no mesmo vídeo (Modo B, só
+    YouTube). Fica nos ajustes de estilo do projeto (`style_overrides.languages.delivery`)."""
+    try:
+        doc = service.get_doc(project_id)
+    except service.ProjectNotFound as exc:
+        raise _not_found(exc) from exc
+    overrides = dict(doc.style_overrides)
+    overrides["languages"] = {**(overrides.get("languages") or {}), "delivery": body.delivery}
+    try:
+        get_style(doc.style_id, overrides)
+    except StyleNotFound as exc:
+        raise HTTPException(status_code=400, detail="o estilo deste projeto não existe mais") from exc
+    doc.style_overrides = overrides
+    label = "faixas de idioma no mesmo vídeo" if body.delivery == "multi_audio_track" else "um vídeo por idioma"
+    version = service.commit(project_id, doc, f"Entrega dos idiomas: {label}")
+    return {"version": version, "delivery": body.delivery}
+
+
+@router.post("/{project_id}/publish/dub-package")
+def dub_package(project_id: str) -> dict[str, Any]:
+    """Pacote para o YouTube Studio com a faixa de áudio, as legendas e o título de cada idioma (Modo B)."""
+    try:
+        return build_dub_package(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/publish/dub-package/open")
+def open_dub_package(project_id: str) -> dict[str, Any]:
+    """Abre a pasta do pacote de faixas de idioma no Explorer (o app roda na sua máquina)."""
+    import os
+    import sys
+
+    folder = get_settings().outputs_dir / project_id / "faixas-youtube"
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="gere o pacote de faixas primeiro")
+    if sys.platform != "win32":
+        raise HTTPException(status_code=501, detail=f"abra manualmente: {folder}")
+    os.startfile(folder)  # noqa: S606 - pasta local do próprio app
+    return {"opened": str(folder)}
 
 
 @router.get("/{project_id}/publications")

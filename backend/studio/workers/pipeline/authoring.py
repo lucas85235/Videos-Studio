@@ -26,6 +26,7 @@ from studio.core.project.document import (
     Source,
     Visual,
 )
+from studio.core.styles.library import StyleNotFound, get_style
 from studio.core.styles.schema import CAMERA_MOVES, GRADE_PRESETS, Structure, StyleSpec
 from studio.core.styles.visual import (
     APPROACHES,
@@ -46,7 +47,7 @@ from studio.core.styles.visual import (
 from studio.core.text import estimate_seconds, normalize_token, split_beats
 from studio.providers import registry
 from studio.providers.base import LLMResult
-from studio.workers.pipeline import storyboard_check
+from studio.workers.pipeline import dubbing, storyboard_check
 from studio.workers.pipeline.schemas import (
     METADATA_SCHEMA,
     SCRIPT_SCHEMA,
@@ -1146,6 +1147,52 @@ def needs_translation(doc: ProjectDoc, lang: str) -> bool:
     return any(not seg.text_for(lang).strip() for seg in doc.segments) or bool(missing_screen_texts(doc, lang))
 
 
+def _style_or_none(doc: ProjectDoc) -> StyleSpec | None:
+    """Estilo do projeto, ou None se ele não existe mais (a tradução segue sem orçamento de duração)."""
+    try:
+        return get_style(doc.style_id, doc.style_overrides)
+    except StyleNotFound:
+        return None
+
+
+def _segment_line(item: dict[str, str]) -> str:
+    budget = f" [{item['budget']}]" if item.get("budget") else ""
+    return f"- {item['id']}{budget}: {item['text']}"
+
+
+SHORTEN_SYSTEM = """Você adapta traduções de narração para dublagem. Cada texto precisa caber no tempo indicado: reescreva
+mais curto, com o mesmo sentido e tom, sem cortar informação importante. Mantenha os IDs exatamente iguais."""
+
+
+def _shorten_over_budget(doc: ProjectDoc, style: StyleSpec, lang: str, budgets: dict[str, dubbing.Budget],
+                         project_id: str | None, job_id: str | None) -> list[str]:
+    """Uma rodada pedindo versões mais curtas dos segmentos que passaram do orçamento (Modo B). Só troca o texto
+    quando a versão nova é mais curta de fato. Devolve os ids encurtados; altera `doc` no lugar."""
+    over = [sid for sid in dubbing.over_budget(doc, style, lang) if sid in budgets]
+    if not over:
+        return []
+    items = [{"id": sid, "text": doc.segment(sid).text_for(lang), "budget": dubbing.budget_line(budgets[sid])}
+             for sid in over]
+    prompt = (f"Idioma: {lang_name(lang)}\nEstas traduções ficaram longas demais para o tempo do vídeo. Reescreva cada "
+              "uma dentro do limite:\n" + "\n".join(_segment_line(item) for item in items))
+    context = {"target_lang": lang, "title": doc.title, "segments": items, "overlays": [], "shorten": True}
+    try:
+        result, _ = _llm("translate", SHORTEN_SYSTEM, prompt, TRANSLATE_SCHEMA, context, project_id, job_id)
+    except Exception as exc:  # noqa: BLE001 - a tradução longa ainda serve (o build acelera ou avisa)
+        log.warning("não deu para encurtar a tradução em %s: %s", lang, exc)
+        return []
+    shortened = []
+    for item in result.data.get("segments", []):
+        sid, text = item.get("id"), (item.get("text") or "").strip()
+        if sid not in over or not text:
+            continue
+        seg = doc.segment(sid)
+        if dubbing.speech_seconds(text, lang, style) < dubbing.speech_seconds(seg.text_for(lang), lang, style):
+            seg.text[lang] = text
+            shortened.append(sid)
+    return shortened
+
+
 def translate(doc: ProjectDoc, target_lang: str, *, screen_only: bool = False, project_id: str | None = None,
               job_id: str | None = None) -> tuple[ProjectDoc, str]:
     """Traduz a narração e os textos de tela. Com `screen_only`, só os textos de tela que faltam em
@@ -1160,7 +1207,14 @@ def translate(doc: ProjectDoc, target_lang: str, *, screen_only: bool = False, p
         segments = [{"id": s.id, "text": s.text_for(source)} for s in doc.segments]
         overlays = [{"id": sc.id, "text": sc.overlay_text[source]} for sc in doc.scenes if sc.overlay_text.get(source)]
         overlays += [entry for sc in doc.scenes for entry in _card_texts(sc, source)]
-    body = ("Segmentos:\n" + "\n".join(f"- {s['id']}: {s['text']}" for s in segments)) if segments else (
+    # Orçamento de duração por segmento (README §7.1): o texto traduzido cabe no tempo do original.
+    style = _style_or_none(doc)
+    budgets = {b.segment_id: b for b in dubbing.segment_budgets(doc, style, target_lang)} if style and segments else {}
+    for item in segments:
+        if item["id"] in budgets:
+            item["budget"] = dubbing.budget_line(budgets[item["id"]])
+    body = ("Segmentos (cada um com o tempo que tem para ser falado; não passe dele):\n"
+            + "\n".join(_segment_line(s) for s in segments)) if segments else (
         "A narração já está traduzida: traduza só os textos de tela.")
     prompt = f"""Traduza de {lang_name(source)} para {lang_name(target_lang)}.
 Título: {doc.title}
@@ -1184,6 +1238,9 @@ Título: {doc.title}
                 _set_card_text(scene, key[len(prefix):], target_lang, text)
     if target_lang not in new_doc.languages:
         new_doc.languages.append(target_lang)
+    if style is not None and seg_text and dubbing.is_multi_track(style, new_doc):
+        # Faixas no mesmo vídeo: tradução que passa do tempo vira pausa no vídeo. Pede uma versão mais curta.
+        _shorten_over_budget(new_doc, style, target_lang, budgets, project_id, job_id)
     meta = new_doc.metadata.get(target_lang) or Metadata()
     if result.data.get("title") and not meta.title and not screen_only:
         meta.title = result.data["title"]

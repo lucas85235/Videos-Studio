@@ -595,7 +595,7 @@ def mix_tracks(
     short: bool = False,
     music_highpass: float = MUSIC_HIGHPASS_HZ,
 ) -> Path:
-    """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo.
+    """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo (ou WAV, se `out_path` termina em .wav).
 
     A trilha passa pelo passa-altas `music_highpass` (ver `music_highpass(clima)`) e, medida depois dele, vai a
     `VOICE_LUFS + music_db + 10` LUFS antes do ducking (com -16, 6 LU abaixo da voz). `total` é a duração do vídeo
@@ -633,6 +633,8 @@ def mix_tracks(
                 break
             gain += loudness - limited
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # .wav: PCM 24 bits sem perda (faixa de idioma do Modo B para o YouTube Studio); o resto sai em AAC.
+    codec = ["-c:a", "pcm_s24le"] if out_path.suffix.lower() == ".wav" else ["-c:a", "aac", "-b:a", "192k"]
     run_ffmpeg([*inputs, "-filter_complex", master(gain, "[out]"), "-map", "[out]", "-ac", "2", "-ar", str(SAMPLE_RATE),
-                "-c:a", "aac", "-b:a", "192k", str(out_path)])
+                *codec, str(out_path)])
     return out_path

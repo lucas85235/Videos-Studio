@@ -17,6 +17,7 @@ from studio.ids import new_id
 from studio.media.real_media import EDITORIAL_WARNING
 from studio.models import Publication
 from studio.workers.jobs import JobContext, job
+from studio.workers.pipeline.dubbing import MULTI_TRACK
 from studio.workers.publish import youtube as yt
 from studio.workers.publish.credits import credit_lines, credits_block, has_editorial
 
@@ -101,7 +102,12 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
         "defaultLanguage": lang,
         "defaultAudioLanguage": lang,
     }
-    localizations = youtube_localizations(doc, lang) if payload.get("localize") else {}
+    # Modo B (faixas de idioma no mesmo vídeo): títulos, descrições e legendas de todos os idiomas vão junto. As
+    # faixas de áudio não têm API: vão à mão pelo pacote (Studio → Idiomas → Dublagem).
+    multi_track = last.get("delivery") == MULTI_TRACK and lang == doc.primary_language
+    localizations = youtube_localizations(doc, lang) if payload.get("localize") or multi_track else {}
+    dub_captions = [(other, e["srt"]) for other, e in (last.get("langs") or {}).items()
+                    if multi_track and other != lang and e.get("srt")] if payload.get("captions", True) else []
     # Token do canal do projeto (vinculado em Canais); sem vínculo, a conta global como antes.
     account = yt.account_for_channel(row.get("channel_id") or doc.channel_id)
     data_dir = get_settings().data_dir
@@ -134,6 +140,14 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 yt.upload_captions(video_id, data_dir / entry["srt"], lang, client, account=account)
             except yt.YouTubeError as exc:
                 warnings.append(str(exc))
+        for other, srt in dub_captions:
+            try:
+                yt.upload_captions(video_id, data_dir / srt, other, client, account=account)
+            except yt.YouTubeError as exc:
+                warnings.append(f"{other}: {exc}")
+    if multi_track:
+        warnings.append("Faixas de áudio dos outros idiomas: envie pelo YouTube Studio (Idiomas → Dublagem) com o "
+                        "pacote de faixas da aba Saída; a API do YouTube não aceita faixas extras.")
     url = f"https://youtu.be/{video_id}"
     with session_scope() as s:
         s.add(
@@ -149,6 +163,7 @@ def run_publish_youtube(ctx: JobContext, payload: dict[str, Any]) -> dict[str, A
                 url=url,
                 details={"privacy": privacy, "publish_at": status.get("publishAt"), "warnings": warnings,
                          "synthetic": status.get("containsSyntheticMedia"), "localizations": sorted(localizations),
+                         **({"caption_langs": sorted(o for o, _ in dub_captions)} if dub_captions else {}),
                          "youtube_channel": yt.account_title(account), **credits_details},
             )
         )
