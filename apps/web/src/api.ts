@@ -490,6 +490,8 @@ export type Channel = {
   credit_price_usd?: number;
   /** Voz final padrão do canal, pré-selecionada no Novo projeto. */
   voice_defaults?: { final?: { provider: string; voice: string } };
+  /** Playlist em que os envios dos projetos deste canal entram (null: nenhuma). */
+  youtube_playlist?: { id: string; title: string } | null;
 };
 export type ChannelSlots = { timezone: string; configured: boolean; slots: string[] };
 
@@ -760,6 +762,58 @@ export type YouTubeAccountStatus = {
   global_connected?: boolean;
   /** `revenue`: o canal tem a receita do YouTube ligada (escolhida ao vincular). */
   linked?: { channel_id: string; channel_title: string; revenue?: boolean }[];
+  /** Todas as contas que podem publicar (global e canais vinculados, sem repetir o mesmo canal). */
+  accounts?: YouTubeAccount[];
+  /** Com project_id: o canal do projeto não está vinculado, então o envio pode escolher a conta. */
+  can_choose_account?: boolean;
+  /** Com project_id: id no YouTube da conta que o projeto usa sem escolha ("" se não houver). */
+  account_channel_id?: string;
+  /** Com project_id: playlist padrão do canal do projeto. */
+  default_playlist?: { id: string; title: string } | null;
+  reason?: string | null;
+};
+
+export type YouTubeAccount = {
+  channel_id: string;
+  channel_title: string;
+  /** Conta conectada na aba de publicação (a "global"). */
+  global: boolean;
+  /** Canais do Vulto ligados a este canal do YouTube. */
+  vulto_channels: string[];
+};
+
+/** GET /api/youtube/playlists */
+export type YouTubePlaylist = { id: string; title: string; privacy: string; count: number | null };
+export type YouTubePlaylists = {
+  account_title: string;
+  playlists: YouTubePlaylist[];
+  /** O canal tem mais playlists do que o app lê (`max`): as que sobraram não aparecem. */
+  truncated?: boolean;
+  max?: number;
+};
+
+/** GET /api/youtube/quota: cota da YouTube Data API usada hoje (dia do Pacífico). */
+export type YouTubeQuota = {
+  day: string;
+  resets_at: string;
+  limit: number;
+  custom_limit: boolean;
+  used: number;
+  remaining: number;
+  uploads: number;
+  upload_limit: number;
+  custom_upload_limit: boolean;
+  uploads_remaining: number;
+  exhausted: boolean;
+  /** Cota geral (10.000) acabou: o vídeo sobe, mas capa, legendas e playlist falham. Só avisa. */
+  general_over: boolean;
+  /** Cota de envios de vídeo acabou: nenhum vídeo sobe hoje. Bloqueia o envio. */
+  uploads_over: boolean;
+  level: 'ok' | 'near' | 'over';
+  message: string | null;
+  /** Unidades que um envio típico gasta (capa + legendas). */
+  publish_estimate: number;
+  by_method: { method: string; calls: number; units: number }[];
 };
 
 /** POST /api/youtube/link */

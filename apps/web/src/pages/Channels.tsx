@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Globe,
   Hash,
+  ListVideo,
   LogIn,
   Mic,
   Package,
@@ -72,6 +73,7 @@ import {
 import { chipClass, Sheet } from './ops/common';
 import { browserZone, sameOffsetAsBrowser, whenIn, zoneCity, zoneLabel } from './ops/zones';
 import { Notice } from './project/delivery/shared';
+import { PlaylistPicker } from '../youtube';
 
 type Form = {
   name: string;
@@ -740,6 +742,60 @@ type CardActions = {
   onSuggest: () => void;
 };
 
+/** Playlist padrão do canal: os envios dos projetos dele entram nela. A lista só é lida ao abrir (gasta cota). */
+const ChannelPlaylist: React.FC<{ channel: Channel }> = ({ channel: c }) => {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const save = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      api.put<{ channel: Channel }>(`/api/channels/${c.id}/youtube/playlist`, { id: id || null, title }),
+    onSuccess: ({ channel }) => {
+      client.invalidateQueries({ queryKey: ['channels'] });
+      setOpen(false);
+      toast({
+        tone: 'good',
+        title: channel.youtube_playlist
+          ? `Os envios de “${c.name}” vão para “${channel.youtube_playlist.title || 'a playlist'}”`
+          : `Os envios de “${c.name}” não entram em playlist`,
+      });
+    },
+  });
+  const current = c.youtube_playlist ?? null;
+  return (
+    <div className="flex flex-col gap-2 text-[13px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <ListVideo size={14} aria-hidden="true" className="shrink-0 text-subtle" />
+        <span className="text-muted">
+          Playlist dos envios: <span className="text-fg">{current ? current.title || 'escolhida' : 'nenhuma'}</span>
+        </span>
+        {!open ? (
+          <Button size="sm" variant="ghost" onClick={() => setOpen(true)}>
+            {current ? 'Trocar' : 'Escolher'}
+          </Button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="flex flex-wrap items-end gap-2">
+          <PlaylistPicker
+            className="min-w-56 flex-1"
+            label="Playlist padrão"
+            scope={{ channel_id: c.id }}
+            value={current?.id ?? ''}
+            disabled={save.isPending}
+            onChange={(id, title) => save.mutate({ id, title })}
+            extra={[{ value: '', label: 'Nenhuma playlist' }]}
+          />
+          <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+            Fechar
+          </Button>
+          {save.error ? <ErrorBox error={save.error} title="Playlist não salva" onClose={() => save.reset()} className="w-full" /> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const ChannelCard: React.FC<
   {
     channel: Channel;
@@ -805,6 +861,7 @@ const ChannelCard: React.FC<
               {hasToken ? 'Desvincular' : 'Remover link'}
             </Button>
           </div>
+          {y.token === 'ok' || y.token === 'global' ? <ChannelPlaylist channel={c} /> : null}
         </div>
       ) : null}
       <div className="flex flex-wrap gap-1.5">

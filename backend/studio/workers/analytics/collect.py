@@ -103,7 +103,7 @@ def fetch_videos(http: httpx.Client, token: str, ids: list[str]) -> list[dict[st
         data = yt._get(http, f"{yt.API}/videos", token, params={
             "part": "statistics,snippet,contentDetails,status", "id": ",".join(ids[i:i + BATCH]),
             "maxResults": str(BATCH),
-        })
+        }, method="videos.list")
         items.extend(data.get("items") or [])
     return items
 

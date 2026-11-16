@@ -27,7 +27,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 ### Publicação
 - [ ] **Driver do Buffer** (TikTok e Instagram pelo plano grátis, API e MCP). Ficou de fora porque a API atual do Buffer precisa ser conferida na documentação oficial e testada com uma conta; hoje há o pacote manual por rede.
 - [ ] Hospedagem das URLs públicas que o Buffer e o Instagram exigem (Cloudflare R2).
-- [ ] YouTube: playlists, medidor de cota, várias contas/canais. (Títulos traduzidos no mesmo vídeo já funcionam.)
+- [x] YouTube: playlists (escolher ou criar no envio, playlist padrão por canal), medidor de cota (custos da documentação oficial, dia do Pacífico, aviso a partir de 80%, envio bloqueado quando acaba; Configurações › Publicação) e várias contas (cada canal vinculado publica no seu; projeto sem canal vinculado escolhe a conta no envio) (15/11/2026). Testado só com a API simulada. Ficou de fora: posição do vídeo na playlist (exige ordem manual na playlist), playlist por idioma e o gasto de cota de outros programas no mesmo projeto do Google Cloud (a API não informa o saldo; o app conta só as chamadas dele).
 - [ ] Driver nativo do Instagram (Standard Access) e teste de visibilidade pública.
 
 ### Voz e idiomas

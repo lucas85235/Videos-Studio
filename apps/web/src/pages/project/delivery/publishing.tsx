@@ -20,6 +20,7 @@ import {
   type ProjectDetail,
   type Publication,
   toLocalInput,
+  type YouTubeAccount,
 } from "../../../api";
 import { label, langLabel } from "../../../labels";
 import {
@@ -38,6 +39,11 @@ import {
   useConfirm,
   useToast,
 } from "../../../ui";
+import {
+  PlaylistPicker,
+  QuotaMeter,
+  useYouTubeQuota,
+} from "../../../youtube";
 import { createKeyedStore, useKeyedStore } from "../core/drafts";
 import { type ChecksChoice, ChecksDialog } from "./preflight/ChecksDialog";
 import { usePreflight } from "./preflight/state";
@@ -68,7 +74,24 @@ export type YouTubeStatus = {
   channel_title: string;
   /** Com project_id: por que este projeto não pode enviar (null quando pode). */
   reason?: string | null;
+  /** Todas as contas conectadas (global e canais vinculados). */
+  accounts?: YouTubeAccount[];
+  /** O canal do projeto não está vinculado: o envio pode escolher a conta. */
+  can_choose_account?: boolean;
+  /** Id no YouTube da conta usada sem escolha ("" se não houver). */
+  account_channel_id?: string;
+  /** Playlist padrão do canal do projeto. */
+  default_playlist?: { id: string; title: string } | null;
 };
+
+/** Valor do seletor de playlist que segue a playlist padrão do canal. */
+const DEFAULT_PLAYLIST = "__padrao";
+/** A conta global sem id de canal (o Google não devolveu o canal no login): vai como account=null. */
+const GLOBAL_ACCOUNT = "__global";
+const accountValue = (a: YouTubeAccount) => a.channel_id || GLOBAL_ACCOUNT;
+
+const accountLabel = (a: YouTubeAccount) =>
+  `${a.channel_title || a.channel_id || "Canal sem nome"}${a.global ? " (conta da aba de publicação)" : a.vulto_channels.length ? ` (canal ${a.vulto_channels.join(", ")})` : ""}`;
 
 /** Conta que o projeto usa de fato para publicar (a do canal dele, ou a global). */
 export const useYouTubeStatus = (projectId: string) =>
@@ -233,6 +256,14 @@ export const YouTubeCard: React.FC<{
   const [privacyChoice, setPrivacy] = useState("private");
   const [when, setWhen] = useState("");
   const [localize, setLocalize] = useState(false);
+  /** Conta escolhida ("" = a conta padrão do projeto); só para projeto sem canal vinculado. */
+  const [accountChoice, setAccount] = useState("");
+  /** null = ainda não mexeu (segue a padrão do canal, se houver). */
+  const [playlistChoice, setPlaylist] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const quota = useYouTubeQuota();
   const testOnly = previewOnly.length > 0;
   const privacy = testOnly ? "private" : privacyChoice;
   useEffect(() => {
@@ -270,6 +301,10 @@ export const YouTubeCard: React.FC<{
           p === "scheduled" && when ? new Date(when).toISOString() : null,
         localize: localize && otherLangs.length > 0,
         ignore_checks: Boolean(opts.ignoreChecks),
+        account: accountParam || null,
+        // null: a playlist padrão do canal; "": nenhuma.
+        playlist_id: playlist === DEFAULT_PLAYLIST ? null : playlist,
+        playlist_title: playlist === DEFAULT_PLAYLIST ? null : playlistTitle,
       });
     },
     onError: (error, opts) => {
@@ -288,6 +323,7 @@ export const YouTubeCard: React.FC<{
         client.invalidateQueries({ queryKey: ["project", projectId] }),
         client.invalidateQueries({ queryKey: ["agenda"] }),
         client.invalidateQueries({ queryKey: ["channel-slots"] }),
+        client.invalidateQueries({ queryKey: ["youtube-quota"] }),
       ]).then(() =>
         toast({
           tone: "info",
@@ -306,6 +342,32 @@ export const YouTubeCard: React.FC<{
     (p) => p.driver === "youtube_native" && p.language === lang,
   );
 
+  const s = status.data;
+  const accounts = s?.accounts ?? [];
+  const chooseAccount = Boolean(s?.can_choose_account) && accounts.length > 0;
+  // A conta padrão do projeto funcionou (connected sem motivo) mas não tem id de canal: é a global sem id.
+  const defaultAccount =
+    s?.account_channel_id || (s?.connected && !s?.reason ? GLOBAL_ACCOUNT : "");
+  const accountId = chooseAccount
+    ? accountChoice || defaultAccount
+    : s?.account_channel_id || "";
+  /** O que vai no envio: a conta global (sentinela) vira null, como a conta padrão. */
+  const accountParam = accountChoice === GLOBAL_ACCOUNT ? "" : accountChoice;
+  const accountTitle =
+    accounts.find((a) => accountValue(a) === accountId)?.channel_title ||
+    s?.channel_title ||
+    "";
+  // A playlist padrão do canal só vale para a conta do próprio canal.
+  const defaultPlaylist = accountChoice ? null : (s?.default_playlist ?? null);
+  const playlist =
+    playlistChoice?.id ?? (defaultPlaylist ? DEFAULT_PLAYLIST : "");
+  const playlistTitle =
+    playlist === DEFAULT_PLAYLIST
+      ? (defaultPlaylist?.title ?? "")
+      : (playlistChoice?.title ?? "");
+  // Só a cota de envios de vídeo bloqueia: sem a cota geral o vídeo sobe (capa, legendas e playlist falham).
+  const quotaOver = Boolean(quota.data?.uploads_over);
+
   const block = !entry?.video
     ? "Renderize o vídeo final deste idioma primeiro."
     : publishJob
@@ -314,11 +376,15 @@ export const YouTubeCard: React.FC<{
         ? "Aguarde a tarefa em andamento terminar."
         : unsavedMeta
           ? UNSAVED_META_BLOCK
-          : privacy === "scheduled" && !when
-          ? "Escolha a data e a hora do agendamento."
-          : privacy === "scheduled" && !isFutureLocal(when)
-            ? "O horário do agendamento precisa estar no futuro."
-            : null;
+          : chooseAccount && !accountId
+            ? "Escolha a conta do YouTube que vai receber o vídeo."
+            : quotaOver
+              ? (quota.data?.message ?? "A cota de envios de vídeo de hoje acabou.")
+              : privacy === "scheduled" && !when
+                ? "Escolha a data e a hora do agendamento."
+                : privacy === "scheduled" && !isFutureLocal(when)
+                  ? "O horário do agendamento precisa estar no futuro."
+                  : null;
 
   const send = async () => {
     if (finalStale) {
@@ -357,7 +423,6 @@ export const YouTubeCard: React.FC<{
     else if (choice === "private") publish.mutate({ privacy: "private" });
   };
 
-  const s = status.data;
   const sendLabel = alreadySent
     ? "Enviar outra cópia"
     : multi
@@ -417,12 +482,35 @@ export const YouTubeCard: React.FC<{
         </div>
       ) : (
         <>
-          <p className="text-[13px] text-muted">
-            Canal:{" "}
-            <span className="font-medium text-fg">
-              {s.channel_title || "conectado"}
-            </span>
-          </p>
+          {chooseAccount ? (
+            <Field
+              label="Conta do YouTube"
+              hint="Este projeto não tem canal vinculado: escolha em qual canal o vídeo entra."
+              className="max-w-md"
+            >
+              <Select
+                value={accountId}
+                onChange={(e) => {
+                  setAccount(e.target.value);
+                  setPlaylist(null);
+                }}
+              >
+                {!accountId ? <option value="">Escolha a conta…</option> : null}
+                {accounts.map((a) => (
+                  <option key={accountValue(a)} value={accountValue(a)}>
+                    {accountLabel(a)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : (
+            <p className="text-[13px] text-muted">
+              Canal:{" "}
+              <span className="font-medium text-fg">
+                {s.channel_title || "conectado"}
+              </span>
+            </p>
+          )}
 
           {testOnly ? (
             <Notice
@@ -509,6 +597,31 @@ export const YouTubeCard: React.FC<{
             </div>
           ) : null}
 
+          {!chooseAccount || accountId ? (
+            <PlaylistPicker
+              key={accountId}
+              lazy
+              className="max-w-md"
+              scope={{
+                project_id: projectId,
+                account: accountParam || undefined,
+              }}
+              value={playlist}
+              onChange={(id, title) => setPlaylist({ id, title })}
+              extra={[
+                ...(defaultPlaylist
+                  ? [
+                      {
+                        value: DEFAULT_PLAYLIST,
+                        label: `Padrão do canal: ${defaultPlaylist.title || "playlist"}`,
+                      },
+                    ]
+                  : []),
+                { value: "", label: "Nenhuma playlist" },
+              ]}
+            />
+          ) : null}
+
           {/* Resumo do que vai subir */}
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-lg border border-line bg-canvas p-3 text-[13px]">
             <dt className="text-subtle">Título</dt>
@@ -531,6 +644,12 @@ export const YouTubeCard: React.FC<{
               {privacy === "scheduled" && when && isFutureLocal(when)
                 ? ` · ${formatWhen(new Date(when).toISOString())}`
                 : ""}
+            </dd>
+            <dt className="text-subtle">Canal</dt>
+            <dd className="truncate text-fg">{accountTitle || "—"}</dd>
+            <dt className="text-subtle">Playlist</dt>
+            <dd className="truncate text-fg">
+              {playlist ? playlistTitle || "Escolhida" : "Nenhuma"}
             </dd>
             <dt className="text-subtle">Capa</dt>
             <dd className="text-fg">
@@ -573,6 +692,8 @@ export const YouTubeCard: React.FC<{
             </Notice>
           ) : null}
 
+          {quota.data ? <QuotaMeter quota={quota.data} /> : null}
+
           {publishJob ? (
             <JobProgress job={publishJob} title="Enviando ao YouTube" />
           ) : null}
@@ -594,7 +715,7 @@ export const YouTubeCard: React.FC<{
             </Button>
             <p className="text-xs text-subtle">
               {block ??
-                "Envia o vídeo, a capa e as legendas. O agendamento fica no próprio YouTube: o computador pode estar desligado na hora."}
+                "Envia o vídeo, a capa, as legendas e põe na playlist. O agendamento fica no próprio YouTube: o computador pode estar desligado na hora."}
             </p>
           </div>
         </>

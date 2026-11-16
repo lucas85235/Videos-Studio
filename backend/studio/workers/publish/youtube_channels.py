@@ -145,6 +145,33 @@ def public_info(settings: dict[str, Any] | None) -> dict[str, Any] | None:
     return {**{k: data.get(k) for k in _PUBLIC_KEYS}, "token": token_status(data)}
 
 
+def default_playlist(settings: dict[str, Any] | None) -> dict[str, str] | None:
+    """Playlist padrão do canal (`settings["youtube_playlist"]`), só se for do canal do YouTube ligado agora."""
+    item = dict((settings or {}).get("youtube_playlist") or {})
+    youtube_id = youtube_data(settings).get("channel_id")
+    if not item.get("id") or not youtube_id or item.get("channel_id") != youtube_id:
+        return None
+    return {"id": item["id"], "title": item.get("title") or ""}
+
+
+def set_default_playlist(channel_id: str, playlist_id: str | None, title: str = "") -> dict[str, str] | None:
+    """Escolhe (ou tira, com None) a playlist em que os envios deste canal entram."""
+    with session_scope() as s:
+        row = s.get(Channel, channel_id)
+        if row is None:
+            raise KeyError(channel_id)
+        settings = dict(row.settings or {})
+        youtube_id = youtube_data(settings).get("channel_id")
+        if playlist_id:
+            if not youtube_id:
+                raise yt.YouTubeError("ligue o canal ao YouTube antes de escolher a playlist padrão")
+            settings["youtube_playlist"] = {"id": playlist_id, "title": (title or "").strip()[:150], "channel_id": youtube_id}
+        else:
+            settings.pop("youtube_playlist", None)
+        row.settings = settings
+        return default_playlist(settings)
+
+
 def avatar_rel(channel_id: str) -> str:
     return f"channels/{channel_id}/avatar.jpg"
 

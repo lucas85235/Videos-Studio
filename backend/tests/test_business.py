@@ -288,7 +288,7 @@ def test_routes_offers_monetization_affiliate_and_publish(isolated_settings, mon
         return {"id": "vid1"}
 
     monkeypatch.setattr(yt, "upload_video", upload_video)
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, chosen=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
     job = get_runner().submit("publish_youtube", {"lang": "pt-BR", "privacy": "private"}, pid, run_inline=True)
     final = get_job(job["id"])
@@ -354,7 +354,7 @@ def test_publish_youtube_sends_paid_placement_and_warns_stale_offer(isolated_set
         return {"id": "vid1"}
 
     monkeypatch.setattr(yt, "upload_video", upload_video)
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, chosen=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
     job = get_runner().submit("publish_youtube", {"lang": "pt-BR", "privacy": "private"}, pid, run_inline=True)
     final = get_job(job["id"])

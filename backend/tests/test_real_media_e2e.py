@@ -217,7 +217,7 @@ def test_suggestion_to_published_credits(isolated_settings, net, monkeypatch):
         return {"id": "vid_e2e"}
 
     monkeypatch.setattr(yt, "upload_video", upload_video)
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, prefer=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
     published = _run("publish_youtube", pid, {"lang": "pt-BR", "privacy": "private"})
     block = credits_block(service.get_doc(pid), "pt-BR")

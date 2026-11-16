@@ -479,7 +479,7 @@ def test_publish_uses_the_chosen_thumbnail_and_creates_the_pending(monkeypatch):
     monkeypatch.setattr(yt, "upload_video", upload_video)
     monkeypatch.setattr(yt, "set_thumbnail", set_thumbnail)
     monkeypatch.setattr(yt, "upload_captions", lambda *a, **k: None)
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, chosen=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
     job = get_runner().submit("publish_youtube", {"lang": "pt-BR", "privacy": "public"}, pid, run_inline=True)
     final = get_job(job["id"])
@@ -500,7 +500,7 @@ def _fake_upload(monkeypatch, video_id: str, sent: dict) -> None:
     monkeypatch.setattr(yt, "upload_video", lambda path, **kw: {"id": video_id})
     monkeypatch.setattr(yt, "set_thumbnail", lambda vid, path, client, account=None: sent.update(thumb=Path(path)))
     monkeypatch.setattr(yt, "upload_captions", lambda *a, **k: None)
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, chosen=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
 
 
@@ -556,7 +556,7 @@ def test_publish_without_variants_uses_the_build_thumbnail(monkeypatch):
     sent: dict = {}
     monkeypatch.setattr(yt, "upload_video", lambda path, **kw: {"id": "vidAB2"})
     monkeypatch.setattr(yt, "set_thumbnail", lambda vid, path, client, account=None: sent.update(thumb=Path(path)))
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, chosen=None: "global")
     monkeypatch.setattr(yt, "account_title", lambda account: "Canal")
     job = get_runner().submit("publish_youtube", {"lang": "pt-BR", "privacy": "private", "captions": False}, pid,
                               run_inline=True)

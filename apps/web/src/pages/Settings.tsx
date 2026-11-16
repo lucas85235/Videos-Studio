@@ -45,6 +45,7 @@ import {
   useToast,
 } from '../ui';
 import { VoicePicker } from '../voices';
+import { YouTubeQuotaSettings } from '../youtube';
 import { AnchorLink, jumpTo, useCopy } from './ops/common';
 import { ImportCanaisSection } from './ops/ImportCanais';
 
@@ -521,6 +522,7 @@ const ProviderSection: React.FC<{ kind: Kind; providers: Provider[] }> = ({ kind
       ) : (
         <p className="text-sm text-muted">Nenhum provedor deste tipo.</p>
       )}
+      {kind === 'publish' ? <YouTubeQuotaSettings /> : null}
     </Section>
   </div>
 );

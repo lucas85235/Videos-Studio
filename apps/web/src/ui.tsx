@@ -769,7 +769,7 @@ export const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) =
   <div aria-hidden="true" className={`animate-pulse rounded-lg bg-raised ${className}`} />
 );
 
-const PROGRESS_TONES = { accent: 'bg-accent', good: 'bg-emerald-400', bad: 'bg-red-400' } as const;
+const PROGRESS_TONES = { accent: 'bg-accent', good: 'bg-emerald-400', warn: 'bg-amber-400', bad: 'bg-red-400' } as const;
 
 export const ProgressBar: React.FC<{
   value: number;

@@ -409,7 +409,7 @@ def test_publish_gate(isolated_settings, monkeypatch):
             return {"id": f"job_{len(sent)}", "kind": kind}
 
     monkeypatch.setattr(routes_publish, "get_runner", lambda: Runner())
-    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "global")
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id, chosen=None: "global")
     client = TestClient(create_app())
     url = f"/api/projects/{pid}/publish/youtube"
     resp = client.post(url, json={"lang": LANG, "privacy": "public"})

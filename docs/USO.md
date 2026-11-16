@@ -74,6 +74,10 @@ O Claude da conta usa o Opus mais recente com esforço médio. Para trocar, defi
 
 Envio: escolha privado, não listado, público ou **agendado**. O agendamento fica no próprio YouTube, então o notebook pode estar desligado na hora. O rótulo de conteúdo sintético é marcado sozinho quando o estilo é fotorrealista ou usa vídeo IA.
 
+- **Playlist**: no cartão do YouTube, escolha a playlist do vídeo, **Nenhuma** ou **+ Nova playlist…** (cria no canal). Em **Canais**, *Playlist dos envios* define a playlist padrão de cada canal; ela vale também na Fila do YouTube. Se a playlist falhar (apagada, cheia), o vídeo continua enviado e o aviso aparece no resultado.
+- **Várias contas**: cada canal vinculado em Canais publica só no próprio canal do YouTube. Projeto sem canal vinculado mostra *Conta do YouTube* para escolher em qual das contas conectadas o vídeo entra.
+- **Cota**: o cartão e **Configurações › Publicação › Cota e contas do YouTube** mostram a cota de hoje: 10.000 unidades por dia para tudo (capa 50, legendas 400, playlist 50, listar 1) e 100 envios de vídeo por dia, à parte. Ela é do projeto do Google Cloud (todas as contas dividem) e zera à meia-noite do horário do Pacífico. A partir de 80% aparece um aviso; quando acaba (ou o Google avisa que acabou), o envio fica bloqueado até zerar. Se o Google aumentou a cota do seu projeto, ajuste o limite ali.
+
 ### Vincular um canal que você já tem
 
 Em **Canais › Vincular canal do YouTube** há dois caminhos:
