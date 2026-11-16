@@ -1,4 +1,4 @@
-import { BadgeDollarSign, ChartLine, FileText, Hand, KeyRound, type LucideIcon, UserCheck } from 'lucide-react';
+import { BadgeDollarSign, ChartLine, FileText, Hand, KeyRound, type LucideIcon, MessagesSquare, UserCheck } from 'lucide-react';
 import React from 'react';
 import type { WaitingItem, WaitingKind } from '../../apiOps';
 import { Badge, Section } from '../../ui';
@@ -10,9 +10,10 @@ const KIND: Record<WaitingKind, { icon: LucideIcon; label: string; action: strin
   youtube: { icon: KeyRound, label: 'YouTube', action: 'Ir para Canais' },
   analytics: { icon: ChartLine, label: 'Métricas', action: 'Ir para Canais' },
   offer: { icon: BadgeDollarSign, label: 'Afiliado', action: 'Ir para Dinheiro' },
+  comments: { icon: MessagesSquare, label: 'Comentários', action: 'Abrir' },
 };
 
-/** O que só você pode fazer: revisões, pacotes manuais, tokens do YouTube e ofertas a conferir. */
+/** O que só você pode fazer: revisões, pacotes manuais, tokens do YouTube, ofertas a conferir e perguntas nos comentários. */
 export const WaitingSection: React.FC<{ items: WaitingItem[] }> = ({ items }) => (
   <Section
     title="Esperando você"

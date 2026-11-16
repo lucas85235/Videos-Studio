@@ -51,6 +51,8 @@ COSTS: dict[str, tuple[int, str]] = {
     "thumbnails.set": (50, GENERAL),
     "captions.insert": (400, GENERAL),
     "search.list": (1, SEARCH),
+    "commentThreads.list": (1, GENERAL),  # caixa de comentários
+    "comments.insert": (50, GENERAL),  # resposta pela caixa de comentários
 }
 
 LIMIT_KEY = "youtube_quota_limit"

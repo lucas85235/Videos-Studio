@@ -23,6 +23,7 @@ const AgendaPage = lazy(() => import('./pages/Agenda').then((m) => ({ default: m
 const TodayPage = lazy(() => import('./pages/Today').then((m) => ({ default: m.TodayPage })));
 const IdeasPage = lazy(() => import('./pages/Ideas').then((m) => ({ default: m.IdeasPage })));
 const AnalyticsPage = lazy(() => import('./pages/Analytics').then((m) => ({ default: m.AnalyticsPage })));
+const CommentsPage = lazy(() => import('./pages/Comments').then((m) => ({ default: m.CommentsPage })));
 const MoneyPage = lazy(() => import('./pages/Money').then((m) => ({ default: m.MoneyPage })));
 // Qualidade e pesquisa (ADR 0003)
 const RadarPage = lazy(() => import('./pages/Radar').then((m) => ({ default: m.RadarPage })));
@@ -222,6 +223,7 @@ export const App: React.FC = () => {
                 <Route path="/hoje" element={<TodayPage />} />
                 <Route path="/ideias" element={<IdeasPage />} />
                 <Route path="/desempenho" element={<AnalyticsPage />} />
+                <Route path="/comentarios" element={<CommentsPage />} />
                 <Route path="/dinheiro" element={<MoneyPage />} />
                 <Route path="/radar" element={<RadarPage />} />
                 <Route path="/referencias" element={<ReferencesPage />} />

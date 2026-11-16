@@ -11,7 +11,8 @@ A manhã (`morning`), cada parte isolada (uma quebrada não derruba as outras):
 3. nos dias 1 a 10, canal com oferta de afiliado ativa e sem receita do mês anterior: pendência para lançar os números;
 4. marcos dos vídeos longos (48 h, 7 dias, 28 dias no ar): pendência de análise, só se o marco foi atingido há menos de
    72 h (nada retroativo);
-5. radar de nichos (ADR 0003, bloco E), uma vez por semana ISO (`step_radar`).
+5. radar de nichos (ADR 0003, bloco E), uma vez por semana ISO (`step_radar`);
+6. comentários novos dos canais cuja caixa de comentários já está em uso (`step_comments`).
 """
 
 from __future__ import annotations
@@ -376,8 +377,30 @@ def step_radar(now: datetime) -> list[str]:
     return [f"radar de nichos na fila ({job['id']})"]
 
 
+def step_comments(now: datetime) -> list[str]:
+    """Lê os comentários novos dos canais cuja caixa de comentários já foi usada (`inbox.in_use`), qualquer que seja o
+    último estado: uma falha passageira (cota do dia, rede, token) é tentada de novo na manhã seguinte, como a coleta de
+    métricas. Custa 1 a 3 unidades de cota por canal; perguntas sem resposta aparecem em Hoje."""
+    from studio.workers.comments import inbox
+
+    with session_scope() as s:
+        ids = [c.id for c in s.query(Channel).order_by(Channel.name).all()
+               if _has_youtube(c.settings) and inbox.in_use(c.settings)]
+    if not ids:
+        return []
+    lines: list[str] = []
+    for cid in ids:
+        res = inbox.refresh(cid, now=now)["channels"][0]
+        if res.get("state") not in (inbox.OK, inbox.SEM_ESCOPO):  # sem escopo lê normalmente; o aviso fica em Hoje
+            lines.append(f"comentários do {res['name']}: {res.get('error') or res.get('state')}")
+        elif res.get("new"):
+            lines.append(f"{res['new']} comentário(s) novo(s) no {res['name']}")
+    return lines
+
+
 STEPS = (
     ("métricas", step_metrics),
+    ("comentários", step_comments),
     ("estoque", step_stock),
     ("receita", step_revenue),
     ("marcos", step_milestones),
