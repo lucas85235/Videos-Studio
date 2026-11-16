@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     """Força provedores offline (mock/procedurais), útil para testes e para usar sem internet."""
     render_concurrency: int = 4
     whisper_model: str = "small"
+    canais_dir: Path | None = None
+    """Pasta do projeto antigo `canais` (importação do histórico). Vazio: `~/canais`."""
 
     @property
     def db_url(self) -> str:

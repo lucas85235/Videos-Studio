@@ -20,6 +20,13 @@ def main(argv: list[str] | None = None) -> None:
     clean.add_argument("--dry-run", action="store_true", help="só mostra o que seria apagado")
     sub.add_parser("voz-local", help="baixa o modelo da voz local da prévia (Kokoro, ~350 MB, uma vez só)")
     sub.add_parser("rotinas", help="roda as rotinas do dia uma vez, sem abrir o app (para a tarefa agendada)")
+    imp = sub.add_parser("importar-canais", help="importa o histórico do projeto antigo canais (só lê a pasta dele)")
+    imp.add_argument("--pasta", default=None, help="pasta do canais (padrão: ~/canais ou VS_CANAIS_DIR)")
+    imp.add_argument("--dry-run", action="store_true", help="só mostra o que entraria, sem gravar")
+    imp.add_argument(
+        "--canal", action="append", default=[], metavar="SLUG=DESTINO",
+        help="destino de um canal do canais: auto (padrão), pular ou o id de um canal do Vulto; repita por canal",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -63,6 +70,24 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Rotinas ({result['status']}): {result['message']}")
         if result["status"] in ("falhou", "parcial"):  # o Agendador mostra o código de saída
             raise SystemExit(1)
+    elif args.command == "importar-canais":
+        from studio.db import init_db
+        from studio.workers.canais_import.apply import format_report, import_canais
+        from studio.workers.canais_import.reader import CanaisError
+
+        choices: dict[str, str] = {}
+        for item in args.canal:
+            slug, sep, target = item.partition("=")
+            if not sep or not slug.strip() or not target.strip():
+                parser.error(f"--canal no formato SLUG=DESTINO (recebido: {item})")
+            choices[slug.strip()] = target.strip()
+        init_db()
+        try:
+            report = import_canais(args.pasta, choices, dry_run=args.dry_run)
+        except (CanaisError, ValueError) as exc:
+            print(f"Erro: {exc}")
+            raise SystemExit(1) from exc
+        print(format_report(report))
     elif args.command == "check":
         from studio.db import init_db
         from studio.media.ffmpeg import available_encoders

@@ -46,6 +46,7 @@ import {
 } from '../ui';
 import { VoicePicker } from '../voices';
 import { AnchorLink, jumpTo, useCopy } from './ops/common';
+import { ImportCanaisSection } from './ops/ImportCanais';
 
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
 type Costs = { by_provider: { provider: string; kind: string; units: number; cost_usd: number; calls: number }[]; total_usd: number };
@@ -75,6 +76,7 @@ const SECTIONS: { id: string; label: string }[] = [
   ]),
   { id: 'musicas', label: 'Músicas' },
   { id: 'armazenamento', label: 'Armazenamento' },
+  { id: 'importar-canais', label: 'Importar do canais' },
   { id: 'sistema', label: 'Sistema e custos' },
 ];
 
@@ -1091,6 +1093,7 @@ export const SettingsPage: React.FC = () => {
         ) : null}
         <MusicLibrarySection />
         <StorageSection />
+        <ImportCanaisSection />
         <SystemSection providers={providers.data} />
       </div>
     </Page>
