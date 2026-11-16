@@ -1,4 +1,4 @@
-import type { TimelineProps } from './types';
+import type { TimelineCard, TimelineProps, TimelineScene } from './types';
 
 /** Props de exemplo (Remotion Studio e testes de fumaça). */
 export const sampleProps: TimelineProps = {
@@ -193,5 +193,120 @@ export const sampleProps: TimelineProps = {
         quoted: true,
       },
     },
+  ],
+};
+
+const blank = { brightness: 0, contrast: 0, saturation: 0, warmth: 0, blur: 0, grade: null };
+const dataScene = (id: string, n: number, kind: 'chart' | 'map', card: TimelineCard): TimelineScene => ({
+  id,
+  kind,
+  from: n * 90,
+  durationInFrames: 90,
+  src: null,
+  motion: 'static',
+  transition: n ? 'fade_black' : 'cut',
+  seed: 10 + n,
+  look: blank,
+  text: '',
+  number: null,
+  captions: [
+    {
+      from: 0,
+      to: 60,
+      words: [
+        { text: 'Os', from: 0, to: 10 },
+        { text: 'números', from: 10, to: 30 },
+        { text: 'mostram', from: 30, to: 55 },
+      ],
+    },
+  ],
+  words: [],
+  card,
+});
+
+/** Família de dados e geografia (16:9): barras, linha, rosca, pizza e mapas (países e estados dos EUA). */
+export const sampleDataProps: TimelineProps = {
+  ...sampleProps,
+  width: 1920,
+  height: 1080,
+  durationInFrames: 540,
+  style: {
+    ...sampleProps.style,
+    family: 'data_geo',
+    families: ['data_geo', 'motion_graphics'],
+    effects: [{ type: 'vignette', amount: 0.08 }],
+    captions: {
+      ...sampleProps.style.captions,
+      style: 'line',
+      font: 'IBM Plex Sans',
+      weight: 600,
+      size: 44,
+      position: 'bottom',
+      uppercase: false,
+      max_words_per_line: 8,
+    },
+    textCards: { font: 'Oswald', color: '#F1F5F9', accent: '#F4B942', background: '#0B2233', animation: 'slide' },
+    progressBar: false,
+  },
+  scenes: [
+    dataScene('dg_bar', 0, 'chart', {
+      label: 'Exportações de soja (MI t)',
+      chart: 'bar',
+      items: [
+        { label: 'Brasil', value: '101', amount: 101 },
+        { label: 'EUA', value: '46', amount: 46 },
+        { label: 'Paraguai', value: '7', amount: 7 },
+        { label: 'Argentina', value: '4,2', amount: 4.2 },
+      ],
+      highlight: 0,
+      source: 'USDA',
+    }),
+    dataScene('dg_line', 1, 'chart', {
+      label: 'População do Brasil (MI)',
+      chart: 'line',
+      items: ['1960:72', '1970:95', '1980:121', '1991:147', '2000:170', '2010:191', '2022:203'].map((p) => {
+        const [label, value] = p.split(':');
+        return { label, value, amount: Number(value) };
+      }),
+      source: 'IBGE',
+    }),
+    dataScene('dg_donut', 2, 'chart', {
+      label: 'Matriz elétrica',
+      chart: 'donut',
+      items: [
+        { label: 'Hidrelétrica', value: '58%', amount: 58 },
+        { label: 'Eólica', value: '14%', amount: 14 },
+        { label: 'Solar', value: '9%', amount: 9 },
+        { label: 'Outras', value: '19%', amount: 19 },
+      ],
+      highlight: 0,
+    }),
+    dataScene('dg_pie', 3, 'chart', {
+      label: 'Onde se joga',
+      chart: 'pie',
+      items: [
+        { label: 'Celular', value: '48%', amount: 48 },
+        { label: 'Console', value: '28%', amount: 28 },
+        { label: 'PC', value: '24%', amount: 24 },
+      ],
+    }),
+    dataScene('dg_map', 4, 'map', {
+      label: 'Onde fica o Pantanal',
+      items: [
+        { label: 'Brasil', value: '62%', amount: 62, region: 'BRA' },
+        { label: 'Bolívia', value: '20%', amount: 20, region: 'BOL' },
+        { label: 'Paraguai', value: '18%', amount: 18, region: 'PRY' },
+      ],
+      highlight: 0,
+      source: 'WWF',
+    }),
+    dataScene('dg_states', 5, 'map', {
+      label: 'Os maiores estados',
+      items: [
+        { label: 'Texas', value: '696 MIL KM²', region: 'US-TX' },
+        { label: 'Califórnia', value: '424 MIL KM²', region: 'US-CA' },
+      ],
+      highlight: 0,
+    }),
   ],
 };

@@ -43,8 +43,9 @@ SCRIPT_SCHEMA = _obj(
     }
 )
 
-# Tipos de cena que o storyboard pode escolher ("count" só no Top 10; "video" e "document" ficam de fora).
-STORYBOARD_KINDS = ["image", "stat", "compare", "title", "text", "quote", "count"]
+# Tipos de cena que o storyboard pode escolher ("count" só no Top 10; "video" e "document" ficam de fora; "chart" e
+# "map" só são explicados no pedido quando o estilo é da família de dados e geografia).
+STORYBOARD_KINDS = ["image", "stat", "compare", "title", "text", "quote", "count", "chart", "map"]
 assert set(STORYBOARD_KINDS) <= set(SCENE_KINDS)
 STORYBOARD_SOURCES = ["new", "reuse", "none"]
 
@@ -88,7 +89,9 @@ STORYBOARD_SCHEMA = _obj(
                     "overlay_text": NS,
                     "value": NS,
                     "label": NS,
-                    "items": {"type": ["array", "null"], "items": _obj({"label": S, "value": S})},
+                    # region: só no map (código ISO ou nome do país/estado), null nos outros.
+                    "items": {"type": ["array", "null"], "items": _obj({"label": S, "value": S, "region": NS})},
+                    "chart": NS,  # bar | line | pie | donut (só no chart), validado no Python
                     "highlight": NI,
                     "headline": NS,
                     "stamp": NS,

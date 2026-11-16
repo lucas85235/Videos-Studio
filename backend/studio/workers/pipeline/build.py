@@ -224,6 +224,8 @@ def scene_needs_image(scene: Scene) -> bool:
         return False
     if scene.kind == "text" and not visual.prompt:
         return False
+    if scene.kind == "map":
+        return False  # o mapa ocupa a tela inteira: a imagem nunca apareceria (o prompt fica para quando voltar a imagem)
     return bool(visual.prompt or visual.query)
 
 

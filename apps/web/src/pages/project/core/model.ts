@@ -365,7 +365,7 @@ export const defaultTab = (detail: ProjectDetail): ProjectTab => {
 /* ------------------------------------------------------------------ */
 
 /** Cenas sem imagem própria em tela cheia, desenhadas pelo renderer (CARD_KINDS de core/project/document.py). */
-export const CARD_KINDS = new Set(['text', 'title', 'count', 'document', 'quote', 'stat', 'compare']);
+export const CARD_KINDS = new Set(['text', 'title', 'count', 'document', 'quote', 'stat', 'compare', 'chart', 'map']);
 
 /** Cota estimada de cada imagem nova (Codex), em segundos. */
 export const IMAGE_QUOTA_SECONDS = 35;
@@ -497,8 +497,9 @@ const pickText = (texts: LocalizedText | undefined, lang: string, fallback: stri
 export type ResolvedCard = {
   value?: string;
   label?: string;
-  items?: { label: string; value: string }[];
+  items?: { label: string; value: string; region?: string }[];
   highlight?: number;
+  chart?: string;
   headline?: string;
   stamp?: string;
   source?: string;
@@ -512,9 +513,15 @@ export const resolveCard = (card: SceneCard | null | undefined, lang: string, fa
   if (value) out.value = value;
   const labelText = pickText(card.label, lang, fallback);
   if (labelText) out.label = labelText;
+  // Região do mapa sem rótulo: o código fica no lugar do nome (o vídeo mostra o nome no idioma dele).
   const items = (card.items ?? [])
-    .map((item) => ({ label: pickText(item.label, lang, fallback), value: pickText(item.value, lang, fallback) }))
+    .map((item) => ({
+      label: pickText(item.label, lang, fallback) || (item.region ?? ''),
+      value: pickText(item.value, lang, fallback),
+      ...(item.region ? { region: item.region } : {}),
+    }))
     .filter((item) => item.label || item.value);
+  if (card.chart) out.chart = card.chart;
   if (items.length) {
     out.items = items;
     if (card.highlight != null && card.highlight >= 0 && card.highlight < items.length) out.highlight = card.highlight;

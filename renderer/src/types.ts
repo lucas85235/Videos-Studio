@@ -12,7 +12,7 @@ export type SceneLook = {
   grade: string | null;
 };
 
-export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video' | 'stat' | 'compare';
+export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video' | 'stat' | 'compare' | 'chart' | 'map';
 
 /** Ponto de foco da câmera (origem do zoom). Ausente ou desconhecido vale 'center'. */
 export type FocusPoint = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
@@ -35,7 +35,14 @@ export const FOCUS_ORIGIN: Record<FocusPoint, string> = {
  */
 export type TimelineFrame = { mode: 'crop' | 'blur'; x: number; y: number; aspect: number; anchor?: number };
 
-export type TimelineCardItem = { label: string; value: string };
+/**
+ * Linha do compare, ponto do gráfico ou região do mapa. `amount`: só em timeline antiga (o backend não manda mais; o
+ * gráfico lê o número do `value`, com a unidade e o separador de cada idioma). `region`: código da região do mapa
+ * ("BRA", "US-TX").
+ */
+export type TimelineCardItem = { label: string; value: string; amount?: number; region?: string };
+
+export type ChartType = 'bar' | 'line' | 'pie' | 'donut';
 
 /** Cartão e sobreposições da cena, já no idioma do vídeo (só as chaves preenchidas). */
 export type TimelineCard = {
@@ -43,6 +50,8 @@ export type TimelineCard = {
   label?: string;
   items?: TimelineCardItem[];
   highlight?: number;
+  /** Tipo do cartão `chart` (ausente: barras). */
+  chart?: ChartType;
   headline?: string;
   stamp?: string;
   source?: string;

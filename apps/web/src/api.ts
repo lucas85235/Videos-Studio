@@ -147,14 +147,19 @@ export type MediaCredits = {
   editorial: boolean;
 };
 
-export type SceneCardItem = { label: LocalizedText; value: LocalizedText };
+/** Linha da comparação, ponto do gráfico ou região do mapa (`region`: código como "BRA" ou "US-TX"). */
+export type SceneCardItem = { label: LocalizedText; value: LocalizedText; region?: string | null };
 
-/** Cartão (número, comparação) e sobreposições (faixa, carimbo, fonte) da cena. */
+export type ChartType = 'bar' | 'line' | 'pie' | 'donut';
+
+/** Cartão (número, comparação, gráfico, mapa) e sobreposições (faixa, carimbo, fonte) da cena. */
 export type SceneCard = {
   value: LocalizedText;
   label: LocalizedText;
   items: SceneCardItem[];
   highlight: number | null;
+  /** Tipo do gráfico (cena `chart`); null nas outras. */
+  chart?: ChartType | null;
   headline: LocalizedText;
   stamp: LocalizedText;
   source: string | null;

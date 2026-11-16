@@ -90,10 +90,13 @@ def _mock_scene(key: str, kind: str = "image", source: str = "new", **fields: An
 def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
     """Storyboard v2 por regras: gancho com imagem nova e headline, número vira `stat` (dois ou mais, `compare`)
     sobre imagem reaproveitada, o resto alterna imagem nova e reaproveitada e a chamada final reaproveita o gancho.
+    Estilo de dados e geografia: 3 ou mais números viram gráfico (linha quando são anos) e país ou estado citado vira
+    mapa.
     Mídia real: a primeira imagem nova depois do gancho sugere uma foto do tema e, com fonte de link no roteiro, a
     seguinte sugere o cartão de notícia dessa fonte."""
     beats: list[dict[str, Any]] = ctx.get("scenes", [])
     topic = ctx.get("topic") or "o tema"
+    data_geo = bool(ctx.get("data_geo"))
     news_ref = next((s.get("n") for s in ctx.get("sources") or [] if str(s.get("url") or "").startswith("http")), None)
     hints: list[dict[str, Any]] = [{"real_kind": "photo", "real_query": topic,
                                     "real_note": f"Foto real de {topic} (Wikimedia Commons)"}]
@@ -125,8 +128,21 @@ def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
         elif hint in ("title", "count"):
             overlay = item.get("overlay_hint") or focus
             scenes.append(_mock_scene(key, hint, "reuse" if last_new else "none", reuse_key=last_new, overlay_text=overlay))
+        elif data_geo and len(values := item.get("values") or []) >= 3:
+            years = all(v.isdigit() and 1800 <= int(v) <= 2100 for v in values)
+            items = [{"label": v if years else f"Item {i + 1}", "value": v, "region": None}
+                     for i, v in enumerate(values[:8])]
+            scenes.append(_mock_scene(key, "chart", "reuse" if last_new else "none", reuse_key=last_new, items=items,
+                                      chart="line" if years else "bar", highlight=len(items) - 1,
+                                      label=" ".join(text.split()[:4])))
+        elif data_geo and item.get("regions"):
+            regions = item["regions"][:6]
+            value = item.get("value") if len(regions) == 1 else None
+            items = [{"label": "", "value": value or "", "region": code} for code in regions]
+            scenes.append(_mock_scene(key, "map", "none", items=items, highlight=0,
+                                      label=" ".join(text.split()[:4])))
         elif len(values := item.get("values") or []) >= 2:
-            items = [{"label": f"Número {i + 1}", "value": v} for i, v in enumerate(values[:3])]
+            items = [{"label": f"Número {i + 1}", "value": v, "region": None} for i, v in enumerate(values[:3])]
             scenes.append(_mock_scene(key, "compare", "reuse" if last_new else "none", reuse_key=last_new,
                                       items=items, highlight=len(items) - 1, label=" ".join(text.split()[:4])))
         elif item.get("has_number") and item.get("value"):

@@ -52,6 +52,7 @@ _CARD_SCALES: dict[str, int] = {
     "mil": 10**3, "k": 10**3, "mi": 10**6, "milhao": 10**6, "milhoes": 10**6, "mm": 10**6,
     "bi": 10**9, "bilhao": 10**9, "bilhoes": 10**9, "tri": 10**12, "trilhao": 10**12, "trilhoes": 10**12,
     "thousand": 10**3, "million": 10**6, "millions": 10**6, "billion": 10**9, "billions": 10**9,
+    "mn": 10**6, "bn": 10**9, "tn": 10**12, "trillion": 10**12, "trillions": 10**12,
 }  # fmt: skip
 # Letras que podem vir grudadas no algarismo sem tirar o valor ('200mi', '24h', '2x', '1º', '1080p').
 _DIGIT_SUFFIXES = {
@@ -320,17 +321,38 @@ def text_numbers(text: str, lang: str = "pt-BR", *, names: bool = False) -> list
     return [value for _, _, value in number_runs(words(text), lang, names=names)]
 
 
-def card_number(value: str) -> float | None:
+def _card_to_number(text: str, lang: str) -> float | None:
+    """Número de cartão com separador: os dois separadores ("1.234,5", "1,234.5") ou um repetido ("1,234,567") dizem
+    qual é o decimal em qualquer idioma; só o caso ambíguo ("1,200", "1.500") segue o idioma do texto."""
+    s = text.replace("−", "-")
+    body = s.lstrip("+-")
+    dots, commas = body.count("."), body.count(",")
+    if dots and commas:
+        dec = "." if body.rfind(".") > body.rfind(",") else ","
+        group = "," if dec == "." else "."
+        return _to_number(s.replace(group, "").replace(dec, "."), "en")
+    if dots > 1 or commas > 1:
+        return _to_number(s.replace("." if dots else ",", ""), "en")
+    if dots or commas:
+        sep = "." if dots else ","
+        head, tail = body.split(sep)
+        if not (len(tail) == 3 and len(head) <= 3 and head != "0"):
+            return _to_number(s.replace(sep, "."), "en")  # "1,5" e "2.5": decimal em qualquer idioma
+    return _to_number(s, "en" if lang.lower().startswith("en") else "pt-BR")
+
+
+def card_number(value: str, lang: str = "pt-BR") -> float | None:
     """Valor numérico do texto de um cartão: '475 MI' → 475e6, '200 MI+' → 200e6, '2×' → 2,
-    '24 H' → 24, 'DEZ 2023' → 2023, 'R$ 1,5 BI' → 1.5e9. Sem algarismo, tenta o número por extenso."""
+    '24 H' → 24, 'DEZ 2023' → 2023, 'R$ 1,5 BI' → 1.5e9, '1.5 B' → 1.5e9. Sem algarismo, tenta o número por extenso.
+    `lang` é o idioma do texto: decide só o separador ambíguo ('1,200' é 1200 em inglês e 1,2 em português)."""
     text = (value or "").strip()
     if not text:
         return None
     match = _NUM_IN_TEXT_RE.search(text)
     if match is None:
-        found = text_numbers(text, "pt-BR", names=True)
+        found = text_numbers(text, lang if lang.lower().startswith("en") else "pt-BR", names=True)
         return float(found[0]) if found else None
-    base = _to_number(match.group(0))
+    base = _card_to_number(match.group(0), lang)
     if base is None:
         return None
     rest = text[match.end() :]
@@ -338,8 +360,8 @@ def card_number(value: str) -> float | None:
     word = re.match(r"\s*([A-Za-zÀ-ÿ]+)", rest)
     if word:
         raw = word.group(1)
-        attached = rest[:1].isalpha()
-        if raw in ("M", "B", "K") and attached:
+        if raw in ("M", "B", "K"):
+            # Maiúscula, grudada ou não ("475M", "1.5 B"); minúscula é unidade ("100 m" são metros).
             scale = {"M": 10**6, "B": 10**9, "K": 10**3}[raw]
         else:
             scale = _CARD_SCALES.get(normalize_token(raw), 1)
