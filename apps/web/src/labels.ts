@@ -25,6 +25,7 @@ export const CAMERA_LABELS: LabelMap = {
   drift: 'Deriva suave',
   static: 'Parada',
   zoom_to: 'Zoom no detalhe',
+  parallax: 'Parallax 2.5D (profundidade)',
 };
 
 export const TRANSITION_LABELS: LabelMap = {

@@ -374,6 +374,11 @@ export const EditPanel: React.FC<{
                     : "imagens novas"}
                 </Badge>
               ) : null}
+              {est.depth_model_mb ? (
+                <Badge>
+                  parallax: baixa o modelo de profundidade ({est.depth_model_mb} MB)
+                </Badge>
+              ) : null}
               {est.tts_chars ? (
                 <Badge>
                   {est.tts_chars.toLocaleString("pt-BR")} caracteres de narração

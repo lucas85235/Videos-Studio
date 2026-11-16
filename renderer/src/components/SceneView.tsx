@@ -121,6 +121,7 @@ const titleEchoesSpeech = (scene: TimelineScene) => {
 export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticBase, lang = 'pt-BR' }) => {
   const { fps, width, height } = useVideoConfig();
   const url = assetUrl(scene.src, assetBaseUrl);
+  const layers = (scene.parallax?.layers ?? []).map((rel) => assetUrl(rel, assetBaseUrl)).filter((u): u is string => Boolean(u));
   const cards = style.textCards;
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
@@ -195,6 +196,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
           zoomStrength={style.zoomStrength}
           transitionFrames={style.transitionFrames}
           url={url}
+          layers={layers}
           cards={cards}
           dim={news ? NEWS_DIM : (DIM[kind] ?? 0)}
           blur={news ? NEWS_BLUR : (BLUR[kind] ?? 0)}

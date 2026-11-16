@@ -53,7 +53,7 @@ import { RealMediaPanel } from './RealMediaPanel';
 import { StoryboardReview } from './StoryboardReview';
 import type { TabNavigation } from './types';
 
-const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'zoom_to', 'drift', 'static'];
+const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'zoom_to', 'drift', 'static', 'parallax'];
 const TRANSITIONS = ['', 'cut', 'flash', 'fade_black', 'glitch', 'light_leak', 'zoom_blur', 'film_burn', 'static_burst'];
 const KINDS = ['image', 'stat', 'compare', 'text', 'title', 'count', 'document', 'quote'];
 const AUTO = 'Automática';

@@ -10,6 +10,8 @@ type Props = {
   zoomStrength: number;
   transitionFrames: number;
   url: string | null;
+  /** Parallax 2.5D: camadas do fundo para a frente (motion 'parallax'). Vazio: a cena usa o Ken Burns. */
+  layers?: string[];
   /** Cores do estilo para o fundo animado quando a cena não tem imagem. */
   cards: TextCardStyle;
   dim?: number;
@@ -44,8 +46,21 @@ const fitAmplitude = (samples: { scale: number; dx: number; dy: number }[], ox: 
   return Math.max(0, k);
 };
 
-/** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco) e gradação de cor. */
-export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, cards, dim = 0, blur = 0, solid = false }) => {
+/**
+ * Parallax 2.5D: aproxima devagar e anda de lado, com cada camada (0 = fundo) andando mais quanto mais perto ela
+ * está. Escala e deslocamento de cada camada em função do progresso q (0..1); `side` sorteia o lado pela semente.
+ */
+export const parallaxLayerPath = (index: number, count: number, z: number, side: number, q: number) => {
+  const w = count > 1 ? index / (count - 1) : 0;
+  return {
+    scale: (1 + z * 0.6) * (1 + z * q * (0.1 + 0.55 * w)),
+    dx: side * z * 36 * (q - 0.5) * (0.12 + w),
+    dy: -z * 8 * q * w,
+  };
+};
+
+/** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco, parallax) e gradação de cor. */
+export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, layers = [], cards, dim = 0, blur = 0, solid = false }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const dur = Math.max(1, scene.durationInFrames - 1);
@@ -64,6 +79,7 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   // Drift: deslocamento pelo tempo (seno), não pelo progresso; a conferência usa os extremos.
   let drift: { ax: number; ay: number } | null = null;
   switch (scene.motion) {
+    case 'parallax': // sem camadas (modelo ausente) é o Ken Burns; com camadas, o caminho fica no ParallaxStack
     case 'ken_burns_in':
       path = { scale: lerp(1 + z * 0.15, 1 + z), dx: (q) => side(1) * lerp(0, z * 12)(q), dy: flat };
       break;
@@ -115,9 +131,11 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
   // Transições de entrada que mexem na imagem
   const tf = Math.max(1, transitionFrames);
   let extraFilter = '';
+  let entryScale = 1;
   if (scene.transition === 'zoom_blur' && frame < tf) {
     const k = 1 - frame / tf;
-    scale *= 1 + 0.14 * k;
+    entryScale = 1 + 0.14 * k;
+    scale *= entryScale;
     extraFilter = ` blur(${10 * k}px)`;
   }
   let jitter = 0;
@@ -142,12 +160,44 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
     );
   }
 
+  const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
+
+  if (scene.motion === 'parallax' && layers.length > 1) {
+    // Camadas por profundidade: a gradação vale para o conjunto (uma cadeia de filtros só, no contêiner).
+    const dir = side(1);
+    return (
+      <AbsoluteFill style={{ overflow: 'hidden', backgroundColor: '#000', filter: filter || undefined, transform: jitter ? `translateX(${jitter}px)` : undefined }}>
+        {layers.map((src, i) => {
+          const lp = parallaxLayerPath(i, layers.length, z, dir, p);
+          const s = lp.scale * bump * entryScale;
+          const r = roomOf(s);
+          const lx = Math.max(-(1 - ox) * r, Math.min(ox * r, lp.dx));
+          const ly = Math.max(-(1 - oy) * r, Math.min(oy * r, lp.dy));
+          return (
+            <Img
+              key={src}
+              src={src}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                transformOrigin: origin,
+                transform: `scale(${s}) translate(${lx}%, ${ly}%)`,
+              }}
+            />
+          );
+        })}
+      </AbsoluteFill>
+    );
+  }
+
   // Rede de segurança: o deslocamento já cabe (fitAmplitude); a borda da imagem nunca aparece.
   const room = roomOf(scale);
   tx = Math.max(-(1 - ox) * room, Math.min(ox * room, tx));
   ty = Math.max(-(1 - oy) * room, Math.min(oy * room, ty));
 
-  const filter = `${imageFilter(effects, scene.look)}${extraFilter}${dim ? ` brightness(${1 - dim})` : ''}${blurPx ? ` blur(${blurPx}px)` : ''}`.trim();
   const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
   const chroma = hasEffect(effects, 'chromatic');
   const imgStyle: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', transform, transformOrigin: origin, filter };

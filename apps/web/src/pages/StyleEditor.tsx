@@ -89,7 +89,7 @@ import {
 
 type Detail = { style: StyleSpec; preset: boolean; warnings: string[] };
 
-const CAMERA = ['ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'drift', 'static'];
+const CAMERA = ['ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'drift', 'static', 'parallax'];
 const TRANSITIONS = ['cut', 'flash', 'fade_black', 'glitch', 'light_leak', 'zoom_blur', 'film_burn', 'static_burst'];
 const STRUCTURES = ['none', 'top10', 'iceberg', 'tierlist', 'quiz', 'timeline', 'history_in_n', 'pov', 'series', 'would_you_rather'];
 const ANIMATIONS = ['fade_up', 'typewriter', 'pop', 'slide', 'flicker'];

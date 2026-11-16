@@ -33,7 +33,7 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 
 ### Estilos e render
 - [ ] Famílias de estilo que ainda caem no modo imagens paradas: dados e geografia (mapas, gráficos, globo), ilustrado 2D (whiteboard, bonecos palito), textura artesanal (colagem), 3D, interface de tela.
-- [ ] Parallax 2.5D com mapa de profundidade (Depth Anything V2 Small ou DA3, só licenças Apache).
+- [x] Parallax 2.5D com mapa de profundidade: Depth Anything V2 Small (Apache-2.0) em ONNX, baixado na primeira cena com parallax (hash conferido), cache `depth`/`parallax` no grafo, 3 camadas no Remotion, Ken Burns com aviso sem o modelo (15/11/2026). Fica para depois: preenchimento do fundo por inpainting de verdade (hoje é borrão das cores em volta, pode deixar uma mancha atrás do sujeito em movimentos fortes), DA3 e uso da GPU.
 - [ ] Vídeo IA (image-to-video via fal.ai) em cenas-chave; o tipo de cena `video` existe no esquema, mas não tem gerador.
 - [ ] Estilo a partir de **vídeo de referência** (PySceneDetect/TransNetV2, paleta, ritmo).
 - [ ] **Style Lab**: componentes novos escritos por IA, com portões de teste.
