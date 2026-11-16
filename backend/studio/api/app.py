@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from studio.api import (
     routes_analytics,
     routes_audio,
+    routes_branches,
     routes_business,
     routes_checks,
     routes_factcheck,
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(routes_projects.router)
+    app.include_router(routes_branches.router)
     app.include_router(routes_misc.router)
     app.include_router(routes_publish.router)
     app.include_router(routes_media.router)

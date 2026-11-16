@@ -14,7 +14,7 @@ from studio.providers import media_search
 from studio.workers.analytics import lessons as lessons_mod
 from studio.workers.jobs import JobContext, job
 from studio.workers.pipeline import authoring
-from studio.workers.pipeline.build import Builder
+from studio.workers.pipeline.build import BuildCancelled, Builder
 
 log = logging.getLogger(__name__)
 
@@ -157,11 +157,61 @@ def run_metadata(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
 def _build(ctx: JobContext, payload: dict[str, Any], mode: str) -> dict[str, Any]:
     project_id = ctx.project_id
     assert project_id
+    version = service.get_project_row(project_id)["current_version"]
     builder = Builder(project_id, mode=mode, langs=payload.get("langs"), sink=ctx)  # type: ignore[arg-type]
-    result = builder.run()
+    result = {**builder.run(), "version": version}
     service.update_settings(project_id, {f"last_{mode}": result})
     service.set_status(project_id, "preview_ready" if mode == "preview" else "rendered")
     return result
+
+
+class _PartSink:
+    """Progresso de uma parte do job (ex.: a 2ª de 2 versões) dentro da barra do job inteiro."""
+
+    def __init__(self, ctx: JobContext, start: float, size: float, label: str) -> None:
+        self.ctx, self.start, self.size, self.label = ctx, start, size, label
+
+    def progress(self, fraction: float, message: str = "") -> None:
+        self.ctx.progress(self.start + self.size * fraction, f"{self.label}: {message}" if message else self.label)
+
+    def cancelled(self) -> bool:
+        return self.ctx.cancelled()
+
+    @property
+    def job_id(self) -> str | None:
+        return self.ctx.job_id
+
+
+@job("ab_build")
+def run_ab_build(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """Prévia ou vídeo final de uma ou mais versões A/B (`branches`: "main", "b"...), uma depois da outra.
+
+    Cada ramo grava na pasta dele (`outputs/<projeto>/ramos/<nome>`); a principal grava no lugar de sempre.
+    """
+    from studio.core.project import branches as br
+
+    project_id = ctx.project_id
+    assert project_id
+    mode = "final" if payload.get("mode") == "final" else "preview"
+    names = list(dict.fromkeys(payload.get("branches") or [br.MAIN]))
+    infos = [br.get_branch(project_id, name) for name in names]
+    results: dict[str, Any] = {}
+    for index, info in enumerate(infos):
+        if ctx.cancelled():
+            raise BuildCancelled("cancelado pelo usuário")
+        label = f"Versão {info['letter']}"
+        sink = _PartSink(ctx, index / len(infos), 1 / len(infos), label)
+        version = info["head"]
+        builder = Builder(project_id, mode=mode, langs=payload.get("langs"), sink=sink,  # type: ignore[arg-type]
+                          version=None if info["is_main"] else version, branch=info["name"])
+        result = builder.run()
+        br.save_result(project_id, info["name"], mode, result, version)
+        if info["is_main"]:
+            service.set_status(project_id, "preview_ready" if mode == "preview" else "rendered")
+        results[info["name"]] = {"letter": info["letter"], "version": version, "langs": result["langs"],
+                                 "generated": result["generated"], "reused": result["reused"]}
+    ctx.progress(1.0, "Versões prontas")
+    return {"mode": mode, "branches": results}
 
 
 @job("preview")

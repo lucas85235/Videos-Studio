@@ -29,6 +29,7 @@ VARIABLES: dict[str, str] = {
     "dia": "Dia da publicação",
     "origem": "Origem",
     "estilo": "Estilo",
+    "versao": "Versão (ramo A/B)",
 }
 # Variáveis comparadas entre os Shorts em "O que funcionou" (o formato já separa Shorts de longos).
 SHORT_VARIABLES = ("tipo", "faixa_duracao", "faixa_nota", "hora", "dia", "origem", "estilo")
@@ -80,6 +81,7 @@ def video_variables(
     short_tipo: str | None = None,
     parent_id: str | None = None,
     style_id: str | None = None,
+    versao: str | None = None,
 ) -> dict[str, str]:
     """Valores das variáveis de um vídeo (só as que dá para saber; as outras ficam de fora).
 
@@ -101,6 +103,8 @@ def video_variables(
         out["origem"] = "corte do longo" if parent_id else "original"
     if style_id:
         out["estilo"] = style_id
+    if versao:
+        out["versao"] = versao  # ramo A/B do projeto ("A" principal, "B"...): `Publication.details["versao"]`
     return out
 
 
@@ -205,6 +209,7 @@ def load_videos(channel_id: str | None = None) -> list[dict[str, Any]]:
                 short_tipo=(short_of or {}).get("tipo") if isinstance(short_of, dict) else None,
                 parent_id=project.parent_id if project else None,
                 style_id=project.style_id if project else None,
+                versao=((pub.details or {}).get("versao") or None) if pub else None,
             )
             metric = metrics.get(yid)
             out[yid] = {
