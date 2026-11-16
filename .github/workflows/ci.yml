@@ -1,0 +1,106 @@
+# CI do Vulto: lint e tipos, testes do backend e testes de interface (Playwright), em jobs separados.
+# O app roda num notebook Windows (docs/adr/0001), então os testes rodam no Windows; lint, tipos e build
+# rodam no Linux, que é mais rápido. Nada aqui chama serviço real: o backend sobe em modo offline (VS_OFFLINE=1).
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  lint-tipos-build:
+    name: Lint, tipos e build da web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Dependências do backend
+        run: uv sync --locked --project backend
+      - name: Ruff
+        run: uv run --no-sync --project backend ruff check backend
+      - name: Dependências do Node
+        run: npm ci
+      - name: Typecheck (renderer e web, inclusive os testes de interface)
+        run: npm run typecheck
+      - name: Build da web
+        run: npm run web:build
+
+  pytest:
+    name: Testes do backend (pytest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: FFmpeg
+        # Vários testes geram e medem áudio com o FFmpeg de verdade (mixagem, loudness, biblioteca de música).
+        run: choco install ffmpeg --no-progress -y
+      - name: Dependências do backend
+        run: uv sync --locked --project backend
+      - name: Pytest (sem o render de verdade, que precisa de VS_TEST_RENDER=1)
+        working-directory: backend
+        run: uv run --no-sync pytest -q -p no:warnings -m "not render"
+
+  interface:
+    name: Testes de interface (Playwright)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: FFmpeg
+        # A prévia do fluxo testado mede e junta a narração de teste com o FFmpeg.
+        run: choco install ffmpeg --no-progress -y
+      - name: Dependências
+        run: |
+          uv sync --locked --project backend
+          npm ci
+      - name: Build da web
+        run: npm run web:build
+      - name: Playwright
+        # O Edge já vem no Windows do GitHub: o config detecta e usa o canal "msedge" (sem baixar navegador).
+        working-directory: apps/web
+        run: npx playwright test
+      - name: Relatório do Playwright
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 14

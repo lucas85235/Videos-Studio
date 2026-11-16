@@ -289,3 +289,23 @@ cd backend; $env:UV_PROJECT_ENVIRONMENT="$env:USERPROFILE\VideosStudioData\.venv
 $env:VS_TEST_RENDER="1"; uv run pytest tests/test_pipeline.py::test_full_render_short   # render real
 npm run renderer:studio       # Remotion Studio para ajustar as composições
 ```
+
+### Testes de interface (Playwright)
+
+```powershell
+npm run web:test:ui           # compila a web e roda os testes de apps/web/e2e
+cd apps/web; npx playwright test e2e/fluxo.spec.ts --headed   # um arquivo só, vendo o navegador
+```
+
+- Os testes sobem o próprio backend em **modo offline** (`VS_OFFLINE=1`: roteiro simulado, voz de teste, imagens procedurais), com uma **pasta de dados temporária** (`%TEMP%\vulto-e2e-8786`, apagada e recriada a cada rodada) na **porta 8786**. Nada vai para a internet e o seu banco real não é tocado: o backend dos testes ignora os `VS_*` do terminal e força `VS_DATABASE_URL` vazio (sem banco externo, mesmo que o `.env` tenha um), além da pasta, da porta, da interface compilada e dos workers. `VS_E2E_PORT` e `VS_E2E_DATA_DIR` trocam a porta e a pasta. **A pasta de `VS_E2E_DATA_DIR` é apagada a cada rodada**, por isso o script só aceita uma pasta dentro de `%TEMP%`, com nome começando por `vulto-e2e` ou já marcada pelos testes (arquivo `.vulto-e2e`), e recusa a pasta de dados real, o repositório e a sua pasta pessoal.
+- Não é preciso baixar navegador: o config usa o **Edge** ou o **Chrome** já instalados (canais `msedge`/`chrome` do Playwright). `VS_E2E_CHANNEL=chrome` força um deles. Sem nenhum dos dois, instale o Chromium do Playwright você mesmo (`npx playwright install chromium`) e use `VS_E2E_CHANNEL=chromium`.
+- Cobrem as páginas principais (Projetos, Novo projeto, Estilos, editor de estilo, Agenda, Canais, Configurações, página não encontrada, menu no celular) e o fluxo criar projeto → roteiro → cenas → prévia. Qualquer erro de JavaScript, erro no console ou resposta 5xx da API reprova o teste.
+- O FFmpeg precisa estar no PATH (a prévia usa; `VS_FFMPEG`/`VS_FFPROBE` também valem). O backend usa o ambiente Python que já existir, nesta ordem: o de `UV_PROJECT_ENVIRONMENT`, `backend/.venv` (o do CI) ou `%USERPROFILE%\VideosStudioData\.venv-backend` (o criado pelo `scripts\setup.ps1`). Sem nenhum deles, o script para e explica: rode o `scripts\setup.ps1`.
+
+### CI (GitHub Actions)
+
+`.github/workflows/ci.yml` roda em push para `develop`/`main` e em pull requests, em três jobs:
+
+- **Lint, tipos e build** (Linux): Ruff, `npm run typecheck` (inclui os testes de interface) e `npm run web:build`.
+- **Pytest** (Windows, como o notebook; FFmpeg instalado pelo Chocolatey). O render real (`VS_TEST_RENDER=1`) fica de fora.
+- **Testes de interface** (Windows, com o Edge do próprio runner). O relatório do Playwright fica como artefato da execução.
