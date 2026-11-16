@@ -45,3 +45,8 @@ data/
 Thumbs.db
 desktop.ini
 *.log
+
+# Testes de interface (Playwright)
+test-results/
+playwright-report/
+blob-report/

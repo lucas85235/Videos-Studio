@@ -10,6 +10,7 @@
   "scripts": {
     "web:dev": "npm --workspace apps/web run dev",
     "web:build": "npm --workspace apps/web run build",
+    "web:test:ui": "npm --workspace apps/web run test:ui",
     "renderer:typecheck": "npm --workspace renderer run typecheck",
     "renderer:studio": "npm --workspace renderer run studio",
     "typecheck": "npm --workspace renderer run typecheck && npm --workspace apps/web run typecheck"
