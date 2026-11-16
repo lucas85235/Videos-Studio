@@ -4,6 +4,7 @@
   falhando, oferta de afiliado sem conferência recente, escopo do Analytics faltando);
 - `pending`: pendências abertas (à mão ou das rotinas);
 - `stock`: estoque de cada canal com mínimo;
+- `series`: séries ativas com o estoque de episódios, revisões e falhas;
 - `yesterday`: o que saiu ontem e os jobs que falharam;
 - `routines`: estado das rotinas;
 - `time`: as etapas que mais levaram tempo nos últimos 7 dias, com as sugestões.
@@ -134,6 +135,7 @@ def summary(now: datetime | None = None) -> dict[str, Any]:
     from studio.workers.ops.routines import public_state
     from studio.workers.ops.stock import stock
     from studio.workers.ops.velocity import report
+    from studio.workers.series.core import today as series_today
 
     vel = report(days=7, now=now)
     return {
@@ -141,6 +143,7 @@ def summary(now: datetime | None = None) -> dict[str, Any]:
         "waiting": waiting(now),
         "pending": list_pending("aberta"),
         "stock": stock(now),
+        "series": series_today(),
         "yesterday": yesterday(now),
         "routines": public_state(),
         "time": {"days": vel["days"], "total_s": vel["total_s"], "steps": vel["steps"][:3],
