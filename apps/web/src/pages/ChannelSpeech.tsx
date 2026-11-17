@@ -1,8 +1,8 @@
 /**
  * Canais › Pronúncia e glossário.
  *
- * - Dicionário de pronúncia: "termo → como falar", por idioma ou para todos. Vai para a voz (todas as vozes); a
- *   legenda continua como está no roteiro.
+ * - Dicionário de pronúncia: "termo → como falar", por idioma ou para todos, e para todas as vozes, só a local (prévia)
+ *   ou só as de API (vídeo final). A legenda continua como está no roteiro.
  * - Glossário de tradução: termos que não se traduzem ou têm tradução fixa por idioma. Entra no pedido de tradução e
  *   é conferido depois (o roteiro avisa quando um termo não foi respeitado).
  */
@@ -18,7 +18,7 @@ export const halfFilledPronunciation = (rows: PronunciationEntry[]) =>
 
 /** Corpo enviado ao servidor: sem linhas vazias e sem traduções em branco. */
 export const cleanPronunciation = (rows: PronunciationEntry[]): PronunciationEntry[] =>
-  rows.filter((r) => r.term.trim() && r.say.trim()).map((r) => ({ term: r.term.trim(), say: r.say.trim(), lang: r.lang }));
+  rows.filter((r) => r.term.trim() && r.say.trim()).map((r) => ({ term: r.term.trim(), say: r.say.trim(), lang: r.lang, voices: r.voices ?? 'all' }));
 
 export const cleanGlossary = (rows: GlossaryEntry[]): GlossaryEntry[] =>
   rows
@@ -44,7 +44,7 @@ export const PronunciationEditor: React.FC<{
       legend="Pronúncia"
       hint={
         <>
-          Como a voz deve falar um nome ou termo (ex.: “Nvidia” → “envídia”). Vale para todas as vozes; a legenda continua como no roteiro. A
+          Como a voz deve falar um nome ou termo (ex.: “Nvidia” → “envídia”); a legenda continua como no roteiro. Escolha para quais vozes a troca vale: a grafia fonética que a voz local precisa (“gê tê á seis”) faz as vozes de API (ElevenLabs, Gemini) soletrarem devagar, então use “Só vozes locais” nesses casos. A
           grafia de como falar só funciona no idioma em que foi escrita: “envídia” é português, então escolha o idioma da linha e use “Todos os
           idiomas” só quando a fala servir para todos. Na voz local da prévia, números, datas, siglas, símbolos e palavras comuns em inglês já
           são lidos por extenso sem precisar de nada aqui.
@@ -55,7 +55,7 @@ export const PronunciationEditor: React.FC<{
         const half = Boolean(row.term.trim()) !== Boolean(row.say.trim());
         return (
           <div key={index} className={ROW}>
-            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-center">
+            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto_auto] sm:items-center">
               <Input
                 aria-label={`Termo ${index + 1}`}
                 value={row.term}
@@ -80,13 +80,22 @@ export const PronunciationEditor: React.FC<{
                   </option>
                 ))}
               </Select>
+              <Select
+                aria-label={`Vozes do termo ${index + 1}`}
+                value={row.voices ?? 'all'}
+                onChange={(e) => set(index, { voices: e.target.value as PronunciationEntry['voices'] })}
+              >
+                <option value="all">Todas as vozes</option>
+                <option value="local">Só vozes locais (Kokoro, Qwen3)</option>
+                <option value="api">Só vozes de API (ElevenLabs, Gemini)</option>
+              </Select>
               <IconButton label={`Remover o termo ${index + 1}`} icon={Trash2} onClick={() => onChange(value.filter((_, i) => i !== index))} />
             </div>
           </div>
         );
       })}
       <div>
-        <Button size="sm" icon={Plus} onClick={() => onChange([...value, { term: '', say: '', lang: languages[0] ?? '' }])}>
+        <Button size="sm" icon={Plus} onClick={() => onChange([...value, { term: '', say: '', lang: languages[0] ?? '', voices: 'all' }])}>
           Adicionar pronúncia
         </Button>
       </div>

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -44,11 +44,19 @@ class PronunciationEntry(BaseModel):
     """Como a voz deve falar ("envídia")."""
     lang: str = Field(default="", max_length=20)
     """Idioma ("pt-BR", ou só "pt"); vazio vale para todos."""
+    voices: Literal["all", "local", "api"] = "all"
+    """Para quais vozes a troca vale: todas, só as locais (Kokoro, Windows, Qwen3: precisam de grafia fonética, como
+    "gê tê á seis") ou só as de API (ElevenLabs, Gemini, Chirp: leem siglas e números sozinhas e soletram devagar
+    uma grafia fonética feita para a voz local)."""
 
     @field_validator("term", "say", "lang")
     @classmethod
     def _strip(cls, value: str) -> str:
         return " ".join(value.split())
+
+    def for_voice(self, local: bool) -> bool:
+        """A troca vale para esta voz? (`local`: voz local, como a da prévia.)"""
+        return self.voices == "all" or (self.voices == "local") == local
 
     def applies_to(self, lang: str) -> bool:
         if not self.lang:
@@ -399,7 +407,7 @@ def _dictionary(lang: str, entries: list[PronunciationEntry], auto: bool) -> lis
     out: list[tuple[list[str], str, bool, str]] = []
     seen: set[str] = set()
     for entry in entries:
-        if not entry.applies_to(lang):
+        if not entry.applies_to(lang) or not entry.for_voice(auto):
             continue
         parts = [_split_punct(tok) for tok in entry.term.split()]
         tokens = [core for _, core, _ in parts]

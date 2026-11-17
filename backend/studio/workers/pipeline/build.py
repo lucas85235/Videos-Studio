@@ -446,6 +446,11 @@ class Builder:
                 "v": 2,
             }
             plan = self.speech(text, lang, local=False)
+            if "elevenlabs" in inputs["chain"]:
+                # Modelo da ElevenLabs na chave: trocar o modelo grava de novo só as narrações das cadeias com ela.
+                from studio.providers.tts import ELEVEN_MODEL
+
+                inputs["eleven_model"] = ELEVEN_MODEL
         if plan.changed:
             # Só quando o texto falado muda: as gravações de antes continuam valendo para os textos sem troca.
             inputs["spoken"] = plan.spoken
@@ -461,6 +466,8 @@ class Builder:
         final = self.final_voice_only()
         if cached and final and not cached.get("commercial", True):
             cached = None  # gravação com voz de teste (ex.: cota esgotada na prévia) não vai para o vídeo final
+        if cached and self._stale_local_speech(cached, inputs["text"], lang):
+            cached = None
         if cached and not self._better_available(inputs["chain"], cached.get("provider")):
             self.stats.hit("tts", True)
             if not cached.get("commercial", True):
@@ -554,6 +561,19 @@ class Builder:
         if not provider.info.commercial_use:
             self.stats.noncommercial.add(provider.info.id)
         return h, output
+
+    def _stale_local_speech(self, cached: dict[str, Any], text: str, lang: str) -> bool:
+        """Gravação de voz local (Kokoro, Windows, Qwen3: recebem o texto falado das vozes locais) feita com outro
+        texto falado. A chave do cache só leva o texto das vozes de API (assim a ElevenLabs não regrava à toa), então
+        uma linha do dicionário marcada "Só a voz local" que mudou depois da gravação só aparece aqui."""
+        try:
+            provider = registry.get(str(cached.get("provider") or ""))
+        except Exception:  # noqa: BLE001 - provedor que saiu do app: a gravação vale como está
+            return False
+        if not getattr(provider.info, "spoken_text", False):
+            return False
+        plan = self.speech(text, lang, local=True)
+        return cached.get("spoken") != (plan.spoken if plan.changed else None)
 
     def _recheck_wer(self, cached: dict[str, Any], text: str, lang: str, spoken: str | None = None) -> list[str]:
         """Problemas de uma narração já gravada, refazendo a conta do erro com os números por extenso (as gravações

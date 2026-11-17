@@ -678,7 +678,9 @@ export type Channel = {
   glossary?: GlossaryEntry[];
 };
 /** `lang` vazio: vale para todos os idiomas. */
-export type PronunciationEntry = { term: string; say: string; lang: string };
+/** Para quais vozes a troca vale: todas, só as locais (prévia) ou só as de API (vídeo final). */
+export type PronunciationVoices = 'all' | 'local' | 'api';
+export type PronunciationEntry = { term: string; say: string; lang: string; voices?: PronunciationVoices };
 /** `keep`: não traduzir; `translations`: tradução fixa por idioma (vale mais que `keep`). */
 export type GlossaryEntry = { term: string; keep: boolean; translations: Record<string, string>; note: string };
 /** Termo do glossário que a tradução não respeitou (refeito a cada abertura do projeto). */

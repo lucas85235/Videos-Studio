@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 import numpy as np
@@ -238,6 +239,12 @@ class GoogleChirp3HD(TTSProvider):
 # --------------------------------------------------------------------------------------------
 
 
+ELEVEN_MODEL = "eleven_v4"
+"""Modelo da ElevenLabs (o mesmo do motor de canais). Entra na chave das narrações (`Builder.narration_inputs`):
+trocar aqui grava de novo só as narrações da ElevenLabs."""
+ELEVEN_SEED = 1971
+
+
 class ElevenLabsTTS(TTSProvider):
     info = ProviderInfo(
         id="elevenlabs",
@@ -287,9 +294,21 @@ class ElevenLabsTTS(TTSProvider):
         if not key or not voice_id:
             raise NotConfigured("configure a chave e o voice_id da ElevenLabs")
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
-        body = {"text": text, "model_id": "eleven_multilingual_v2", "voice_settings": {"stability": 0.45, "similarity_boost": 0.8, "speed": speed or 1.0}}
+        # Mesma configuração do motor de canais, que soa natural em português com a mesma voz: Eleven v4 com o idioma
+        # fixo (sem ele a voz escorrega para a pronúncia de outra língua, ex.: "libera"), speaker boost e seed fixa.
+        # O v4 ignora `speed` na API: o ritmo é aplicado depois, no áudio (atempo), e os tempos das palavras acompanham.
+        body: dict[str, Any] = {
+            "text": text,
+            "model_id": ELEVEN_MODEL,
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "use_speaker_boost": True},
+            "seed": ELEVEN_SEED,
+        }
+        lang_code = (lang or "").split("-")[0].lower()
+        if lang_code:
+            body["language_code"] = lang_code
+        tempo = float(speed or 1.0)
         try:
-            resp = httpx.post(url, params={"output_format": "mp3_44100_128"}, json=body, headers={"xi-api-key": key}, timeout=300)
+            resp = httpx.post(url, params={"output_format": "mp3_44100_192"}, json=body, headers={"xi-api-key": key}, timeout=300)
         except httpx.HTTPError as exc:
             raise TransientError(f"falha de conexão com a ElevenLabs: {exc}") from exc
         if resp.status_code == 429:
@@ -303,10 +322,12 @@ class ElevenLabsTTS(TTSProvider):
         payload = resp.json()
         raw = out_dir / "raw.mp3"
         raw.write_bytes(base64.b64decode(payload["audio_base64"]))
-        final = _final_wav(raw, out_dir)
+        final = _final_wav(raw, out_dir, tempo=tempo)
         words = _words_from_chars(payload.get("alignment") or {})
+        if words and tempo != 1.0:
+            words = [Word(w.text, w.start / tempo, w.end / tempo) for w in words]
         return TTSResult(path=final, duration_s=wav_duration(final), words=words or None,
-                         usage=Usage(units=len(text), unit_name="chars"), model="eleven_multilingual_v2")
+                         usage=Usage(units=len(text), unit_name="chars"), model=ELEVEN_MODEL)
 
 
 def _words_from_chars(alignment: dict) -> list[Word]:

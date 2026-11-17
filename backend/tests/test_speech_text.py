@@ -222,7 +222,7 @@ def test_channel_saves_pronunciation_and_glossary():
             "glossary": [{"term": "Vulto", "keep": True}, {"term": "canal dark", "keep": False,
                                                             "translations": {"en-US": "faceless channel", "es-ES": " "}}],
         }).json()
-        assert created["pronunciation"] == [{"term": "Nvidia", "say": "Ênvidia", "lang": "pt-BR"}]
+        assert created["pronunciation"] == [{"term": "Nvidia", "say": "Ênvidia", "lang": "pt-BR", "voices": "all"}]
         assert created["glossary"][1]["translations"] == {"en-US": "faceless channel"}
         # a tela antiga (sem os campos) não apaga o que já existe
         updated = client.put(f"/api/channels/{created['id']}", json={"name": "Canal 2"}).json()
@@ -330,3 +330,20 @@ def test_translation_uses_the_glossary_and_warns_when_it_was_not_followed(monkey
         doc.segments[0].text["en-US"] = "Vulto is a faceless channel."
         service.commit(project_id, doc, "correção")
         assert client.get(f"/api/projects/{project_id}").json()["glossary_warnings"] == []
+
+
+def test_pronunciation_scope_by_voice():
+    """A grafia fonética da voz local ("gê tê á seis") não vai para a voz de API, que soletra devagar."""
+    entries = [
+        PronunciationEntry(term="GTA 6", say="gê tê á seis", voices="local"),
+        PronunciationEntry(term="GTA 6", say="GTA seis", voices="api"),
+        PronunciationEntry(term="Vice", say="Váice"),
+        PronunciationEntry(term="PS5", say="pê ésse cinco", voices="local"),
+    ]
+    text = "GTA 6 em Vice no PS5"
+    assert speech_plan(text, "pt-BR", entries, auto=True).spoken == "gê tê á seis em Váice no pê ésse cinco"
+    assert speech_plan(text, "pt-BR", entries, auto=False).spoken == "GTA seis em Váice no PS5"
+    # Sem o campo (canais antigos), vale para todas as vozes, como antes.
+    old = pronunciation_of({"pronunciation": [{"term": "Nvidia", "say": "envídia", "lang": ""}]})
+    assert old[0].voices == "all"
+    assert speech_plan("A Nvidia", "pt-BR", old, auto=False).spoken == "A envídia"
