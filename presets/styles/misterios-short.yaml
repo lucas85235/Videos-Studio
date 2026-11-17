@@ -36,7 +36,7 @@ art:
   bible: "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, pouca luz, contraste dramático, grão de tela"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [painting, archival, collage]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 1.6, max: 2.6 }

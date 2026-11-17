@@ -22,7 +22,7 @@ from studio.providers.base import (
     Refused,
     TransientError,
 )
-from studio.providers.image import CodexCLIImage, PexelsStock, PlaceholderImage
+from studio.providers.image import AntigravityCLIImage, CodexCLIImage, PexelsStock, PlaceholderImage
 from studio.providers.kokoro import KokoroTTS
 from studio.providers.llm import ClaudeCodeLLM, MockLLM
 from studio.providers.tts import (
@@ -58,6 +58,7 @@ _register(
     WindowsSapiTTS(),
     MockTTS(),
     CodexCLIImage(),
+    AntigravityCLIImage(),
     PexelsStock(),
     PlaceholderImage(),
     FasterWhisperAligner(),
@@ -100,7 +101,7 @@ PREVIEW_TTS_CHAIN: list[str] = ["kokoro_local"]
 DEFAULT_CHAINS: dict[str, list[str]] = {
     "llm": ["claude_code"],
     "tts": ["gemini_tts", "google_chirp3hd", "qwen3_tts_local"],
-    "image": ["codex_cli"],
+    "image": ["codex_cli", "antigravity_cli"],
     "align": ["faster_whisper"],
     "video": ["fal_kling_turbo", "fal_kling_3"],
 }

@@ -37,7 +37,7 @@ art:
   bible: "colagem de papel recortado em camadas, texturas de papel e papelão, cores terrosas com um acento vivo, um sujeito em destaque por cena sobre fundo simples"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [collage, archival, painting]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 2.2, max: 3.5 }

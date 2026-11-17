@@ -37,7 +37,7 @@ art:
   bible: "pintura editorial luminosa e realista, cenas de cada fase da vida e da época, lugares, objetos e paisagens marcantes, cores naturais, luz natural suave; a pessoa retratada aparece de costas, em silhueta ou à distância"
   banned: ["texto", "letras", "logotipos", "marca d'água", "retrato fotorrealista de pessoa real", "rosto identificável de pessoa real"]
   languages: [painting, editorial, archival]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 3.5, max: 6.0 }

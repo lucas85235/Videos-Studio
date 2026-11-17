@@ -37,7 +37,7 @@ art:
   bible: "desenho a traço de marcador preto sobre fundo branco liso, linhas firmes e simples, poucas sombras, um elemento principal por cena, visual de lousa branca"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo", "fundo colorido"]
   languages: [line_art, flat_vector]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 2.5, max: 4.0 }

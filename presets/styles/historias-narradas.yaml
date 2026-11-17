@@ -36,7 +36,7 @@ art:
   bible: "ilustração de livro ilustrado em pintura digital, pinceladas suaves, cores quentes e acolhedoras, luz natural, personagens expressivos sem rostos detalhados, cenários do cotidiano"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo", "violência explícita"]
   languages: [painting, editorial]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 3.5, max: 6.0 }

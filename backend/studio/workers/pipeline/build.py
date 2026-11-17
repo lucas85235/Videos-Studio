@@ -72,6 +72,10 @@ log = logging.getLogger(__name__)
 Mode = Literal["preview", "final"]
 
 _codex_lock = threading.Lock()
+# Geradores por CLI do plano (Codex, Antigravity): um pedido por vez em cada um, cada um com a sua trava.
+_CLI_IMAGE_LOCKS = {"codex_cli": _codex_lock, "antigravity_cli": threading.Lock()}
+# Segundos por imagem na estimativa do plano de geração (os outros geradores: 12 s).
+_IMAGE_SECONDS = {"codex_cli": 40, "antigravity_cli": 40}
 # Tipos de cena que não desenham o VisualLayer (o documento é um cartão com a imagem parada): sem parallax.
 NO_VISUAL_LAYER_KINDS = frozenset({"document"})
 _depth_lock = threading.Lock()  # mesma imagem em duas cenas: um mapa e um jogo de camadas só
@@ -815,9 +819,10 @@ class Builder:
             # Imagens âncora só para o gerador que as aceita; os outros ficam com a descrição do prompt.
             extra = {"references": refs} if refs and provider.info.accepts_references else {}
             sent[provider.info.id] = bool(extra)
-            if provider.info.id == "codex_cli":
-                with _codex_lock:
-                    self._check()  # cancelado enquanto esperava a vez do Codex: não começa outra imagem
+            cli_lock = _CLI_IMAGE_LOCKS.get(provider.info.id)
+            if cli_lock is not None:
+                with cli_lock:
+                    self._check()  # cancelado enquanto esperava a vez do CLI: não começa outra imagem
                     return provider.generate(prompt=inputs["prompt"], width=inputs["width"], height=inputs["height"],
                                              seed=inputs["seed"], out_dir=out_dir, **extra)
             return provider.generate(prompt=inputs["prompt"], width=inputs["width"], height=inputs["height"],
@@ -1802,7 +1807,7 @@ def plan(project_id: str, langs: list[str] | None = None, doc: ProjectDoc | None
         "tts_voice": builder.style.voice.voice,
         "image_provider": img_provider,
         "estimated_cost_usd": round(est, 4),
-        "estimated_seconds": round(tts_seconds + len(missing_images) * (40 if img_provider == "codex_cli" else 12)),
+        "estimated_seconds": round(tts_seconds + len(missing_images) * _IMAGE_SECONDS.get(img_provider, 12)),
     }
     # Créditos da voz final pelo `credits_per_char` do canal (ADR 0002); None quando não se aplica.
     from studio.workers.ops.estimate import credits_estimate

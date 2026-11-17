@@ -247,8 +247,8 @@ class ArtSpec(StrictModel):
     bible: str = "ilustração digital detalhada e limpa, cores naturais e equilibradas, luz suave, composição clara com um sujeito em destaque"
     banned: list[str] = ["texto", "letras", "logotipos", "marca d'água"]
     anchors: list[str] = []
-    image_chain: list[str] = ["codex_cli"]
-    thumbnail_chain: list[str] = ["codex_cli"]
+    image_chain: list[str] = ["codex_cli", "antigravity_cli"]
+    thumbnail_chain: list[str] = ["codex_cli", "antigravity_cli"]
     video_chain: list[str] = ["fal_kling_turbo", "fal_kling_3"]
     """Vídeo IA (image-to-video) das cenas-chave, na ordem de fallback."""
     video_scenes: int | None = Field(default=None, ge=0, le=20)

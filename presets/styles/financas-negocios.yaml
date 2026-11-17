@@ -37,7 +37,7 @@ art:
   bible: "ilustração editorial moderna em 3D suave, escritórios, cidades, lojas, moedas, cofrinhos e gráficos abstratos sem números, paleta azul-marinho, verde e branco, luz de estúdio clara, fundo limpo"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "marcas reais", "cédulas de dinheiro reais"]
   languages: [render_3d, editorial, isometric, ui_mockup]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 3.0, max: 5.0 }

@@ -98,7 +98,7 @@ const SECTIONS: { id: string; label: string }[] = [
 const DEFAULT_CHAIN: Record<Kind, string[]> = {
   llm: ['claude_code'],
   tts: ['gemini_tts', 'google_chirp3hd', 'qwen3_tts_local'],
-  image: ['codex_cli'],
+  image: ['codex_cli', 'antigravity_cli'],
   video: ['fal_kling_turbo', 'fal_kling_3'],
   align: ['faster_whisper'],
   publish: ['youtube'],
@@ -138,6 +138,7 @@ const SHORT_NAMES: Record<string, string> = {
   elevenlabs: 'ElevenLabs',
   qwen3_tts_local: 'Qwen3',
   codex_cli: 'Codex',
+  antigravity_cli: 'Antigravity',
 };
 const shortName = (p: Provider) => SHORT_NAMES[p.id] ?? p.name.replace(/\s*\(.*\)\s*$/, '');
 const names = (list: Provider[], short = true) => list.map((p) => (short ? shortName(p) : p.name)).join(', ');

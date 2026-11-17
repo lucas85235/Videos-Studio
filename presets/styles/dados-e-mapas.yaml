@@ -37,7 +37,7 @@ art:
   bible: "ilustração editorial limpa em tons de azul-petróleo e areia, cidades, portos, fronteiras, paisagens e objetos do assunto vistos de longe, luz clara, fundo calmo"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "bandeiras com texto", "mapas desenhados pela IA"]
   languages: [editorial, isometric, flat_vector]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 3.0, max: 5.5 }

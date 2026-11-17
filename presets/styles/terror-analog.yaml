@@ -35,7 +35,7 @@ art:
   bible: "fotografia granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, cores lavadas, sem pessoas nítidas"
   banned: ["texto", "letras", "logotipos", "marca d'água", "sangue explícito"]
   languages: [archival, painting]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 2.2, max: 3.8 }

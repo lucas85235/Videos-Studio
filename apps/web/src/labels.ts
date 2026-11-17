@@ -284,6 +284,7 @@ export const PROVIDER_SHORT: LabelMap = {
   windows_sapi: 'Voz do Windows',
   mock_tts: 'Voz de teste',
   codex_cli: 'Codex',
+  antigravity_cli: 'Antigravity',
   pexels: 'Pexels',
   placeholder: 'Imagens de teste',
 };

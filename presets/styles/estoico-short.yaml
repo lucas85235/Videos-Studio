@@ -35,7 +35,7 @@ art:
   bible: "pintura clássica a óleo, estátuas de mármore greco-romanas, templos e paisagens mediterrâneas, tons quentes, atmosfera serena e contemplativa"
   banned: ["texto", "letras", "logotipos", "marca d'água"]
   languages: [painting, render_3d]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 2.2, max: 3.6 }

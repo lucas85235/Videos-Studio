@@ -1,6 +1,7 @@
 """Provedores de imagem.
 
-Cadeia padrão: Codex CLI (cota do ChatGPT Plus) → procedural (só prévia). Fotos de banco pelo Pexels (opcional).
+Cadeia padrão: Codex CLI (cota do ChatGPT Plus) → Antigravity CLI (Nano Banana pela cota do Google AI Pro, desde
+17/11/2026) → procedural (só prévia). Fotos de banco pelo Pexels (opcional).
 FLUX (BFL), fal.ai e OpenAI Images (pagos por imagem) foram retirados a pedido do usuário em 14/11/2026.
 """
 
@@ -214,6 +215,234 @@ class CodexCLIImage(ImageProvider):
         final = fit_image(newest, out_dir / "image.jpg", width, height)
         return ImageResult(path=final, usage=Usage(units=1, unit_name="images"), model="codex-imagegen",
                            meta={"source_file": newest.name})
+
+
+# --------------------------------------------------------------------------------------------
+# Antigravity CLI (Google AI Pro)
+# --------------------------------------------------------------------------------------------
+#
+# Conferido em 17/11/2026 com o agy 1.5.10 logado na conta do plano Google AI Pro (sem chave de API):
+#   - `agy -p "<pedido>" --output-format stream-json` roda sem janela; o agente passa o pedido a um subagente
+#     `image-generator`, que chama `generate_image` com Prompt, AspectRatio ("16:9"...), ImageName e ImagePaths
+#     (as imagens de referência: o personagem saiu fiel);
+#   - a imagem sai em `~/.gemini/antigravity-cli/brain/<conversation_id da conversa principal>/<ImageName>_<n>.jpg`
+#     (1376x768 no 16:9) e a resposta final (evento "result") traz o caminho;
+#   - 60–100 s por imagem; o agente tende a reescrever o prompt, por isso o pedido manda copiar o texto como está;
+#   - no modo `accept-edits` o agente não roda comandos (pedir para não copiar nem converter evita a tentativa).
+
+AGY_ASPECTS = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+"""Proporções que o `generate_image` (Nano Banana) aceita."""
+AGY_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+AGY_MODEL = "gemini-3.8-flash-low"
+"""Modelo do agente que repassa o pedido ao `generate_image` (a imagem sai do Nano Banana de qualquer jeito)."""
+_AGY_QUOTA = ("resource_exhausted", "resource exhausted", "quota", "rate limit", "rate-limit", "usage limit",
+              "limit reached", "too many requests", " 429")
+_AGY_AUTH = ("not logged into antigravity", "please sign in", "sign in to", "unauthenticated")
+_AGY_REFUSED = ("can't help", "cannot help", "can't create", "cannot create", "unable to generate",
+                "safety", "policy", "não posso")
+_AGY_PATH_RE = re.compile(r"[A-Za-z]:[\\/][^`'\"\n<>|*?]+?\.(?:png|jpe?g|webp)", re.IGNORECASE)
+
+
+def agy_aspect(width: int, height: int) -> str:
+    """A proporção aceita mais perto de largura:altura (o resto o `fit_image` corta)."""
+    target = math.log(width / height)
+
+    def distance(aspect: str) -> float:
+        w, h = (int(n) for n in aspect.split(":"))
+        return abs(math.log(w / h) - target)
+
+    return min(AGY_ASPECTS, key=distance)
+
+
+def agy_executable() -> str | None:
+    """O `agy` do PATH; senão, onde o instalador oficial põe (`%LOCALAPPDATA%\\agy\\bin\\agy.exe`), que o servidor
+    iniciado antes da instalação não tem no PATH."""
+    found = shutil.which("agy")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA")
+    if local and (Path(local) / "agy" / "bin" / "agy.exe").is_file():
+        return str(Path(local) / "agy" / "bin" / "agy.exe")
+    return None
+
+
+def agy_brain_dir() -> Path:
+    return Path(os.environ.get("VS_AGY_BRAIN") or Path.home() / ".gemini" / "antigravity-cli" / "brain")
+
+
+def agy_events(output: str) -> list[dict]:
+    """Os eventos do `--output-format stream-json` (uma linha JSON por evento; o resto é ignorado)."""
+    events = []
+    for line in output.splitlines():
+        line = line.strip().lstrip("﻿")
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def agy_result(events: list[dict]) -> dict:
+    """O evento final ("result"), ou vazio quando o agy saiu antes."""
+    for event in reversed(events):
+        if event.get("event") == "result" and isinstance(event.get("result"), dict):
+            return event["result"]
+    return {}
+
+
+def agy_conversation_ids(events: list[dict]) -> list[str]:
+    """Ids das conversas desta chamada: a principal primeiro (é onde a imagem fica), depois as dos subagentes."""
+    ids: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in ids:
+            ids.append(value)
+
+    for event in events:
+        for key in ("init", "result", "step_update"):
+            block = event.get(key)
+            if isinstance(block, dict):
+                add(block.get("conversation_id"))
+    for event in events:
+        update = event.get("step_update")
+        subagents = ((update or {}).get("subagent_info") or {}).get("subagents") if isinstance(update, dict) else None
+        for sub in subagents or []:
+            if isinstance(sub, dict):
+                add(sub.get("conversation_id"))
+    return ids
+
+
+def agy_error_text(events: list[dict]) -> str:
+    """Os erros que o agy relatou (de ferramentas e do resultado) e a resposta final, numa linha só: é onde aparecem
+    cota esgotada, falta de login e recusa. O pedido (que ecoa nos eventos) fica de fora."""
+    parts: list[str] = []
+    for event in events:
+        if event.get("event") == "error" or "error" in event:
+            parts.append(json.dumps(event.get("error", event), ensure_ascii=False))
+        update = event.get("step_update")
+        if isinstance(update, dict):
+            error = (update.get("tool_info") or {}).get("error")
+            if error:
+                parts.append(json.dumps(error, ensure_ascii=False))
+    result = agy_result(events)
+    if result:
+        if result.get("status") not in (None, "SUCCESS"):
+            parts.append(str(result.get("status")))
+        for key in ("error", "response"):
+            if result.get(key):
+                parts.append(str(result[key]))
+    return " | ".join(parts)
+
+
+def agy_new_images(brain: Path, before: set[Path], started: float, events: list[dict]) -> list[Path]:
+    """As imagens desta chamada: o caminho que a resposta final cita, senão as da pasta das nossas conversas, senão
+    a mais nova criada no `brain` durante a chamada (outro uso do Antigravity ao mesmo tempo grava em outra pasta)."""
+    response = str(agy_result(events).get("response") or "")
+    cited = [Path(m) for m in _AGY_PATH_RE.findall(response)]
+    found = [p for p in dict.fromkeys(cited) if p.is_file() and p not in before]
+    if found:
+        return found
+    if not brain.exists():
+        return []
+    for conversation in agy_conversation_ids(events):
+        own = brain / conversation
+        if own.is_dir():
+            files = [p for p in own.iterdir() if p.suffix.lower() in AGY_IMAGE_SUFFIXES and p not in before]
+            if files:
+                return files
+    return [p for p in brain.rglob("*") if p.suffix.lower() in AGY_IMAGE_SUFFIXES and p not in before
+            and ".system_generated" not in p.parts and p.stat().st_mtime >= started - 5]
+
+
+def agy_instruction(prompt: str, aspect: str, references: list[Path]) -> str:
+    """O pedido ao agente: uma chamada ao `generate_image`, com o prompt do Vulto copiado sem mudar nada."""
+    refs = ""
+    if references:
+        paths = ", ".join(f'"{p}"' for p in references)
+        refs = (f"ImagePaths=[{paths}] (character appearance references: keep face, hair, body, clothing and "
+                "proportions; do not copy their background, pose or framing, and do not edit them: create a new "
+                "image), ")
+    return (
+        "Call the generate_image tool yourself exactly once (do not delegate to a subagent) and do nothing else: no "
+        f'other tools, no commands, do not copy, convert or move any file. Arguments: AspectRatio="{aspect}", '
+        f'ImageName="vulto", {refs}'
+        "Prompt = the text between <prompt> and </prompt>, copied verbatim, without rewording, adding or removing "
+        "anything. The image must have no text, letters, numbers or watermark. "
+        f"<prompt>{prompt}</prompt> When done, reply only with the absolute path of the generated image file."
+    )
+
+
+class AntigravityCLIImage(ImageProvider):
+    info = ProviderInfo(
+        id="antigravity_cli",
+        kind="image",
+        name="Antigravity CLI (Google AI Pro)",
+        commercial_use=True,
+        local=True,
+        free=True,
+        notes="Nano Banana pela cota do plano Google AI Pro (sem chave de API), pelo `agy` logado na sua conta. "
+        "Um job por vez; a imagem é detectada em ~/.gemini/antigravity-cli/brain. Cota diária não publicada: ao "
+        "esgotar, a cadeia segue.",
+        cost_note="Incluído no Google AI Pro; a API do Gemini é cobrada à parte",
+        accepts_references=True,
+    )
+
+    timeout_s = 480
+
+    def availability(self) -> tuple[bool, str]:
+        if not agy_executable():
+            return False, "Antigravity CLI (agy) não encontrado (instale e faça login com a conta Google)"
+        return True, "ok"
+
+    def generate(self, *, prompt, width, height, seed, out_dir, references=None) -> ImageResult:
+        agy = agy_executable()
+        if not agy:
+            raise NotConfigured("Antigravity CLI (agy) não encontrado")
+        brain = agy_brain_dir()
+        before = {p for p in brain.rglob("*") if p.suffix.lower() in AGY_IMAGE_SUFFIXES} if brain.exists() else set()
+        references = [Path(r) for r in references or [] if Path(r).is_file()]
+        aspect = agy_aspect(width, height)
+        cmd = [agy, "--print-timeout", f"{self.timeout_s - 30}s", "--mode", "accept-edits", "--disable-slash-commands",
+               "--output-format", "stream-json"]
+        # O agente só repassa o pedido: o modelo leve basta e leva ~30 s (o padrão do agy levou 60–100 s).
+        # VS_AGY_MODEL troca o modelo; vazio usa o padrão do agy.
+        model = os.environ.get("VS_AGY_MODEL", AGY_MODEL)
+        if model:
+            cmd += ["--model", model]
+        started = time.time()
+        with tempfile.TemporaryDirectory() as workdir:
+            copies = []
+            for n, ref in enumerate(references, 1):
+                copy = Path(workdir) / f"ref{n}{ref.suffix.lower() or '.jpg'}"
+                shutil.copyfile(ref, copy)
+                copies.append(copy)
+            cmd += ["-p", agy_instruction(prompt, aspect, copies)]
+            try:
+                proc = run_tree(cmd, cwd=workdir, timeout=self.timeout_s)
+            except subprocess.TimeoutExpired as exc:
+                raise TransientError("o Antigravity demorou demais para gerar a imagem") from exc
+        events = agy_events(proc.stdout or "")
+        new_files = agy_new_images(brain, before, started, events)
+        if new_files:
+            newest = max(new_files, key=lambda p: p.stat().st_mtime)
+            final = fit_image(newest, out_dir / "image.jpg", width, height)
+            return ImageResult(path=final, usage=Usage(units=1, unit_name="images"), model="antigravity-nano-banana",
+                               meta={"source_file": str(newest), "aspect": aspect})
+        problem = (agy_error_text(events) + " | " + (proc.stderr or "")).strip(" |")
+        lowered = problem.lower()
+        if any(key in lowered for key in _AGY_AUTH):
+            raise NotConfigured("o Antigravity CLI não está logado (rode `agy` e entre com a conta Google)")
+        if any(key in lowered for key in _AGY_QUOTA):
+            raise QuotaExceeded(f"cota de imagens do Antigravity esgotada: {problem[-300:]}")
+        if any(key in lowered for key in _AGY_REFUSED):
+            raise Refused("o Antigravity recusou o pedido de imagem")
+        log.warning("o Antigravity terminou sem gerar imagem (código %s): %s", proc.returncode,
+                    problem[-600:] or _codex_tail(proc.stdout or ""))
+        raise TransientError(f"o Antigravity terminou sem gerar imagem (código {proc.returncode})")
 
 
 # --------------------------------------------------------------------------------------------

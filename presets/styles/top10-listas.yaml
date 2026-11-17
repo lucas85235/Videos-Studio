@@ -36,7 +36,7 @@ art:
   bible: "ilustração digital vibrante e detalhada, cores saturadas e luz clara, um sujeito em destaque com composição centralizada, cenário que muda a cada item"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
   languages: [key_art, editorial, render_3d]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 3.0, max: 5.0 }

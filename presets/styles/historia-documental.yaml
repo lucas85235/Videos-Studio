@@ -36,7 +36,7 @@ art:
   bible: "pintura digital histórica realista e luminosa, cores naturais da época, luz natural suave, cenas amplas de cidades, mercados, paisagens e pessoas comuns, figurinos e arquitetura fiéis ao período"
   banned: ["texto", "letras", "logotipos", "marca d'água", "violência explícita", "objetos modernos fora da época"]
   languages: [archival, painting, isometric]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 4.0, max: 6.5 }

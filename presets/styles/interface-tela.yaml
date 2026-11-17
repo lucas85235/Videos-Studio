@@ -36,7 +36,7 @@ art:
   bible: "ilustração digital limpa de tecnologia, cores vivas sobre fundo escuro, objetos e telas genéricas sem texto legível, um sujeito em destaque por cena"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "interface de marca real"]
   languages: [ui_mockup, editorial, flat_vector]
-  image_chain: [codex_cli]
+  image_chain: [codex_cli, antigravity_cli]
 
 edit:
   shot_seconds: { min: 3.0, max: 5.0 }
