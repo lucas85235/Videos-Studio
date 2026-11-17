@@ -1,7 +1,9 @@
 """Coletores de sinais da pesquisa de vídeos. Cada um é isolado: se falhar, a rodada anota a falha e continua.
 
-- `own_signals`: o próprio canal (sem cota, sem rede): longos e Shorts separados, com a mediana de views por dia de
-  cada formato e os 5 melhores e piores (`mult` = views por dia ÷ mediana do formato);
+- `own_signals`: o próprio canal, longos e Shorts separados: a mediana de views por dia de cada formato (só vídeos
+  públicos e assentados) e os 5 melhores e piores (`mult` = views por dia ÷ mediana). Com o login do canal, parte do
+  inventário de uploads inteiro (`analytics/uploads.py`) e das views públicas de agora (videos.list: ~4 unidades para
+  100 vídeos, sem `search`); sem ele, dos vídeos que o Vulto conhece com métrica;
 - `competitor_signals`: vídeos fora da curva dos concorrentes (sem `search`: channels + playlistItems + videos), contra a
   mediana do PRÓPRIO concorrente no mesmo formato (vídeos com 7+ dias); Shorts entram marcados;
 - `keyword_signals`: uma busca por termo e mercado ("br" e/ou "us"), com o idioma conferido e os canais fora do alvo
@@ -20,13 +22,15 @@ import urllib.parse
 from typing import Any
 
 from studio.db import session_scope
-from studio.models import YouTubeComment
+from studio.models import Channel, YouTubeComment
 from studio.workers.radar import analysis
 from studio.workers.radar.access import Api
 from studio.workers.radar.analysis import MERCADOS, em_lotes, mediana, quando_iso, segundos_iso
 
 SHORT_MAX_S = 180  # até 3 min conta como Short
 SETTLED_DAYS = 7  # vídeo "assentado" (entra na linha de base do concorrente)
+OWN_SETTLED_DAYS = {"long": 7, "short": 3}  # idem no próprio canal (Short assenta antes); mais novo: mult provisório
+UNKNOWN_FORMAT = "desconhecido"  # sem duração (live, estreia, vídeo que não veio): fora das medianas
 MIN_BASE = 3  # vídeos assentados do formato para a mediana do formato valer; menos que isso usa a do canal todo
 OUTLIER_MULT = 2.0  # vídeo do concorrente fora da curva: 2× a mediana dele
 TOP_N = 5
@@ -54,7 +58,9 @@ def _result(items: Any, units: int = 0, erro: str | None = None, **extra: Any) -
 
 
 def format_of(duration_s: float | int | None) -> str:
-    return "short" if duration_s is not None and 0 < duration_s <= SHORT_MAX_S else "long"
+    if not duration_s:
+        return UNKNOWN_FORMAT
+    return "short" if duration_s <= SHORT_MAX_S else "long"
 
 
 def _watch(video_id: str, fmt: str = "long") -> str:
@@ -64,31 +70,111 @@ def _watch(video_id: str, fmt: str = "long") -> str:
 # ----------------------------------------------------------------------------- próprio canal
 
 
-def own_signals(channel_id: str) -> dict[str, Any]:
-    """Desempenho do próprio canal por formato. Vídeo sem métrica fica de fora (o canal pode não ter Analytics)."""
+def _own_candidates(channel_id: str, videos: list[dict[str, Any]], http: Any, now: dt.datetime,
+                    inv: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Os vídeos do canal com views, data, formato e privacidade. Com o login do canal: o inventário inteiro e as
+    views de agora; senão (ou se a leitura falhar): os vídeos que o Vulto conhece, com a privacidade da última coleta.
+    Devolve (vídeos, `{fonte, aviso, inventario}`)."""
+    from studio.workers.analytics import uploads
+    from studio.workers.publish import youtube as yt
+
+    known = {v["youtube_id"]: v for v in videos}
+    aviso = None
+    own = http is None
+    client = http or yt.new_client()
+    try:
+        inv = inv if inv is not None else uploads.inventory(channel_id, client, now=now)
+        if inv["completo"] and inv["items"]:
+            with session_scope() as s:
+                row = s.get(Channel, channel_id)
+                link = dict(((row.settings or {}) if row else {}).get("youtube") or {})
+            token = inv.get("token") or uploads.channel_token(client, link)
+            fresh = uploads.video_stats(client, token, [i["video_id"] for i in inv["items"]])
+            out = []
+            for yid, f in fresh.items():
+                v = known.get(yid) or {}
+                fmt = format_of(f["duration_s"])
+                if fmt == UNKNOWN_FORMAT and v.get("format") in ("long", "short"):
+                    fmt = v["format"]
+                out.append({"youtube_id": yid, "title": f["title"] or v.get("title") or "", "format": fmt,
+                            "privacy": f["privacy"], "views": f["views"], "published_at": f["published"],
+                            "metric": v.get("metric") or {}})
+            pages = math.ceil(len(inv["items"]) / 50) if inv.get("fonte") == "api" else 0  # playlistItems
+            units = pages + math.ceil(len(inv["items"]) / 50)  # + videos.list
+            return out, {"fonte": "youtube", "aviso": None, "inventario": len(inv["items"]), "units": units}
+        aviso = inv.get("erro")
+    except yt.YouTubeError as exc:
+        aviso = str(exc)
+    finally:
+        if own:
+            client.close()
+    out = []
+    for v in videos:
+        m = v.get("metric") or {}
+        out.append({"youtube_id": v["youtube_id"], "title": v.get("title") or "", "format": v.get("format"),
+                    "privacy": v.get("privacy") or "public", "views": m.get("views"),
+                    "published_at": v.get("published_at"), "metric": m, "vpd": v.get("views_per_day")})
+    return out, {"fonte": "vulto", "aviso": aviso, "inventario": None, "units": 0}
+
+
+def own_signals(channel_id: str, *, http: Any = None, now: dt.datetime | None = None,
+                inventory: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Desempenho do próprio canal por formato. Fica de fora: vídeo que hoje não é público (um privado com views
+    antigas ficaria com a idade subindo e as views paradas), formato desconhecido e vídeo sem views. A mediana usa só
+    os assentados (`OWN_SETTLED_DAYS`); com menos de `MIN_BASE` no formato, vale a do canal todo (`base: "canal"`);
+    sem nenhum, a dos novos (`base: "novos"`). Vídeo novo sai com `provisorio`. Por formato: `n_publicos` (públicos
+    no canal), `n` (com views), `n_assentados` e `base_fraca` (menos de `MIN_BASE` assentados no formato)."""
     from studio.workers.analytics import experiments
     from studio.workers.analytics.variables import load_videos
 
+    now = now or dt.datetime.now(dt.UTC)
     videos = load_videos(channel_id)
-    out: dict[str, Any] = {}
+    cands, meta = _own_candidates(channel_id, videos, http, now, inventory)
+    rows: list[dict[str, Any]] = []
+    publicos = {"long": 0, "short": 0}
+    fora_do_ar = 0
+    for c in cands:
+        fmt = c["format"]
+        if fmt not in publicos:
+            continue
+        if c["privacy"] != "public":
+            fora_do_ar += 1 if c.get("views") else 0
+            continue
+        publicos[fmt] += 1
+        when = quando_iso(c["published_at"]) if c.get("published_at") else None
+        age_d = (now - when).total_seconds() / 86400 if when else None
+        if age_d is not None and age_d < 0:
+            continue  # agendado que ainda não saiu
+        if c.get("vpd") is not None:
+            vpd = float(c["vpd"])
+        elif c.get("views") is not None:
+            vpd = c["views"] / max(age_d if age_d is not None else 1, 1)  # como `metrics.views_per_day`
+        else:
+            continue
+        m = c.get("metric") or {}
+        settled = age_d is None or age_d >= OWN_SETTLED_DAYS[fmt]  # sem data, não dá para dizer que é novo
+        rows.append({"youtube_id": c["youtube_id"], "title": c["title"], "format": fmt, "views": c.get("views"),
+                     "vpd": round(vpd, 1), "ctr": m.get("ctr"), "pct_watched": m.get("pct_watched"),
+                     "published_at": c.get("published_at"), "idade_d": round(age_d, 1) if age_d is not None else None,
+                     "provisorio": not settled, "url": _watch(c["youtube_id"], fmt)})
+    settled_all = [r["vpd"] for r in rows if not r["provisorio"]]
+    out: dict[str, Any] = {"fonte": meta["fonte"], "aviso": meta["aviso"], "inventario": meta["inventario"],
+                           "fora_do_ar": fora_do_ar, "units": meta["units"]}
     for fmt in ("long", "short"):
-        rows = []
-        for v in videos:
-            vpd = v.get("views_per_day")
-            vfmt = v.get("format") or format_of(v.get("duration_s"))
-            if vpd is None or vfmt != fmt:
-                continue
-            m = v.get("metric") or {}
-            rows.append({"youtube_id": v["youtube_id"], "title": v.get("title") or "", "format": fmt,
-                         "views": m.get("views"), "vpd": round(vpd, 1), "ctr": m.get("ctr"),
-                         "pct_watched": m.get("pct_watched"), "published_at": v.get("published_at"),
-                         "url": _watch(v["youtube_id"], fmt)})
-        med = mediana(r["vpd"] for r in rows)
-        for r in rows:
+        mine = [r for r in rows if r["format"] == fmt]
+        settled = [r["vpd"] for r in mine if not r["provisorio"]]
+        if len(settled) >= MIN_BASE:
+            med, base = mediana(settled), "formato"
+        elif len(settled_all) >= MIN_BASE:
+            med, base = mediana(settled_all), "canal"
+        else:
+            med, base = mediana(r["vpd"] for r in mine), "novos"
+        for r in mine:
             r["mult"] = round(r["vpd"] / med, 2) if med else None
-        rows.sort(key=lambda r: -r["vpd"])
-        out[fmt] = {"n": len(rows), "med": round(med, 1), "top": rows[:TOP_N],
-                    "bottom": rows[TOP_N:][-TOP_N:][::-1]}
+        mine.sort(key=lambda r: -r["vpd"])
+        out[fmt] = {"n": len(mine), "n_publicos": publicos[fmt], "n_assentados": len(settled),
+                    "base_fraca": len(settled) < MIN_BASE, "base": base, "med": round(med, 1), "top": mine[:TOP_N],
+                    "bottom": mine[TOP_N:][-TOP_N:][::-1]}
     try:
         out["suggestions"] = experiments.suggestions(experiments.results(channel_id, videos))
     except Exception:  # noqa: BLE001 - as sugestões são um extra
@@ -225,7 +311,7 @@ def competitor_signals(api: Api, competitors: list[dict[str, Any]], *, days: int
                           "med_long": meds["long"], "med_short": meds["short"],
                           "url": f"https://www.youtube.com/channel/{cid}"})
         for r in rows:
-            med = meds[r["format"]]
+            med = meds.get(r["format"])  # formato desconhecido (sem duração): sem mediana, fica de fora
             if not med or r["idade_d"] > days:
                 continue
             mult = r["views"] / med

@@ -35,6 +35,8 @@ RISK_LEVELS = ("baixo", "medio", "alto")
 FORMAT_NAMES = {"long": "vídeo longo", "short": "Short"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 VIDEO_ID_RE = re.compile(r"(?:youtu\.be/|[?&]v=|/shorts/|/live/)([0-9A-Za-z_-]{11})")
+# "item 11", "ideia #3", "a ideia nº 2": o número muda quando o Vulto reordena por nota (`finalize`)
+ITEM_REF_RE = re.compile(r"\b(?:item|ideia|idea)\s*(?:n[º°o]\.?\s*|#\s*)?(\d{1,2})\b", re.IGNORECASE)
 
 SYSTEM = """Você é o estrategista de conteúdo do canal do YouTube descrito no pedido. Proponha de 10 a 25 vídeos com
 mais chance de desempenho PARA ESTE CANAL, ranqueados, cada um com a data ou a janela de publicação.
@@ -45,7 +47,8 @@ Regras:
 2. Nunca invente URL nem número. Views, inscritos e curtidas só aparecem citando o ref do sinal.
 3. Use a web com moderação (no máximo umas 8 buscas): notícias, lançamentos e datas do nicho nos próximos 60 dias e
    tendências que os sinais não mostram.
-4. Não repita os títulos de FEITOS nem das IDEIAS ABERTAS.
+4. Não repita o TEMA nem o ângulo de FEITOS (publicados, privados, agendados e em produção) nem das IDEIAS
+   ABERTAS, mesmo com outro título; se quiser reaproveitar um tema, diga no "angle" o que muda.
 5. Use só os formatos do canal (lista FORMATOS). Longos e Shorts são públicos diferentes: compare um Short com os
    Shorts dos sinais e um longo com os longos. Equilibre os formatos conforme o que funciona no canal (sinais
    próprios) e o que os concorrentes mostram.
@@ -56,7 +59,11 @@ Regras:
 8. Risco: direitos/imagem, factual, saturação, fora da persona, desmonetização.
 9. Mercado "us" nos sinais: ângulos que ainda não existem em português são oportunidade; diga isso no "why".
 10. Em "lacunas", liste curto o que você não conseguiu medir ou verificar nesta rodada (ex.: busca sem resultado,
-    tendência sem fonte). Escreva tudo em português do Brasil."""
+    tendência sem fonte). Escreva tudo em português do Brasil.
+11. Sinais próprios: o tamanho do canal é "videos_publicos"; "videos_com_metrica" é só a base medida. Não diga que o
+    canal tem poucos vídeos de um formato, nem chame um item de "melhor vídeo do canal", pelos itens listados. Com
+    "base_fraca", diga que a base é pequena; mult com "provisorio" é de vídeo novo e ainda pode mudar.
+12. Nunca cite outra ideia pelo número ("item 11", "ideia #3"): o Vulto reordena a lista. Cite pelo título."""
 
 
 def schema(formats: list[str]) -> dict[str, Any]:
@@ -106,8 +113,12 @@ def build_context(channel: dict[str, Any], signals: dict[str, Any], *, formats: 
             for r in part.get(group) or []:
                 rows.append({"ref": _ref(refs, "P", r, r.get("title", "")), "grupo": "melhor" if group == "top"
                              else "pior", "title": r.get("title", ""), "views": r.get("views"), "vpd": r.get("vpd"),
-                             "mult": r.get("mult"), "ctr": r.get("ctr"), "retencao": r.get("pct_watched")})
-        own_out[fmt] = {"videos": part.get("n", 0), "mediana_views_dia": part.get("med", 0), "itens": rows}
+                             "mult": r.get("mult"), "provisorio": bool(r.get("provisorio")), "ctr": r.get("ctr"),
+                             "retencao": r.get("pct_watched")})
+        own_out[fmt] = {"videos_publicos": part.get("n_publicos", part.get("n", 0)),
+                        "videos_com_metrica": part.get("n", 0), "assentados": part.get("n_assentados"),
+                        "base_fraca": part.get("base_fraca", False), "base_da_mediana": part.get("base"),
+                        "mediana_views_dia": part.get("med", 0), "itens": rows}
     competitors: dict[str, list[dict[str, Any]]] = {f: [] for f in formats}
     for r in ((signals.get("competitors") or {}).get("items") or [])[:MAX_COMPETITORS]:
         if r.get("format") in competitors:
@@ -139,7 +150,7 @@ def build_context(channel: dict[str, Any], signals: dict[str, Any], *, formats: 
         "competitors": competitors,
         "keywords": keywords,
         "comments": comments,
-        "done": [d["title"] for d in done][:MAX_DONE],
+        "done": [" — ".join(x for x in (d["title"], d.get("theme"), d.get("status")) if x) for d in done][:MAX_DONE],
         "open_ideas": [i["title"] for i in open_ideas][:MAX_OPEN],
         "refs": refs,
     }
@@ -254,12 +265,33 @@ def _evidence(raw: list[Any], refs: dict[str, dict[str, Any]]) -> tuple[list[dic
     return out, dropped
 
 
+def _numbered_titles(raw: list[Any]) -> dict[int, str]:
+    """Número que o modelo deu a cada ideia → título: o `rank` dele, se for único; senão a posição na lista."""
+    items = [i for i in raw if isinstance(i, dict) and _text(i.get("title"), 100)]
+    ranks = [i.get("rank") for i in items]
+    if all(isinstance(r, int) for r in ranks) and len(set(ranks)) == len(ranks):
+        return {int(i["rank"]): _text(i["title"], 100) for i in items}
+    return {n: _text(i["title"], 100) for n, i in enumerate(items, start=1)}
+
+
+def _rewrite_item_refs(text: str, titles: dict[int, str]) -> str:
+    """Troca "item 11" pelo título da ideia que o modelo numerou assim (a ordem final é outra)."""
+    return ITEM_REF_RE.sub(lambda m: f'"{titles[int(m.group(1))]}"' if int(m.group(1)) in titles
+                           else "outra ideia desta lista", text)
+
+
 def postprocess(data: Any, refs: dict[str, dict[str, Any]], formats: list[str],
                 today: date) -> dict[str, Any]:
-    """Ideias limpas (refs traduzidos, formato do canal, nota de 0 a 10, data válida ou vazia) e as descartadas."""
+    """Ideias limpas (refs traduzidos, formato do canal, nota de 0 a 10, data válida ou vazia, "item N" trocado pelo
+    título) e as descartadas."""
     ideas: list[dict[str, Any]] = []
     discarded: list[dict[str, str]] = []
     raw = data.get("ideas") if isinstance(data, dict) else None
+    titles = _numbered_titles(raw if isinstance(raw, list) else [])
+
+    def txt(value: Any, limit: int) -> str:
+        return _text(_rewrite_item_refs(_text(value, limit * 2), titles), limit)
+
     for item in (raw if isinstance(raw, list) else [])[:MAX_IDEAS]:
         if not isinstance(item, dict):
             continue
@@ -282,17 +314,17 @@ def postprocess(data: Any, refs: dict[str, dict[str, Any]], formats: list[str],
         ideas.append({
             "title": title,
             "format": fmt,
-            "angle": _text(item.get("angle"), 600),
-            "why": _text(item.get("why"), 800),
+            "angle": txt(item.get("angle"), 600),
+            "why": txt(item.get("why"), 800),
             "evidence": evidence,
             "refs_dropped": dropped,
             "when": {"type": wtype, "date": start.isoformat() if start and start >= today else "",
                      "until": until.isoformat() if until and start and until >= start else "",
-                     "note": _text(when.get("note"), 300)},
+                     "note": txt(when.get("note"), 300)},
             "needs": [_text(n, 200) for n in item.get("needs") or [] if _text(n, 200)][:8],
             "score": round(score, 1),
             "risk": {"level": risk.get("level") if risk.get("level") in RISK_LEVELS else "medio",
-                     "note": _text(risk.get("note"), 400)},
+                     "note": txt(risk.get("note"), 400)},
         })
     return {"ideas": ideas, "discarded": discarded}
 

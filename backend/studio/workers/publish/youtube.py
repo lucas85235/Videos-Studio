@@ -58,7 +58,9 @@ ACCOUNT_KEY = "youtube_account"
 # Vínculo de canal: alvo do login ("new" cria um canal do Vulto; senão é o id de um canal existente).
 NEW_CHANNEL = "new"
 PENDING_TTL_S = 30 * 60
-RECENT_VIDEOS = 15
+RECENT_VIDEOS = 15  # vitrine do canal (tela); o inventário completo é `fetch_all_uploads`
+UPLOADS_MAX = 500
+UPLOAD_DESCRIPTION = 300
 
 # Leituras públicas (link colado): só URLs montadas aqui, com cabeçalho de navegador genérico (nada do usuário).
 SITE = "https://www.youtube.com"
@@ -538,6 +540,37 @@ def fetch_recent_uploads(http: httpx.Client, token: str, playlist_id: str, limit
             continue
         out.append({"title": title, "video_id": (snippet.get("resourceId") or {}).get("videoId") or "",
                     "published": snippet.get("publishedAt") or ""})
+    return out[:limit]
+
+
+def fetch_all_uploads(http: httpx.Client, token: str, playlist_id: str,
+                      limit: int = UPLOADS_MAX) -> list[dict[str, str]]:
+    """Todos os uploads do canal (até `limit`), paginando a playlist de uploads: playlistItems.list com 50 itens por
+    página, 1 unidade de cota por página. Com o token do dono vêm também os privados e os agendados, com o título
+    real e `privacy`; vídeo apagado (ou privado lido sem ser o dono: "Private video") fica de fora."""
+    if not playlist_id:
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    page = ""
+    while len(out) < limit:
+        params = {"part": "snippet,status", "playlistId": playlist_id, "maxResults": "50"}
+        if page:
+            params["pageToken"] = page
+        data = _get(http, f"{API}/playlistItems", token, params=params, method="playlistItems.list")
+        for item in data.get("items") or []:
+            snippet = item.get("snippet") or {}
+            title = (snippet.get("title") or "").strip()
+            vid = (snippet.get("resourceId") or {}).get("videoId") or ""
+            if not vid or vid in seen or not title or title in ("Private video", "Deleted video"):
+                continue
+            seen.add(vid)
+            out.append({"video_id": vid, "title": title, "published": snippet.get("publishedAt") or "",
+                        "privacy": (item.get("status") or {}).get("privacyStatus") or "",
+                        "description": " ".join((snippet.get("description") or "").split())[:UPLOAD_DESCRIPTION]})
+        page = data.get("nextPageToken") or ""
+        if not page:
+            break
     return out[:limit]
 
 

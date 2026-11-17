@@ -34,6 +34,7 @@ VARIABLES: dict[str, str] = {
 # Variáveis comparadas entre os Shorts em "O que funcionou" (o formato já separa Shorts de longos).
 SHORT_VARIABLES = ("tipo", "faixa_duracao", "faixa_nota", "hora", "dia", "origem", "estilo")
 SHORT_MAX_S = 180  # Short tem no máximo 3 min
+UNKNOWN_FORMAT = "desconhecido"  # sem estilo e sem duração (ex.: privado que a coleta nunca leu)
 
 _ISO_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$")
 
@@ -65,10 +66,13 @@ def score_band(score: float) -> str:
 
 
 def video_format(style_format: str | None, duration_s: float | None) -> str:
-    """'short' se o estilo do projeto é Short ou o vídeo tem até 3 min; senão 'long'."""
+    """'short' se o estilo do projeto é Short ou o vídeo tem até 3 min; 'long' pelo estilo ou com mais de 3 min;
+    sem estilo e sem duração, `UNKNOWN_FORMAT` (não dá para saber; antes virava 'long')."""
     if style_format == "short" or (duration_s is not None and duration_s <= SHORT_MAX_S):
         return "short"
-    return "long"
+    if style_format == "long" or duration_s is not None:
+        return "long"
+    return UNKNOWN_FORMAT
 
 
 def video_variables(
@@ -228,6 +232,7 @@ def load_videos(channel_id: str | None = None) -> list[dict[str, Any]]:
                 "duration_s": duration,
                 "score": scores.get(project.id) if project else None,
                 "format": variables["formato"],
+                "privacy": info.get("privacy"),  # da última coleta (None: nunca lido)
                 "variables": variables,
                 "metric": metric,
                 "views_per_day": views_per_day(metric),

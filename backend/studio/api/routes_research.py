@@ -25,6 +25,12 @@ class Competitor(BaseModel):
     handle: str = Field(default="", max_length=100)
 
 
+class ExtraSource(BaseModel):
+    type: Literal["estudio_db"]
+    path: str = Field(min_length=4, max_length=500)
+    canal: str = Field(min_length=1, max_length=100)
+
+
 class ConfigBody(BaseModel):
     channel_id: str
     competitors: list[Competitor] | None = Field(default=None, max_length=config.MAX_COMPETITORS)
@@ -35,6 +41,7 @@ class ConfigBody(BaseModel):
     budget: int | None = Field(default=None, ge=config.BUDGET_RANGE[0], le=config.BUDGET_RANGE[1])
     days: int | None = Field(default=None, ge=config.DAYS_RANGE[0], le=config.DAYS_RANGE[1])
     auto: bool | None = None
+    extra_sources: list[ExtraSource] | None = Field(default=None, max_length=config.MAX_SOURCES)
 
 
 class ResolveBody(BaseModel):

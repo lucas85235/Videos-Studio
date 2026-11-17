@@ -57,7 +57,9 @@ export const VideosTable: React.FC<{ videos: AnalyticsVideo[] }> = ({ videos }) 
                       {v.title || v.youtube_id}
                     </a>
                     <div className="flex flex-wrap items-center gap-1.5 text-[13px] text-subtle">
-                      <Badge tone={v.format === 'short' ? 'info' : 'neutral'}>{v.format === 'short' ? 'Short' : 'Longo'}</Badge>
+                      <Badge tone={v.format === 'short' ? 'info' : 'neutral'}>
+                        {v.format === 'short' ? 'Short' : v.format === 'long' ? 'Longo' : 'Formato ?'}
+                      </Badge>
                       {v.project_id ? (
                         <Link to={`/projetos/${v.project_id}`} className="hover:text-fg hover:underline">
                           Projeto

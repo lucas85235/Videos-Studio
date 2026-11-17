@@ -34,7 +34,8 @@ export type AnalyticsVideo = {
   published_at: string | null;
   duration_s: number | null;
   score: number | null;
-  format: 'short' | 'long';
+  /** 'desconhecido': sem estilo e sem duração (ex.: privado que a coleta nunca leu). */
+  format: 'short' | 'long' | 'desconhecido';
   variables: Record<string, string>;
   metric: VideoMetric | null;
   views_per_day: number | null;

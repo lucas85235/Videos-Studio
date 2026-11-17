@@ -21,7 +21,7 @@ import httpx
 
 from studio.db import session_scope
 from studio.models import Channel, Project, Publication
-from studio.workers.analytics import reach, yt_revenue
+from studio.workers.analytics import reach, uploads, yt_revenue
 from studio.workers.analytics.metrics import parse_when, upsert_metric
 from studio.workers.analytics.variables import parse_iso_duration
 from studio.workers.publish import youtube as yt
@@ -51,7 +51,8 @@ def _float(value: Any) -> float | None:
 
 
 def channel_video_ids(channel_id: str) -> tuple[list[str], dict[str, datetime]]:
-    """Ids dos vídeos do canal: publicações do YouTube (`external_id`) + vídeos recentes do canal vinculado.
+    """Ids dos vídeos do canal: publicações do YouTube (`external_id`) + vídeos recentes do canal vinculado + o
+    inventário de uploads (`uploads.py`: o canal inteiro, não só os 15 recentes).
 
     Devolve também o horário agendado de cada publicação (a idade de um agendado conta de quando saiu).
     """
@@ -72,6 +73,7 @@ def channel_video_ids(channel_id: str) -> tuple[list[str], dict[str, datetime]]:
                     scheduled[pub.external_id] = pub.scheduled_at
         channel = s.get(Channel, channel_id)
         recent = (((channel.settings or {}).get("youtube") or {}).get("recent_videos") or []) if channel else []
+        recent = [*recent, *uploads.cached(channel.settings if channel else None)]
     for v in recent:
         vid = v.get("video_id") if isinstance(v, dict) else None
         if vid and vid not in ids:
@@ -193,6 +195,10 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
         saved = _save_state(channel_id, state=state, error=str(exc), checked_at=now.isoformat())
         return {"channel_id": channel_id, **saved, "saved": 0, "skipped": 0}
 
+    try:  # o inventário (renovado a cada `uploads.TTL_H` h) nunca derruba a coleta: sem ele ficam os recentes
+        uploads.inventory(channel_id, http, now=now, token=token)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("inventário de uploads do canal %s não lido: %s", channel_id, exc)
     ids, scheduled = channel_video_ids(channel_id)
     if not ids:
         # Analytics não foi chamado: o escopo conhecido continua valendo (não vira "ok" sem testar o token).
@@ -216,10 +222,6 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
         stats, details = item.get("statistics") or {}, item.get("contentDetails") or {}
         views = _int(stats.get("viewCount"))
         privacy = status.get("privacyStatus") or "public"
-        # Privado ou agendado que ainda não foi ao ar: fora da conta (lição #205). Privado com views continua.
-        if privacy != "public" and not views:
-            skipped += 1
-            continue
         # Só as datas do YouTube; o `scheduled_at` local fica de reserva (se o vídeo foi ao ar antes da hora marcada
         # no Vulto, a data antiga do agendamento ficaria no futuro e o vídeo perderia a idade).
         published = max(
@@ -228,10 +230,15 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
         ) or parse_when(scheduled.get(vid))
         if published is not None and published > now:
             published = None  # ainda não saiu: sem idade
-        kept[vid] = {"published": published, "views": views, "likes": _int(stats.get("likeCount")),
-                     "comments": _int(stats.get("commentCount"))}
+        # Título, duração e privacidade de todos (também dos pulados: um Short privado continua Short).
         info[vid] = {"title": snippet.get("title") or "", "published_at": published.isoformat() if published else None,
                      "duration_s": parse_iso_duration(details.get("duration")), "privacy": privacy}
+        # Privado ou agendado que ainda não foi ao ar: fora da conta (lição #205). Privado com views continua.
+        if privacy != "public" and not views:
+            skipped += 1
+            continue
+        kept[vid] = {"published": published, "views": views, "likes": _int(stats.get("likeCount")),
+                     "comments": _int(stats.get("commentCount"))}
 
     # `scope` só muda quando o Analytics respondeu (ok ou faltando); sem chamada ou com outra falha, fica o de antes.
     scope: str | None = None

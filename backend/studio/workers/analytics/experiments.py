@@ -102,7 +102,7 @@ def results(channel_id: str | None = None, videos: list[dict[str, Any]] | None =
         if v.get("format") == "short":
             if _age(v) >= IDADE_MIN_H["short"]:
                 shorts.append(v)
-        else:
+        elif v.get("format") == "long":  # formato desconhecido (sem duração) não entra em nenhum dos dois
             longs.append(v)
     geral = mediana(s["metric"]["views"] for s in shorts)
     por_var = []

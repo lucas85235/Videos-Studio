@@ -118,9 +118,23 @@ export type ResearchOwnVideo = {
   ctr: number | null;
   pct_watched: number | null;
   published_at: string | null;
+  /** Vídeo novo (ainda não assentado): fora da mediana, mult provisório. */
+  provisorio?: boolean;
   url: string;
 };
-export type ResearchOwnFormat = { n: number; med: number; top: ResearchOwnVideo[]; bottom: ResearchOwnVideo[] };
+export type ResearchOwnFormat = {
+  /** Vídeos públicos com views (a base medida). */
+  n: number;
+  /** Vídeos públicos do formato no canal (sem login do canal: os que o Vulto conhece). */
+  n_publicos?: number;
+  n_assentados?: number;
+  /** Menos de 3 assentados no formato: a mediana é a do canal todo (ou a dos novos). */
+  base_fraca?: boolean;
+  base?: 'formato' | 'canal' | 'novos';
+  med: number;
+  top: ResearchOwnVideo[];
+  bottom: ResearchOwnVideo[];
+};
 export type ResearchOwnSuggestion = { kind: string; text: string };
 
 export type ResearchCompetitorVideo = {

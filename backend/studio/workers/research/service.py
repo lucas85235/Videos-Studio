@@ -143,6 +143,14 @@ def _gap_lines(cfg: dict[str, Any], sig: dict[str, Any], plan: dict[str, Any], s
     for f in sig.get("falhas") or []:
         out.append(f"{STEP_NAMES.get(f['etapa'], f['etapa'])}: {f['erro']}")
     own = sig.get("own") or {}
+    if own.get("aviso"):
+        out.append(f"próprio canal lido só pelo que o Vulto conhece (sem o canal inteiro): {own['aviso']}")
+    for k, name in (("long", "longos"), ("short", "Shorts")):
+        part = own.get(k) or {}
+        if part.get("n") and part.get("base_fraca"):
+            out.append(f"próprio canal: só {part.get('n_assentados', 0)} {name} assentados; a mediana dos {name} é "
+                       f"{'a do canal todo' if part.get('base') == 'canal' else 'a dos vídeos novos'} e o mult é "
+                       "provisório")
     if "own" not in skip and own and not any((own.get(k) or {}).get("n") for k in ("long", "short")):
         out.append("sem métricas dos vídeos do próprio canal (vincule o YouTube com o login do Google para a coleta "
                    "diária de métricas)")
@@ -178,6 +186,11 @@ def _collect(step: str, sig: dict[str, Any], fn: Callable[[], dict[str, Any]]) -
     return res
 
 
+def _units(api: radar_access.Api | None, sig: dict[str, Any]) -> int:
+    """Cota geral da rodada: concorrentes e buscas (`api`) + o canal inteiro lido com o login do canal (`own`)."""
+    return (api.unidades if api else 0) + int((sig.get("own") or {}).get("units") or 0)
+
+
 def _save_run(run_id: str, channel_id: str, *, job_id: str | None, now: datetime, status: str, params: dict[str, Any],
               api: radar_access.Api | None, sig: dict[str, Any], synth: dict[str, Any], gaps: list[str],
               idea_ids: list[str], tokens: int = 0, usd: float = 0.0, error: str | None = None) -> None:
@@ -185,7 +198,7 @@ def _save_run(run_id: str, channel_id: str, *, job_id: str | None, now: datetime
     with session_scope() as s:
         s.add(ResearchRun(
             id=run_id, channel_id=channel_id, job_id=job_id, created_at=now, finished_at=datetime.now(UTC),
-            status=status, error=error, params=params, units=api.unidades if api else 0, llm_tokens=tokens,
+            status=status, error=error, params=params, units=_units(api, sig), llm_tokens=tokens,
             llm_api_equiv_usd=usd, signals=sig, synthesis=synth, gaps=list(dict.fromkeys(gaps)), idea_ids=idea_ids,
         ))
     config.update_state(channel_id, last_run_id=run_id)
@@ -240,7 +253,7 @@ def run(channel_id: str, *, job_id: str | None = None, skip: list[str] | tuple[s
 
     say(0.05, "Lendo o desempenho do canal")
     if "own" not in skip:
-        own = _collect("own", sig, lambda: signals.own_signals(channel_id))
+        own = _collect("own", sig, lambda: signals.own_signals(channel_id, http=http, now=now))
         if own is not None:  # se falhou, a etapa fica de fora (a tela diz que o canal não foi lido)
             sig["own"] = own
     say(0.15, "Concorrentes")
@@ -277,7 +290,7 @@ def run(channel_id: str, *, job_id: str | None = None, skip: list[str] | tuple[s
     try:
         status, idea_ids, retry = _synthesize_and_save(
             run_id, channel_id, channel, cfg, sig, synth, gaps, skip, formats, today, spent, say, stop, web_http,
-            job_id)
+            job_id, http=http, now=now)
     except BuildCancelled:
         gaps.insert(0, 'pesquisa cancelada: as ideias não foram para o banco (use "Salvar ideia" na rodada)')
         _record_quietly(save, "cancelada", error="cancelada por você", spent=spent)
@@ -288,7 +301,7 @@ def run(channel_id: str, *, job_id: str | None = None, skip: list[str] | tuple[s
     _save_run(run_id, channel_id, job_id=job_id, now=now, status=status, params=params, api=api, sig=sig,
               synth=synth, gaps=gaps, idea_ids=idea_ids, tokens=spent["tokens"], usd=spent["usd"])
     return {"run_id": run_id, "status": status, "ideas": len(synth["ideas"]), "saved": len(idea_ids),
-            "units": api.unidades if api else 0, "searches": api.buscas if api else 0,
+            "units": _units(api, sig), "searches": api.buscas if api else 0,
             "lacunas": len(set(gaps)), "retry": retry}
 
 
@@ -306,10 +319,11 @@ def _synthesize_and_save(run_id: str, channel_id: str, channel: dict[str, Any], 
                          sig: dict[str, Any], synth: dict[str, Any], gaps: list[str], skip: list[str],
                          formats: list[str], today: Any, spent: dict[str, Any], say: Callable[[float, str], None],
                          stop: Callable[[], bool], web_http: httpx.Client | None,
-                         job_id: str | None) -> tuple[str, list[str], bool]:
+                         job_id: str | None, *, http: httpx.Client | None = None,
+                         now: datetime | None = None) -> tuple[str, list[str], bool]:
     """Síntese, checagem e gravação das ideias. Devolve `(status, idea_ids, retry)`; preenche `synth`, `gaps` e
     `spent`. O cancelamento é conferido antes do Claude e logo antes de gravar no banco (a síntese já paga fica)."""
-    done = check.done_titles(channel_id)
+    done = check.done_titles(channel_id, http=http, now=now, gaps=gaps, extra_sources=cfg.get("extra_sources"))
     bank = check.open_ideas(channel_id)
     ctx = synthesis.build_context(channel, sig, formats=formats, markets=cfg["markets"], done=done,
                                   open_ideas=[i for i in bank if i["status"] in check.OPEN_STATUSES], today=today)
@@ -352,8 +366,17 @@ def _synthesize_and_save(run_id: str, channel_id: str, channel: dict[str, Any], 
             if not ideas:
                 gaps.insert(0, "a síntese rodou, mas nenhuma ideia sobrou (veja as descartadas)" if post["discarded"]
                             else "a síntese rodou, mas não devolveu ideias")
+    verdicts: dict[int, dict[str, Any]] = {}
+    if synth["ideas"] and not stop():
+        say(0.95, "Conferindo repetição de tema")
+        try:
+            verdicts = check.judge_duplicates(synth["ideas"], done, bank, job_id=job_id)
+        except Exception as exc:  # noqa: BLE001 - sem o juízo, vale a semelhança dos títulos
+            log.warning("pesquisa: juízo de tema falhou: %s", exc)
+            gaps.append(f"checagem de repetição por tema não rodou (ficou só a semelhança de títulos): "
+                        f"{str(exc)[:200]}")
     cancel = stop()  # último ponto: depois daqui as ideias vão para o banco e a rodada fecha
-    idea_ids = _check_and_save(run_id, channel_id, synth["ideas"], done, bank, save=not cancel)
+    idea_ids = _check_and_save(run_id, channel_id, synth["ideas"], done, bank, save=not cancel, verdicts=verdicts)
     synth["agenda"] = synthesis.agenda(synth["ideas"])
     if cancel:
         raise BuildCancelled("pesquisa cancelada")
@@ -412,17 +435,24 @@ def _save_one(idea: dict[str, Any], channel_id: str, run_id: str, force: bool = 
 
 
 def _check_and_save(run_id: str, channel_id: str, ideas: list[dict[str, Any]], done: list[dict[str, Any]],
-                    bank: list[dict[str, Any]], *, save: bool = True) -> list[str]:
-    """Confere cada ideia (contra os vídeos feitos, o banco e as ideias já gravadas nesta rodada) e grava as novas e
-    as parecidas. Sem `save` (rodada cancelada), só confere."""
+                    bank: list[dict[str, Any]], *, save: bool = True,
+                    verdicts: dict[int, dict[str, Any]] | None = None) -> list[str]:
+    """Confere cada ideia (contra os vídeos feitos, o banco e as ideias já gravadas nesta rodada; `verdicts` é o
+    juízo de tema do LLM, por índice da ideia) e grava as novas e as parecidas. Sem `save` (rodada cancelada), só
+    confere."""
     saved: list[str] = []
+    judged_bank = list(bank)  # os índices do juízo são desta lista
     bank = list(bank)
     run_day = datetime.now(UTC).astimezone().date().isoformat()
-    for idea in ideas:
-        idea["check"] = check.check_idea(idea, done, bank)
+    for n, idea in enumerate(ideas):
+        idea["check"] = check.merge_verdict(check.check_idea(idea, done, bank), (verdicts or {}).get(n), done=done,
+                                            bank=judged_bank, ideas=ideas)
         if idea["check"]["status"] == "parecida":
             sim = idea["check"]["similar_to"] or {}
-            note = f'parecida com "{sim.get("title", "")}", já feito'
+            where = {"banco": "ideia do banco", "rodada": "outra ideia desta rodada"}.get(
+                idea["check"].get("onde", ""), "já feito")
+            diff = idea["check"].get("diferenca") or ""
+            note = f'parecida com "{sim.get("title", "")}", {where}' + (f" (o que muda: {diff})" if diff else "")
             idea["risk"]["note"] = f"{note}; {idea['risk']['note']}" if idea["risk"]["note"] else note
         if save and idea["check"]["status"] in SAVE_STATUSES and (
                 new := _save_one(idea, channel_id, run_id, run_day=run_day)):

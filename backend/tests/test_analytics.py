@@ -99,7 +99,7 @@ def test_bands_same_cuts_as_canais():
     assert var.parse_iso_duration("PT1M5S") == 65 and var.parse_iso_duration("PT2H") == 7200
     assert var.parse_iso_duration("") is None
     assert var.video_format("long", 60) == "short" and var.video_format("long", 181) == "long"
-    assert var.video_format("short", None) == "short" and var.video_format(None, None) == "long"
+    assert var.video_format("short", None) == "short" and var.video_format(None, None) == "desconhecido"
 
 
 def test_hour_and_day_in_channel_timezone():

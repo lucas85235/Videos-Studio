@@ -195,8 +195,12 @@ const OwnList: React.FC<{ title: string; rows: ResearchOwnVideo[] }> = ({ title,
                 <span title="CTR da miniatura">CTR {pct(r.ctr)}</span>
               </div>
             </div>
-            <Badge tone={(r.mult ?? 0) >= 1.5 ? 'good' : (r.mult ?? 1) < 0.6 ? 'bad' : 'neutral'} title="Views por dia ÷ mediana do formato">
+            <Badge
+              tone={(r.mult ?? 0) >= 1.5 ? 'good' : (r.mult ?? 1) < 0.6 ? 'bad' : 'neutral'}
+              title={r.provisorio ? 'Vídeo novo: fora da mediana, o mult ainda pode mudar' : 'Views por dia ÷ mediana do formato'}
+            >
               {multText(r.mult)}
+              {r.provisorio ? ' (novo)' : ''}
             </Badge>
           </li>
         ))}
@@ -212,7 +216,10 @@ const OwnFormat: React.FC<{ label: string; part: ResearchOwnFormat | undefined }
     <div className="flex flex-wrap items-baseline gap-x-3">
       <h3 className="font-display text-[15px] font-semibold text-fg">{label}</h3>
       <span className="text-[13px] text-muted">
-        {part?.n ? `${part.n} vídeos com métrica · mediana de ${fmtNum(part.med)} views por dia` : 'sem vídeos com métrica'}
+        {part?.n
+          ? `${part.n_publicos ?? part.n} públicos · ${part.n} com views · mediana de ${fmtNum(part.med)} views por dia` +
+            (part.base_fraca ? (part.base === 'canal' ? ' (base pequena: mediana do canal todo)' : ' (base pequena: só vídeos novos)') : '')
+          : 'sem vídeos com métrica'}
       </span>
     </div>
     {part?.n ? (

@@ -9,7 +9,9 @@ Campos editáveis:
 - `budget`: teto da cota geral da YouTube Data API por rodada (cada leitura = 1 unidade; as buscas têm balde próprio
   de 100 por dia, contado à parte);
 - `days`: janela dos vídeos olhados;
-- `auto`: rodar toda semana na rotina da manhã.
+- `auto`: rodar toda semana na rotina da manhã;
+- `extra_sources`: outras fontes do que o canal já fez, lidas só para a checagem de repetição:
+  `[{type: "estudio_db", path, canal}]` (o banco do sistema antigo, `estudio.db`, com o nome do canal lá).
 Estado (gravado pelo job e pela rotina): `last_week`, `last_week_submitted`, `last_week_tries` (tentativas da rotina
 naquela semana), `last_run_id`, `last_job`.
 """
@@ -46,7 +48,10 @@ DEFAULTS: dict[str, Any] = {
     "budget": 600,
     "days": 90,
     "auto": False,
+    "extra_sources": [],
 }
+SOURCE_TYPES = ("estudio_db",)
+MAX_SOURCES = 5
 STATE_FIELDS = ("last_week", "last_week_submitted", "last_week_tries", "last_run_id", "last_job")
 EDITABLE = tuple(DEFAULTS)
 _WRITE_LOCK = threading.Lock()  # tela, job e rotina gravam no mesmo JSON: ler e gravar juntos, sem perder campo
@@ -117,6 +122,20 @@ def _competitors(value: Any) -> list[dict[str, str]]:
     return out
 
 
+def _sources(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > MAX_SOURCES:
+        raise ResearchError(f"fontes externas: mande uma lista de até {MAX_SOURCES}")
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("type") not in SOURCE_TYPES:
+            raise ResearchError('fonte externa: o tipo aceito é "estudio_db"')
+        path, canal = str(item.get("path") or "").strip(), str(item.get("canal") or "").strip()
+        if not path.lower().endswith(".db") or not canal:
+            raise ResearchError("fonte externa: informe o caminho do .db e o nome do canal nele")
+        out.append({"type": item["type"], "path": path[:500], "canal": canal[:100]})
+    return out
+
+
 def _int_in(value: Any, name: str, bounds: tuple[int, int]) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float) or int(value) != value:
         raise ResearchError(f"{name}: use um número inteiro")
@@ -150,6 +169,8 @@ def validate(changes: dict[str, Any]) -> dict[str, Any]:
             out[key] = _int_in(value, "janela em dias", DAYS_RANGE)
         elif key == "auto":
             out[key] = bool(value)
+        elif key == "extra_sources":
+            out[key] = _sources(value)
     return out
 
 

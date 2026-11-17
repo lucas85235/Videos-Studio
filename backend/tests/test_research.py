@@ -231,7 +231,11 @@ def test_sinais_proprios_separam_longos_e_shorts(monkeypatch):
     assert out["long"]["n"] == 7 and out["long"]["med"] == 400
     assert out["long"]["top"][0]["youtube_id"] == "l6" and out["long"]["top"][0]["mult"] == 1.75
     assert [r["youtube_id"] for r in out["long"]["bottom"]] == ["l0", "l1"]  # os 2 que sobram depois do top 5
-    assert out["short"]["med"] == 2000 and out["short"]["top"][0]["url"] == "https://www.youtube.com/shorts/s1"
+    # só 2 Shorts: base fraca, a mediana é a do canal todo (como no concorrente)
+    assert out["short"]["med"] == 500 and out["short"]["base"] == "canal" and out["short"]["base_fraca"]
+    assert out["short"]["top"][0]["url"] == "https://www.youtube.com/shorts/s1"
+    assert out["long"]["base"] == "formato" and not out["long"]["base_fraca"]
+    assert out["fonte"] == "vulto" and out["aviso"] == "canal sem vínculo com o YouTube"
 
 
 def test_pre_filtro_de_comentarios():
@@ -260,8 +264,11 @@ def test_check_contra_videos_feitos_e_banco():
         {"title": "A história secreta do Banco Imperial", "video_id": "abcdefghijk"}]})
     with session_scope() as s:
         s.add(Idea(id="ide_existente", channel_id=cid, title="O Ouro de Serra Pelada", status="aprovada"))
-    done, bank = check.done_titles(cid), check.open_ideas(cid)
-    assert done == [{"title": "A história secreta do Banco Imperial", "url": "https://youtu.be/abcdefghijk"}]
+    gaps: list[str] = []
+    done, bank = check.done_titles(cid, gaps=gaps), check.open_ideas(cid)
+    assert done == [{"title": "A história secreta do Banco Imperial", "url": "https://youtu.be/abcdefghijk",
+                     "status": "no canal", "theme": ""}]
+    assert gaps and gaps[0].startswith("checagem de repetição sem o canal inteiro")  # sem login: só a vitrine
     rep = check.check_idea({"title": "A história secreta do Banco Imperial!"}, done, bank)
     assert rep["status"] == "repetida" and rep["similar_to"]["url"] == "https://youtu.be/abcdefghijk"
     par = check.check_idea({"title": "Banco Imperial: a história secreta que ninguém contou"}, done, bank)
@@ -752,3 +759,310 @@ def test_web_tasks_inclui_a_pesquisa():
 
     assert "video_ideas" in WEB_TASKS
     assert date.fromisoformat(_ctx()["today"]) == TODAY
+
+
+# ----------------------------------------------------------------------------- canal inteiro (inventário de uploads)
+
+OWN_YT = "UC" + "o" * 22
+
+
+def _own_items() -> dict[str, dict]:
+    """57 uploads do próprio canal: 4 longos assentados e 1 novo, 48 Shorts assentados e 1 novo, um privado que já
+    teve views (tirado do ar), um agendado e uma live sem duração."""
+    items: dict[str, dict] = {}
+
+    def add(vid, views, days, dur, privacy="public", publish_at=None):
+        it = _item(vid, views, days, dur)
+        it["status"] = {"privacyStatus": privacy, **({"publishAt": publish_at} if publish_at else {})}
+        items[vid] = it
+
+    for n, views in enumerate([1000, 2000, 4000, 8000], start=1):
+        add(f"own_long_{n}", views, 10, "PT12M")
+    add("own_long_5", 5000, 2, "PT12M")  # 2 dias: mult provisório, fora da mediana
+    for n in range(1, 49):
+        add(f"own_short{n:02d}", 100 * n * 5, 5, "PT40S")  # vpd = 100 × n
+    add("own_short49", 30000, 1, "PT40S")
+    add("own_priv_01", 5000, 4, "PT35S", privacy="private")  # privado com views: fora
+    add("own_sched01", 0, 0.5, "PT35S", privacy="private", publish_at=_iso(-2))  # agendado
+    add("own_live_01", 900, 20, "P0D")  # sem duração: formato desconhecido
+    return items
+
+
+def _own_handler(calls: list[str], items: dict[str, dict]):
+    ids = list(items)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        calls.append(url)
+        q = parse_qs(urlparse(url).query)
+        path = urlparse(url).path.rsplit("/", 1)[-1]
+        if path == "playlistItems":
+            assert q["playlistId"] == ["UUown"] and q["part"] == ["snippet,status"]
+            start = int(q.get("pageToken", ["0"])[0])
+            page = ids[start:start + 50]
+            body: dict = {"items": [{"snippet": {"title": items[v]["snippet"]["title"],
+                                                 "publishedAt": items[v]["snippet"]["publishedAt"],
+                                                 "description": "  descrição   do vídeo  ",
+                                                 "resourceId": {"videoId": v}},
+                                     "status": {"privacyStatus": items[v]["status"]["privacyStatus"]}}
+                                    for v in page]}
+            body["items"].append({"snippet": {"title": "Deleted video", "resourceId": {"videoId": "apagado001"}}})
+            if start + 50 < len(ids):
+                body["nextPageToken"] = str(start + 50)
+            return httpx.Response(200, json=body)
+        if path == "videos":
+            got = q["id"][0].split(",")
+            assert len(got) <= 50
+            return httpx.Response(200, json={"items": [items[i] for i in got if i in items]})
+        return httpx.Response(404, json={})
+
+    return handler
+
+
+def _own_channel(monkeypatch) -> str:
+    from studio.workers.analytics import uploads
+
+    monkeypatch.setattr(uploads, "channel_token", lambda http, link: "token-do-dono")
+    return _channel(youtube={"channel_id": OWN_YT, "uploads_playlist": "UUown", "source": "oauth", "recent_videos": [
+        {"title": "Vídeo own_short49", "video_id": "own_short49", "published": _iso(1)}]})
+
+
+def test_sinais_proprios_leem_o_canal_inteiro_sem_search(monkeypatch):
+    from studio.workers.analytics import collect, uploads
+
+    cid = _own_channel(monkeypatch)
+    calls: list[str] = []
+    http = httpx.Client(transport=httpx.MockTransport(_own_handler(calls, _own_items())))
+    out = signals.own_signals(cid, http=http, now=NOW)
+    pls = [c for c in calls if "/playlistItems" in c]
+    vids = [c for c in calls if "/videos" in c]
+    assert len(pls) == 2 and "pageToken=50" in pls[1] and len(vids) == 2  # 4 unidades, nenhuma busca
+    assert not any("/search" in c for c in calls)
+    assert out["fonte"] == "youtube" and out["inventario"] == 57 and out["aviso"] is None and out["units"] == 4
+    assert out["fora_do_ar"] == 1  # o privado com views saiu da conta
+    lg, sh = out["long"], out["short"]
+    assert (lg["n_publicos"], lg["n"], lg["n_assentados"], lg["base"]) == (5, 5, 4, "formato")
+    assert lg["med"] == 300.0  # mediana de 100/200/400/800 views por dia
+    assert lg["top"][0]["youtube_id"] == "own_long_5" and lg["top"][0]["provisorio"]
+    assert lg["top"][1]["youtube_id"] == "own_long_4" and lg["top"][1]["mult"] == 2.67
+    assert (sh["n_publicos"], sh["n"], sh["n_assentados"], sh["base_fraca"]) == (49, 49, 48, False)
+    every = {r["youtube_id"] for f in ("long", "short") for g in ("top", "bottom") for r in out[f][g]}
+    assert not every & {"own_priv_01", "own_sched01", "own_live_01"}
+    # o inventário fica guardado à parte; a vitrine (recent_videos) continua com o que tinha
+    with session_scope() as s:
+        settings = s.get(Channel, cid).settings
+    assert len(settings["uploads"]["items"]) == 57 and settings["uploads"]["playlist"] == "UUown"
+    assert settings["uploads"]["items"][0]["description"] == "descrição do vídeo"
+    assert [v["video_id"] for v in settings["youtube"]["recent_videos"]] == ["own_short49"]
+    # dentro de 6 h vale o guardado: sem playlistItems de novo
+    assert signals.own_signals(cid, http=http, now=NOW + timedelta(hours=1))["units"] == 2  # só videos.list
+    assert len([c for c in calls if "/playlistItems" in c]) == 2
+    assert uploads.inventory(cid, http, now=NOW + timedelta(hours=7), save=False)["fonte"] == "api"
+    # a coleta diária de métricas passa a enxergar o canal inteiro
+    ids, _ = collect.channel_video_ids(cid)
+    assert len(ids) == 57 and "own_long_1" in ids
+    # e a checagem de repetição também (com privados e agendados)
+    gaps: list[str] = []
+    done = check.done_titles(cid, http=http, now=NOW + timedelta(hours=1), gaps=gaps)
+    assert gaps == [] and len(done) == 57
+    priv = next(d for d in done if d["url"].endswith("own_priv_01"))
+    assert priv["status"] == "privado ou agendado" and priv["theme"] == "descrição do vídeo"
+    # o pedido ao Claude leva o tamanho real do canal e a base medida
+    ctx = synthesis.build_context({"name": "Canal"}, {"own": out}, formats=["long", "short"], markets=["br"],
+                                  done=done, open_ideas=[], today=TODAY)
+    assert ctx["own"]["long"]["videos_publicos"] == 5 and ctx["own"]["long"]["assentados"] == 4
+    assert ctx["own"]["long"]["itens"][0]["provisorio"] is True
+    assert "privado ou agendado" in " ".join(ctx["done"])
+    prompt = synthesis.SYSTEM + synthesis.build_prompt(ctx)
+    assert "videos_publicos" in prompt and "Cite pelo título" in prompt
+
+
+def test_sinais_proprios_sem_login_avisam_e_tiram_privados(monkeypatch):
+    from studio.workers.analytics import variables
+
+    vids = [{"youtube_id": f"s{i}", "title": f"S{i}", "format": "short", "views_per_day": v, "privacy": "public",
+             "metric": {"views": v * 10}, "published_at": _iso(10)} for i, v in enumerate([10, 20, 30])]
+    vids.append({"youtube_id": "priv", "title": "tirado do ar", "format": "short", "views_per_day": 999,
+                 "privacy": "private", "metric": {"views": 5000}, "published_at": _iso(4)})
+    vids.append({"youtube_id": "jovem", "title": "novo", "format": "short", "views_per_day": 500,
+                 "privacy": "public", "metric": {"views": 500}, "published_at": _iso(1)})
+    vids.append({"youtube_id": "semdur", "title": "sem duração", "format": "desconhecido", "views_per_day": 7,
+                 "privacy": "public", "metric": {"views": 70}, "published_at": _iso(10)})
+    monkeypatch.setattr(variables, "load_videos", lambda channel_id=None: vids)
+    cid = _channel(youtube={"channel_id": OWN_YT, "source": "public"})
+    out = signals.own_signals(cid, now=NOW)
+    assert out["fonte"] == "vulto" and "login do Google" in out["aviso"] and out["fora_do_ar"] == 1
+    sh = out["short"]
+    assert (sh["n"], sh["n_assentados"], sh["med"]) == (4, 3, 20.0)  # o novo não entra na mediana
+    assert sh["top"][0]["youtube_id"] == "jovem" and sh["top"][0]["provisorio"] and sh["top"][0]["mult"] == 25
+    assert out["long"]["n"] == 0  # o sem duração não vira longo
+    gaps = service._gap_lines({"days": 90, "competitors": [], "keywords": []}, {"own": out}, {}, [], True)
+    assert any(g.startswith("próprio canal lido só pelo que o Vulto conhece") for g in gaps)
+
+
+def test_formato_sem_duracao_e_coleta_guarda_dados_dos_privados(monkeypatch):
+    from studio.workers.analytics import collect, reach, uploads, variables, yt_revenue
+
+    assert variables.video_format(None, None) == "desconhecido"
+    assert variables.video_format("long", None) == "long" and variables.video_format(None, 40) == "short"
+    assert signals.format_of(None) == "desconhecido" and signals.format_of(0) == "desconhecido"
+    assert signals.format_of(181) == "long"
+    cid = _own_channel(monkeypatch)
+    monkeypatch.setattr(yt, "account_for_channel", lambda channel_id: "conta")
+    monkeypatch.setattr(yt, "access_token", lambda http, account=None: "token-do-dono")
+    monkeypatch.setattr(reach, "fetch_reach", lambda *a, **k: ("ok", {}, ""))
+    monkeypatch.setattr(yt_revenue, "collect_revenue", lambda *a, **k: ("ok", {}, ""))
+    calls: list[str] = []
+    own = _own_handler(calls, _own_items())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(yt.ANALYTICS_API):
+            return httpx.Response(200, json={"columnHeaders": [], "rows": []})
+        return own(request)
+
+    with session_scope() as s:  # o agendado está na vitrine, como os Shorts privados do Lucas em Vice
+        row = s.get(Channel, cid)
+        yt_link = dict(row.settings["youtube"])
+        yt_link["recent_videos"] = [*yt_link["recent_videos"], {"title": "Agendado", "video_id": "own_sched01"}]
+        row.settings = {**row.settings, "youtube": yt_link}
+    out = collect.collect_channel(cid, httpx.Client(transport=httpx.MockTransport(handler)), now=NOW)
+    assert out["skipped"] == 1 and out["saved"] == 56  # só o agendado sem views fica fora da conta
+    with session_scope() as s:
+        cache = s.get(Channel, cid).settings["analytics"]["videos"]
+    assert cache["own_sched01"]["duration_s"] == 35 and cache["own_sched01"]["privacy"] == "private"
+    assert uploads.cached({"uploads": {"items": [{"video_id": "x"}, "lixo"]}}) == [{"video_id": "x"}]
+    videos = {v["youtube_id"]: v for v in variables.load_videos(cid)}
+    assert videos["own_sched01"]["format"] == "short"  # Short privado continua Short
+    assert videos["own_priv_01"]["privacy"] == "private"
+
+
+def test_done_titles_le_o_sistema_antigo(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "estudio.db"
+    con = sqlite3.connect(db)
+    con.execute("create table videos (canal, titulo, tema, etapa, status, youtube_id)")
+    con.execute("create table ideias (canal, titulo, angulo, status)")
+    con.executemany("insert into videos values (?, ?, ?, ?, ?, ?)", [
+        ("plantao-vice", "Quanto GTA 6 custou de verdade", "custo", "revisao", "ativo", None),
+        ("plantao-vice", "GTA 6 sem disco", "https://fonte", "publicado", "ativo", "abcdefghijk"),
+        ("plantao-vice", "Cancelado", "", "roteiro", "cancelado", None),
+        ("outro", "De outro canal", "", "publicado", "ativo", None)])
+    con.executemany("insert into ideias values (?, ?, ?, ?)", [
+        ("plantao-vice", "Dá para jogar GTA 6 18 horas antes?", "Nova Zelândia", "nova"),
+        ("plantao-vice", "Rejeitada", "", "rejeitada")])
+    con.commit()
+    con.close()
+    cid = _channel()
+    gaps: list[str] = []
+    src = [{"type": "estudio_db", "path": str(db), "canal": "plantao-vice"},
+           {"type": "estudio_db", "path": str(tmp_path / "nao-existe.db"), "canal": "x"}]
+    done = check.done_titles(cid, gaps=gaps, extra_sources=src)
+    assert [(d["title"], d["status"], d["theme"], d["url"]) for d in done] == [
+        ("Quanto GTA 6 custou de verdade", "sistema antigo: revisao", "custo", ""),
+        ("GTA 6 sem disco", "sistema antigo: publicado", "", "https://youtu.be/abcdefghijk"),
+        ("Dá para jogar GTA 6 18 horas antes?", "ideia do sistema antigo (nova)", "Nova Zelândia", "")]
+    assert any("nao-existe.db" in g for g in gaps)
+    saved = config.save_config(cid, extra_sources=src[:1])
+    assert saved["extra_sources"] == src[:1]
+    with pytest.raises(config.ResearchError):
+        config.save_config(cid, extra_sources=[{"type": "planilha", "path": "x.db", "canal": "a"}])
+
+
+# Regressão da rodada rsr_q18wpgwsmd (Lucas em Vice, 17/11/2026): os títulos reescritos sobre o mesmo tema saíram
+# "nova" com semelhança de 0,08 a 0,33.
+DONE_REAL = [
+    {"title": "Tem gente que vai jogar GTA 6 ANTES de você? #GTA6", "url": "https://youtu.be/ZIjazT5cgYQ",
+     "status": "privado ou agendado", "theme": ""},
+    {"title": "GTA 6 com 210 GB no PS5? E a versão física vem SEM disco #GTA6 #PS5",
+     "url": "https://youtu.be/wwU1SFFOHus", "status": "público", "theme": ""},
+    {"title": "212 GB do GTA 6 é quanto do seu PS5? A conta e o tempo de download",
+     "url": "https://youtu.be/hMp2yP4k_gY", "status": "privado ou agendado", "theme": ""},
+    {"title": "GTA 6 não terá dublagem em português: o motivo da Rockstar", "url": "", "status": "sistema antigo",
+     "theme": ""},
+    {"title": "Quanto GTA 6 custou de verdade", "url": "", "status": "sistema antigo: revisao", "theme": ""},
+]
+IDEAS_REAL = [
+    "GTA 6 libera à 0h de quinta no Brasil, mas a Nova Zelândia joga 16 horas antes",  # #2
+    "GTA 6: a caixa de PS5 não tem disco (só um código para baixar 212 GB)",  # #3
+    "GTA 6 ocupa até 212 GB: quanto espaço sobra no seu PS5 (e o patch que já saiu)",  # #4
+    "GTA 6 tem português? Legenda sim, dublagem não (e nenhum idioma tem)",  # #9
+    "GTA 5 x GTA 6: quanto do mapa é cidade de verdade?",  # #13
+    "GTA 6 entrou na disputa do GOTY por 24 horas",  # #14
+    "GTA 6 ganhou o GOTY? O resultado do The Game Awards em horário de Brasília",  # #19
+]
+
+
+def test_juizo_de_tema_pega_titulo_reescrito(monkeypatch):
+    cid = _channel()
+    ideas = [_idea(t, [], fmt="short") for t in IDEAS_REAL]
+    # só pela semelhança de títulos, as repetições passam como novas (o bug) e o custo do mapa cola no do jogo
+    lexical = [check.check_idea(i, DONE_REAL, [])["status"] for i in ideas]
+    assert lexical == ["nova", "nova", "nova", "nova", "parecida", "nova", "nova"]
+    seen: dict = {}
+
+    def fake_llm(prompt, context, job_id):
+        seen["prompt"] = prompt
+        return {"matches": [
+            {"idea": "I1", "match": "F1", "mesmo_tema": True, "mesmo_angulo": False, "diferenca": "mapa de fusos"},
+            {"idea": "I2", "match": "F2", "mesmo_tema": True, "mesmo_angulo": True, "diferenca": ""},
+            {"idea": "I3", "match": "F3", "mesmo_tema": True, "mesmo_angulo": True, "diferenca": ""},
+            {"idea": "I4", "match": "F4", "mesmo_tema": True, "mesmo_angulo": False, "diferenca": "legenda"},
+            {"idea": "I7", "match": "I6", "mesmo_tema": True, "mesmo_angulo": False, "diferenca": "o resultado"},
+            {"idea": "I5", "match": "F5", "mesmo_tema": False, "mesmo_angulo": False, "diferenca": ""},  # #13: nova
+            {"idea": "I6", "match": "I7", "mesmo_tema": True, "mesmo_angulo": True},  # aponta para depois: ignora
+            {"idea": "I5", "match": "F99", "mesmo_tema": True, "mesmo_angulo": True},  # ref inventado: ignora
+        ]}
+
+    monkeypatch.setattr(check, "_judge_llm", fake_llm)
+    verdicts = check.judge_duplicates(ideas, DONE_REAL, [])
+    assert "I1: GTA 6 libera" in seen["prompt"] and "F5: Quanto GTA 6 custou de verdade" in seen["prompt"]
+    i5 = next(line for line in seen["prompt"].splitlines() if line.startswith("I5: "))
+    assert i5.endswith("— [suspeita: F5]") and "[suspeita" not in seen["prompt"].replace(i5, "")
+    assert sorted(verdicts) == [0, 1, 2, 3, 4, 6] and not verdicts[4]["mesmo_tema"]
+    service._check_and_save("rsr_teste", cid, ideas, DONE_REAL, [], verdicts=verdicts)
+    status = [(i["check"]["status"], (i["check"]["similar_to"] or {}).get("title", "")[:20]) for i in ideas]
+    assert status == [("parecida", "Tem gente que vai jo"), ("repetida", "GTA 6 com 210 GB no "),
+                      ("repetida", "212 GB do GTA 6 é qu"), ("parecida", "GTA 6 não terá dubla"),
+                      ("nova", ""), ("nova", ""), ("parecida", "GTA 6 entrou na disp")]
+    note = ideas[0]["risk"]["note"]
+    assert note.startswith('parecida com "Tem gente') and "mapa de fusos" in note
+    assert "outra ideia desta rodada" in ideas[6]["risk"]["note"]
+    # mesmo tema e ângulo de uma ideia já gravada na rodada: já no banco, com o id dela
+    same = check.merge_verdict({"status": "nova", "similar_to": None, "similarity": 0.1, "idea_id": None},
+                               {"onde": "rodada", "alvo": 5, "mesmo_tema": True, "mesmo_angulo": True,
+                                "diferenca": ""}, done=DONE_REAL, bank=[], ideas=ideas)
+    assert same["status"] == "ja_no_banco" and same["idea_id"] == ideas[5]["check"]["idea_id"]
+    # o juízo nunca desce o status da semelhança de títulos
+    rep = {"status": "repetida", "similar_to": {"title": "x", "url": ""}, "similarity": 0.9, "idea_id": None}
+    assert check.merge_verdict(rep, verdicts[0], done=DONE_REAL, bank=[], ideas=ideas) == rep
+
+
+def test_rodada_segue_se_o_juizo_de_tema_falhar(monkeypatch):
+    from studio.providers.base import ProviderError
+
+    def boom(prompt, context, job_id):
+        raise ProviderError("limite do plano")
+
+    monkeypatch.setattr(check, "_judge_llm", boom)
+    cid = _research_channel()
+    out = service.run(cid, http=_client([]), now=NOW)
+    run = service.get_run(out["run_id"])
+    assert out["status"] == "ok" and out["saved"] == 8
+    assert any(g.startswith("checagem de repetição por tema não rodou") for g in run["lacunas"])
+
+
+def test_referencia_a_outra_ideia_pelo_numero_vira_titulo():
+    data = {"ideas": [
+        {**_idea("Quanto tempo leva para zerar", [], score=9), "rank": 1},
+        {**_idea("GOTY por 24 horas", [], score=5), "rank": 2},
+        {**_idea("Resultado do GOTY", [], score=7), "rank": 3},
+    ]}
+    data["ideas"][2]["why"] = "Fecha o ciclo do item 2. Ver também a ideia #7."
+    data["ideas"][2]["risk"] = {"level": "baixo", "note": "depende da ideia nº 1"}
+    post = synthesis.postprocess(data, {}, ["long"], TODAY)
+    final = synthesis.finalize(post["ideas"], TODAY)
+    goty = next(i for i in final if i["title"] == "Resultado do GOTY")
+    assert goty["rank"] == 2  # a ordem mudou (por nota), o texto não aponta mais para o número velho
+    assert goty["why"] == 'Fecha o ciclo do "GOTY por 24 horas". Ver também a outra ideia desta lista.'
+    assert goty["risk"]["note"] == 'sem prova; depende da "Quanto tempo leva para zerar"'

@@ -387,3 +387,8 @@ def mock_video_ideas(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"resumo": f"Síntese offline com {len(ideas)} ideias a partir dos sinais coletados.",
             "temas": [niche], "ideas": ideas, "web_sources": [],
             "lacunas": ["síntese offline: sem notícias, datas nem tendências da web"]}
+
+
+def mock_idea_dupes(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Juízo de tema offline: sem modelo não dá para julgar tema; fica só a semelhança de títulos da checagem."""
+    return {"matches": []}
