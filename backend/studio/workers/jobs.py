@@ -62,6 +62,11 @@ class JobContext:
     def cancelled(self) -> bool:
         return self._cancel.is_set()
 
+    def uncancel(self) -> None:
+        """O job passou do ponto sem volta (o resultado já foi gravado): um pedido de cancelar que chegou depois não
+        vale mais, e o job fecha como concluído em vez de "cancelado"."""
+        self._cancel.clear()
+
     def progress(self, fraction: float, message: str = "") -> None:
         fraction = max(0.0, min(1.0, fraction))
         with session_scope() as s:
@@ -211,7 +216,7 @@ def get_job(job_id: str) -> dict[str, Any] | None:
 
 
 # Registra os jobs do pipeline, de publicação, da gestão de canal (ADR 0002) e da qualidade e pesquisa (ADR 0003:
-# radar, factcheck, audiocheck, finalcheck e visual)
+# radar, pesquisa de vídeos, factcheck, audiocheck, finalcheck e visual)
 from studio.workers import publish_tasks, tasks  # noqa: E402,F401
 from studio.workers.analytics import tasks as _analytics_tasks  # noqa: E402,F401
 from studio.workers.audiocheck import tasks as _audiocheck_tasks  # noqa: E402,F401
@@ -219,5 +224,6 @@ from studio.workers.factcheck import tasks as _factcheck_tasks  # noqa: E402,F40
 from studio.workers.finalcheck import tasks as _finalcheck_tasks  # noqa: E402,F401
 from studio.workers.ops import tasks as _ops_tasks  # noqa: E402,F401
 from studio.workers.radar import tasks as _radar_tasks  # noqa: E402,F401
+from studio.workers.research import tasks as _research_tasks  # noqa: E402,F401
 from studio.workers.shorts import tasks as _shorts_tasks  # noqa: E402,F401
 from studio.workers.visual import tasks as _visual_tasks  # noqa: E402,F401

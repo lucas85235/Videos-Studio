@@ -18,6 +18,7 @@ import {
   Sparkles,
   SquarePlay,
   Target,
+  Telescope,
   Trash2,
   Tv,
   Unlink,
@@ -896,8 +897,9 @@ const ChannelCard: React.FC<
         editing ? 'border-accent/60 ring-1 ring-accent/30' : 'border-line hover:border-line-strong'
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
+      {/* Em tela estreita os botões descem para a linha de baixo (e quebram entre si) em vez de espremer o nome. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-[12rem] flex-1 items-center gap-3">
           <Avatar y={y} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -907,7 +909,11 @@ const ChannelCard: React.FC<
             {c.niche ? <div className="text-[13px] text-muted">{c.niche}</div> : null}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
+          <Link to={`/pesquisa?canal=${c.id}`} className={buttonClass({ size: 'sm' })} aria-label={`Pesquisar vídeos para o canal ${c.name}`}>
+            <Telescope size={14} strokeWidth={2} aria-hidden="true" className="shrink-0" />
+            Pesquisar vídeos
+          </Link>
           <Button size="sm" icon={UserRound} onClick={onCharacters} aria-label={`Personagens do canal ${c.name}`}>
             Personagens{characterCount(c) ? ` (${characterCount(c)})` : ''}
           </Button>

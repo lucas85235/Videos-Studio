@@ -149,6 +149,17 @@ A página **Comentários** (grupo Gestão) lê os comentários de todos os víde
 - Se a resposta der "o YouTube não respondeu a tempo", ela pode ter sido publicada: confira em **Abrir no YouTube** antes de enviar de novo.
 - Em fios com muitas respostas o YouTube devolve só parte delas: se a resposta do canal não vier entre elas, o comentário continua em **Não respondidos** (marcar como lido tira de **Perguntas novas**, **Não lidos** e Hoje).
 
+### Pesquisa de vídeos do canal
+
+A página **Pesquisa de vídeos** (grupo Gestão, ou o atalho no cartão do canal) junta numa rodada o que funciona no canal e no nicho e devolve de 10 a 25 ideias ranqueadas, cada uma com a **data ou janela de publicação**.
+
+- **Configuração** (por canal): concorrentes (cole o link do canal; resolver não gasta cota), até 8 palavras-chave (vazio = as 5 primeiras do canal no YouTube; uma por linha, sem `|`), **mercados** "br" e/ou "us" (o "us" acha ângulos de fora que ainda não existem em português; dá para pôr termos em inglês só para ele), formatos do canal (vazio = deduzido dos estilos), janela em dias e orçamento de cota.
+- **O que a rodada lê**: o desempenho dos seus vídeos (longos e Shorts separados, por views por dia), os vídeos fora da curva de cada concorrente (contra a mediana dele no mesmo formato), as buscas em cada mercado escolhido e as perguntas e pedidos dos comentários. Depois o Claude Code, com busca na web, junta notícias e datas do nicho e escreve a síntese.
+- **Cota do YouTube**: cada palavra-chave é uma busca por mercado, e as buscas têm cota própria no YouTube (100 por dia, somando o Radar); cada busca ainda gasta umas 2 unidades da cota geral, e os concorrentes umas 2 cada. **Simular** mostra a conta antes (com a configuração salva); o que não cabe no orçamento ou nas buscas do dia fica de fora e aparece nas lacunas. Com o acesso pelo token de um canal vinculado, o gasto entra no medidor de Publicações.
+- **Resultado**: ranking por nota e **agenda por data**, com as evidências de cada ideia (só links dos sinais coletados ou páginas que abriram de verdade; ideia sem prova perde 2 pontos). Ideia igual a um vídeo já feito fica só no relatório; as outras vão para **Ideias** com origem "pesquisa". **Lacunas** lista o que não deu para medir na rodada (sem acesso à API, sem métricas, sem web...).
+- Sem busca na web (ou no limite do plano Claude), a rodada fica **parcial**: os sinais ficam guardados e nenhuma ideia é criada. Cancelada ou com erro, a rodada também fica no histórico, com os sinais (a síntese já feita fica na rodada cancelada, e dá para salvar as ideias à mão). Uma rodada manual a cada 6 h por canal: o botão mostra a hora em que libera.
+- **Rodar toda semana** coloca o canal na rotina da manhã (um canal por manhã e uma pesquisa por vez; pula o canal com 15 ou mais ideias novas esperando ou com rodada nas últimas 6 h). Se a rodada falhar ou o Claude bater no limite do plano, o canal tenta de novo numa manhã seguinte (até 2 vezes na semana), depois dos canais que ainda não rodaram. Uma rodada manual completa conta como a da semana. As ideias novas aparecem em **Hoje**, com o link para decidir em **Ideias**. O relatório em Markdown sai pelo histórico de rodadas.
+
 ### Séries com piloto automático
 
 Em **Séries**, cadastre uma série por canal: nome, tema, instruções fixas (bordão, estrutura), formato, estilo (vazio = o do canal), **cadência** (todo dia, toda semana...) e quantos **episódios em estoque** ela deve manter à frente.
@@ -161,7 +172,7 @@ Em **Séries**, cadastre uma série por canal: nome, tema, instruções fixas (b
 
 ### Rotinas com o Vulto fechado
 
-As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, comentários novos, pendências de estoque, receita e marcos, radar semanal e episódios das séries com piloto ligado) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
+As rotinas do dia (cópia do banco e, depois do horário da manhã, coleta de métricas, comentários novos, pendências de estoque, receita e marcos, radar semanal, pesquisa de vídeos semanal e episódios das séries com piloto ligado) rodam sozinhas com o app aberto. Para rodarem com ele fechado, agende uma tarefa no Windows (uma vez só), no PowerShell, na pasta do projeto:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\agendar-rotinas.ps1                 # ao entrar no Windows e todo dia às 08:00

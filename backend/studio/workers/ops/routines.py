@@ -13,7 +13,8 @@ A manhã (`morning`), cada parte isolada (uma quebrada não derruba as outras):
    72 h (nada retroativo);
 5. radar de nichos (ADR 0003, bloco E), uma vez por semana ISO (`step_radar`);
 6. comentários novos dos canais cuja caixa de comentários já está em uso (`step_comments`);
-7. séries com piloto automático ligado (`step_series`): episódios novos até o estoque da série, parando no portão de
+7. pesquisa de vídeos dos canais com "Rodar toda semana", um canal por manhã (`step_research`);
+8. séries com piloto automático ligado (`step_series`): episódios novos até o estoque da série, parando no portão de
    revisão do roteiro (nunca publica).
 """
 
@@ -352,6 +353,7 @@ def step_milestones(now: datetime) -> list[str]:
 
 
 RADAR_IDEAS_LIMIT = 15  # LIMITE_IDEIAS do canais: o radar não roda com tantas ideias novas esperando
+RESEARCH_WEEK_TRIES = 2  # tentativas da pesquisa semanal de um canal antes de deixar a semana para lá
 
 
 def step_radar(now: datetime) -> list[str]:
@@ -377,6 +379,59 @@ def step_radar(now: datetime) -> list[str]:
     job = jobs.get_runner().submit("radar_collect", {"weekly": week})
     catalog.update_radar_state(last_week_submitted=week, last_job=job.get("id"))
     return [f"radar de nichos na fila ({job['id']})"]
+
+
+def step_research(now: datetime) -> list[str]:
+    """Pesquisa de vídeos dos canais com "Rodar toda semana" ligado, uma vez por semana ISO por canal e um canal por
+    manhã (espalha o uso do plano Claude). Pula (e marca a semana) o canal com 15 ou mais ideias novas esperando.
+
+    - Uma pesquisa por vez: com qualquer pesquisa na fila ou rodando (manual, de outro canal), nenhuma entra hoje;
+    - canal com rodada nas últimas 6 h (manual, por exemplo) espera: a manual que fecha "ok" já marca a semana;
+    - quem falhou não trava os outros: a ordem é por tentativas na semana e depois por nome, então o canal que falhou
+      ontem vai para o fim da fila; depois de `RESEARCH_WEEK_TRIES` tentativas sem fechar, a semana dele é encerrada."""
+    from studio.workers import jobs
+    from studio.workers.radar import ideas
+    from studio.workers.research import config, service
+
+    if service.KIND not in jobs._REGISTRY:
+        return []
+    week = ideas.iso_week(now)
+    with session_scope() as s:
+        channels = [(c.id, c.name) for c in s.query(Channel).order_by(Channel.name).all()
+                    if ((c.settings or {}).get(config.KEY) or {}).get("auto")]
+    lines: list[str] = []
+    queue: list[tuple[int, str, str]] = []
+    for cid, name in channels:
+        cfg = config.get_config(cid)
+        if cfg.get("last_week") == week:
+            continue
+        tries = int(cfg.get("last_week_tries") or 0) if cfg.get("last_week_submitted") == week else 0
+        if tries >= RESEARCH_WEEK_TRIES:
+            config.update_state(cid, last_week=week)
+            lines.append(f"pesquisa de vídeos do {name}: {tries} tentativas sem fechar nesta semana; fica para a "
+                         "próxima (veja o Histórico da pesquisa)")
+            continue
+        waiting = service.channel_new_ideas(cid)
+        if waiting >= RADAR_IDEAS_LIMIT:
+            config.update_state(cid, last_week=week)
+            lines.append(f"pesquisa de vídeos do {name} pulada: {waiting} ideias novas esperando você")
+            continue
+        hours = service.hours_since_last(cid, now)
+        if hours is not None and 0 <= hours < service.MANUAL_COOLDOWN_H:
+            continue
+        queue.append((tries, name, cid))
+    if not queue:
+        return lines
+    # `last_week` só é marcada pelo job quando a rodada fecha (e `last_job` quando começa): se falhar, uma manhã
+    # seguinte tenta de novo (até `RESEARCH_WEEK_TRIES` vezes), depois dos canais que ainda não tentaram
+    tries, name, cid = min(queue)
+    with service.SUBMIT_LOCK:
+        if service.any_active_job() is not None:
+            return lines
+        config.update_state(cid, last_week_submitted=week, last_week_tries=tries + 1)
+        job = jobs.get_runner().submit(service.KIND, {"channel_id": cid, "weekly": week})
+    lines.append(f"pesquisa de vídeos: rodando para {name} ({job['id']})")
+    return lines
 
 
 def step_comments(now: datetime) -> list[str]:
@@ -414,6 +469,7 @@ STEPS = (
     ("receita", step_revenue),
     ("marcos", step_milestones),
     ("radar", step_radar),
+    ("pesquisa", step_research),
     ("séries", step_series),
 )
 

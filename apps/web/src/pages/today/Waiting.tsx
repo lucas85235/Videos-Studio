@@ -1,4 +1,4 @@
-import { BadgeDollarSign, ChartLine, FileText, Hand, KeyRound, type LucideIcon, MessagesSquare, UserCheck } from 'lucide-react';
+import { BadgeDollarSign, ChartLine, FileText, Hand, KeyRound, type LucideIcon, MessagesSquare, Telescope, UserCheck } from 'lucide-react';
 import React from 'react';
 import type { WaitingItem, WaitingKind } from '../../apiOps';
 import { Badge, Section } from '../../ui';
@@ -11,6 +11,7 @@ const KIND: Record<WaitingKind, { icon: LucideIcon; label: string; action: strin
   analytics: { icon: ChartLine, label: 'Métricas', action: 'Ir para Canais' },
   offer: { icon: BadgeDollarSign, label: 'Afiliado', action: 'Ir para Dinheiro' },
   comments: { icon: MessagesSquare, label: 'Comentários', action: 'Abrir' },
+  research: { icon: Telescope, label: 'Pesquisa', action: 'Decidir as ideias' },
 };
 
 /** O que só você pode fazer: revisões, pacotes manuais, tokens do YouTube, ofertas a conferir e perguntas nos comentários. */

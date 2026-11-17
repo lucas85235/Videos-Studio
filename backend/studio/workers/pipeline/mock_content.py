@@ -346,3 +346,44 @@ def mock_comment_reply(ctx: dict[str, Any]) -> dict[str, Any]:
     if ctx.get("question"):
         return {"reply": f"{hello} Boa pergunta: vou conferir direitinho e trago a resposta num próximo vídeo."}
     return {"reply": f"{hello} Que bom que curtiu o vídeo."}
+
+
+def mock_video_ideas(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Síntese offline da pesquisa de vídeos: uma ideia por sinal (concorrentes, buscas e comentários, nessa ordem),
+    no formato do sinal quando o canal faz esse formato, citando o `ref` dele; completa até 10 com ideias sem prova.
+    Datas: hoje + 7, + 10, + 13... Sem web, não traz notícia nem fonte."""
+    from datetime import date, timedelta
+
+    formats = list(ctx.get("formats") or ["long"])
+    today = date.fromisoformat(str(ctx.get("today") or date.today().isoformat()))
+    picks: list[tuple[str, str, str]] = []  # (ref, título, formato)
+    for group in ("competitors", "keywords"):
+        for fmt in formats:
+            for item in (ctx.get(group) or {}).get(fmt) or []:
+                picks.append((item["ref"], f"{item['title']}: o que ninguém contou", fmt))
+    for item in ctx.get("comments") or []:
+        picks.append((item["ref"], f"Respondendo ao público: {str(item.get('texto') or '')[:60]}", formats[0]))
+    niche = (ctx.get("channel") or {}).get("niche") or "o nicho do canal"
+    fillers = iter(("os bastidores", "a linha do tempo", "os erros que ninguém viu", "os números",
+                    "os personagens esquecidos", "o que mudou", "as perguntas sem resposta", "o mapa", "a origem",
+                    "o depois"))
+    while len(picks) < 10:  # títulos distintos: a checagem tira do banco os quase iguais
+        picks.append(("", f"Ideia {len(picks) + 1}: {next(fillers)} de {niche}", formats[len(picks) % len(formats)]))
+    ideas = []
+    for n, (ref, title, fmt) in enumerate(picks[:25], start=1):
+        ideas.append({
+            "rank": n,
+            "title": title[:100],
+            "format": fmt,
+            "angle": "ângulo offline (regras)",
+            "why": "sinal coletado na rodada" if ref else "sem sinal: ideia de preenchimento",
+            "evidence": [{"kind": "busca", "ref": ref, "url": "", "note": "sinal da rodada"}] if ref else [],
+            "when": {"type": "evergreen", "date": (today + timedelta(days=7 + 3 * (n - 1))).isoformat(), "until": "",
+                     "note": "data espalhada no calendário (offline)"},
+            "needs": ["roteiro"],
+            "score": round(max(0.0, 8.0 - 0.2 * n), 1),
+            "risk": {"level": "baixo", "note": ""},
+        })
+    return {"resumo": f"Síntese offline com {len(ideas)} ideias a partir dos sinais coletados.",
+            "temas": [niche], "ideas": ideas, "web_sources": [],
+            "lacunas": ["síntese offline: sem notícias, datas nem tendências da web"]}

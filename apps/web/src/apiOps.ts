@@ -34,7 +34,7 @@ export type StockInfo = {
 };
 
 /** O que só você pode fazer (calculado na hora). `where` = caminho no app. */
-export type WaitingKind = 'review' | 'post' | 'youtube' | 'analytics' | 'offer' | 'comments';
+export type WaitingKind = 'review' | 'post' | 'youtube' | 'analytics' | 'offer' | 'comments' | 'research';
 export type WaitingItem = { kind: WaitingKind; text: string; where: string; channel_id: string | null; project_id: string | null };
 
 export type Yesterday = {

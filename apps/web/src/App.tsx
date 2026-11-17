@@ -28,6 +28,7 @@ const CommentsPage = lazy(() => import('./pages/Comments').then((m) => ({ defaul
 const MoneyPage = lazy(() => import('./pages/Money').then((m) => ({ default: m.MoneyPage })));
 // Qualidade e pesquisa (ADR 0003)
 const RadarPage = lazy(() => import('./pages/Radar').then((m) => ({ default: m.RadarPage })));
+const VideoResearchPage = lazy(() => import('./pages/VideoResearch').then((m) => ({ default: m.VideoResearchPage })));
 const ReferencesPage = lazy(() => import('./pages/References').then((m) => ({ default: m.ReferencesPage })));
 
 const COLLAPSED_KEY = 'vulto.barraRecolhida';
@@ -228,6 +229,7 @@ export const App: React.FC = () => {
                 <Route path="/comentarios" element={<CommentsPage />} />
                 <Route path="/dinheiro" element={<MoneyPage />} />
                 <Route path="/radar" element={<RadarPage />} />
+                <Route path="/pesquisa" element={<VideoResearchPage />} />
                 <Route path="/referencias" element={<ReferencesPage />} />
                 <Route path="/canais" element={<ChannelsPage />} />
                 <Route path="/configuracoes" element={<SettingsPage />} />

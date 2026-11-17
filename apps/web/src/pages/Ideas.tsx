@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { Lightbulb, Plus } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import { Lightbulb, Plus, Telescope } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, type Channel, DEFAULT_STYLE_ID, type StyleItem } from '../api';
 import { businessApi, IDEA_STATUS_LABELS, type IdeaStatus } from '../apiBusiness';
-import { Button, Empty, ErrorBox, Field, Input, Page, PageHeader, SegmentedControl, Select, Skeleton } from '../ui';
+import { Button, buttonClass, Empty, ErrorBox, Field, Input, Page, PageHeader, SegmentedControl, Select, Skeleton } from '../ui';
 import { IdeaCard } from './ideas/IdeaCard';
 import { IdeaForm } from './ideas/IdeaForm';
 
@@ -18,10 +19,24 @@ const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
   { id: 'todas', label: 'Todas' },
 ];
 
+const statusFrom = (v: string | null): StatusFilter | null => STATUS_FILTERS.find((f) => f.id === v)?.id ?? null;
+
 /** Ideias: banco de ideias de vídeo, por nota, com decisão e "Virar projeto". */
 export const IdeasPage: React.FC = () => {
-  const [channel, setChannel] = useState('');
-  const [status, setStatus] = useState<StatusFilter>('abertas');
+  // ?canal= e ?situacao= abrem já filtrado (links da pesquisa de vídeos e de Hoje), também com a página já aberta
+  // (o aviso "Ver em Ideias" de outro canal só troca a URL).
+  const [params] = useSearchParams();
+  const urlChannel = params.get('canal');
+  const urlStatus = params.get('situacao');
+  const [channel, setChannel] = useState(() => urlChannel ?? '');
+  const [status, setStatus] = useState<StatusFilter>(() => statusFrom(urlStatus) ?? 'abertas');
+  useEffect(() => {
+    if (urlChannel !== null) setChannel(urlChannel);
+  }, [urlChannel]);
+  useEffect(() => {
+    const s = statusFrom(urlStatus);
+    if (s) setStatus(s);
+  }, [urlStatus]);
   const [minScore, setMinScore] = useState('');
   const [adding, setAdding] = useState(false);
 
@@ -77,6 +92,12 @@ export const IdeasPage: React.FC = () => {
           <Field label="Nota mínima" className="w-32" error={minValid ? undefined : 'De 0 a 10.'}>
             <Input inputMode="decimal" value={minScore} onChange={(e) => setMinScore(e.target.value)} placeholder="Ex.: 7" />
           </Field>
+          {channel ? (
+            <Link to={`/pesquisa?canal=${channel}`} className={buttonClass({ variant: 'ghost' })}>
+              <Telescope size={16} strokeWidth={2} aria-hidden="true" className="shrink-0" />
+              Pesquisar ideias para este canal
+            </Link>
+          ) : null}
         </div>
         <SegmentedControl
           label="Situação"

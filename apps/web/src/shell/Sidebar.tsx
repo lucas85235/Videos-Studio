@@ -13,6 +13,7 @@ import {
   Repeat,
   Settings,
   Sun,
+  Telescope,
   Tv,
   Wallet,
   X,
@@ -39,6 +40,7 @@ const PRODUCTION: NavDef[] = [
 ];
 const MANAGEMENT: NavDef[] = [
   { to: '/radar', label: 'Radar', icon: Radar, match: (p) => p.startsWith('/radar') },
+  { to: '/pesquisa', label: 'Pesquisa de vídeos', icon: Telescope, match: (p) => p.startsWith('/pesquisa') },
   { to: '/desempenho', label: 'Desempenho', icon: BarChart3, match: (p) => p.startsWith('/desempenho') },
   { to: '/comentarios', label: 'Comentários', icon: MessagesSquare, match: (p) => p.startsWith('/comentarios') },
   { to: '/dinheiro', label: 'Dinheiro', icon: Wallet, match: (p) => p.startsWith('/dinheiro') },

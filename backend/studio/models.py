@@ -484,6 +484,33 @@ class RadarChannel(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
+class ResearchRun(Base):
+    """Uma rodada da pesquisa de vídeos de um canal (sinais do canal, concorrentes, buscas e comentários + síntese do
+    Claude com busca na web). Os sinais e a síntese ficam em JSON da rodada; as ideias aprovadas vão para `Idea`."""
+
+    __tablename__ = "research_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # new_id("rsr")
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="ok")  # ok|parcial|falhou
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # markets, days, budget, competitors, keywords, formats, skip, weekly
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    units: Mapped[int] = mapped_column(Integer, default=0)  # cota da YouTube Data API gasta
+    llm_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    llm_api_equiv_usd: Mapped[float] = mapped_column(Float, default=0.0)  # o plano não cobra; só a referência
+    # {own:{long,short,suggestions}, competitors:{items,channels}, keywords:{items,searches,pulados}, comments:[...],
+    #  falhas:[{etapa, erro}]}
+    signals: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # {resumo, temas, ideas:[...com check], web_sources, descartadas}
+    synthesis: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    gaps: Mapped[list[str]] = mapped_column(JSON, default=list)  # lacunas: o que não deu para medir nesta rodada
+    idea_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
 class FactClaim(Base):
     """Afirmação do roteiro conferida numa fonte. Origem: itens de roteiro/checagem-<slug>.json."""
 

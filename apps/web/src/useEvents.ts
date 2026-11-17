@@ -72,6 +72,29 @@ const jobToast = (client: QueryClient, job: Job): ToastOptions | null => {
     // O Instagram ainda processava o vídeo ao fim da espera: o post sai quando o usuário retomar.
     return { tone: 'warn', title: 'Instagram ainda processando o vídeo', description: 'Use "Tentar publicar de novo" em Publicações deste projeto daqui a alguns minutos.', action };
   }
+  if (job.status === 'done' && job.kind === 'video_research') {
+    // Pesquisa de vídeos: sem projeto; o aviso diz quantas ideias e leva à tela da pesquisa do canal.
+    const result = (job.result ?? {}) as { saved?: number; status?: string; ideas?: number };
+    const channelId = typeof job.payload?.channel_id === 'string' ? job.payload.channel_id : '';
+    const saved = Number(result.saved ?? 0);
+    const partial = result.status === 'parcial';
+    const empty = !partial && !Number(result.ideas ?? 0);
+    const onPage = window.location.pathname === '/pesquisa';
+    return {
+      tone: partial || empty ? 'warn' : 'good',
+      title: partial
+        ? 'Pesquisa de vídeos parcial: só os sinais'
+        : empty
+          ? 'Pesquisa de vídeos pronta, sem ideias'
+          : `Pesquisa de vídeos pronta: ${saved} ${saved === 1 ? 'ideia salva' : 'ideias salvas'}`,
+      description: partial
+        ? 'A síntese não rodou; veja as lacunas na aba Sugestões.'
+        : empty
+          ? 'A síntese rodou, mas nenhuma ideia sobrou; veja as lacunas e as descartadas na aba Sugestões.'
+          : undefined,
+      action: channelId && !onPage ? { label: 'Ver sugestões', to: `/pesquisa?canal=${encodeURIComponent(channelId)}` } : undefined,
+    };
+  }
   if (job.status === 'done') {
     return { tone: 'good', title: JOB_DONE_LABELS[job.kind] ?? `${kind}: concluído`, description: title ?? undefined, action };
   }

@@ -2,7 +2,7 @@
 
 - `waiting`: o que só você pode fazer, calculado na hora (revisões, pacotes manuais a postar, YouTube com token
   falhando, oferta de afiliado sem conferência recente, escopo do Analytics faltando, perguntas sem resposta na caixa
-  de comentários e caixa de comentários sem a permissão do YouTube);
+  de comentários, caixa de comentários sem a permissão do YouTube e ideias novas da pesquisa de vídeos);
 - `pending`: pendências abertas (à mão ou das rotinas);
 - `stock`: estoque de cada canal com mínimo;
 - `series`: séries ativas com o estoque de episódios, revisões e falhas;
@@ -81,6 +81,12 @@ def waiting(now: datetime | None = None) -> list[dict[str, Any]]:
         plural = "pergunta sem resposta" if q["count"] == 1 else "perguntas sem resposta"
         out.append(_item("comments", f"Responder {q['count']} {plural} nos comentários do {q['name']}",
                          f"/comentarios?canal={q['channel_id']}&filtro=perguntas", q["channel_id"]))
+    for cid, name, settings in channels:
+        n = _research_waiting(cid, settings)
+        if n:
+            plural = "ideia nova" if n == 1 else "ideias novas"
+            out.append(_item("research", f"{n} {plural} da pesquisa de vídeos do {name}", f"/ideias?canal={cid}",
+                             cid))
     names = {cid: name for cid, name, _ in channels}
     for _, cid, name, checked in offers:
         try:
@@ -93,6 +99,19 @@ def waiting(now: datetime | None = None) -> list[dict[str, Any]]:
         out.append(_item("offer", f"Conferir a oferta {name} do {names.get(cid, cid)} (vendedor, estoque e preço): "
                                   f"{when}", "/dinheiro", cid))
     return out
+
+
+def _research_waiting(channel_id: str, settings: dict[str, Any]) -> int:
+    """Ideias da pesquisa de vídeos do canal ainda esperando decisão (só canais que já rodaram a pesquisa)."""
+    if not ((settings.get("research") or {}).get("last_run_id")):
+        return 0
+    from studio.workers.research.service import new_ideas_waiting
+
+    try:
+        return new_ideas_waiting(channel_id)
+    except Exception as exc:  # noqa: BLE001 - a pesquisa não derruba o resumo
+        log.debug("ideias da pesquisa do canal %s não lidas: %s", channel_id, exc)
+        return 0
 
 
 def _open_questions() -> list[dict[str, Any]]:

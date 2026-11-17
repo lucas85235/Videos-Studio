@@ -33,6 +33,7 @@ PACIFIC = ZoneInfo("America/Los_Angeles")
 
 DAILY_LIMIT = 10_000
 UPLOAD_LIMIT = 100
+SEARCH_LIMIT = 100  # chamadas de `search.list` por dia (balde próprio)
 NEAR_FRACTION = 0.8
 
 GENERAL = "general"
@@ -170,6 +171,18 @@ def mark_exhausted(bucket_name: str = GENERAL, now: datetime | None = None) -> N
     _set_setting(EXHAUSTED_KEY, {"day": day, "buckets": sorted(buckets)})
 
 
+def search_left(now: datetime | None = None) -> int:
+    """Buscas (`search.list`) que ainda cabem hoje no balde próprio, pelo que o app contou (pesquisa e radar com o token
+    de um canal vinculado). Zero se o Google já respondeu quotaExceeded nesse balde."""
+    day = pacific_day(now)
+    if SEARCH in _exhausted_buckets(day):
+        return 0
+    with session_scope() as s:
+        row = s.query(YouTubeQuotaUsage).filter_by(day=day, method="search.list").one_or_none()
+        calls = row.calls if row is not None else 0
+    return max(0, SEARCH_LIMIT - calls)
+
+
 def publish_estimate(*, thumbnail: bool = True, captions: bool = True, playlist: bool = False) -> int:
     """Unidades da cota geral que um envio gasta (o vídeo em si conta na cota de uploads)."""
     return (cost("thumbnails.set") if thumbnail else 0) + (cost("captions.insert") if captions else 0) + (
@@ -191,7 +204,7 @@ def status(now: datetime | None = None) -> dict[str, Any]:
     up_limit = upload_limit()
     used = sum(units for method, _, units in rows if bucket(method) == GENERAL)
     uploads = sum(calls for method, calls, _ in rows if method == "videos.insert")
-    exhausted = _exhausted_buckets(day)
+    exhausted = _exhausted_buckets(day) & {GENERAL, UPLOADS}  # o balde das buscas não afeta os envios
     general_over = GENERAL in exhausted or used >= limit
     uploads_over = UPLOADS in exhausted or uploads >= up_limit
     over = general_over or uploads_over

@@ -367,4 +367,5 @@ export const JOB_DONE_LABELS: LabelMap = {
   publish_instagram: 'Reel publicado no Instagram',
   ab_build: 'Versões A/B prontas',
   media_find: 'Busca de mídia oficial concluída',
+  video_research: 'Pesquisa de vídeos concluída',
 };

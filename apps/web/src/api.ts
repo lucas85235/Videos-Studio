@@ -953,6 +953,7 @@ export const JOB_LABELS: Record<string, string> = {
   publish_instagram: 'Publicação no Instagram',
   ab_build: 'Versões A/B',
   media_find: 'Busca de mídia oficial',
+  video_research: 'Pesquisa de vídeos',
 };
 
 /* ------------------------------------------------------------------ */

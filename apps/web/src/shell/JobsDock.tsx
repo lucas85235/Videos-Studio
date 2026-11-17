@@ -7,6 +7,7 @@ import {
   LayoutGrid,
   MonitorPlay,
   Tags,
+  Telescope,
   Upload,
   Wand2,
   X,
@@ -27,6 +28,7 @@ const JOB_ICONS: Record<string, LucideIcon> = {
   render: Film,
   autopilot: Wand2,
   publish_youtube: Upload,
+  video_research: Telescope,
 };
 
 const FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -67,7 +69,12 @@ export const JobsDock: React.FC<{ collapsed?: boolean; onNavigate?: () => void }
   if (!active.length && !failures.length) return null;
 
   const titleOf = (job: Job) => (job.project_id ? (titles.get(job.project_id) ?? 'Projeto') : 'Geral');
-  const linkOf = (job: Job) => (job.project_id ? `/projetos/${job.project_id}` : '/');
+  const linkOf = (job: Job) => {
+    if (job.project_id) return `/projetos/${job.project_id}`;
+    // A pesquisa de vídeos é por canal, sem projeto: leva para a tela da pesquisa daquele canal.
+    if (job.kind === 'video_research' && typeof job.payload?.channel_id === 'string') return `/pesquisa?canal=${encodeURIComponent(job.payload.channel_id)}`;
+    return '/';
+  };
 
   if (collapsed) {
     const first = active[0] ?? failures[0];
