@@ -5,7 +5,9 @@
   `GET /api/captures/{id}`, `PUT /api/captures/{id}/phrases/{i}/view`.
 - Referências: `GET|POST /api/references`, `POST /api/references/link`, `GET|PATCH|DELETE /api/references/{id}`,
   `POST /api/references/{id}/analyze` (job `reference_shots`), `POST /api/references/{id}/style` (cria um estilo do
-  usuário a partir das medidas), `POST|GET /api/references/{id}/profile` (perfil de edição, ADR 0004 §3.2).
+  usuário a partir das medidas), `POST|GET /api/references/{id}/profile` (perfil de edição, ADR 0004 §3.2),
+  `POST /api/references/{id}/project` (estilo + projeto novo de uma vez) e `GET /api/references/{id}/adherence`
+  (aderência ao perfil dos projetos que usam um estilo feito dela, ADR 0004 §3.11).
 - Miniaturas: `GET /api/projects/{id}/thumbs`, `PUT .../thumbs/spec`, `POST .../thumbs` (job `thumbs_variants`),
   `PUT .../thumbs/chosen`.
 """
@@ -54,6 +56,14 @@ class RefStyleBody(BaseModel):
 
 class ProfileBody(BaseModel):
     deep: bool = False
+
+
+class RefProjectBody(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    style_name: str | None = Field(default=None, max_length=120)
+    topic: str = Field(default="", max_length=2000)
+    channel_id: str | None = Field(default=None, max_length=40)
+    use_llm: bool = True
 
 
 class ThumbSpecItem(BaseModel):
@@ -244,6 +254,81 @@ def style_from_reference(ref_id: str, body: RefStyleBody | None = None) -> dict[
         return from_reference.create_from_reference(ref, use_llm=body.use_llm, name=(body.name or "").strip() or None)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _ready_reference(ref_id: str, action: str) -> dict[str, Any]:
+    ref = references.get_reference(ref_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="referência não encontrada")
+    if ref["status"] != "pronto":
+        raise HTTPException(status_code=409, detail=f"Analise o vídeo antes de {action}.")
+    return ref
+
+
+@router.post("/references/{ref_id}/project")
+def project_from_reference(ref_id: str, body: RefProjectBody) -> dict[str, Any]:
+    """"Novo projeto a partir desta referência": cria o estilo (como `POST .../style`) e um projeto com ele, com o nome
+    que o usuário deixou (a tela sugere o título limpo da referência)."""
+    ref = _ready_reference(ref_id, "criar o projeto")
+    try:
+        made = from_reference.create_from_reference(ref, use_llm=body.use_llm,
+                                                    name=(body.style_name or "").strip() or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    style_id = made["style"]["id"]
+    try:
+        doc = service.create_project(title=" ".join(body.title.split()), style_id=style_id, topic=body.topic.strip(),
+                                     channel_id=body.channel_id or None)
+    except Exception as exc:  # noqa: BLE001 - o estilo fica em Meus estilos; o projeto se cria à mão
+        raise HTTPException(status_code=422,
+                            detail=f"O estilo “{made['style']['name']}” foi criado, mas o projeto não: {exc}") from exc
+    return {"project": {"id": doc.id, "title": doc.title, "style_id": style_id},
+            "style": {"id": style_id, "name": made["style"]["name"]}, "suggestions": made.get("suggestions", [])}
+
+
+MAX_ADHERENCE_PROJECTS = 12
+
+
+@router.get("/references/{ref_id}/adherence")
+def reference_adherence(ref_id: str) -> dict[str, Any]:
+    """Os projetos que usam um estilo feito desta referência (`grammar.profile_refs`) com a aderência ao perfil e o
+    índice "cara de IA" (a medida de `GET /projects/{id}/edit-metrics`, só leitura). Os mais recentes primeiro."""
+    from studio.core.styles.library import StyleNotFound, get_style
+    from studio.core.styles.schema import grammar_for
+    from studio.db import session_scope
+    from studio.models import Project, Style
+    from studio.workers.finalcheck.profile_check import project_metrics
+
+    if references.get_reference(ref_id) is None:
+        raise HTTPException(status_code=404, detail="referência não encontrada")
+    with session_scope() as s:
+        style_rows = [(r.id, r.name) for r in s.query(Style.id, Style.name).all()]
+        projects = [(p.id, p.title, p.style_id) for p in s.query(Project.id, Project.title, Project.style_id)
+                    .order_by(Project.updated_at.desc()).all()]
+    styles: dict[str, str] = {}
+    for style_id, name in style_rows:
+        try:
+            if ref_id in grammar_for(get_style(style_id)).profile_refs:
+                styles[style_id] = name
+        except (StyleNotFound, ValueError):
+            continue
+    out: list[dict[str, Any]] = []
+    for project_id, title, style_id in projects:
+        if style_id not in styles:
+            continue
+        if len(out) >= MAX_ADHERENCE_PROJECTS:
+            break
+        entry: dict[str, Any] = {"id": project_id, "title": title, "style_id": style_id,
+                                 "style_name": styles[style_id], "adherence": None, "index": None, "source": None}
+        try:
+            data = project_metrics(project_id)
+            adherence = data.get("adherence") or {}
+            entry.update({"adherence": adherence.get("score"), "index": data["index"]["score"],
+                          "band": data["index"]["band"], "source": data["source"]})
+        except Exception as exc:  # noqa: BLE001 - projeto sem cenas ainda: fica sem nota
+            entry["error"] = str(exc)[:200]
+        out.append(entry)
+    return {"reference_id": ref_id, "styles": [{"id": k, "name": v} for k, v in styles.items()], "projects": out}
 
 
 # --------------------------------------------------------------------------------------------

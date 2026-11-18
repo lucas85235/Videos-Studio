@@ -11,6 +11,7 @@ import {
   Music,
   Pencil,
   RotateCw,
+  Scissors,
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -41,6 +42,7 @@ import { tabOwnsAction } from "./core/NextStep";
 import { MusicPanel, VoicePanel } from "./delivery/AudioPanels";
 import { AudioCheckPanel } from "./delivery/audio/AudioCheckPanel";
 import { type CurrentScene, EditPanel } from "./delivery/EditPanel";
+import { EditTrackPanel } from "./EditTrack";
 import {
   buildToken,
   findActiveJob,
@@ -77,7 +79,7 @@ const PreviewComposition: React.FC<TimelineProps & { mixUrl?: string }> = ({
   </>
 );
 
-type SideTab = "editar" | "voz" | "trilha";
+type SideTab = "editar" | "edicao" | "voz" | "trilha";
 const SIDE_PREFIX = "previa-lateral";
 /** Id do botão "Ir para Vídeo e publicação" (recebe o foco depois de aprovar). */
 const GO_OUTPUT_ID = "previa-ir-saida";
@@ -722,6 +724,7 @@ export const PreviewTab: React.FC<
             onChange={(id) => setSide(id as SideTab)}
             tabs={[
               { id: "editar", label: "Editar", icon: Pencil },
+              { id: "edicao", label: "Cortes", icon: Scissors },
               { id: "voz", label: "Voz", icon: AudioLines },
               {
                 id: "trilha",
@@ -754,6 +757,24 @@ export const PreviewTab: React.FC<
               goTo={goTo}
             />
           </div>
+          {side === "edicao" ? (
+            <div
+              {...tabPanelProps("edicao", SIDE_PREFIX)}
+              className="min-h-0 overflow-y-auto p-4"
+            >
+              <EditTrackPanel
+                detail={detail}
+                lang={lang}
+                currentSceneId={current?.id ?? null}
+                disabled={busy}
+                goTo={goTo}
+                onSeekScene={(id) => seekScene(sceneIndex(id))}
+                onSeekSeconds={(seconds) => {
+                  if (t) seekFrame(Math.round(seconds * t.fps));
+                }}
+              />
+            </div>
+          ) : null}
           {side === "voz" ? (
             <div
               {...tabPanelProps("voz", SIDE_PREFIX)}

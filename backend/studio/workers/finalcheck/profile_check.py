@@ -4,7 +4,7 @@
   com o índice, a aderência ao perfil da referência, os itens `perfil.*` e a faixa por nível de fonte. Só leitura:
   serve a rota `GET /projects/{id}/edit-metrics` e o CLI `studio edit-metrics`.
 - `run_edit_check`: depois do render, audita o MP4 com o mesmo extrator da referência
-  (`media.refprofile.measure_video(mp4, quick=True)`, quando o item `ref-perfil` existir) e grava o
+  (`media.refprofile.measure_video(mp4, quick=True)`) e grava o
   `QualityReport(kind="edit")`. A conferência do vídeo final (`report.run_final_check`) chama este passo.
 """
 
@@ -33,16 +33,14 @@ SOURCE_LABELS = {"final": "vídeo final", "preview": "última prévia", "estimat
 Progress = Callable[[float, str], None]
 
 
-# --- Medida do render (stub até o merge de `ref-perfil`) ------------------------------------------------------------
+# --- Medida do render -----------------------------------------------------------------------------------------------
 
 
 def measure_render(path: Path) -> EditFingerprint | None:
-    """A impressão do MP4 pelo extrator da referência, em modo rápido. None quando o extrator ainda não existe
-    (item `ref-perfil` sem merge) ou falha: a conferência fica só com a timeline."""
-    try:
-        from studio.media.refprofile import measure_video  # type: ignore[attr-defined]
-    except ImportError:
-        return None
+    """A impressão do MP4 pelo extrator da referência (`media.refprofile.measure_video`), em modo rápido. None quando
+    a medida falha: a conferência fica só com a timeline."""
+    from studio.media.refprofile import measure_video
+
     try:
         result = measure_video(path, quick=True)
     except Exception as exc:  # noqa: BLE001 - a auditoria do MP4 é complemento, nunca derruba a conferência

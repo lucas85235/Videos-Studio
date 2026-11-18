@@ -142,6 +142,102 @@ export type RefStyleResult = {
   suggestions?: string[];
 };
 
+/* ------------------------------------------------------------------ */
+/* Perfil de edição medido (ADR 0004 §3.2, core/editing/profile.py)    */
+/* ------------------------------------------------------------------ */
+
+export type ProfileFieldOrigin = 'medido' | 'visão' | 'llm' | 'padrão' | 'usuário';
+export type ProfileFieldMeta = { confidence: number; origin: ProfileFieldOrigin };
+
+export type EditProfile = {
+  version: number;
+  quick: boolean;
+  duration_s: number;
+  measured_at: string | null;
+  refs: string[];
+  pace: {
+    shots: number;
+    median_s: number;
+    mean_s: number;
+    p10_s: number;
+    p90_s: number;
+    cv: number;
+    max_shot_s: number;
+    cuts_per_min: number;
+    cuts_per_min_windows: number[];
+    hook_cuts_per_min: number;
+    micro_count: number;
+    micro_per_min: number;
+    max_still_s: number;
+    events_per_min: number;
+  };
+  camera: {
+    punch_per_min: number;
+    punch_scale: number;
+    shake_per_min: number;
+    slow_zoom_share: number;
+    zoom_rate_pct_s: number;
+    kb_share: number;
+    static_share: number;
+    freeze_per_min: number;
+  };
+  materials: { mix: Record<string, number>; prov_mix: Record<string, number>; switch_per_min: number; max_same_prov_run: number; max_same_prov_run_s: number };
+  overlays: {
+    text_pop_per_min: number;
+    meme_per_min: number;
+    annot_per_min: number;
+    overlay_per_min: number;
+    on_screen_text_share: number;
+    text_case: string;
+    text_pos: string;
+    font_desc: string;
+  };
+  captions: { style: string; words_per_line: number; uppercase: boolean | null; position: string; font_desc: string; font_match: string; emphasis: string };
+  audio: { sfx_per_min: number; sfx_on_cut_share: number; sfx_classes: Record<string, number>; music_level_db: number | null; drops_per_min: number };
+  speech: {
+    wpm: number;
+    pauses_per_min: number;
+    questions_per_min: number;
+    person: string;
+    tone_tags: string[];
+    structure: { role: string; start_s: number; end_s: number }[];
+  };
+  humor: { patterns: string[]; gag_per_min: number };
+  recurring: { id: string; kind: 'mascot' | 'logo' | 'meme' | 'other'; count: number; thumb: string | null; first_s: number }[];
+  meta: Record<string, ProfileFieldMeta>;
+};
+
+/** GET /api/references/{id}/profile: `profile` null enquanto não foi medido; `notes` diz o que ficou de fora. */
+export type ReferenceProfileState = {
+  reference_id: string;
+  profile: EditProfile | null;
+  notes: { skipped?: Record<string, string>; vision_provider?: string | null; [key: string]: unknown };
+};
+
+/** POST /api/references/{id}/project: estilo e projeto criados de uma vez. */
+export type ReferenceProjectResult = {
+  project: { id: string; title: string; style_id: string };
+  style: { id: string; name: string };
+  suggestions: string[];
+};
+
+/** GET /api/references/{id}/adherence: projetos com estilo feito desta referência. */
+export type ReferenceAdherence = {
+  reference_id: string;
+  styles: { id: string; name: string }[];
+  projects: {
+    id: string;
+    title: string;
+    style_id: string;
+    style_name: string;
+    adherence: number | null;
+    index: number | null;
+    band?: 'verde' | 'amarelo' | 'vermelho';
+    source: string | null;
+    error?: string;
+  }[];
+};
+
 /** POST /api/references: a referência criada e o job da análise, que começa sozinho. */
 export type ReferenceUpload = ReferenceVideo & { job: Job };
 
@@ -169,6 +265,12 @@ export const visualApi = {
   analyzeReference: (id: string) => api.post<Job>(`/api/references/${id}/analyze`),
   styleFromReference: (id: string, body: { use_llm: boolean; name?: string }) =>
     api.post<RefStyleResult>(`/api/references/${id}/style`, body),
+  profile: (id: string) => api.get<ReferenceProfileState>(`/api/references/${id}/profile`),
+  /** Mede o perfil de novo (job `reference_profile`): `deep` acrescenta a fala e a visão. */
+  measureProfile: (id: string, deep: boolean) => api.post<Job>(`/api/references/${id}/profile`, { deep }),
+  projectFromReference: (id: string, body: { title: string; style_name?: string; topic?: string; use_llm: boolean }) =>
+    api.post<ReferenceProjectResult>(`/api/references/${id}/project`, body),
+  adherence: (id: string) => api.get<ReferenceAdherence>(`/api/references/${id}/adherence`),
   thumbs: (projectId: string, lang: string) =>
     api.get<ThumbsState>(`/api/projects/${projectId}/thumbs?lang=${encodeURIComponent(lang)}`),
   setThumbSpec: (projectId: string, lang: string, variants: ThumbSpec[]) =>

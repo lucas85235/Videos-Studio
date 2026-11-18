@@ -42,13 +42,17 @@ export type Visual = {
 
 /** photo: foto de licença livre; news: cartão de notícia; official: arte, trailer ou foto de imprensa oficial. */
 export type RealKind = 'photo' | 'news' | 'official';
-export type MediaSource = 'commons' | 'openverse' | 'pexels' | 'link' | 'upload';
+/** O que a cena mostra de fato (ADR 0004): as imagens de `RealKind` ou um trecho de vídeo, uma captura, um meme. */
+export type MediaKind = RealKind | 'clip' | 'capture' | 'meme';
+export type MediaSource = 'commons' | 'openverse' | 'pexels' | 'link' | 'upload' | 'youtube' | 'library' | 'capture';
+/** Nível (origem) do material na tela, do mais real ao gerado (`Prov` em core/project/document.py). */
+export type Prov = 'own' | 'official' | 'capture' | 'free' | 'stock' | 'graphic' | 'meme' | 'ai';
 /** cover: preenche a tela (recorta); contain: imagem inteira sobre ela mesma desfocada; null: pela proporção. */
 export type MediaFit = 'cover' | 'contain';
 
 /** Mídia real anexada à cena (Visual.media em core/project/document.py). */
 export type MediaRef = {
-  kind: RealKind;
+  kind: MediaKind;
   source: MediaSource;
   /** Original normalizado na pasta de dados (use com `fileUrl`); null só na notícia sem imagem. */
   asset: string | null;
@@ -73,6 +77,18 @@ export type MediaRef = {
   published: string;
   headline: LocalizedText;
   candidate_id: string;
+  /* Campos do ADR 0004 (servidor antigo: ausentes). */
+  /** Proxy mp4 do trecho (relativo à pasta de dados); `asset` é o pôster. */
+  video?: string | null;
+  start_s?: number;
+  dur_s?: number | null;
+  hold?: boolean;
+  mute?: boolean;
+  /** Captura: trechos destacados `[x, y, w, h]` (0 a 1). */
+  rects?: number[][];
+  tier?: Prov | null;
+  /** Item do acervo (`pool.json`) de onde a mídia veio. */
+  pool_id?: string;
 };
 
 /** Sugestão de mídia real do storyboard (Scene.real). */
@@ -217,6 +233,120 @@ export type Scene = {
   video_hint?: string | null;
   /** Avatar do apresentador nesta cena (null/ausente: sem avatar). */
   presenter?: ScenePresenter | null;
+  /** Subplanos da cena (ADR 0004 §3.6); vazio: um plano só. */
+  shots?: SubShot[];
+  /** Eventos presos a palavras (punch, texto, SFX, meme…). */
+  fx?: FxEvent[];
+  /** Papel da batida, ênfase e piada (do storyboard ou do planejador). */
+  mark?: BeatMark | null;
+};
+
+/* ------------------------------------------------------------------ */
+/* Camada de edição (ADR 0004 §3.0, core/project/document.py)          */
+/* ------------------------------------------------------------------ */
+
+export type FxType =
+  | 'punch'
+  | 'shake'
+  | 'zoom_rect'
+  | 'freeze'
+  | 'flash'
+  | 'text_pop'
+  | 'meme'
+  | 'sfx'
+  | 'highlight'
+  | 'arrow'
+  | 'circle'
+  | 'counter'
+  | 'music_drop'
+  | 'speed'
+  | 'whip'
+  | 'pip';
+export type EditOrigin = 'planner' | 'llm' | 'user';
+export type FxParam = string | number | boolean | number[];
+
+/** Evento dentro da cena. `at`: "palavra", "palavra#2" (2ª vez na cena) ou "@1200" (ms desde o início da cena). */
+export type FxEvent = {
+  type: FxType;
+  at: string;
+  dur_ms: number | null;
+  params: Record<string, FxParam>;
+  origin: EditOrigin;
+  locked: boolean;
+};
+
+export type ShotSource = 'self' | 'pool' | 'media' | 'reuse' | 'ai';
+export type SubShot = {
+  /** Gatilho do corte; null: o início da cena. */
+  at: string | null;
+  source: ShotSource;
+  pool_id: string | null;
+  media: MediaRef | null;
+  reuse_of: string | null;
+  framing: { scale: number; x: number; y: number } | null;
+  motion: string | null;
+  easing: string | null;
+  strength: number | null;
+  clip_in: number | null;
+  speed: number;
+  hold: boolean;
+  origin: 'planner' | 'user';
+  locked: boolean;
+};
+
+export type BeatRole = 'hook' | 'reveal' | 'joke' | 'aside' | 'list' | 'number' | 'tension' | 'breath' | 'cta';
+export type BeatMark = {
+  role: BeatRole;
+  emphasis: string[];
+  energy: number;
+  serious: boolean;
+  gag: { at: string | null; payoff: 'meme' | 'freeze' | 'zoom' | 'sfx' | 'text'; tag: string; line: string } | null;
+};
+
+/* ------------------------------------------------------------------ */
+/* Fontes e gramática de edição do estilo (core/styles/schema.py)      */
+/* ------------------------------------------------------------------ */
+
+/** De onde vem o que aparece na tela: mistura por nível e teto de IA em TEMPO de tela. */
+export type SourcePolicy = {
+  mix: Partial<Record<Prov, number>>;
+  ai_max_share: number;
+  ai_photo: boolean;
+  hook: Prov[];
+  official_max_clip_s: number;
+  official_max_share: number;
+  require_ai_reason: boolean;
+};
+
+export type EditGrammar = {
+  editor: 'off' | 'auto';
+  intensity: number;
+  shot_median_s: number;
+  shot_cv: number;
+  shot_max_s: number;
+  micro_per_min: number;
+  burst_prob: number;
+  punch_per_min: number;
+  punch_scale: { min: number; max: number };
+  shake_per_min: number;
+  text_pop_per_min: number;
+  meme_per_min: number;
+  annot_per_min: number;
+  sfx_per_min: number;
+  sfx_on_cut_share: number;
+  sfx_palette: Record<string, number>;
+  sfx_tonal_ok: boolean;
+  switch_per_min: number;
+  max_still_s: number;
+  slow_zoom_share: number;
+  static_share_min: number;
+  humor: 'none' | 'light' | 'meme';
+  caption_emphasis: 'none' | 'color' | 'pop' | 'emoji';
+  effects_policy: 'global' | 'per_tier';
+  music_drop_before_reveal: boolean;
+  hook: { window_s: number; shot_median_s: number | null; punch_per_min: number | null; text_pop_per_min: number | null; sfx_per_min: number | null } | null;
+  profile_refs: string[];
+  tolerance: number;
 };
 
 export type ClipSpec = { prompt: string; seconds: number };
@@ -679,7 +809,20 @@ export type StyleSpec = {
   script: { tone: string; structure: string[]; hook_max_s: number; fact_check: boolean; cta: string | null; banned_phrases: string[] };
   voice: { chain: string[]; voice: string | null; style_prompt: string | null; speed: number; gap_s: number; voice_profile: string | null; preview?: PreviewVoice };
   /** `languages`: linguagens visuais preferidas (a primeira dominante; vazio = livre). */
-  art: { bible: string; banned: string[]; image_chain: string[]; thumbnail_chain: string[]; photoreal: boolean; languages?: string[]; video_chain?: string[]; video_scenes?: number | null };
+  art: {
+    bible: string;
+    banned: string[];
+    image_chain: string[];
+    thumbnail_chain: string[];
+    photoreal: boolean;
+    languages?: string[];
+    video_chain?: string[];
+    video_scenes?: number | null;
+    /** Política de fontes (ADR 0004); servidor antigo: ausente. */
+    sources?: SourcePolicy;
+    /** OBSOLETO: vale `sources` (escondido no editor). */
+    sources_mix?: Record<string, number>;
+  };
   edit: {
     shot_seconds: { min: number; max: number };
     /** Fração das batidas que pode ganhar imagem nova (o resto reaproveita ou vira cartão). */
@@ -711,6 +854,8 @@ export type StyleSpec = {
     zoom_strength: number;
     /** Avatar do apresentador nas cenas: 'auto' segue canal/projeto; 'off' desliga neste estilo. */
     presenter?: 'auto' | 'off';
+    /** Gramática de edição (ADR 0004): ritmo dos planos e eventos por minuto. Servidor antigo: ausente. */
+    grammar?: EditGrammar;
   };
   audio: { music: { source: string; mood: string; volume_db: number; ducking: boolean }; sfx: { auto: boolean; pack: string; volume_db: number }; loudness_lufs: number };
   thumbnail: {

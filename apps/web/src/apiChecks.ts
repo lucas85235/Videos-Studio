@@ -1,5 +1,5 @@
 /* Cliente dos relatórios de conferência (ADR 0003): item comum a G e H e a conferência do vídeo final (bloco H). */
-import { api, type Job } from './api';
+import { api, type Job, type Prov } from './api';
 
 export type CheckLevel = 'ok' | 'aviso' | 'erro';
 
@@ -54,7 +54,7 @@ export type Preflight = {
 };
 
 /** Nível (origem) do material na tela, do mais real ao gerado (ADR 0004; `core/sources.py`). */
-export type Prov = 'own' | 'official' | 'capture' | 'free' | 'stock' | 'graphic' | 'meme' | 'ai';
+export type { Prov };
 
 /** Faixa do índice "cara de IA": verde até 30, amarelo até 55, vermelho acima. */
 export type AiLookBand = 'verde' | 'amarelo' | 'vermelho';
