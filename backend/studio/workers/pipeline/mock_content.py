@@ -82,6 +82,8 @@ def _mock_scene(key: str, kind: str = "image", source: str = "new", **fields: An
 
     props = STORYBOARD_SCHEMA["properties"]["scenes"]["items"]["properties"]
     base: dict[str, Any] = {k: None for k in props}
+    # Campos que o esquema estrito não deixa nulos (marcas de edição do ADR 0004).
+    base.update({"role": "breath", "serious": False})
     base.update({"key": key, "kind": kind, "source": source})
     base.update(fields)
     return base

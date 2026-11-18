@@ -10,6 +10,7 @@ from studio.core.glossary import GlossaryEntry, glossary_of
 from studio.core.hashing import hash_obj
 from studio.core.project import service
 from studio.core.project.document import THUMB_WORDS_MAX, Metadata
+from studio.core.project.pool import Pool, save_pool
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.models import Channel, utcnow
@@ -17,7 +18,7 @@ from studio.providers import media_search
 from studio.workers import novelty
 from studio.workers.analytics import lessons as lessons_mod
 from studio.workers.jobs import JobContext, get_runner, job
-from studio.workers.pipeline import authoring, media_find, video_clips
+from studio.workers.pipeline import authoring, edit_plan, media_find, media_pool, video_clips
 from studio.workers.pipeline.build import BuildCancelled, Builder
 
 log = logging.getLogger(__name__)
@@ -471,10 +472,12 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
     ctx.progress(0.1, "Planejando as cenas")
     doc = service.get_doc(project_id)
     style = get_style(doc.style_id, doc.style_overrides)
+    pool, edit_warnings = _gather_pool(project_id, doc, style)
     new_doc, provider, review = authoring.storyboard(
         doc, style, project_id=project_id, job_id=ctx.job_id,
         channel=_channel_info(doc.channel_id), styles=authoring.style_catalog(style),
     )
+    edit_warnings += _attach_and_plan(new_doc, style, pool)
     counts = review["counts"]
     message = f"Cenas planejadas ({provider}): {counts['scenes']} cenas, {counts['new_images']} imagens novas"
     version = service.commit(project_id, new_doc, message, author="ai")
@@ -498,9 +501,40 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
         if find_job:
             result["media_find_job"] = find_job
     ctx.progress(1.0, "Cenas prontas para revisão")
-    if warning:
-        result["warnings"] = [warning]
+    warnings = [*edit_warnings, *([warning] if warning else [])]
+    if warnings:
+        result["warnings"] = warnings
     return result
+
+
+def _gather_pool(project_id: str, doc: Any, style: Any) -> tuple[Pool, list[str]]:
+    """Acervo de material real ANTES do storyboard (ADR 0004): coletado, gravado em `pool.json` (o storyboard lê de
+    lá com `load_pool`) e devolvido. Acervo vazio não grava nada. Falha vira aviso: o storyboard sai como antes."""
+    try:
+        pool = media_pool.gather(doc, style)
+        if pool.items or pool.warnings:
+            save_pool(project_id, pool)
+        return pool, list(pool.warnings)
+    except Exception as exc:  # noqa: BLE001 - sem acervo, o storyboard segue com IA e cartões
+        log.warning("a coleta do acervo falhou: %s", exc)
+        return Pool(), [f"O acervo de material real não saiu: {exc}"]
+
+
+def _attach_and_plan(doc: Any, style: Any, pool: Pool) -> list[str]:
+    """Depois do storyboard e antes de gravar: anexa a mídia escolhida do acervo e planeja subplanos e eventos (no
+    próprio `doc`). Falha vira aviso e a cena fica como o storyboard deixou."""
+    warnings: list[str] = []
+    try:
+        warnings += media_pool.attach_chosen(doc, pool)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("o anexo do acervo falhou: %s", exc)
+        warnings.append(f"A mídia do acervo não foi anexada: {exc}")
+    try:
+        edit_plan.plan(doc, style, pool)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("o planejador de edição falhou: %s", exc)
+        warnings.append(f"O planejador de edição falhou: {exc}")
+    return warnings
 
 
 def _find_media(ctx: JobContext, doc: Any) -> tuple[dict[str, Any] | None, str | None]:

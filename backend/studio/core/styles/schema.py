@@ -74,6 +74,7 @@ CAMERA_MOVES = (
     "punch_zoom",
     "drift",
     "static",
+    "push",  # aproximação lenta e reta no centro (sem deriva lateral), o "push-in" de editor (ADR 0004)
     "zoom_to",  # aproxima do foco da cena (Scene.focus); feito para imagem reaproveitada
     "parallax",  # 2.5D: camadas pelo mapa de profundidade (studio.media.depth); sem o modelo vira ken_burns_in
 )
@@ -132,6 +133,13 @@ DEFAULT_THUMB_PALETTE: dict[str, str] = {
     "yellow": "#FFD400", "pink": "#FF2E88", "orange": "#FF8A1F", "teal": "#19D3C5", "ink": "#1A0B2E",
 }
 SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map")
+# Níveis de fonte do material na tela, do mais real ao gerado (espelho de `Prov` em `core/project/document.py`).
+SOURCE_TIERS = ("own", "official", "capture", "free", "stock", "graphic", "meme", "ai")
+# Política de fontes padrão (ADR 0004): o real é o padrão e a IA é apoio declarado, medida em tempo de tela.
+DEFAULT_SOURCE_MIX: dict[str, float] = {
+    "official": 0.25, "capture": 0.15, "free": 0.15, "stock": 0.10, "graphic": 0.15, "meme": 0.0, "ai": 0.20,
+}
+DEFAULT_HOOK_TIERS = ("own", "official", "capture", "free")
 # Tipos do cartão `chart` (família de dados): barras, linha, pizza e rosca.
 CHART_TYPES = ("bar", "line", "pie", "donut")
 
@@ -249,6 +257,48 @@ class VoiceSpec(StrictModel):
     """Pausa entre segmentos de narração."""
 
 
+def _check_tiers(value: list[str], label: str) -> list[str]:
+    for tier in value:
+        if tier not in SOURCE_TIERS:
+            raise ValueError(f"{label} desconhecido: {tier} (válidos: {', '.join(SOURCE_TIERS)})")
+    return list(dict.fromkeys(value))
+
+
+class SourcePolicy(StrictModel):
+    """De onde vem o que aparece na tela (ADR 0004 §3.0). A IA tem teto em TEMPO DE TELA (`ai_max_share`), não em
+    número de cenas; o resto é a mistura-alvo por nível de fonte."""
+
+    mix: dict[str, float] = dict(DEFAULT_SOURCE_MIX)
+    """Fração-alvo do tempo de tela por nível (`SOURCE_TIERS`)."""
+    ai_max_share: float = Field(default=0.20, ge=0, le=1)
+    """Teto de imagem de IA, em fração do tempo de tela."""
+    ai_photo: bool = False
+    """A IA pode imitar foto (com rótulo de conteúdo sintético). Padrão: linguagem assumidamente não fotográfica."""
+    hook: list[str] = list(DEFAULT_HOOK_TIERS)
+    """Níveis aceitos no gancho (os primeiros segundos)."""
+    official_max_clip_s: float = Field(default=4.0, gt=0, le=30)
+    """Duração máxima de cada trecho de material oficial (trailer, gameplay)."""
+    official_max_share: float = Field(default=0.35, ge=0, le=1)
+    """Teto de material oficial no tempo de tela (risco de Content ID)."""
+    require_ai_reason: bool = True
+    """Cena de IA precisa de motivo declarado (hipótese, futuro, conceito)."""
+
+    @field_validator("mix")
+    @classmethod
+    def _mix(cls, value: dict[str, float]) -> dict[str, float]:
+        for key, share in value.items():
+            if key not in SOURCE_TIERS:
+                raise ValueError(f"nível de fonte desconhecido: {key} (válidos: {', '.join(SOURCE_TIERS)})")
+            if share < 0:
+                raise ValueError(f"fração negativa para {key}")
+        return value
+
+    @field_validator("hook")
+    @classmethod
+    def _hook(cls, value: list[str]) -> list[str]:
+        return _check_tiers(value, "nível de fonte do gancho")
+
+
 class ArtSpec(StrictModel):
     bible: str = "ilustração digital detalhada e limpa, cores naturais e equilibradas, luz suave, composição clara com um sujeito em destaque"
     banned: list[str] = ["texto", "letras", "logotipos", "marca d'água"]
@@ -260,6 +310,9 @@ class ArtSpec(StrictModel):
     video_scenes: int | None = Field(default=None, ge=0, le=20)
     """Máximo de cenas com vídeo IA por vídeo (é pago). None: 2 no Short e 6 no longo (README §15.2); 0 desliga."""
     sources_mix: dict[str, float] = {"ai_image": 1.0}
+    """OBSOLETO (ADR 0004): nunca foi lido. Vale `sources`; o validador copia para lá as chaves que são nível de fonte."""
+    sources: SourcePolicy = SourcePolicy()
+    """Política de fontes: mistura por nível, teto de IA em tempo de tela, gancho e material oficial."""
     photoreal: bool = False
     """Arte fotorrealista exige rótulo de conteúdo sintético nas plataformas."""
     languages: list[str] = []
@@ -269,6 +322,21 @@ class ArtSpec(StrictModel):
     @classmethod
     def _languages(cls, value: list[str]) -> list[str]:
         return validate_languages(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_sources(cls, data: Any) -> Any:
+        """Estilo antigo (sem `sources`): a política padrão. As chaves de `sources_mix` que são nível de fonte entram
+        na mistura por cima do padrão; o `{"ai_image": 1.0}` de sempre (campo que nunca foi lido) fica só o padrão."""
+        if not isinstance(data, dict) or "sources" in data:
+            return data
+        legacy = data.get("sources_mix")
+        if isinstance(legacy, dict):
+            valid = {k: v for k, v in legacy.items()
+                     if k in SOURCE_TIERS and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0}
+            if valid:
+                return {**data, "sources": {"mix": {**DEFAULT_SOURCE_MIX, **valid}}}
+        return data
 
     @model_validator(mode="after")
     def _photoreal_languages(self) -> ArtSpec:
@@ -329,6 +397,65 @@ class TextCardSpec(StrictModel):
     animation: Literal["fade_up", "typewriter", "pop", "slide", "flicker"] = "fade_up"
 
 
+class HookGrammar(StrictModel):
+    """Cotas próprias da janela do gancho (None: as do vídeo)."""
+
+    window_s: float = Field(default=5.0, gt=0, le=60)
+    shot_median_s: float | None = Field(default=None, gt=0, le=30)
+    punch_per_min: float | None = Field(default=None, ge=0, le=60)
+    text_pop_per_min: float | None = Field(default=None, ge=0, le=60)
+    sfx_per_min: float | None = Field(default=None, ge=0, le=120)
+
+
+class EditGrammar(StrictModel):
+    """Gramática de edição (ADR 0004 §3.0): ritmo dos planos, densidade de eventos por minuto e travas. O planejador
+    (`workers/pipeline/edit_plan`) transforma isto em `Scene.shots` e `Scene.fx`; `grammar_for` dá a efetiva."""
+
+    editor: Literal["off", "auto"] = "auto"
+    """off: o planejador não mexe na cena (fica um plano por cena, como antes)."""
+    intensity: int = Field(default=2, ge=0, le=3)
+    """Escala as cotas: 0→0,5×, 1→0,75×, 2→1×, 3→1,4×."""
+    shot_median_s: float = Field(default=2.6, gt=0, le=30)
+    shot_cv: float = Field(default=0.6, ge=0, le=3)
+    shot_max_s: float = Field(default=7.0, gt=0, le=60)
+    micro_per_min: float = Field(default=1.0, ge=0, le=60)
+    burst_prob: float = Field(default=0.15, ge=0, le=1)
+    punch_per_min: float = Field(default=3.0, ge=0, le=60)
+    punch_scale: Range = Range(min=1.12, max=1.30)
+    shake_per_min: float = Field(default=0.3, ge=0, le=60)
+    text_pop_per_min: float = Field(default=2.0, ge=0, le=60)
+    meme_per_min: float = Field(default=0.5, ge=0, le=30)
+    annot_per_min: float = Field(default=0.5, ge=0, le=30)
+    sfx_per_min: float = Field(default=4.0, ge=0, le=120)
+    sfx_on_cut_share: float = Field(default=0.3, ge=0, le=1)
+    sfx_palette: dict[str, float] = {}
+    """Pesos por tipo de SFX ou id da biblioteca. Vazio: o padrão do planejador."""
+    sfx_tonal_ok: bool = True
+    """SFX tonal (com nota, que briga com a trilha) pode entrar no automático."""
+    switch_per_min: float = Field(default=2.0, ge=0, le=60)
+    max_still_s: float = Field(default=6.0, gt=0, le=60)
+    slow_zoom_share: float = Field(default=0.30, ge=0, le=1)
+    static_share_min: float = Field(default=0.25, ge=0, le=1)
+    humor: Literal["none", "light", "meme"] = "light"
+    caption_emphasis: Literal["none", "color", "pop", "emoji"] = "pop"
+    effects_policy: Literal["global", "per_tier"] = "per_tier"
+    """per_tier: grão e vinheta só no material de arquivo (a timeline marca `clean` em captura, gráfico e próprio)."""
+    music_drop_before_reveal: bool = True
+    hook: HookGrammar | None = None
+    profile_refs: list[str] = []
+    """Ids das referências cujo perfil gerou esta gramática."""
+    tolerance: float = Field(default=0.35, gt=0, le=3)
+    """Tolerância relativa das cotas (aderência e conferência)."""
+
+    @field_validator("sfx_palette")
+    @classmethod
+    def _palette(cls, value: dict[str, float]) -> dict[str, float]:
+        for key, weight in value.items():
+            if weight < 0:
+                raise ValueError(f"peso negativo para {key}")
+        return value
+
+
 class EditSpec(StrictModel):
     shot_seconds: Range = Range(min=2.0, max=3.5)
     """Duração de cada cena (batida) em segundos: o storyboard corta a narração por frase nessa faixa."""
@@ -348,6 +475,9 @@ class EditSpec(StrictModel):
     """Pesos do tratamento das cenas de imagem (ids de `TREATMENTS`). Vazio: automático pela família."""
     presenter: Literal["auto", "off"] = "auto"
     """Avatar do apresentador nas cenas: "auto" segue o canal/projeto; "off" desliga neste estilo."""
+    grammar: EditGrammar = EditGrammar()
+    """Gramática de edição (subplanos, eventos, cotas). Use `grammar_for(style)` para a efetiva (o Short troca os
+    valores que estão no padrão)."""
 
     @field_validator("treatments")
     @classmethod
@@ -490,6 +620,30 @@ class StyleSpec(StrictModel):
 
     def all_families(self) -> list[Family]:
         return self.families_mix or [self.family]
+
+
+# No Short, os valores da gramática e da política que estão no padrão do longo trocam por estes (ADR 0004 §3.0).
+SHORT_GRAMMAR_DEFAULTS: dict[str, float] = {"shot_median_s": 1.6, "max_still_s": 3.0, "sfx_per_min": 6.0}
+SHORT_SOURCES_DEFAULTS: dict[str, float] = {"ai_max_share": 0.30}
+
+
+def _short_swap[M: StrictModel](model: M, swaps: dict[str, float]) -> M:
+    fields = type(model).model_fields
+    update = {k: v for k, v in swaps.items() if getattr(model, k) == fields[k].default}
+    return model.model_copy(update=update) if update else model
+
+
+def grammar_for(style: StyleSpec) -> EditGrammar:
+    """A gramática efetiva do estilo. No Short, o que está no valor padrão troca: mediana 1,6 s, `max_still_s` 3 s e
+    6 SFX/min. Valor escolhido (diferente do padrão) fica."""
+    grammar = style.edit.grammar
+    return _short_swap(grammar, SHORT_GRAMMAR_DEFAULTS) if style.format.type == "short" else grammar
+
+
+def sources_for(style: StyleSpec) -> SourcePolicy:
+    """A política de fontes efetiva. No Short, o teto de IA no padrão (0,20) vira 0,30."""
+    policy = style.art.sources
+    return _short_swap(policy, SHORT_SOURCES_DEFAULTS) if style.format.type == "short" else policy
 
 
 def treatment_pool(style: StyleSpec) -> dict[str, float]:

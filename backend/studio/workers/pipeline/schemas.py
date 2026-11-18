@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from studio.core.project.document import BEAT_ROLES
 from studio.core.styles.schema import (
     AUTO_CAMERA_MOVES,
     GRADE_PRESETS,
@@ -55,7 +56,8 @@ SCRIPT_SCHEMA = _obj(
 # "map" só são explicados no pedido quando o estilo é da família de dados e geografia).
 STORYBOARD_KINDS = ["image", "stat", "compare", "title", "text", "quote", "count", "chart", "map"]
 assert set(STORYBOARD_KINDS) <= set(SCENE_KINDS)
-STORYBOARD_SOURCES = ["new", "reuse", "none"]
+# "pool": item do acervo de material real do projeto (`pool.json`), citado em `pool_id` (ADR 0004).
+STORYBOARD_SOURCES = ["new", "reuse", "none", "pool"]
 
 # Storyboard v2: direção de arte do vídeo + uma cena por batida. Os ids de catálogo (linguagem, plano,
 # composição, foco, câmera, gradação) vão como string anulável e são validados no Python: enum que aceita
@@ -107,12 +109,22 @@ STORYBOARD_SCHEMA = _obj(
                     "source_ref": NI,
                     # Sugestão de mídia real, em campos achatados (objeto anulável aninhado é arriscado no
                     # --json-schema do Claude): "photo" | "news" | "official" | null, validado no Python.
+                    # Reserva desde o ADR 0004: o acervo (`pool_id`) é o caminho do material real.
                     "real_kind": NS,
                     "real_query": NS,  # inglês, 2 a 6 palavras
                     "real_note": NS,  # português: o que mostrar e onde achar
                     "real_source_ref": NI,  # número da fonte com o link da notícia em "Fontes do roteiro"
                     # Vídeo IA (pago): o movimento em inglês nas poucas batidas que ganham com o clipe; null nas outras.
                     "video_motion": NS,
+                    # --- ADR 0004 (achatados, validados no Python) ---
+                    "pool_id": NS,  # id do item do acervo ("p12") com source "pool"
+                    "ai_reason": NS,  # por que esta cena é IA (hipótese, futuro, conceito); null fora de "new"
+                    "role": {"type": "string", "enum": list(BEAT_ROLES)},  # papel da batida na edição
+                    "emphasis": NSA,  # até 3 palavras FALADAS na batida (ênfase, texto que pula)
+                    "serious": {"type": "boolean"},  # batida séria: nada cômico
+                    "gag_payoff": NS,  # meme | freeze | zoom | sfx | text
+                    "gag_line": NS,  # frase curta do "meme sem meme"
+                    "gag_at": NS,  # palavra onde a piada cai
                 }
             ),
         },

@@ -1,6 +1,11 @@
 // Tipos da timeline gerada pelo backend (studio/core/timeline.py).
 
-export type CaptionWord = { text: string; from: number; to: number };
+/**
+ * Palavra da legenda (quadros). `emph`: ênfase da palavra marcada no storyboard (`mark.emphasis`), conforme
+ * `grammar.caption_emphasis`; `emoji`: emoji que entra com ela. Ausentes: palavra comum (como antes).
+ */
+export type CaptionWord = { text: string; from: number; to: number; emph?: CaptionEmphasis; emoji?: string };
+export type CaptionEmphasis = 'color' | 'pop' | 'emoji';
 export type CaptionLine = { from: number; to: number; words: CaptionWord[] };
 
 export type SceneLook = {
@@ -11,6 +16,63 @@ export type SceneLook = {
   blur: number;
   grade: string | null;
 };
+
+/** Nível (origem) do material na tela, do mais real ao gerado (ADR 0004; `core/sources.py`). */
+export type Prov = 'own' | 'official' | 'capture' | 'free' | 'stock' | 'graphic' | 'meme' | 'ai';
+
+/** Tipos de evento dentro da cena (espelho de `FxType` em `core/project/document.py`). */
+export type FxType =
+  | 'punch'
+  | 'shake'
+  | 'zoom_rect'
+  | 'freeze'
+  | 'flash'
+  | 'text_pop'
+  | 'meme'
+  | 'sfx'
+  | 'highlight'
+  | 'arrow'
+  | 'circle'
+  | 'counter'
+  | 'music_drop'
+  | 'speed'
+  | 'whip'
+  | 'pip';
+
+export type ShotEasing = 'linear' | 'outCubic' | 'inOutQuad' | 'snap';
+
+/** Enquadramento do subplano: escala (1 = quadro inteiro) e centro (0 a 1). */
+export type ShotFraming = { scale: number; x: number; y: number };
+
+/**
+ * Subplano da cena já resolvido (quadros relativos ao início da cena). `src`: imagem (relativa à pasta de dados);
+ * `video`: proxy mudo do clipe, tocado de `clipIn` (s) com `speed`, congelando no último quadro com `hold`. Sem `src`
+ * nem `video`: o visual da própria cena.
+ */
+export type TimelineShot = {
+  from: number;
+  dur: number;
+  prov: Prov;
+  src?: string;
+  video?: string;
+  clipIn?: number;
+  speed?: number;
+  hold?: boolean;
+  framing: ShotFraming;
+  motion: string;
+  easing?: ShotEasing;
+};
+
+/** Evento dentro da cena já resolvido (quadros relativos ao início da cena); `params` depende do tipo. */
+export type TimelineFx = { type: FxType; from: number; dur: number; params: Record<string, unknown> };
+
+/**
+ * Contrato de áudio da timeline (fica no backend: o som é mixado no FFmpeg, não vai para o renderer). SFX de evento:
+ * `at` em segundos no vídeo, `scene` a cena dona, `lib_id` o som da biblioteca e `gain_db` o ganho relativo.
+ */
+export type TimelineSfxEvent = { type: string; at: number; scene: string; lib_id?: string; gain_db?: number };
+/** Queda da trilha (`timeline.music_drops`, só quando houver): início e duração em segundos. */
+export type TimelineMusicDrop = { at: number; dur: number };
 
 export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video' | 'stat' | 'compare' | 'chart' | 'map';
 
@@ -124,6 +186,14 @@ export type TimelineScene = {
   video_seconds?: number;
   /** Avatar do apresentador nesta cena (montado pelo `core/timeline.py`). Ausente: sem avatar. */
   presenter?: TimelinePresenter;
+  /** Nível do material da cena (`sources.prov_of_scene`). Ausente: timeline antiga. */
+  prov?: Prov;
+  /** Sem grão nem vinheta nesta cena (efeitos por nível: captura, gráfico e material próprio). Ausente: como antes. */
+  clean?: true;
+  /** Subplanos da cena (vários planos por batida). Ausente: um plano só, como antes. */
+  shots?: TimelineShot[];
+  /** Eventos presos a palavras (punch, texto que pula, meme, marca-texto...). Ausente: nenhum. */
+  fx?: TimelineFx[];
 };
 
 /**

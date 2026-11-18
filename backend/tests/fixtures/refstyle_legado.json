@@ -1,0 +1,249 @@
+{
+ "id": "ref-ytdown-com-youtube-media-ht4blj6jdg-voce-vai-zerar",
+ "name": "YTDown.com_YouTube_Media_-hT4bLj6Jdg_VOCÊ-VAI-ZERAR-GTA-6-PELO-YOUTUBE_001_1080p (referência)",
+ "description": "Criado a partir da referência “YTDown.com_YouTube_Media_-hT4bLj6Jdg_VOCÊ-VAI-ZERAR-GTA-6-PELO-YOUTUBE_001_1080p” sobre o preset Curiosidades e Explicativo (longo): plano mediano de 1.43 s, 21.0 cortes/min, paleta #0d090a #392b29 #685758 #b0927c #dad5ce",
+ "family": "motion_graphics",
+ "families_mix": [
+  "motion_graphics",
+  "still_cinema"
+ ],
+ "structure": "none",
+ "tags": [
+  "curiosidades",
+  "explicativo",
+  "ciencia",
+  "longo",
+  "referencia"
+ ],
+ "format": {
+  "type": "long",
+  "aspect": "16:9",
+  "resolution": "1920x1080",
+  "fps": 60,
+  "duration": {
+   "target_s": 600.0,
+   "min_s": 420.0,
+   "max_s": 900.0
+  }
+ },
+ "languages": {
+  "primary": "pt-BR",
+  "outputs": [
+   "pt-BR"
+  ],
+  "delivery": "separate_videos"
+ },
+ "script": {
+  "tone": "empolgado e informal, de fã para fã, curiosidades e detalhes do jogo, com hype e humor leve",
+  "structure": [
+   "hook",
+   "pergunta_central",
+   "contexto",
+   "capitulo_1",
+   "capitulo_2",
+   "capitulo_3",
+   "curiosidade_bonus",
+   "conclusao",
+   "cta"
+  ],
+  "hook_max_s": 15.0,
+  "fact_check": true,
+  "cta": "Se você aprendeu algo novo, inscreva-se e deixe nos comentários o próximo tema.",
+  "banned_phrases": [],
+  "speakers": {
+   "narrator": {
+    "voice_profile": null,
+    "voice": null,
+    "style_prompt": null
+   }
+  },
+  "words_per_minute": {
+   "pt-BR": 150,
+   "en-US": 155,
+   "es-ES": 160
+  }
+ },
+ "voice": {
+  "chain": [
+   "gemini_tts",
+   "google_chirp3hd",
+   "qwen3_tts_local"
+  ],
+  "preview": {
+   "local": true,
+   "voice": null
+  },
+  "voice_profile": null,
+  "voice": "Puck",
+  "style_prompt": "youtuber gamer brasileiro empolgado, ritmo rápido, tom de conversa e de hype, frases curtas e de impacto",
+  "speed": 1.0,
+  "timbre": {
+   "rvc_model": null,
+   "enabled": false
+  },
+  "qa": {
+   "enabled": true,
+   "max_wer": 0.2,
+   "retries": 1
+  },
+  "gap_s": 0.35
+ },
+ "art": {
+  "bible": "key art cinematográfica de videogame de mundo aberto, personagens e cidades estilizados, alto contraste com sombras profundas quase pretas, tons quentes de marrom, bege e pele, realces creme suaves, textura levemente granulada, composição dramática de capa de jogo",
+  "banned": [
+   "texto",
+   "letras",
+   "números",
+   "logotipos",
+   "marca d'água"
+  ],
+  "anchors": [],
+  "image_chain": [
+   "codex_cli",
+   "antigravity_cli"
+  ],
+  "thumbnail_chain": [
+   "codex_cli",
+   "antigravity_cli"
+  ],
+  "video_chain": [
+   "fal_kling_turbo",
+   "fal_kling_3"
+  ],
+  "video_scenes": null,
+  "sources_mix": {
+   "ai_image": 1.0
+  },
+  "photoreal": false,
+  "languages": [
+   "key_art",
+   "render_3d",
+   "painting",
+   "editorial"
+  ]
+ },
+ "edit": {
+  "shot_seconds": {
+   "min": 0.9,
+   "max": 2.7
+  },
+  "new_image_ratio": 0.5,
+  "camera": {
+   "punch_zoom": 3.0,
+   "ken_burns_in": 3.0,
+   "pan_left": 1.5,
+   "pan_right": 1.5,
+   "drift": 1.0,
+   "static": 1.0
+  },
+  "transitions": {
+   "cut": 17.0,
+   "fade_black": 1.0,
+   "zoom_blur": 1.0,
+   "light_leak": 1.0
+  },
+  "transition_seconds": 0.2,
+  "effects": [
+   {
+    "type": "vignette",
+    "amount": 0.2,
+    "preset": null,
+    "params": {}
+   },
+   {
+    "type": "grain",
+    "amount": 0.12,
+    "preset": null,
+    "params": {}
+   },
+   {
+    "type": "grade",
+    "amount": 0.6,
+    "preset": "warm-sepia",
+    "params": {}
+   }
+  ],
+  "captions": {
+   "style": "word",
+   "font": "Montserrat",
+   "weight": 800,
+   "size": 56,
+   "color": "#FFFFFF",
+   "highlight": "#FFD400",
+   "stroke": 5,
+   "stroke_color": "#000000",
+   "position": "bottom",
+   "max_words_per_line": 6,
+   "uppercase": true,
+   "background": null
+  },
+  "text_cards": {
+   "font": "Bebas Neue",
+   "color": "#FFFFFF",
+   "accent": "#FFD400",
+   "background": "#0D090A",
+   "animation": "pop"
+  },
+  "progress_bar": false,
+  "progress_color": "#FFD400",
+  "watermark": null,
+  "zoom_strength": 0.09,
+  "treatments": {},
+  "presenter": "auto"
+ },
+ "audio": {
+  "music": {
+   "source": "procedural",
+   "mood": "pulse",
+   "volume_db": -22.0,
+   "ducking": true
+  },
+  "sfx": {
+   "auto": true,
+   "pack": "basic",
+   "volume_db": -12.0
+  },
+  "loudness_lufs": -14.0
+ },
+ "thumbnail": {
+  "template": "texto-grande-esquerda",
+  "variations": 3,
+  "per_language": true,
+  "font": "Bebas Neue",
+  "color": "#FFFFFF",
+  "accent": "#FFD400",
+  "templates": [
+   "heroi-palavra",
+   "numero-lista",
+   "avatar-reage"
+  ],
+  "title_candidates": 5,
+  "thumb_candidates": 3,
+  "presenter": true,
+  "palette": {
+   "yellow": "#FFD400",
+   "pink": "#FF2E88",
+   "orange": "#FF8A1F",
+   "teal": "#19D3C5",
+   "ink": "#1A0B2E"
+  },
+  "logo_asset": null,
+  "allow_editorial": false,
+  "gate_package": true
+ },
+ "variation": {
+  "seed_scope": "video",
+  "avoid_repeat_last": 5
+ },
+ "publish": {
+  "targets": [
+   {
+    "platform": "youtube",
+    "driver": "youtube_native",
+    "privacy": "private",
+    "schedule": null
+   }
+  ],
+  "ai_label": "auto"
+ }
+}
