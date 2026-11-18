@@ -267,13 +267,26 @@ _HEAD_STOP = frozenset("de da do em no na of in on at to by and the com por".spl
 _WEAK_TERMS = frozenset(
     "video videos clip footage stock real digital online internet live show total normal final original simple "
     "person people young group hand hands playing play using large small glowing bright colorful concept scene "
-    "style design room backdrop setting indoor indoors outdoor outdoors".split()
+    "style design room backdrop setting indoor indoors outdoor outdoors game games gaming gamer".split()
 )
 # Marcas de aparelho: na foto, só com a marca citada na cena (e o mesmo modelo, se a foto diz o modelo).
 _HARDWARE = frozenset(
     "xbox ps nintendo wii gameboy iphone ipad macbook geforce rtx gtx radeon ryzen".split()
 )
 _HARDWARE_ALIAS = {"playstation": "ps", "psn": "ps"}
+# Linha de produto dentro da marca: "GeForce RTX 4090" e "RTX 4090" são a mesma placa.
+_HARDWARE_FAMILY = {"rtx": "geforce", "gtx": "geforce"}
+# Aparelho sem marca na descrição ("joysticks on a video game console"): com o modelo citado na cena, a foto não prova
+# que é ele.
+_HARDWARE_NOUNS = frozenset(
+    "console consoles controller controllers joystick joysticks gamepad gamepads handheld smartphone smartphones "
+    "cellphone gpu".split()
+)
+# Onde o prompt de reserva (em inglês) deixa o assunto e passa ao cenário: "A sealed parcel | on a gaming desk".
+_PROMPT_TAIL = re.compile(
+    r"[,.;:]|\b(?:on|in|at|beside|behind|near|under|over|against|next|while|during|inside|atop|above|below|beneath"
+    r"|across|into|onto|from|amid|among)\b", re.I)
+_MODEL_JOIN = frozenset("e ou and or".split())
 _ROMAN = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9"}
 _YEAR = re.compile(r"(?:19|20)\d\d")
 
@@ -347,19 +360,32 @@ def model_marks(*texts: object) -> dict[str, set[str]]:
         if not isinstance(text, str):
             continue
         words = _model_words(text)
-        for head, nxt in zip(words, words[1:], strict=False):
+        for i, (head, nxt) in enumerate(zip(words, words[1:], strict=False)):
             if head.isdigit() or head in _TERM_STOP or head in _HEAD_STOP or len(head) < 2 or not _is_model(nxt):
                 continue
-            out.setdefault(head, set()).add(_ROMAN.get(nxt, nxt))
+            models = out.setdefault(head, set())
+            models.add(_ROMAN.get(nxt, nxt))
+            # "Series X|S", "Series X e S": a letra seguinte (com ou sem "e"/"ou" no meio) é outro modelo da mesma
+            # marca. Só letra depois de letra: "Xbox One S" não vira o modelo "S" do Xbox.
+            j = i + 2
+            while len(nxt) == 1 and j < len(words):
+                if words[j] in _MODEL_JOIN and j + 1 < len(words):
+                    j += 1
+                if len(words[j]) != 1 or not _is_model(words[j]):
+                    break
+                models.add(words[j])
+                j += 1
     return out
 
 
 def _hardware_brands(*texts: object) -> set[str]:
-    """Marcas de aparelho citadas nos textos ("PlayStation" e "PS" contam como a mesma)."""
+    """Marcas de aparelho citadas nos textos ("PlayStation" e "PS" contam como a mesma; "RTX" e "GTX" são
+    "GeForce")."""
     out: set[str] = set()
     for text in texts:
         if isinstance(text, str):
-            out |= {_HARDWARE_ALIAS.get(w, w) for w in _model_words(text)} & _HARDWARE
+            found = {_HARDWARE_ALIAS.get(w, w) for w in _model_words(text)} & _HARDWARE
+            out |= {_HARDWARE_FAMILY.get(b, b) for b in found}
     return out
 
 
@@ -373,41 +399,96 @@ def _hardware_marks(*texts: object) -> dict[str, set[str]]:
     return out
 
 
+class ScenePrompt(str):
+    """O prompt de reserva da cena (a imagem de IA, em inglês) entre os `texts` de `fits_scene`. Ele descreve uma
+    composição inteira: o assunto vem na frente e o cenário depois ("A sealed parcel | on a gaming desk next to the
+    PC"). Para provar que a foto de banco mostra a cena só vale a cabeça (`prompt_head`): o cenário é acaso ("gaming
+    desk setup" não ilustra a encomenda). O portão do tópico e a marca do aparelho leem o prompt inteiro."""
+
+    __slots__ = ()
+
+
+def prompt_head(text: str) -> str:
+    """O assunto do prompt: o trecho até a primeira vírgula, ponto ou preposição de lugar."""
+    return _PROMPT_TAIL.split(text, maxsplit=1)[0]
+
+
+def _stem(token: str) -> str:
+    return token[:-1] if len(token) > 3 and token.endswith("s") else token
+
+
+_GATE_STOP = frozenset(fold(w) for w in _LEADING | _CONNECTORS | _HEAD_STOP | _TERM_STOP | {"pra", "pro"})
+
+
+def _gate_tokens(text: str) -> set[str]:
+    """Palavras que dizem o assunto num rótulo ou numa cena, com os apelidos de marca juntos ("PS5" e "PlayStation 5"
+    dão "ps") e sem número nem algarismo romano ("GTA VI" e "GTA 6" dão "gta"), para o portão do tópico."""
+    out: set[str] = set()
+    for word in _model_words(text):
+        word = _HARDWARE_ALIAS.get(word, word)
+        word = _HARDWARE_FAMILY.get(word, word)
+        if word.isdigit() or word in _ROMAN or word in _GATE_STOP or word in _WEAK_TERMS or len(word) < 2:
+            continue
+        out.add(_stem(word))
+    return out
+
+
 def fits_text(tier: str, desc: str, tags: Iterable[str] = (), topic: str = "", *texts: object) -> bool:
     """`fits_scene` pelos campos do item (nível, descrição, etiquetas e tópico da busca), sem precisar do `PoolItem`."""
     if tier not in KEYWORD_TIERS:
         return True
+    from studio.media.stock_frame import describes_watermark
+
     tags = [t for t in tags if isinstance(t, str)]
+    shown_text = " ".join([desc, *tags])
+    if describes_watermark(shown_text) is not None:
+        return False  # arte de fã ("GTA 6 Fan Cover") e prévia marcada nunca são a cena, nem no acervo já coletado
     scene = " ".join(t for t in texts if isinstance(t, str))
-    if topic.strip():
-        key = fold(topic)
-        # A busca foi por outro assunto: o que a foto divide com a cena é acaso ("console" de uma busca por "Xbox"
-        # numa fala sobre o PC; "vídeo" de uma busca por "Rockstar" numa fala sobre vídeo curto).
-        if key and f" {key} " not in f" {fold(scene)} ":
-            return False
+    topic_words = _gate_tokens(topic) if topic.strip() else set()
+    # A busca foi por outro assunto: o que a foto divide com a cena é acaso ("console" de uma busca por "Xbox" numa
+    # fala sobre o PC; "vídeo" de uma busca por "Rockstar" numa fala sobre vídeo curto). Basta uma palavra do tópico
+    # na cena: o rótulo pode ser longo (o tema do vídeo, quando o roteiro tem poucos nomes) ou citado em parte ("o
+    # farol" para "Farol da Ilha Rasa", "PS5" para "PlayStation 5", "GTA VI" para "GTA 6").
+    if topic_words and not topic_words & _gate_tokens(scene):
+        return False
     # Aparelho com marca: a cena cita a marca e, se a foto diz o modelo, o mesmo modelo (Xbox 360 não ilustra "Steam,
     # PlayStation e Xbox"; Xbox One não ilustra "os consoles de 2013").
-    cited_brands = _hardware_brands(*texts)
-    if _hardware_brands(desc, *tags) - cited_brands:
+    shown_brands = _hardware_brands(shown_text)
+    if shown_brands - _hardware_brands(*texts):
         return False
     cited_hw = _hardware_marks(*texts)
-    for brand, models in _hardware_marks(desc, *tags).items():
+    shown_hw = _hardware_marks(shown_text)
+    for brand, models in shown_hw.items():
         if not models & cited_hw.get(brand, set()):
             return False
+    # A cena cita o modelo ("Xbox Series S", "PS5") e a foto mostra um aparelho sem dizer qual: não prova que é ele
+    # (os "joysticks on a video game console" eram um Series S).
+    if any(cited_hw.values()) and not shown_hw and (
+            shown_brands or {_stem(w) for w in _model_words(shown_text)} & {_stem(w) for w in _HARDWARE_NOUNS}):
+        return False
     cited = model_marks(*texts)
-    shown = model_marks(desc, *tags)
+    shown = model_marks(shown_text)
     for head, models in shown.items():
         if cited.get(head) and not models & cited[head]:
             return False
-    # O nome próprio solto da fala não prova nada: o banco devolve o que tem a palavra em qualquer sentido ("Rockstar"
-    # é a estrela do rock, "ISO" é a sensibilidade da câmera, "Gaming" do "Xbox Cloud Gaming" vira controle qualquer).
-    # A prova é uma palavra comum em comum ("o farol" na fala, "lighthouse farol" na foto), o nome inteiro de duas ou
-    # mais palavras que não é a busca ("Farol da Ilha Rasa" na foto e na fala) ou a marca com o mesmo modelo dos dois
-    # lados ("GTA 6").
-    if (content_terms(desc, *tags) - _WEAK_TERMS) & (common_terms(*texts) - _WEAK_TERMS):
+    # O nome próprio solto da fala não prova nada quando é o que foi buscado: o banco devolve o que tem a palavra em
+    # qualquer sentido ("Rockstar" é a estrela do rock, "ISO" é a sensibilidade da câmera). A prova (com o prompt de
+    # reserva reduzido ao assunto, `ScenePrompt`) é uma palavra comum em comum ("o farol" na fala, "lighthouse farol"
+    # na foto), outro nome próprio, que não é o buscado nem marca de aparelho ("Colosseum" e "Rome" numa busca por
+    # "Coliseu"), o nome inteiro de duas ou mais palavras ("Farol da Ilha Rasa") ou a marca com o mesmo modelo dos
+    # dois lados ("GTA 6").
+    proof = tuple(prompt_head(t) if isinstance(t, ScenePrompt) else t for t in texts)
+    shown_terms = content_terms(shown_text) - _WEAK_TERMS
+    common = common_terms(*proof)
+    if shown_terms & (common - _WEAK_TERMS):
         return True
-    shown_blob = f" {fold(' '.join([desc, *tags]))} "
-    for text in texts:
+    cased = [t for t in proof if isinstance(t, str) and any(ch.islower() for ch in t)]  # faixa em maiúscula: não dá
+    names = {n for n in content_terms(*cased) - common - _WEAK_TERMS - _HARDWARE - set(_HARDWARE_ALIAS)
+             if len(n) >= _TERM_MIN_LEN and _stem(n) not in topic_words}
+    if shown_terms & names:
+        return True
+    shown_blob = f" {fold(shown_text)} "
+    for text in proof:
         if not isinstance(text, str) or not any(ch.islower() for ch in text):
             continue
         for run, _ in _proper_runs(text):
@@ -421,7 +502,11 @@ def fits_scene(item: PoolItem, *texts: object) -> bool:
     """O item do acervo pode ilustrar a cena de `texts` (a fala, a faixa, o prompt de reserva)? Material de busca por
     palavra-chave (`KEYWORD_TIERS`) só quando:
 
-    - a cena fala do assunto que foi buscado (`item.topic`): o resto é acaso de palavra;
+    - a cena cita pelo menos uma palavra do assunto que foi buscado (`item.topic`, com apelido de marca e sem número:
+      "PS5" é "PlayStation 5", "GTA VI" é "GTA 6"): o resto é acaso de palavra;
+    - não é arte de fã nem prévia com marca d'água (`stock_frame.describes_watermark`, também no acervo antigo);
+    - do prompt de reserva (`ScenePrompt`) só o assunto prova, não o cenário;
+    - com a geração do aparelho citada na cena, a descrição de aparelho sem modelo não serve;
     - a descrição (ou as etiquetas) divide com a cena uma palavra comum que não é genérica (`_WEAK_TERMS`), o nome
       inteiro de duas palavras ou mais ("Farol da Ilha Rasa") ou a mesma marca com o mesmo modelo ("GTA 6"): o nome
       próprio solto e a sigla da fala não provam, o banco acha o homônimo ("Rockstar in the woods" para a Rockstar
@@ -1478,8 +1563,8 @@ def _scene_texts(doc: ProjectDoc, scene: Scene) -> tuple[str, ...]:
 
     lang = doc.primary_language
     headline = scene.card.headline.get(lang, "") if scene.card is not None else ""
-    return tuple(t for t in (scene_text(doc, scene), scene.visual.prompt, headline, scene.overlay_text.get(lang, ""))
-                 if t)
+    return tuple(t for t in (scene_text(doc, scene), ScenePrompt(scene.visual.prompt or ""), headline,
+                             scene.overlay_text.get(lang, "")) if t)
 
 
 def _has_real(scene: Scene, project_id: str) -> bool:

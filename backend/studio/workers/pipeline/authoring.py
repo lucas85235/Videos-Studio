@@ -1548,7 +1548,10 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         ahead = None
         topic = _match_tokens(beat.text, data.get("prompt"), data.get("real_query"), data.get("real_note"),
                               data.get("headline"), data.get("overlay_text"))
-        texts = tuple(t for t in (beat.text, data.get("headline"), data.get("overlay_text"), data.get("prompt"),
+        # O prompt de IA vai marcado: na prova de `fits_scene` só vale o assunto dele, não o cenário.
+        prompt = data.get("prompt")
+        texts = tuple(t for t in (beat.text, data.get("headline"), data.get("overlay_text"),
+                                  media_pool.ScenePrompt(prompt) if isinstance(prompt, str) else None,
                                   data.get("real_query")) if isinstance(t, str) and t.strip())
         chosen_item: PoolItem | None = None
         plain = False

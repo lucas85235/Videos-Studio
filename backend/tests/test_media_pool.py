@@ -1363,6 +1363,65 @@ def test_stock_hardware_needs_the_brand_and_model_the_scene_cites():
     assert not media_pool.fits_scene(ps5.model_copy(update={"topic": ""}), "Só no PS4, o console antigo.")
 
 
+@pytest.mark.parametrize(("desc", "topic", "texts"), [
+    # o tópico é o tema do vídeo (roteiro com poucos nomes): basta uma palavra dele na cena
+    ("Pink orchid flowers in a pot", "Como cuidar de orquídeas no inverno",
+     ("Regue as orquídeas uma vez por semana.", "close-up of orchids on a windowsill in winter")),
+    # o nome citado em parte, o algarismo romano e o apelido da marca
+    ("Lighthouse on a rocky island at dusk", "Farol da Ilha Rasa",
+     ("O farol foi construído em 1829 e ainda funciona.", "lighthouse on a rocky island at sunset")),
+    ("Grand Theft Auto VI logo", "GTA 6", ("O GTA VI chega em 2026.", "GTA VI logo")),
+    ("PlayStation 5 console on a desk", "PlayStation 5", ("O PS5 vendeu muito.", "a PS5 console on a desk")),
+    # outro nome próprio, que não é o buscado, nos dois lados ("Colosseum", "Rome" numa busca por "Coliseu")
+    ("The Colosseum in Rome", "Coliseu", ("O Coliseu recebia 50 mil pessoas.", "the Colosseum in Rome at sunrise")),
+    # linha de produto da marca e modelos em sequência
+    ("NVIDIA GeForce RTX 4090 graphics card", "RTX 4090",
+     ("A RTX 4090 é a placa mais cara.", "RTX 4090 graphics card close-up")),
+    ("Xbox Series S console", "Xbox", ("Os Xbox Series X|S chegaram em 2020.", "Xbox Series consoles")),
+])
+def test_stock_of_the_subject_fits_by_alias_part_of_the_name_or_other_proper_name(desc, topic, texts):
+    item = PoolItem(id="p1", tier="free", media="image", desc=desc, topic=topic)
+    assert media_pool.fits_scene(item, *texts) is True
+
+
+def test_stock_proof_reads_only_the_subject_of_the_fallback_prompt():
+    """O prompt de reserva descreve a composição inteira: o cenário ("on a gaming desk next to the PC") não prova que
+    a mesa gamer de banco é a encomenda da cena (casos reais scn_hk70pmqg e scn_wu3fxbh5)."""
+    setup = PoolItem(id="p1", tier="stock", media="image", topic="PC",
+                     desc="High-tech gaming setup featuring a curved monitor, RGB keyboard, and vibrant lighting.")
+    speech = "existe. E se o jogo não existe, o que é que vem dentro daquele PC? Já já você vai ver."
+    prompt = ("A sealed plain cardboard parcel sitting on a gaming desk next to the PC tower, thin red light leaking "
+              "from its seams.")
+    assert not media_pool.fits_scene(setup, speech, media_pool.ScenePrompt(prompt))
+    desk = PoolItem(id="p2", tier="stock", media="image", topic="PC",
+                    desc="Sleek gaming desk setup featuring RGB lighting, large monitor, and gaming PC.")
+    phone = ("A hand holds a smartphone showing a large abstract glowing padlock shape, in front of a powered-off PC "
+             "tower on the desk.")
+    spoken = "troca as senhas pelo celular, nunca pelo PC infectado"
+    assert media_pool.fits_scene(desk, spoken, phone)  # texto solto (sem a marca de prompt): conta inteiro
+    assert not media_pool.fits_scene(desk, spoken, media_pool.ScenePrompt(phone))
+    # a cabeça do prompt é a mesa: aí a foto serve
+    assert media_pool.fits_scene(desk, "o PC gamer novo", media_pool.ScenePrompt("A gaming desk setup at night, RGB"))
+
+
+def test_stock_fan_art_never_fits_even_from_an_old_pool():
+    """A arte de fã sai na coleta (`bank_misfit`), mas o acervo já coletado ainda a tem: `fits_scene` também recusa
+    ("GTA 6 Fan Cover" passava pela marca com modelo "GTA 6")."""
+    fan = PoolItem(id="p191", tier="free", media="image", desc="GTA 6 Fan Cover", topic="GTA 6")
+    assert not media_pool.fits_scene(fan, "não existe GTA 6 de PC, então todo download de PC hoje é golpe.")
+    assert media_pool.fits_scene(fan.model_copy(update={"desc": "GTA 6 cover"}), "a capa do GTA 6")
+
+
+def test_stock_console_without_model_does_not_fit_a_scene_that_cites_the_model():
+    """A cena cita a geração ("Xbox Series S", "PS5") e a foto mostra um console sem dizer qual: não prova que é ele;
+    com a cena só na marca, o console genérico serve."""
+    pad = PoolItem(id="p209", tier="stock", media="image", topic="Xbox",
+                   desc="close up of wireless joysticks on a video game console")
+    assert not media_pool.fits_scene(pad, "No Xbox One o jogo não roda, só nos consoles Series.")
+    assert not media_pool.fits_scene(pad.model_copy(update={"topic": "PS5"}), "O console PS5 vendeu mais.")
+    assert media_pool.fits_scene(pad, "Nuvem: só em console Xbox.")
+
+
 def test_gather_drops_stock_with_watermark_fan_art_or_pillarbox_shape(isolated_settings, monkeypatch):
     """Na coleta: a prévia do Shutterstock (marca d'água), a capa de fã do Flickr e a foto quadrada ou o vídeo em pé
     (no vídeo deitado, entrariam com as laterais desfocadas) ficam fora do acervo, com aviso; a foto deitada e o
