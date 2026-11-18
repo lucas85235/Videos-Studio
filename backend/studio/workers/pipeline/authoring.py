@@ -308,8 +308,10 @@ O que o app desenha:
 Todo cartão (stat, compare, title, text, quote) usa de fundo, desfocado e escurecido, o material de uma batida
 vizinha: prefira o real (source "pool" com o pool_id, ou "reuse" de uma batida com item do acervo); source "none"
 deixa o fundo liso (só quando o cartão pede fundo limpo); fundo de IA só quando não houver material real.
-Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras, ex. "RECORDE"; nunca
-"INÉDITO" nem "EXCLUSIVO": as imagens são ilustrações), source_ref (o número da fonte em "Fontes do roteiro" que
+Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras: só o veredito sobre o que
+a cena afirma, ex. "CONFIRMADO", "BOATO", "FALSO", "RECORDE", e só onde o veredito importa; nunca rótulo: tipo ou nome
+da fonte ("IMPRENSA"), data ("13/11") nem numeração de lista ("SINAL 2"); nunca "INÉDITO" nem "EXCLUSIVO": as
+imagens são ilustrações), source_ref (o número da fonte em "Fontes do roteiro" que
 traz o dado do cartão, ou null). Campo que não se aplica vai como null. A faixa compete com a legenda: use no
 gancho e só onde acrescenta o que a fala não diz (data, nome, virada de assunto: "TRAILER 2 · MAIO 2025", não só
 "MAIO DE 2025"), no máximo 1 a cada 3 cenas, sem repetir a fala da batida.

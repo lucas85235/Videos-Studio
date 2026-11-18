@@ -5,7 +5,7 @@
   prompt, número inventado no cartão, imagens novas quase todas na mesma hora do dia, imagem reaproveitada para
   outra data ou outro evento quando ainda há vaga para imagem nova);
 - corrigido: o código já arrumou no documento (plano repetido, gancho sem imagem nova, cartão sem fundo, carimbo
-  "INÉDITO", faixa que só repete a fala, fonte do cartão que não traz o número ou que ficou sozinha, personagem de
+  "INÉDITO" ou que é rótulo e não veredito ("IMPRENSA", "SINAL 2"), faixa que só repete a fala, fonte do cartão que não traz o número ou que ficou sozinha, personagem de
   ficção sem rosto);
 - aviso: o usuário vê, nada muda (motivo repetido, cartões seguidos ou demais, comparação de medidas diferentes, a
   mesma imagem em cenas seguidas demais, chamada final de outro estilo).
@@ -134,6 +134,20 @@ _BANNED_STAMPS = {
     "inedito", "inedita", "ineditos", "ineditas", "exclusivo", "exclusiva", "exclusivos", "exclusivas", "exclusive",
     "unseen", "leaked", "leak", "vazou", "vazado", "vazada", "vazamento", "filtrado", "filtrada",
 }  # fmt: skip
+# Carimbo é veredito sobre o que a cena afirma (CONFIRMADO, BOATO, FALSO, GOLPE). Tipo de fonte ("IMPRENSA") é rótulo:
+# repete o que a captura e a fonte já mostram e só disputa espaço com o texto da tela.
+_LABEL_STAMPS = {
+    "imprensa", "noticia", "noticias", "materia", "materias", "reportagem", "jornal", "fonte", "fontes", "site",
+    "press", "news", "source", "sources", "article", "report", "prensa", "fuente", "fuentes", "articulo",
+}  # fmt: skip
+# Numeração de lista ("SINAL 2", "PASSO 3"): o contador da tela e a fala já numeram; carimbo não é índice.
+_LIST_STAMPS = {
+    "sinal", "sinais", "passo", "passos", "dica", "dicas", "item", "itens", "etapa", "etapas", "parte", "step",
+    "steps", "tip", "tips", "sign", "signs", "paso", "pasos", "senal", "senales", "consejo",
+}  # fmt: skip
+# Data de dia e mês no carimbo ("13/11", "10.11"): é crédito ou faixa, não veredito. Ano sozinho ("2013") fica: ele
+# entra quando o número é dito (`stamp_from`).
+_DAY_MONTH_RE = re.compile(r"\b\d{1,2}\s*[/.-]\s*\d{1,2}\b")
 # Palavras de ligação que não contam ao comparar a faixa com a fala.
 _FUNCTION_WORDS = {
     "de", "do", "da", "dos", "das", "e", "o", "a", "os", "as", "em", "no", "na", "nos", "nas", "um", "uma", "para",
@@ -568,6 +582,47 @@ def fix_echo_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         scene.card = scene.card if scene.card.resolved(lang) else None
         issues.append(Issue("carimbo_repetido", CORRIGIDO, f'O carimbo "{stamp}" só repetia "{echoed}" na mesma cena: saiu.',
                             beat.key, scene.id))
+    return issues
+
+
+def _label_stamp(stamp: str, source: str | None) -> str | None:
+    """Por que o carimbo é rótulo e não veredito (None: é veredito): tipo de fonte ("IMPRENSA"), o nome da própria
+    fonte ou data de dia e mês ("ESET 13/11"), numeração de lista ("SINAL 2", "SINAIS 3·4")."""
+    tokens = [t for t in (normalize_token(p) for p in re.split(r"[\s·•|/—–:,.!?()-]+", stamp)) if t]
+    if not tokens:
+        return None
+    if all(t in _LABEL_STAMPS for t in tokens):
+        return "tipo de fonte"
+    if _DAY_MONTH_RE.search(stamp) or any(t in _MONTHS and t not in _AMBIGUOUS_MONTHS for t in tokens):
+        return "data"
+    # Só o nome da fonte ("GAMESBEAT", "ESET IMPRENSA"); "ROCKSTAR CONFIRMA" é veredito e fica.
+    named = {n for p in re.split(r"[\s()·,]+", source or "") if len(n := normalize_token(p)) >= 3} - _FUNCTION_WORDS
+    if named and all(t in named or t in _LABEL_STAMPS for t in tokens):
+        return "nome da fonte"
+    if tokens[0] in _LIST_STAMPS and len(tokens) > 1 and all(t.isdigit() for t in tokens[1:]):
+        return "numeração de lista"
+    return None
+
+
+def fix_label_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Carimbo que é rótulo e não veredito sai ("IMPRENSA", "ESET 13/11", "SINAL 2"): o carimbo girado é para dizer o
+    que vale a afirmação (CONFIRMADO, BOATO, FALSO). Rótulo repete a fonte, a faixa ou o contador e, a cada cena, ainda
+    disputa a tela com a manchete da captura e o texto grande."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None:
+            continue
+        stamp = (scene.card.stamp.get(lang) or "").strip()
+        why = _label_stamp(stamp, scene.card.source) if stamp else None
+        if why is None:
+            continue
+        scene.card.stamp = {}
+        scene.card = scene.card if scene.card.resolved(lang) else None
+        issues.append(Issue("carimbo_rotulo", CORRIGIDO,
+                            f'O carimbo "{stamp}" saiu: é {why}, não veredito (carimbo é para CONFIRMADO, BOATO, '
+                            "FALSO).", beat.key, scene.id))
     return issues
 
 
@@ -1429,6 +1484,7 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
         issues += fix_flat_cards(doc, beats)
     issues += fix_stamps(doc, beats)
     issues += fix_echo_stamps(doc, beats)
+    issues += fix_label_stamps(doc, beats)
     issues += fix_repeated_headlines(doc, beats)
     issues += _check_sources(doc, beats)
     issues += fix_lone_sources(doc, beats)

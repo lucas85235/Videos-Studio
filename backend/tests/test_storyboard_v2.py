@@ -1119,6 +1119,44 @@ def test_stamp_that_repeats_the_scene_title_is_dropped():
     assert doc.scenes[1].card.stamp == {"pt-BR": "ADIADO"} and doc.scenes[2].card.stamp == {"pt-BR": "2013"}
 
 
+def test_label_stamps_are_dropped_and_verdicts_stay():
+    """Carimbo é veredito: tipo de fonte, nome da fonte com data e numeração de lista saem (QA do prj_gq4krrs11w:
+    "IMPRENSA" na barra da captura, "ESET 13/11", "SINAL 2" tampando o texto); veredito e ano dito ficam."""
+    import inspect
+
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    doc = gta_doc()
+    seg = doc.segments[2].id
+    stamps = [("IMPRENSA", "GamesBeat"), ("ESET 13/11", "WeLiveSecurity (ESET)"), ("SINAL 2", "ESET"),
+              ("SINAIS 3·4", None), ("13 DE OUTUBRO", None), ("GAMESBEAT", "GamesBeat"),
+              ("CONFIRMADO", "Rockstar Games"), ("BOATO", "GamesBeat"), ("NÃO EXISTE", None), ("2013", None),
+              ("GOLPE", "Malwarebytes"), ("ROCKSTAR CONFIRMA", "Rockstar Games")]
+    doc.scenes = [Scene(id=f"scn_{i}", segment_id=seg, part=i, parts=len(stamps), kind="image",
+                        visual=Visual(type="none"), card=SceneCard(stamp={"pt-BR": stamp}, source=source))
+                  for i, (stamp, source) in enumerate(stamps)]
+    doc.scenes[0].card.headline = {"pt-BR": "GAMESBEAT · 13/10"}
+    beats = [storyboard_check.Beat(key=f"{seg}:{i}", segment_id=seg, part=i, parts=len(stamps), index=2,
+                                   role="body", words=GTA[2].split(), seconds=3.0) for i in range(len(stamps))]
+    issues = storyboard_check.fix_label_stamps(doc, beats)
+    assert [(i.code, i.severity, i.scene_id) for i in issues] == [
+        ("carimbo_rotulo", "corrigido", f"scn_{i}") for i in range(6)]
+    assert issues[0].message.startswith('O carimbo "IMPRENSA" saiu: é tipo de fonte')
+    assert "data" in issues[1].message and "numeração de lista" in issues[2].message
+    assert "nome da fonte" in issues[5].message
+    # O cartão continua com a faixa e a fonte; sem mais nada, a fonte sozinha fica para `fix_lone_sources`.
+    assert doc.scenes[0].card.stamp == {} and doc.scenes[0].card.headline == {"pt-BR": "GAMESBEAT · 13/10"}
+    assert doc.scenes[3].card is None and doc.scenes[4].card is None
+    for i in range(6, len(stamps)):
+        assert doc.scenes[i].card.stamp == {"pt-BR": stamps[i][0]}
+    # Cena travada pelo usuário não muda.
+    doc.scenes[6].locked = True
+    doc.scenes[6].card.stamp = {"pt-BR": "IMPRENSA"}
+    assert storyboard_check.fix_label_stamps(doc, beats) == []
+    # A revisão inteira roda a correção.
+    assert "fix_label_stamps(doc, beats)" in inspect.getsource(storyboard_check.check)
+
+
 def test_headline_that_only_repeats_the_beat_is_dropped(monkeypatch):
     doc = gta_doc()
     data = load_fixture(doc)
