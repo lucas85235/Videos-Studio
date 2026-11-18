@@ -527,6 +527,9 @@ class BeatMark(BaseModel):
     energy: int = Field(default=1, ge=0, le=3)
     serious: bool = False
     gag: GagHint | None = None
+    origin: EditOrigin = "llm"
+    """Quem marcou: o storyboard (`llm`), o usuário ou o planejador (`planner`, marca inferida pelo texto: refeita a
+    cada "Reeditar" e apagada quando a fala da cena muda)."""
 
     @field_validator("emphasis", mode="before")
     @classmethod

@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from studio.core.editing.stale import drop_stale_edit
 from studio.core.hashing import seed_from
 from studio.core.project.document import (
     CARD_KINDS,
@@ -578,4 +579,5 @@ def apply_ops(doc: ProjectDoc, ops: list[Any], base_style: StyleSpec | None = No
             apply_op(new_doc, op, base_style)
         except OpError as exc:
             raise OpError(f"operação {index} ({getattr(op, 'op', '?')}): {exc}") from exc
+    drop_stale_edit(doc, new_doc)  # fala ou imagem da cena mudou: a edição automática dela fica velha
     return ProjectDoc.model_validate(new_doc.model_dump())

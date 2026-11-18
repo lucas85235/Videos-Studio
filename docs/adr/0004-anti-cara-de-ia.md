@@ -643,6 +643,34 @@ Também: `api/routes_edit.py` com `POST /projects/{id}/reedit {intensity}`, que 
 
 **Dependências:** fundação.
 
+**Desvios e acertos da revisão** (o código é a referência; a convenção completa está na docstring de `edit_plan.py`):
+- `music_drop`: **o gatilho é o FIM da queda**. O evento sai no `at` da palavra da revelação (a do punch), com
+  `dur_ms` de 300 a 600, e a trilha some antes dela (contrato do `edit_resolve.resolve_fx`). Só entra junto com o punch
+  da revelação e no máximo uma a cada `40 s / escala da intensidade`. A revelação inferida pelo texto exige "!" com
+  número ou nome próprio e no máximo uma a cada 20 s; o resto vira `breath`.
+- `meme` leva `src` (PNG) ou `video` (WebM) do `MemeItem.file` (relativo à pasta de dados), além do `lib_id`;
+  `meme_library.pick` recebe `presenter=` (o avatar efetivo do projeto) e, sem meme, o "meme sem meme" usa
+  `template_for` + `template_events`. `shake` grava `strength` e `amount`.
+- SFX: o `lib_id` vem de `sfx_library.pick(kind, seed, exclude, tonal_ok)` ou da paleta, sempre conferido na
+  biblioteca (licença conhecida, trava tonal, nada cômico em cena séria). Sem a biblioteca, só procedural.
+- Cotas: o total de cada tipo é arredondado para o mais perto e só depois dividido entre gancho e corpo (o floor do
+  corpo derrubava o Short). A troca de material (`switch`) entra no mesmo orçamento, com a cota do corpo liberada pro
+  rata ao longo do vídeo e uma troca reservada para o gancho. O plano de imagem é sorteado até `max_still_s`, para o
+  corte cumprir a trava antes do punch.
+- Acervo: afinidade exige entidade em comum ou 2 etiquetas; no gancho só os níveis de `sources.hook`; material
+  `official` fica em planos de até `official_max_clip_s` (sem respiro longo) e sai dos candidatos ao passar de
+  `official_max_share` do tempo de tela. Clipe sem `dur_s` não ganha "próximo trecho".
+- Contrato da fundação ampliado neste item (PR pequeno, campos opcionais): `SubShot.easing`/`SubShot.strength` e
+  `BeatMark.origin` (`planner` na marca inferida, refeita a cada "Reeditar"). `core/editing/stale.drop_stale_edit`
+  tira os subplanos e eventos do planejador (não travados) e a marca inferida da cena cuja fala ou mídia mudou; é
+  chamado por `ops.apply_ops`, pelas edições de `media_edit` e pelo `PUT /projects/{id}/doc`.
+- **Pendência de integração com `timeline-fx`/`renderer-fx`:** `SubShot.easing` e `SubShot.strength` só chegam ao
+  vídeo quando `edit_resolve.resolve_shots` usar o `easing` do plano (e só sortear quando vier None) e multiplicar a
+  força de zoom do estilo pelo `strength`, emitindo `strength?` no plano resolvido (`types.ts`) para o renderer. Até lá,
+  a variação de força fica sem efeito. O punch seco não depende disso: é o corte para um enquadramento fechado e parado.
+- Créditos dos subplanos do acervo: feitos em `timeline-fx` (`edit_resolve.shown_materials` em
+  `credits.shown_media`), que entra antes deste item na ordem de merge.
+
 ---
 
 ### 3.7 `timeline-fx`: resolver planos e eventos em quadros

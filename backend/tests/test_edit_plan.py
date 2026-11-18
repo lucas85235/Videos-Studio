@@ -6,6 +6,7 @@ pequenos são montados à mão. A biblioteca de memes, quando entra, é trocada 
 
 from __future__ import annotations
 
+import math
 import statistics
 from types import SimpleNamespace
 
@@ -192,14 +193,38 @@ def test_marks_are_completed_only_when_missing(isolated_settings):
     assert doc.scenes[2].mark is not None and doc.scenes[2].mark.serious
 
 
+def _fake_sfx_library(items: list[SimpleNamespace], picks: list[tuple] | None = None) -> SimpleNamespace:
+    """Biblioteca de SFX falsa no formato de `media.sfx_library` (`get`, `pick` e `SfxItem.auto`)."""
+    by_id = {i.id: i for i in items}
+
+    def pick(kind, seed, exclude=(), *, tonal_ok=True):
+        if picks is not None:
+            picks.append((kind, frozenset(exclude), tonal_ok))
+        options = [i for i in items if i.kind == kind and i.auto(tonal_ok) and i.id not in set(exclude)]
+        return options[seed % len(options)] if options else None
+
+    return SimpleNamespace(get=by_id.get, pick=pick)
+
+
+def _sfx_item(lib_id: str, kind: str, *, license: str = "cc0", tonal: bool = False, tags: tuple = (),
+              file: str | None = "x.wav") -> SimpleNamespace:
+    def auto(tonal_ok: bool = True) -> bool:
+        return license != "desconhecida" and (tonal_ok or not tonal)
+
+    return SimpleNamespace(id=lib_id, kind=kind, license=license, tonal=tonal, tags=list(tags), file=file, auto=auto)
+
+
 def test_serious_beat_never_gets_a_meme_and_gags_use_the_library(isolated_settings, monkeypatch):
     calls: list[tuple] = []
 
-    def pick(tag, seed, exclude):
-        calls.append((tag, seed, frozenset(exclude)))
-        return SimpleNamespace(id="meme-susto", sfx_id="sfx-susto", max_ms=1200)
+    def pick(tag, seed, exclude, *, presenter=None):
+        calls.append((tag, seed, frozenset(exclude), presenter))
+        return SimpleNamespace(id="meme-susto", sfx_id="sfx-susto", max_ms=1200, media="png",
+                               file="library/memes/meme-susto.png")
 
-    monkeypatch.setattr(edit_plan, "_pick_meme", pick)
+    monkeypatch.setattr(edit_plan, "_meme_module", lambda: SimpleNamespace(pick=pick))
+    monkeypatch.setattr(edit_plan, "_sfx_module", lambda: _fake_sfx_library([_sfx_item("sfx-susto", "boom")]))
+    monkeypatch.setattr(edit_plan._Planner, "_presenter", lambda self: "avatar-do-canal")
     style = get_style(LONG)
     texts = [LONG_TEXT] * 6
     doc = _doc(texts)
@@ -212,13 +237,54 @@ def test_serious_beat_never_gets_a_meme_and_gags_use_the_library(isolated_settin
     assert comic and all(sid not in serious for sid, _e in comic)
     memes = _fx(doc, "meme")
     assert memes and all(e.params["lib_id"] == "meme-susto" and e.at == "desapareceu" for _s, e in memes)
+    # o renderer desenha o meme pelo arquivo (`src` PNG ou `video` WebM), não pelo id
+    assert all(e.params["src"] == "library/memes/meme-susto.png" and "video" not in e.params for _s, e in memes)
     assert all(400 <= (e.dur_ms or 0) <= 1500 for _s, e in memes)
     assert any(e.params.get("lib_id") == "sfx-susto" for _s, e in _fx(doc, "sfx"))
-    assert calls and all("meme-velho" in exclude for _t, _seed, exclude in calls)  # memória dos últimos vídeos
+    assert calls and all("meme-velho" in exclude for _t, _seed, exclude, _p in calls)  # memória dos últimos vídeos
+    assert all(p == "avatar-do-canal" for *_x, p in calls)  # as poses do avatar entram como reação
     # meme a 20 s de distância no longo
     times = sorted(t for _sid, kind, t in _event_times(doc, style) if kind == "meme")
     assert len(times) == len(memes)
     assert all(b - a >= 20 for a, b in zip(times, times[1:], strict=False))
+
+
+def test_webm_meme_goes_as_video_and_meme_without_file_is_not_drawn_empty(isolated_settings, monkeypatch):
+    item = SimpleNamespace(id="danca", sfx_id=None, max_ms=900, media="webm", file="library/memes/danca.webm")
+    monkeypatch.setattr(edit_plan, "_meme_module", lambda: SimpleNamespace(pick=lambda *a, **k: item))
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, LONG_TEXT])
+    doc.scenes[1].mark = BeatMark(role="joke", gag=GagHint(payoff="meme", tag="danca", at="trancada"))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    meme = next(e for _s, e in _fx(doc, "meme"))
+    assert meme.params["video"] == "library/memes/danca.webm" and "src" not in meme.params
+    # item sem arquivo (biblioteca velha): sai o "meme sem meme", nunca um meme vazio
+    blank = SimpleNamespace(id="vazio", sfx_id=None, max_ms=900)
+    monkeypatch.setattr(edit_plan, "_meme_module", lambda: SimpleNamespace(pick=lambda *a, **k: blank))
+    other = _doc([LONG_TEXT, LONG_TEXT])
+    other.scenes[1].mark = BeatMark(role="joke", gag=GagHint(payoff="meme", tag="danca", at="trancada"))
+    edit_plan.plan(other, style, Pool(), recent=set())
+    assert not _fx(other, "meme") and _fx(other, "freeze")
+
+
+def test_meme_without_meme_uses_the_library_template(isolated_settings, monkeypatch):
+    def template_events(name, at, line=""):
+        assert name == "record_scratch"
+        return [FxEvent(type="freeze", at=at, dur_ms=1100), FxEvent(type="sfx", at=at, params={"lib_id": "scratch"}),
+                FxEvent(type="text_pop", at=at, dur_ms=1100, params={"text": line})]
+
+    lib = SimpleNamespace(pick=lambda *a, **k: None, template_for=lambda tag, seed: SimpleNamespace(id="record_scratch"),
+                          template_events=template_events)
+    monkeypatch.setattr(edit_plan, "_meme_module", lambda: lib)
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, LONG_TEXT])
+    doc.scenes[1].mark = BeatMark(role="joke", gag=GagHint(payoff="meme", tag="pera", at="trancada", line="Pera aí"))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    fx = {e.type: e for e in doc.scenes[1].fx if e.at == "trancada"}
+    assert {"freeze", "sfx", "text_pop"} <= set(fx), fx
+    assert fx["freeze"].dur_ms == 1100 and fx["text_pop"].params["text"] == "Pera aí"
+    assert fx["sfx"].params["purpose"] == "gag" and "lib_id" not in fx["sfx"].params  # "scratch" é procedural
+    assert not _fx(doc, "meme")
 
 
 def test_gag_without_library_is_the_meme_without_meme(isolated_settings):
@@ -244,8 +310,10 @@ def test_reveal_cuts_on_the_emphasis_with_punch_sfx_and_music_drop(isolated_sett
     assert "diário" in [s.at for s in scene.shots]
     at_word = {e.type for e in scene.fx if e.at == "diário"}
     assert {"punch", "sfx"} <= at_word
+    # a queda da trilha termina na palavra da revelação (o gatilho é o FIM da queda, contrato do timeline-fx)
     drop = [e for e in scene.fx if e.type == "music_drop"]
-    assert drop and drop[0].at == "um" and 300 <= (drop[0].dur_ms or 0) <= 600
+    assert drop and drop[0].at == "diário" and 300 <= (drop[0].dur_ms or 0) <= 600
+    assert not [e for e in doc.scenes[0].fx if e.type == "music_drop"]
 
 
 def test_locked_and_user_items_are_preserved(isolated_settings):
@@ -279,7 +347,7 @@ def test_quotas_scale_and_spacing(isolated_settings):
     for beat in planner.beats:
         for e in beat.scene.fx:
             t = planner._time_of(beat, e.at)
-            assert t <= beat.end - edit_plan.TAIL_S + 1e-6 or e.type == "music_drop"
+            assert t <= beat.end - edit_plan.TAIL_S + 1e-6
             times.setdefault(e.type, []).append(t)
     for fx_type, values in times.items():
         if fx_type in ("punch", "text_pop", "sfx", "shake"):
@@ -411,3 +479,324 @@ def test_storyboard_job_runs_the_planner(isolated_settings, style_id):
     doc = _mock_project(style_id)
     assert edit_plan.summary(doc)["fx_total"] > 0
     assert any(len(s.shots) > 1 for s in doc.scenes)
+
+
+# --- cotas, travas e contratos (revisão) -------------------------------------------------------------------------------
+
+
+def _per_min(doc: ProjectDoc, style, fx_type: str) -> float:
+    return len(_fx(doc, fx_type)) / (_duration(doc, style) / 60)
+
+
+def test_short_quotas_are_within_tolerance(isolated_settings):
+    doc = _mock_project(SHORT)
+    style = get_style(doc.style_id, doc.style_overrides)
+    grammar = grammar_for(style)
+    for fx_type, rate in (("punch", grammar.punch_per_min), ("text_pop", grammar.text_pop_per_min),
+                          ("sfx", grammar.sfx_per_min)):
+        per_min = _per_min(doc, style, fx_type)
+        assert abs(per_min - rate) <= grammar.tolerance * rate, (fx_type, per_min, rate)
+
+
+def test_budget_rounds_the_total_then_splits_hook_and_body(isolated_settings):
+    grammar = grammar_for(get_style(SHORT))
+    budget = edit_plan._Budget(grammar, 1.0, 61.0)
+    # total pelo mais perto: 2/min no corpo + 4/min no gancho de 5 s = 2,2 → 2 (o floor do corpo dava 1)
+    assert sum(budget.left["text_pop"]) == 2
+    assert sum(budget.left["punch"]) == round(3 * 56 / 60 + 6 * 5 / 60)
+    calm = edit_plan._Budget(grammar, 0.5, 61.0)
+    assert all(sum(calm.left[k]) <= sum(budget.left[k]) / 2 + 1 for k in ("punch", "text_pop", "sfx"))
+
+
+def test_hook_window_has_its_own_quota(isolated_settings):
+    style = get_style(LONG, {"edit": {"grammar": {"hook": {"window_s": 10, "punch_per_min": 12,
+                                                             "text_pop_per_min": 0, "sfx_per_min": 0}}}})
+    grammar = grammar_for(style)
+    doc = _doc([LONG_TEXT] * 6)
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    in_hook = [(kind, t) for _sid, kind, t in _event_times(doc, style) if t < 10.0]
+    assert sum(1 for k, _t in in_hook if k == "punch") <= round(12 * 10 / 60)  # 2 na janela, sem empréstimo
+    assert not [k for k, _t in in_hook if k in ("text_pop", "sfx")]
+    body = [t for _sid, kind, t in _event_times(doc, style) if kind == "text_pop" and t >= 10.0]
+    assert len(body) >= grammar.text_pop_per_min * (_duration(doc, style) - 10) / 60 * (1 - grammar.tolerance)
+
+
+def _wide_pool(n: int = 30, tiers: tuple[str, ...] = ("free", "stock", "capture")) -> Pool:
+    return Pool(items=[PoolItem(id=f"p{i}", tier=tiers[i % len(tiers)], tags=["farol", "ilha"],
+                                path=f"uploads/prj_teste/pool/{i}.jpg") for i in range(n)])
+
+
+def test_switch_quota_is_spread_over_the_whole_video(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT] * 18)
+    pool = _wide_pool()
+    edit_plan.plan(doc, style, pool, recent=set())
+    total = _duration(doc, style)
+    times = sorted(a for _sid, a, _d, p in edit_plan.timed_shots(doc, style, pool) if p != "ai")
+    assert times and len(times) <= grammar_for(style).switch_per_min * total / 60 + 1
+    # os subplanos do acervo chegam ao meio e ao fim do vídeo (a cota não se esgota no começo)
+    assert any(total / 3 <= t < 2 * total / 3 for t in times), times
+    assert any(t >= 2 * total / 3 for t in times), times
+
+
+def test_at_most_three_shots_in_a_row_with_the_same_prov_when_the_pool_allows(isolated_settings):
+    style = get_style(LONG, {"edit": {"grammar": {"switch_per_min": 30}}})
+    doc = _doc([LONG_TEXT] * 4)
+    pool = _wide_pool(60)
+    edit_plan.plan(doc, style, pool, recent=set())
+    provs = [p for _s, _a, _d, p in edit_plan.timed_shots(doc, style, pool)]
+    run = longest = 1
+    for a, b in zip(provs, provs[1:], strict=False):
+        run = run + 1 if a == b else 1
+        longest = max(longest, run)
+    assert len(provs) > 10 and longest <= edit_plan.MAX_SAME_PROV, provs
+
+
+def test_pool_needs_real_affinity(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT] * 3)
+    loose = Pool(items=[PoolItem(id=f"p{i}", tier="free", tags=["farol", "carro"], path=f"uploads/x/{i}.jpg")
+                        for i in range(10)])
+    edit_plan.plan(doc, style, loose, recent=set())
+    assert not [sh for s in doc.scenes for sh in s.shots if sh.source == "pool"]  # 1 etiqueta só não basta
+    doc = _doc([LONG_TEXT] * 3)
+    by_entity = Pool(items=[PoolItem(id=f"p{i}", tier="free", entities=["Santa Clara"], tags=["mapa"],
+                                     path=f"uploads/x/{i}.jpg") for i in range(10)])
+    edit_plan.plan(doc, style, by_entity, recent=set())
+    assert [sh for s in doc.scenes for sh in s.shots if sh.source == "pool"]  # a entidade dita na fala basta
+
+
+def test_official_material_is_short_capped_and_out_of_the_hook(isolated_settings):
+    style = get_style(LONG)
+    sources = style.art.sources
+    doc = _doc([LONG_TEXT] * 6)
+    trailer = MediaRef(kind="clip", source="youtube", asset="uploads/prj_teste/media/t.jpg",
+                       video="uploads/prj_teste/media/t.mp4", start_s=0.0, dur_s=600.0, tier="official")
+    doc.scenes[2].visual = Visual(type="upload", media=trailer)
+    doc.scenes[2].mark = BeatMark(role="breath")  # sem o respiro longo: é oficial
+    pool = _wide_pool(40, ("official",))
+    edit_plan.plan(doc, style, pool, recent=set())
+    shots = edit_plan.timed_shots(doc, style, pool)
+    official = [(sid, a, d) for sid, a, d, p in shots if p == "official"]
+    assert official
+    assert all(d <= sources.official_max_clip_s + 1e-6 for _sid, _a, d in official), official
+    total = _duration(doc, style)
+    from_pool = sum(d for sid, _a, d, p in shots if p == "official" and sid != doc.scenes[2].id)
+    # o teto vale para a escolha do acervo (o que já passou dele não ganha mais oficial)
+    assert from_pool <= sources.official_max_share * total + sources.official_max_clip_s
+    window = edit_plan._Budget(grammar_for(style), 1.0, total).window
+    assert all(p in sources.hook or p == "ai" for _sid, a, _d, p in shots if a < window)
+
+
+def test_clip_without_duration_does_not_run_past_its_end(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT] * 2)
+    clip = MediaRef(kind="clip", source="youtube", asset="uploads/prj_teste/media/a.jpg",
+                    video="uploads/prj_teste/media/a.mp4", start_s=3.0, dur_s=None, tier="free")
+    doc.scenes[1].visual = Visual(type="upload", media=clip)
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    shots = doc.scenes[1].shots
+    assert not [sh for sh in shots if sh.source == "self" and sh.clip_in is not None]
+    assert not [sh for sh in shots if sh.hold]
+    doc = _doc([LONG_TEXT] * 2)
+    doc.scenes[1].visual = Visual(type="upload", media=clip.model_copy(update={"dur_s": 6.0}))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    ins = [sh.clip_in for sh in doc.scenes[1].shots if sh.clip_in is not None]
+    assert all(x <= 3.0 + 6.0 - edit_plan.CLIP_END_PAD_S for x in ins), ins
+
+
+def test_sfx_palette_and_library_respect_license_tonal_and_serious(isolated_settings, monkeypatch):
+    items = [
+        _sfx_item("tapa-livre", "impact"), _sfx_item("tapa-sem-licenca", "impact", license="desconhecida"),
+        _sfx_item("apito-tonal", "pop", tonal=True), _sfx_item("buzina-comica", "pop", tags=("comico",)),
+    ]
+    monkeypatch.setattr(edit_plan, "_sfx_module", lambda: _fake_sfx_library(items))
+    palette = {i.id: 1.0 for i in items}
+    style = get_style(LONG, {"edit": {"grammar": {"sfx_palette": palette, "sfx_tonal_ok": False}}})
+    doc = _doc([LONG_TEXT] * 6)
+    for i, scene in enumerate(doc.scenes):
+        scene.mark = BeatMark(role="breath", serious=i % 2 == 0)
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    used = [(sid, e.params.get("lib_id")) for sid, e in _fx(doc, "sfx")]
+    ids = {lib for _sid, lib in used if lib}
+    assert "tapa-livre" in ids
+    assert not ids & {"tapa-sem-licenca", "apito-tonal"}
+    serious = {s.id for s in doc.scenes if s.mark and s.mark.serious}
+    assert not [sid for sid, lib in used if lib == "buzina-comica" and sid in serious]
+    # sem a biblioteca, id de biblioteca da paleta não tem como ser conferido: fica de fora
+    monkeypatch.setattr(edit_plan, "_sfx_module", lambda: None)
+    doc = _doc([LONG_TEXT] * 3)
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert not [e for _s, e in _fx(doc, "sfx") if e.params.get("lib_id")]
+
+
+def test_library_sfx_enter_by_kind_with_memory(isolated_settings, monkeypatch):
+    picks: list[tuple] = []
+    items = [_sfx_item("swish-meu", "swish"), _sfx_item("swish-velho", "swish"),
+             _sfx_item("pop-embutido", "pop", file=None)]
+    monkeypatch.setattr(edit_plan, "_sfx_module", lambda: _fake_sfx_library(items, picks))
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT] * 4)
+    edit_plan.plan(doc, style, Pool(), recent={"swish-velho"})
+    ids = {e.params.get("lib_id") for _s, e in _fx(doc, "sfx")}
+    assert "swish-meu" in ids and "swish-velho" not in ids
+    assert "pop-embutido" not in ids  # procedural embutido: só o tipo
+    assert picks and all("swish-velho" in exclude for _k, exclude, _t in picks)
+
+
+def test_no_comic_sound_in_a_serious_beat(isolated_settings, monkeypatch):
+    items = [_sfx_item("pop-risada", "pop", tags=("risada",)), _sfx_item("tick-seco", "tick")]
+    monkeypatch.setattr(edit_plan, "_sfx_module", lambda: _fake_sfx_library(items))
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT] * 4)
+    for scene in doc.scenes:
+        scene.mark = BeatMark(role="joke", serious=True, gag=GagHint(payoff="freeze", at="trancada"))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    sfx = [e for _s, e in _fx(doc, "sfx")]
+    assert sfx and not [e for e in sfx if e.params.get("purpose") == "gag"]
+    assert not [e for e in sfx if e.params.get("lib_id") == "pop-risada"]
+    assert not _fx(doc, "freeze") and not _fx(doc, "meme") and not _fx(doc, "shake")
+
+
+def test_music_drop_is_spaced_and_reveal_is_not_every_exclamation(isolated_settings):
+    style = get_style(LONG)
+    texts = [f"Ninguém esperava o que veio depois da reunião de Genebra, a de número {i}!" for i in range(1, 19)]
+    doc = _doc(texts)
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    times = _event_times(doc, style)
+    drops = sorted(t for _sid, kind, t in times if kind == "music_drop")
+    punches = {t for _sid, kind, t in times if kind == "punch"}
+    total = _duration(doc, style)
+    assert len(drops) <= math.ceil(total / edit_plan.MUSIC_DROP_GAP_S) + 1, (len(drops), total)
+    assert all(b - a >= edit_plan.MUSIC_DROP_GAP_S - 1e-6 for a, b in zip(drops, drops[1:], strict=False))
+    assert all(t in punches for t in drops)  # só com o punch da revelação
+    reveals = [s for s in doc.scenes if s.mark and s.mark.role == "reveal"]
+    assert reveals and len(reveals) <= math.ceil(total / edit_plan.REVEAL_GAP_S) + 1
+    plain = _doc([LONG_TEXT, "Que dia lindo para passear com a família!"])
+    edit_plan.plan(plain, style, Pool(), recent=set())
+    assert plain.scenes[1].mark is not None and plain.scenes[1].mark.role == "breath"
+
+
+def test_text_pop_shows_the_whole_number(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, "O farol tinha trezentos e quarenta e dois degraus até a lanterna, e cada um rangia."])
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    mark = doc.scenes[1].mark
+    assert mark is not None and mark.origin == "planner"
+    assert mark.emphasis[0] == "trezentos e quarenta e dois"
+    pops = [e for e in doc.scenes[1].fx if e.type == "text_pop"]
+    assert pops and pops[0].at == "trezentos" and pops[0].params["text"] == "342"
+    assert not [e for e in doc.scenes[1].fx if e.at in ("quarenta", "dois")]
+
+
+def test_inferred_proper_noun_ignores_the_capital_after_a_period(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, "O vento derrubou a torre. Depois, ninguém voltou para consertar a escada."])
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    mark = doc.scenes[1].mark
+    assert mark is not None and "Depois" not in mark.emphasis
+
+
+def test_max_still_only_counts_the_shot_and_respects_user_cuts(isolated_settings):
+    style = get_style(LONG)
+    grammar = grammar_for(style)
+    doc = _doc([LONG_TEXT, LONG_TEXT])
+    cuts = [c for c in (edit_plan._at_text(w) for w in LONG_TEXT.split()[8::9]) if PRESENTER_AT_RE.match(c)]
+    cuts = [c for c in dict.fromkeys(cuts) if trigger_index(LONG_TEXT.split(), c) is not None]
+    user = [SubShot(origin="user"), *(SubShot(at=c, origin="user", framing=ShotFraming(scale=1.2)) for c in cuts)]
+    doc.scenes[1].shots = user
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert doc.scenes[1].shots == user
+    planner = edit_plan._Planner(doc, style, grammar, Pool(), set())
+    beat = next(b for b in planner.beats if b.scene.id == "scn1")
+    spans = planner._still_spans(beat)
+    assert len(spans) == len(user)  # os cortes do usuário dividem a cena (antes era um trecho só)
+    # nenhum trecho parado passa do limite sem um punch dentro dele
+    times = sorted(planner._time_of(beat, e.at) for e in doc.scenes[1].fx if e.type in ("punch", "zoom_rect"))
+    for a, b in spans:
+        marks = [a, *(t for t in times if a < t < b), b]
+        assert all(y - x <= grammar.max_still_s + 1e-6 for x, y in zip(marks, marks[1:], strict=False)), (a, b)
+
+
+def test_reframe_limit_is_shared_by_the_root_with_a_pinned_image(isolated_settings):
+    style = get_style(SHORT)
+    doc = _doc([LONG_TEXT] * 3, style_id=SHORT)
+    doc.scenes[0].visual = Visual(type="ai_image", prompt="farol", asset="uploads/prj_teste/fixa.jpg")
+    for scene in doc.scenes[1:]:
+        scene.visual = Visual(reuse_of="scn0")
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    reframes = [sh for s in doc.scenes for sh in s.shots[1:] if sh.source == "self"]
+    assert 1 <= len(reframes) <= edit_plan.MAX_REFRAMES
+
+
+def test_shake_carries_the_key_the_renderer_reads(isolated_settings):
+    style = get_style(LONG, {"edit": {"grammar": {"shake_per_min": 6}}})
+    doc = _doc([LONG_TEXT] * 3)
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    shakes = [e for _s, e in _fx(doc, "shake")]
+    assert shakes and all(e.params["strength"] == e.params["amount"] for e in shakes)
+
+
+def test_music_drop_contract_with_the_timeline_resolver(isolated_settings):
+    """Com o `timeline-fx` junto: a queda resolvida termina no quadro do punch da revelação (o silêncio encosta no
+    impacto)."""
+    edit_resolve = pytest.importorskip("studio.core.edit_resolve")
+    style = get_style(LONG)
+    text = "E o que encontraram lá dentro foi um diário escondido atrás da parede."
+    doc = _doc([LONG_TEXT, text])
+    doc.scenes[1].mark = BeatMark(role="reveal", emphasis=["diário"])
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    fps = 30
+    words = [{"text": t, "from": 10 * i, "to": 10 * i + 9} for i, t in enumerate(text.split())]
+    fx, _sfx, drops, _w = edit_resolve.resolve_fx(doc.scenes[1], words, fps, 10 * len(words), doc=doc, seed=doc.seed)
+    punch = next(e for e in fx if e["type"] == "punch")
+    assert drops and abs(drops[0]["at"] + drops[0]["dur"] - punch["from"] / fps) < 1e-3
+
+
+# --- edição que ficou velha --------------------------------------------------------------------------------------------
+
+
+def test_text_change_drops_the_planned_edit_of_that_scene(isolated_settings):
+    from studio.core.project.ops import apply_ops, parse_ops
+
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, LONG_TEXT])
+    user_fx = FxEvent(type="text_pop", at="farol", params={"text": "FAROL"}, origin="user")
+    doc.scenes[1].fx = [user_fx]
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert doc.scenes[0].mark is not None and doc.scenes[1].mark.origin == "planner"
+    planned0 = list(doc.scenes[0].fx)
+    new = apply_ops(doc, parse_ops([{"op": "update_segment_text", "segment_id": "seg1", "lang": "pt-BR",
+                                     "text": "Outra fala, completamente diferente."}]))
+    assert new.scenes[1].fx == [user_fx] and not new.scenes[1].shots and new.scenes[1].mark is None
+    assert new.scenes[0].fx == planned0  # a outra cena não mudou
+    # o Reeditar infere a marca de novo pela fala nova
+    edit_plan.plan(new, style, Pool(), recent=set())
+    assert new.scenes[1].mark is not None and new.scenes[1].mark.origin == "planner"
+
+
+def test_media_change_drops_the_planned_shots(isolated_settings):
+    from studio.core.project import media_edit
+
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, LONG_TEXT])
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert doc.scenes[1].shots
+    clip = MediaRef(kind="clip", source="youtube", asset="uploads/prj_teste/media/a.jpg",
+                    video="uploads/prj_teste/media/a.mp4", dur_s=30.0)
+    new = media_edit.attach_media(doc, "scn1", clip)
+    assert not new.scenes[1].shots and not [e for e in new.scenes[1].fx if e.origin == "planner"]
+    assert new.scenes[0].shots == doc.scenes[0].shots
+
+
+def test_reedit_refreshes_the_planner_mark_but_keeps_the_storyboard_one(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([LONG_TEXT, "A morte do faroleiro nunca foi explicada."])
+    mine = BeatMark(role="joke", emphasis=["faroleiro"])
+    doc.scenes[1].mark = mine
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    stale = doc.scenes[0].mark.model_copy(update={"emphasis": ["inexistente"]})
+    doc.scenes[0].mark = stale
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert doc.scenes[0].mark != stale and "inexistente" not in doc.scenes[0].mark.emphasis
+    assert doc.scenes[1].mark == mine

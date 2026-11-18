@@ -2,34 +2,46 @@
 
 Roda depois do storyboard (e do anexo do acervo) e pelo botão "Reeditar" (`POST /projects/{id}/reedit`), sem LLM e
 sem gastar cota: a mesma semente (`doc.seed` + id da cena) dá a mesma edição. Escreve só `Scene.shots`, `Scene.fx` e
-`Scene.mark` (este só quando falta). O que está `locked` ou é do usuário (`origin="user"`) fica; cena travada
-(`Scene.locked`) não muda nada; `grammar.editor == "off"` não faz nada.
+`Scene.mark` (este só quando falta ou quando foi o próprio planejador que inferiu, `mark.origin="planner"`). O que está
+`locked` ou é do usuário (`origin="user"`) fica; cena travada (`Scene.locked`) não muda nada; `grammar.editor == "off"`
+não faz nada. Quando a fala ou a mídia de uma cena muda, `core.editing.stale` tira o que o planejador pôs nela.
 
 Passos:
 1. **Tempo das palavras** estimado pelo texto (palavra longa demora mais, vírgula e ponto pausam) e pela taxa da voz
    do estilo (`words_per_minute` × `voice.speed`), com os mesmos cortes de cena da timeline (`scene_word_ranges`).
-2. **Marca da batida** (`BeatMark`) completada quando falta: papel pelo segmento e pelo texto, ênfase (número e palavra
-   forte), cena séria pelos termos do avatar.
+2. **Marca da batida** (`BeatMark`) completada quando falta: papel pelo segmento e pelo texto, ênfase (número inteiro
+   e nome próprio), cena séria pelos termos do avatar. A revelação só é inferida com "!" e número ou nome, e no máximo
+   uma a cada `REVEAL_GAP_S`; o resto vira `breath`.
 3. **Ritmo**: durações de uma lognormal (mediana `shot_median_s`, σ = √ln(1+CV²)); o corte cai na palavra mais perto do
    alvo, preferindo ênfase > número > depois de vírgula > substantivo. Rajada de 2 a 4 planos curtos no gancho, na piada
-   e na lista (`burst_prob`); respiro longo e sem câmera no clipe de batida `breath`; corte seco na ênfase do `reveal`.
-4. **Fonte do subplano**: próximo trecho do mesmo clipe > outro item do acervo com a mesma etiqueta (cota de `switch`)
-   > o mesmo asset reenquadrado (jump cut 1,0 → 1,25 em outro ponto, no máximo 2 por asset, contando o `zoom_to` das
-   cenas que reaproveitam a imagem). Sem fonte, o plano não é cortado.
+   e na lista (`burst_prob`); respiro longo e sem câmera no clipe de batida `breath` (nunca em material oficial); corte
+   seco na ênfase do `reveal`. Material oficial (`official`) fica em planos de até `sources.official_max_clip_s`.
+4. **Fonte do subplano**: próximo trecho do mesmo clipe (só com a duração conhecida) > outro item do acervo com
+   afinidade (entidade em comum ou 2 etiquetas; cota de `switch` distribuída pelo vídeo, com janela própria no gancho,
+   onde só entram os níveis de `sources.hook`; oficial até `sources.official_max_share` do tempo de tela) > o mesmo
+   asset reenquadrado (jump cut 1,0 → 1,25 em outro ponto, no máximo 2 por asset, contando o `zoom_to` das cenas que
+   reaproveitam a imagem). Sem fonte, o plano não é cortado.
 5. **Câmera** por plano (static 35%, push 25%, drift 15%, punch seco 15%, pan 10% só em plano aberto), força ±40% e
-   curva por semente; clipe sem câmera, captura parada; `slow_zoom_share` e `static_share_min` cumpridos no fim.
+   curva por semente; clipe sem câmera, captura parada; `slow_zoom_share` e `static_share_min` cumpridos no fim. O
+   punch seco é o corte para um enquadramento mais fechado e parado (sem curva: plano parado não tem movimento).
 6. **Eventos** com cota por minuto (janela própria no gancho), escalada por `intensity` (0→0,5×, 1→0,75×, 2→1×,
    3→1,4×): primeiro os estruturais (revelação, piada, contador da lista, marca-texto da captura, plano parado demais),
    depois o guloso por pontuação (ênfase > número > início de capítulo > piada > maior lacuna) com 1,2 s entre eventos
    do mesmo tipo.
 
-Parâmetros que o planejador escreve em `FxEvent.params` (lidos por `timeline-fx` e pelo renderer):
-- `punch`: `scale`; `shake`: `strength`; `freeze`: nada (a duração em `dur_ms`);
-- `text_pop`: `text` (1 a 3 palavras); `counter`: `text` ("2/5");
-- `sfx`: `kind` (tipo procedural, sempre presente) e `lib_id` (som da biblioteca, quando escolhido pela paleta);
-  `purpose` (cut, punch, text_pop, reveal, gag, accent) só informativo;
-- `meme`: `lib_id`, `tag` e `variant` ("corner"); `highlight` e `zoom_rect`: `rect` ([x, y, w, h] de 0 a 1);
-- `music_drop`: nada (a duração em `dur_ms`; cai na palavra ANTES da revelação).
+Convenção de `FxEvent.params` (o que o planejador escreve, lido por `timeline-fx` e pelo renderer):
+- `punch`: `scale`; `shake`: `strength` e `amount` (o mesmo valor: o renderer lê `strength`, `amount` é o nome
+  antigo); `freeze`: nada (a duração em `dur_ms`);
+- `text_pop`: `text` (1 a 3 palavras; número inteiro como a legenda mostra, "342", "2013"); `counter`: `text` ("2/5");
+- `sfx`: `kind` (tipo procedural, sempre presente) e `lib_id` (som da biblioteca do usuário, só os de licença conhecida
+  e que passam pela trava tonal; nada cômico em cena séria); `purpose` (cut, punch, text_pop, reveal, gag, accent) só
+  informativo;
+- `meme`: `src` (PNG) ou `video` (WebM), caminho relativo à pasta de dados como os demais assets da timeline, mais
+  `lib_id` (memória do canal), `tag` e `variant` ("corner");
+- `highlight` e `zoom_rect`: `rect` ([x, y, w, h] de 0 a 1);
+- `music_drop`: nada; `dur_ms` de 300 a 600. **O gatilho é o FIM da queda**: o `at` é a palavra da revelação (a do
+  punch), a trilha some `dur_ms` antes dela e volta nela (contrato do `edit_resolve.resolve_fx`). Entra só com o punch
+  da revelação e no máximo uma a cada `MUSIC_DROP_GAP_S / escala da intensidade`.
 """
 
 from __future__ import annotations
@@ -44,7 +56,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from studio.core.hashing import seed_from
-from studio.core.numbers import notable_number_runs
+from studio.core.numbers import merge_number_words, notable_number_runs
 from studio.core.project.document import (
     CARD_KINDS,
     PRESENTER_AT_RE,
@@ -59,7 +71,7 @@ from studio.core.project.document import (
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.project.presenter import fold, trigger_index, word_key
 from studio.core.sources import prov_of_scene
-from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for
+from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
 from studio.core.text import _GOOD_CUT_BEFORE, _NO_CUT_AFTER
 from studio.core.text import words as split_words
 from studio.core.timeline import scene_word_ranges
@@ -71,21 +83,28 @@ INTENSITY_SCALE: dict[int, float] = {0: 0.5, 1: 0.75, 2: 1.0, 3: 1.4}
 MIN_SHOT_S = 0.35
 """Plano mínimo (meme e flash são eventos, não planos: ficam de fora)."""
 TAIL_S = 0.5
-"""Nada nos 0,5 s finais da cena (nem corte nem evento; a queda da trilha é a exceção)."""
+"""Nada nos 0,5 s finais da cena (nem corte nem evento)."""
 SPACING_S = 1.2
 """Espaçamento mínimo entre eventos do mesmo tipo."""
 MEME_GAP_S = {"long": 20.0, "short": 8.0}
+MUSIC_DROP_GAP_S = 40.0
+"""Distância mínima entre quedas da trilha na intensidade padrão (dividida pela escala: 3 → ~29 s, 1 → ~53 s)."""
+MUSIC_DROP_MS = (300, 600)
+REVEAL_GAP_S = 20.0
+"""Revelação inferida só pelo texto ("!"): no máximo uma a cada 20 s (a do storyboard não tem limite)."""
 HISTORY_VIDEOS = 5
 MAX_REFRAMES = 2
 SIMILAR = 0.15
 """Dois planos com duração a ±15% um do outro são "iguais": no máximo 2 seguidos."""
 MAX_SAME_PROV = 3
 HOOK_BOOST = 2.0
-"""Sem `grammar.hook`, a janela do gancho tem o dobro da densidade de punch, texto e SFX."""
+"""Sem `grammar.hook`, a janela do gancho tem o dobro da densidade de punch, texto, SFX e troca de material."""
 BREATH_S = (5.0, 9.0)
 BURST_S = (0.5, 1.5)
 REFRAME_SCALE = 1.25
 PUNCH_CAMERA = (1.15, 1.30)
+CLIP_END_PAD_S = 0.5
+"""Trecho seguinte do clipe: a entrada fica a pelo menos 0,5 s do fim do material."""
 
 CAMERA_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("static", 0.35), ("push", 0.25), ("drift", 0.15), ("punch", 0.15), ("pan", 0.10),
@@ -95,10 +114,14 @@ STILL_MOTIONS = frozenset({"static", "none"})
 OPEN_SHOTS = frozenset({"wide", "aerial", "top_down"})
 EASINGS: tuple[tuple[str, float], ...] = (("inOutQuad", 0.4), ("outCubic", 0.4), ("linear", 0.2))
 
-BUDGETED = ("punch", "shake", "text_pop", "sfx", "meme", "annot")
+BUDGETED = ("punch", "shake", "text_pop", "sfx", "meme", "annot", "switch")
+"""Cotas por minuto. `switch` é a troca de material (subplano do acervo), não um evento."""
 ANNOT_TYPES = frozenset({"highlight", "arrow", "circle"})
 COMIC_FX = frozenset({"meme", "freeze", "shake"})
 COMIC_SFX = frozenset({"boom", "scratch"})
+COMIC_TAGS = frozenset({"comico", "comedia", "humor", "meme", "piada", "zoeira", "engracado", "risada", "cartoon",
+                        "boom", "scratch", "pera", "ue", "oxe"})
+"""Etiquetas de som cômico da biblioteca (comparadas dobradas): ficam fora da cena séria."""
 TONAL_SFX = frozenset({"riser", "riser_short", "bass_drop"})
 # Tipos de SFX do planejador. Os que o `media.audio` ainda não gera caem no parecido (`_available_kind`).
 SFX_FALLBACK: dict[str, str] = {
@@ -119,6 +142,7 @@ DEFAULT_SFX: dict[str, dict[str, float]] = {
 _SENTENCE_END = (".", "!", "?", "…")
 _CLAUSE_END = (",", ";", ":", "—", "–")
 _CLOSERS = "\"'”’»)]}"
+_EDGE_PUNCT = ".,;:!?…\"'“”«»()[]{}"
 _FUNCTION_WORDS = frozenset(fold(w) for group in _NO_CUT_AFTER.values() for w in group)
 _GOOD_BEFORE = frozenset(fold(w) for group in _GOOD_CUT_BEFORE.values() for w in group)
 _AT_CLEAN = re.compile(r"[^\w\-'’]", re.UNICODE)
@@ -139,6 +163,10 @@ class _W:
     at: str = ""
     comma_before: bool = False
     number: bool = False
+    """Primeira palavra de um número que vale destaque (o resto da sequência fica em `in_number`)."""
+    number_text: str = ""
+    """O número inteiro como a legenda mostra ("342", "2013", "R$ 200 milhões")."""
+    in_number: bool = False
     emph: bool = False
     content: bool = False
     chapter: bool = False
@@ -184,6 +212,9 @@ class _Beat:
     item: PoolItem | None
     asset: str
     tags: set[str]
+    """Etiquetas fortes: entidades da cena e etiquetas do item que ela mostra."""
+    spoken: set[str]
+    """Etiquetas fracas: as palavras de conteúdo da fala."""
     keep_shots: bool
     shots: list[_Shot] = field(default_factory=list)
     pos: int = 0
@@ -229,36 +260,63 @@ class _Event:
 
 
 class _Budget:
-    """Cotas por tipo: uma para a janela do gancho e outra para o resto do vídeo, sem empréstimo entre elas."""
+    """Cotas por tipo: uma para a janela do gancho e outra para o resto do vídeo, sem empréstimo entre elas.
+
+    A cota do vídeo inteiro é a taxa × minutos × escala arredondada para o mais perto; depois sai a parte do gancho (a
+    taxa dele × a duração da janela, também arredondada) e o resto é do corpo. Assim a contagem por minuto fica perto da
+    taxa no Short e no longo, e a intensidade 0 dá metade das cotas pela escala, não por arredondar para baixo."""
 
     def __init__(self, grammar: EditGrammar, scale: float, total_s: float) -> None:
         hook = grammar.hook
+        self.total_s = total_s
         self.window = min(total_s, hook.window_s if hook is not None else 5.0)
         body_min = max(0.0, total_s - self.window) / 60.0
         hook_min = self.window / 60.0
         rates = {"punch": grammar.punch_per_min, "shake": grammar.shake_per_min, "text_pop": grammar.text_pop_per_min,
-                 "sfx": grammar.sfx_per_min, "meme": grammar.meme_per_min, "annot": grammar.annot_per_min}
+                 "sfx": grammar.sfx_per_min, "meme": grammar.meme_per_min, "annot": grammar.annot_per_min,
+                 "switch": grammar.switch_per_min}
         if grammar.humor == "none":
             rates["meme"] = 0.0
         hook_rates = dict(rates)
         for name in ("punch", "text_pop", "sfx"):
             override = getattr(hook, f"{name}_per_min") if hook is not None else None
             hook_rates[name] = override if override is not None else rates[name] * HOOK_BOOST
-        # O corpo arredonda para baixo (a escala da intensidade fica proporcional); o gancho, para o mais perto.
-        self.left: dict[str, list[int]] = {
-            name: [int(math.floor(hook_rates[name] * scale * hook_min + 0.5)),
-                   int(math.floor(rates[name] * scale * body_min + 1e-9))]
-            for name in BUDGETED
-        }
+        hook_rates["switch"] = rates["switch"] * HOOK_BOOST
+        self.left: dict[str, list[int]] = {}
+        for name in BUDGETED:
+            hook_n = hook_rates[name] * scale * hook_min
+            body_n = rates[name] * scale * body_min
+            total = int(math.floor(hook_n + body_n + 0.5))
+            in_hook = min(total, int(math.floor(hook_n + 0.5)))
+            self.left[name] = [in_hook, total - in_hook]
         # A piada marcada no storyboard é intenção do roteiro: o vídeo tem lugar para pelo menos uma (fora do calmo).
         if rates["meme"] > 0 and scale >= 0.75 and body_min > 0:
             self.left["meme"][1] = max(1, self.left["meme"][1])
+        # O gancho é onde o material real mais vale (ADR §3.6.4): uma troca para o acervo cabe nele (fora do calmo).
+        # Sai do total (não soma): a contagem por minuto continua a da taxa.
+        switch = self.left["switch"]
+        if rates["switch"] > 0 and scale >= 0.75 and self.window > 0 and switch[0] == 0 and switch[1] > 0:
+            self.left["switch"] = [1, switch[1] - 1]
+        self.quota = {name: list(v) for name, v in self.left.items()}
 
     def slot(self, t: float) -> int:
         return 0 if t < self.window else 1
 
     def has(self, kind: str, t: float) -> bool:
         return self.left[kind][self.slot(t)] > 0
+
+    def has_spread(self, kind: str, t: float) -> bool:
+        """Como `has`, mas a cota do corpo vai sendo liberada ao longo do vídeo (pro rata, com folga de 1): quem passa
+        em ordem pelo vídeo não gasta tudo no começo."""
+        slot = self.slot(t)
+        if self.left[kind][slot] <= 0:
+            return False
+        if slot == 0:
+            return True
+        quota = self.quota[kind][1]
+        used = quota - self.left[kind][1]
+        span = max(1e-6, self.total_s - self.window)
+        return used < quota * (t - self.window) / span + 1.0
 
     def take(self, kind: str, t: float) -> bool:
         slot = self.slot(t)
@@ -279,7 +337,7 @@ class _Budget:
 def _budget_kind(fx_type: str) -> str | None:
     if fx_type in ANNOT_TYPES:
         return "annot"
-    return fx_type if fx_type in BUDGETED else None
+    return fx_type if fx_type in BUDGETED and fx_type != "switch" else None
 
 
 # --- entrada ----------------------------------------------------------------------------------------------------------
@@ -398,16 +456,85 @@ def recent_lib_ids(doc: ProjectDoc, limit: int = HISTORY_VIDEOS) -> set[str]:
         return set()
 
 
-def _pick_meme(tag: str, seed: int, exclude: set[str], presenter: Any | None = None) -> Any | None:
-    """Meme da biblioteca do usuário com a etiqueta, ou uma pose do avatar do canal como reação
-    (`media.meme_library.pick`)."""
-    from studio.media import meme_library
+# --- bibliotecas do usuário (item `biblioteca-inserts`; import tardio: sem elas, procedural e "meme sem meme") ---------
 
+
+def _meme_module() -> Any | None:
     try:
-        return meme_library.pick(tag, seed, exclude, presenter=presenter)
+        from studio.media import meme_library  # type: ignore[attr-defined]
+    except ImportError:
+        return None
+    return meme_library
+
+
+def _sfx_module() -> Any | None:
+    try:
+        from studio.media import sfx_library  # type: ignore[attr-defined]
+    except ImportError:
+        return None
+    return sfx_library
+
+
+def _pick_meme(tag: str, seed: int, exclude: set[str], presenter: Any | None = None) -> Any | None:
+    """Meme da biblioteca do usuário (ou pose do avatar, `presenter`) com a etiqueta (`meme_library.pick`)."""
+    lib = _meme_module()
+    pick = getattr(lib, "pick", None) if lib is not None else None
+    if pick is None:
+        return None
+    try:
+        try:
+            return pick(tag, seed, exclude, presenter=presenter)
+        except TypeError:  # biblioteca sem as poses do avatar
+            return pick(tag, seed, exclude)
     except Exception as exc:  # noqa: BLE001 - biblioteca com problema: sai o "meme sem meme"
         log.warning("a biblioteca de memes falhou: %s", exc)
         return None
+
+
+def _meme_template(tag: str, seed: int, at: str, line: str) -> list[FxEvent] | None:
+    """Os eventos do template "meme sem meme" da biblioteca para a etiqueta (`template_for` + `template_events`)."""
+    lib = _meme_module()
+    template_for = getattr(lib, "template_for", None) if lib is not None else None
+    template_events = getattr(lib, "template_events", None) if lib is not None else None
+    if template_for is None or template_events is None:
+        return None
+    try:
+        template = template_for(tag, seed)
+        return list(template_events(template.id, at, line))
+    except Exception as exc:  # noqa: BLE001 - sem template: o "meme sem meme" do planejador
+        log.warning("o template de meme falhou: %s", exc)
+        return None
+
+
+def _meme_params(item: Any) -> dict[str, Any] | None:
+    """`src` (PNG) ou `video` (WebM) do meme, como os outros assets da timeline (relativo à pasta de dados)."""
+    path = str(getattr(item, "file", "") or "").replace("\\", "/")
+    if not path:
+        return None
+    media = str(getattr(item, "media", "") or "")
+    is_video = media == "webm" or path.lower().endswith((".webm", ".mp4", ".mov"))
+    return {"video": path} if is_video else {"src": path}
+
+
+def _sfx_comic(item: Any) -> bool:
+    kind = fold(str(getattr(item, "kind", "") or ""))
+    tags = {fold(str(t)) for t in (getattr(item, "tags", None) or [])}
+    return kind in COMIC_SFX or bool(tags & COMIC_TAGS)
+
+
+def _sfx_auto(item: Any, tonal_ok: bool) -> bool:
+    """O som da biblioteca pode entrar no automático: licença conhecida (e CC BY com autor), sem apito, e a trava
+    tonal (som tonal só com `sfx_tonal_ok`)."""
+    auto = getattr(item, "auto", None)
+    if callable(auto):
+        try:
+            return bool(auto(tonal_ok))
+        except Exception:  # noqa: BLE001
+            return False
+    license_ = str(getattr(item, "license", "") or "").strip().lower()
+    if not license_ or license_ in ("desconhecida", "unknown"):
+        return False
+    return tonal_ok or not bool(getattr(item, "tonal", False))
 
 
 def _available_kind(kind: str) -> str:
@@ -443,6 +570,7 @@ class _Planner:
         self.doc = doc
         self.style = style
         self.g = grammar
+        self.sources = sources_for(style)
         self.pool = pool
         self.recent = set(recent)
         self.scale = INTENSITY_SCALE.get(grammar.intensity, 1.0)
@@ -451,27 +579,30 @@ class _Planner:
         self.used_lib: set[str] = set()
         self.reframes: Counter[str] = Counter()
         self.pool_uses: Counter[str] = Counter()
+        self.official_s = 0.0
+        self._last_reveal = -math.inf
+        self._presenter_cache: tuple[Any] | None = None
         self.beats = self._beats()
         self.total = max((b.end for b in self.beats), default=0.0)
         self.budget = _Budget(grammar, self.scale, self.total)
-        self.switch_left = int(math.floor(grammar.switch_per_min * self.scale * self.total / 60.0 + 1e-9))
-
-    def _presenter(self) -> Any | None:
-        """O avatar do canal (as poses viram reações), lido uma vez. None: sem canal, desligado ou sem banco."""
-        if not hasattr(self, "_presenter_cache"):
-            found = None
-            if self.doc.channel_id:
-                try:
-                    from studio.core.project.presenter import channel_presenter
-
-                    found = channel_presenter(self.doc.channel_id)
-                except Exception as exc:  # noqa: BLE001 - sem avatar, só a biblioteca de memes
-                    log.warning("avatar do canal indisponível para reações: %s", exc)
-            self._presenter_cache = found if found is not None and found.enabled else None
-        return self._presenter_cache
+        self.official_cap = self.sources.official_max_share * self.total
 
     def _rng(self, beat: _Beat, *purpose: Any) -> random.Random:
         return random.Random(seed_from(self.doc.seed, beat.scene.id, "edit", *purpose))
+
+    def _presenter(self) -> Any | None:
+        """O avatar efetivo do projeto (as poses viram reações na biblioteca de memes). Sem canal ou sem banco: None."""
+        if self._presenter_cache is None:
+            presenter = None
+            if self.doc.channel_id:
+                try:
+                    from studio.core.project.presenter import project_presenter
+
+                    presenter = project_presenter(self.doc, self.style)
+                except Exception as exc:  # noqa: BLE001 - sem avatar, só a biblioteca
+                    log.warning("avatar do canal indisponível para as reações: %s", exc)
+            self._presenter_cache = (presenter,)
+        return self._presenter_cache[0]
 
     # --- 1 e 2: tempo das palavras e marcas ---------------------------------------------------------------------------
 
@@ -521,18 +652,17 @@ class _Planner:
             seg_role = roles.get(scene.segment_id, "body")
             media = doc.shown_media(scene)
             item = self.pool.item(media.pool_id) if media is not None and media.pool_id else None
-            mark = scene.mark or self._infer_mark(scene, [w.text for w in words], seg_role, order, list_runs)
+            texts = [w.text for w in words]
+            mark = scene.mark if scene.mark is not None and scene.mark.origin != "planner" else \
+                self._infer_mark(scene, texts, seg_role, order, list_runs, words[0].start)
             ws = self._word_rows(words, mark, seg_role == "chapter" and scene.id in first_of_segment)
-            root = doc.reuse_root(scene)
-            asset = (media.asset or media.pool_id or media.video or "") if media is not None else ""
-            asset = asset or (scene.visual.asset or "") or (root.id if root is not None else scene.id)
-            tags = _tagset([*(item.tags + item.entities if item is not None else []), *scene.visual.entities])
-            tags |= {w.key for w in ws if w.content}
+            strong = _tagset([*(item.tags + item.entities if item is not None else []), *scene.visual.entities])
             keep_shots = any(s.locked or s.origin == "user" for s in scene.shots)
             beats.append(_Beat(
                 scene=scene, order=order, words=ws, start=words[0].start, end=words[-1].end + (pauses[-1] or 0.12),
                 prov=prov_of_scene(scene, doc), mark=mark, editable=not scene.locked, seg_role=seg_role, media=media,
-                item=item, asset=asset, tags={t for t in tags if t}, keep_shots=keep_shots, pos=len(beats),
+                item=item, asset=self._asset_key(scene, media), tags={t for t in strong if t},
+                spoken={w.key for w in ws if w.content}, keep_shots=keep_shots, pos=len(beats),
             ))
         # zoom_to já usado nas cenas que reaproveitam a imagem conta no limite de reenquadramento
         for beat in beats:
@@ -540,38 +670,57 @@ class _Planner:
                 self.reframes[_reframe_key(beat)] += 1
         return beats
 
+    def _asset_key(self, scene: Scene, media: MediaRef | None) -> str:
+        """A imagem que a cena mostra, a mesma chave na raiz e nas cenas que a reaproveitam (o limite de
+        reenquadramento é por imagem): a mídia real, a imagem fixada na cena, ou a da raiz da cadeia de `reuse_of`."""
+        if media is not None:
+            key = media.asset or media.pool_id or media.video or ""
+            if key:
+                return key
+        if scene.visual.asset:
+            return scene.visual.asset
+        root = self.doc.reuse_root(scene) or scene
+        return root.visual.asset or root.id
+
     @staticmethod
     def _list_flags(doc: ProjectDoc) -> set[str]:
         """Cenas que formam lista: duas ou mais seguidas com `count` ou com o papel `list`."""
         return {s.id for s in doc.ordered_scenes()
                 if s.kind == "count" or (s.mark is not None and s.mark.role == "list")}
 
-    def _infer_mark(self, scene: Scene, texts: list[str], seg_role: str, order: int, lists: set[str]) -> BeatMark:
+    def _infer_mark(self, scene: Scene, texts: list[str], seg_role: str, order: int, lists: set[str],
+                    start: float) -> BeatMark:
         from studio.workers.pipeline.presenter import _serious
 
         text = " ".join(texts)
         lang = self.doc.primary_language
         tail = text.rstrip(_CLOSERS)
         numbers = notable_number_runs(texts, lang)
+        contents = [(i, t) for i, t in enumerate(texts) if _is_content(word_key(t))]
+        # nome próprio: maiúscula no meio da frase (depois de ponto, a maiúscula é só o começo da frase)
+        proper = [t for i, t in contents
+                  if i > 0 and t[:1].isupper() and not texts[i - 1].rstrip(_CLOSERS).endswith(_SENTENCE_END)]
         if seg_role == "hook" or (order == 0 and seg_role != "cta"):
             role = "hook"
         elif seg_role == "cta":
             role = "cta"
         elif scene.id in lists:
             role = "list"
+        elif tail.endswith("!") and (numbers or proper) and start - self._last_reveal >= REVEAL_GAP_S:
+            role = "reveal"
+            self._last_reveal = start
         elif numbers:
             role = "number"
         elif tail.endswith("?"):
             role = "tension"
-        elif tail.endswith("!"):
-            role = "reveal"
         else:
             role = "breath"
         emphasis: list[str] = []
         if numbers:
-            emphasis.append(_at_text(texts[numbers[0][0]]))
-        contents = [(i, t) for i, t in enumerate(texts) if _is_content(word_key(t))]
-        proper = [t for i, t in contents if i > 0 and t[:1].isupper()]
+            i0, i1, _value = numbers[0]
+            phrase = " ".join(w for w in (_at_text(t) for t in texts[i0:i1]) if w)
+            if phrase:
+                emphasis.append(phrase)
         strong = sorted((t for _, t in contents if len(word_key(t)) >= 7), key=lambda t: -len(word_key(t)))
         for cand in (*proper, *strong):
             clean = _at_text(cand)
@@ -579,15 +728,18 @@ class _Planner:
                 emphasis.append(clean)
         energy = {"hook": 3, "reveal": 2, "tension": 2, "list": 2, "number": 2}.get(role, 1)
         return BeatMark(role=role, emphasis=[e for e in emphasis if e], energy=energy,
-                        serious=_serious(text) is not None)
+                        serious=_serious(text) is not None, origin="planner")
 
     def _word_rows(self, words: list[Word], mark: BeatMark, chapter: bool) -> list[_W]:
         texts = [w.text for w in words]
         keys = [word_key(t) for t in texts]
-        emph = {word_key(e) for e in mark.emphasis}
-        numbers: set[int] = set()
-        for i0, i1, _value in notable_number_runs(texts, self.doc.primary_language):
-            numbers.update(range(i0, i1))
+        emph = _phrase_starts(keys, mark.emphasis)
+        lang = self.doc.primary_language
+        number_text: dict[int, str] = {}
+        inside: set[int] = set()
+        for i0, i1, _value in notable_number_runs(texts, lang):
+            number_text[i0] = _number_display(texts[i0:i1], lang)
+            inside.update(range(i0 + 1, i1))
         gag_index = trigger_index(texts, mark.gag.at) if mark.gag is not None and mark.gag.at else None
         rows: list[_W] = []
         seen: Counter[str] = Counter()
@@ -595,8 +747,8 @@ class _Planner:
             seen[key] += 1
             row = _W(text=word.text, key=key, start=word.start, end=word.end, index=i,
                      comma_before=i > 0 and texts[i - 1].rstrip(_CLOSERS).endswith(_CLAUSE_END + _SENTENCE_END),
-                     number=i in numbers, emph=bool(key) and key in emph, content=_is_content(key),
-                     chapter=chapter and i == 0, gag=gag_index == i)
+                     number=i in number_text, number_text=number_text.get(i, ""), in_number=i in inside,
+                     emph=i in emph, content=_is_content(key), chapter=chapter and i == 0, gag=gag_index == i)
             row.at = self._at_for(texts, i, seen[key], word.start - words[0].start)
             rows.append(row)
         return rows
@@ -614,8 +766,8 @@ class _Planner:
 
     def run(self) -> None:
         for beat in self.beats:
-            if beat.editable and beat.scene.mark is None:
-                beat.scene.mark = beat.mark  # só complementa: marca que veio do storyboard fica
+            if beat.editable and (beat.scene.mark is None or beat.scene.mark.origin == "planner"):
+                beat.scene.mark = beat.mark  # só complementa: marca que veio do storyboard ou do usuário fica
         self._register_kept()
         recent_durs: list[float] = []
         prov_run: list[str] = []
@@ -625,6 +777,8 @@ class _Planner:
             else:
                 recent_durs.append(beat.dur)
                 prov_run.append(beat.prov)
+            self.official_s += sum(s.dur for s in beat.shots if s.prov == "official") if beat.shots else \
+                (beat.dur if beat.prov == "official" else 0.0)
         self._camera_shares()
         self._structural()
         self._max_still()
@@ -675,7 +829,9 @@ class _Planner:
         rng = self._rng(beat, "shots")
         role = beat.mark.role
         shots = [_Shot(t=beat.start, word=None, prov=beat.prov)]
-        breath_clip = role == "breath" and beat.clip
+        # o respiro longo é para o clipe próprio; trecho oficial (trailer, gameplay) fica curto (Content ID)
+        breath_clip = role == "breath" and beat.clip and beat.prov != "official"
+        max_clip = self.sources.official_max_clip_s
         forced: _W | None = self._reveal_word(beat) if role == "reveal" else None
         burst = 0
         if role in ("hook", "joke", "list") and rng.random() < self.g.burst_prob:
@@ -695,7 +851,14 @@ class _Planner:
                     d = rng.uniform(*BREATH_S)
                 else:
                     d = self._sample(rng, t)
-                target_word = self._cut_word(beat, t, t + d, recent_durs + [s.dur for s in shots[:-1]])
+                    if not beat.clip:  # imagem parada: o corte (subplano) cumpre o `max_still_s` antes do punch
+                        d = min(d, self.g.max_still_s)
+                hard: float | None = None
+                if shots[-1].prov == "official" and beat.end - shots[-1].t > max_clip + 1e-6:
+                    hard = max(shots[-1].t + max_clip, t + 2 * MIN_SHOT_S)
+                    d = min(d, hard - t)
+                target_word = self._cut_word(beat, t, t + d, recent_durs + [s.dur for s in shots[:-1]],
+                                             hard_end=hard)
             if target_word is None:
                 break
             shot = self._source_for(beat, shots, target_word, rng, prov_run)
@@ -729,11 +892,15 @@ class _Planner:
                 return word
         return None
 
-    def _cut_word(self, beat: _Beat, shot_start: float, target: float, durs: list[float]) -> _W | None:
-        """A palavra do corte: a mais perto do alvo, com preferência de ênfase > número > vírgula > substantivo."""
-        if target >= beat.end - MIN_SHOT_S:
+    def _cut_word(self, beat: _Beat, shot_start: float, target: float, durs: list[float],
+                  hard_end: float | None = None) -> _W | None:
+        """A palavra do corte: a mais perto do alvo, com preferência de ênfase > número > vírgula > substantivo.
+        `hard_end`: o corte tem de vir até ali (material oficial), mesmo que o alvo passe do fim da cena."""
+        if hard_end is None and target >= beat.end - MIN_SHOT_S:
             return None  # o alvo passa do fim da cena: o plano vai até o fim
         limit = min(beat.latest_start(), beat.end - MIN_SHOT_S)
+        if hard_end is not None:
+            limit = min(limit, hard_end)
         best: tuple[float, int] | None = None
         best_word: _W | None = None
         for word in beat.words[1:]:
@@ -746,6 +913,8 @@ class _Planner:
                 score -= 0.8
             if word.key in _FUNCTION_WORDS and word.key not in _GOOD_BEFORE and not word.comma_before:
                 score -= 0.6  # "parte | do farol": o corte não separa a preposição do que ela liga
+            if word.in_number:
+                score -= 1.5  # "dois mil | e treze": o número é uma palavra só
             piece = word.start - shot_start
             if len(durs) >= 2 and _similar(durs[-1], durs[-2]) and _similar(piece, durs[-1]):
                 score -= 3.0
@@ -760,7 +929,7 @@ class _Planner:
 
     def _source_for(self, beat: _Beat, shots: list[_Shot], word: _W, rng: random.Random,
                     prov_run: list[str]) -> _Shot | None:
-        """Fonte do novo plano: próximo trecho do clipe > acervo com a mesma etiqueta > reenquadramento. Com 3 planos
+        """Fonte do novo plano: próximo trecho do clipe > acervo com afinidade > reenquadramento. Com 3 planos
         seguidos do mesmo nível, o acervo de outro nível passa na frente."""
         own = next(s for s in reversed(shots) if s.source == "self")  # o primeiro plano é sempre o da cena
         run = [*prov_run, *(s.prov for s in shots)]
@@ -770,26 +939,40 @@ class _Planner:
             probe = self._pool_shot(beat, shots, word, rng, avoid=avoid, dry=True)
             if probe is not None and probe.prov != avoid:
                 return self._pool_shot(beat, shots, word, rng, avoid=avoid)
-        return (self._clip_next(beat, own, word, rng)
-                or self._pool_shot(beat, shots, word, rng, avoid=avoid)
-                or self._reframe(beat, own, word, rng))
+        found = (self._clip_next(beat, own, word, rng)
+                 or self._pool_shot(beat, shots, word, rng, avoid=avoid)
+                 or self._reframe(beat, own, word, rng))
+        if found is None and shots[-1].prov == "official" and beat.prov != "official":
+            # o trecho oficial do acervo acaba no limite: volta para a imagem da própria cena
+            found = _Shot(t=word.start, word=word, prov=beat.prov, framing=own.framing)
+        return found
 
     def _clip_next(self, beat: _Beat, prev: _Shot, word: _W, rng: random.Random) -> _Shot | None:
-        """O trecho seguinte do mesmo clipe (pula 0,4 a 1,5 s do material), dentro do `dur_s` do trecho."""
+        """O trecho seguinte do mesmo clipe (pula 0,4 a 1,5 s do material), dentro do `dur_s` do trecho. Sem a duração
+        do clipe, não há como saber se o próximo trecho existe: a fonte passa para o acervo ou o plano segue."""
         media = beat.media
-        if media is None or not media.video:
+        if media is None or not media.video or media.dur_s is None:
             return None
         start = prev.clip_in if prev.clip_in is not None else media.start_s
         clip_in = start + (word.start - prev.t) + rng.uniform(0.4, 1.5)
-        if media.dur_s is not None and clip_in + 0.5 > media.start_s + media.dur_s:
+        last = media.start_s + media.dur_s - CLIP_END_PAD_S
+        if clip_in > last:
             return None
-        return _Shot(t=word.start, word=word, prov=beat.prov, clip_in=round(clip_in, 2), motion="none",
-                     hold=media.dur_s is None)
+        return _Shot(t=word.start, word=word, prov=beat.prov, clip_in=round(clip_in, 2), motion="none")
+
+    def _pool_ok(self, item: PoolItem, beat: _Beat, word: _W) -> bool:
+        """Regras de direitos do item: no gancho só os níveis de `sources.hook`; oficial até o teto de tela."""
+        if word.start < self.budget.window and item.tier not in self.sources.hook:
+            return False
+        return not (item.tier == "official" and self.official_s >= self.official_cap)
 
     def _pool_shot(self, beat: _Beat, shots: list[_Shot], word: _W, rng: random.Random, avoid: str | None,
                    *, dry: bool = False) -> _Shot | None:
-        """Outro item do acervo com etiqueta em comum (cota de `switch_per_min`); `dry` só consulta."""
-        if self.switch_left <= 0 or not beat.tags:
+        """Outro item do acervo com afinidade (cota de `switch`, distribuída pelo vídeo); `dry` só consulta.
+
+        Afinidade: entidade do item na cena ou na fala, ou pelo menos 2 etiquetas em comum. As etiquetas fortes
+        (entidades da cena, etiquetas do item que ela mostra) pesam o dobro das palavras da fala."""
+        if not self.budget.has_spread("switch", word.start) or not (beat.tags or beat.spoken):
             return None
         recent_ids = {s.pool_id for b in self.beats[max(0, beat.pos - 2):beat.pos] for s in b.shots if s.pool_id}
         recent_ids |= {s.pool_id for s in shots if s.pool_id}
@@ -797,6 +980,7 @@ class _Planner:
             rng = random.Random(seed_from(self.doc.seed, beat.scene.id, "edit", "probe", word.index))
         best: tuple[float, float] | None = None
         chosen: PoolItem | None = None
+        context = beat.tags | beat.spoken
         for item in self.pool.items:
             if item.media == "meme" or not (item.path or item.poster):
                 continue
@@ -804,10 +988,15 @@ class _Planner:
                 continue
             if item.id in recent_ids or self.pool_uses[item.id] >= 2:
                 continue
-            overlap = len(beat.tags & _tagset(item.tags + item.entities))
-            if overlap == 0:
+            if not self._pool_ok(item, beat, word):
                 continue
-            score = overlap + 0.1 * item.score + (2.0 if avoid is not None and item.tier != avoid else 0.0)
+            keys = _tagset(item.tags + item.entities)
+            entity_hit = bool(_tagset(item.entities) & context) or bool(_tagset(beat.scene.visual.entities) & keys)
+            hits = len(keys & context)
+            if not entity_hit and hits < 2:
+                continue
+            score = 2.0 * len(keys & beat.tags) + len(keys & beat.spoken) + (2.0 if entity_hit else 0.0)
+            score += 0.1 * item.score + (2.0 if avoid is not None and item.tier != avoid else 0.0)
             if avoid is not None and item.tier == avoid:
                 score -= 2.0
             key = (score, rng.random())
@@ -817,7 +1006,7 @@ class _Planner:
             return None
         if dry:
             return _Shot(t=word.start, word=word, prov=chosen.tier, source="pool", pool_id=chosen.id)
-        self.switch_left -= 1
+        self.budget.take("switch", word.start)
         self.pool_uses[chosen.id] += 1
         clip_in = None
         if chosen.media == "clip":  # o segundo uso do mesmo clipe entra noutro ponto
@@ -857,8 +1046,8 @@ class _Planner:
         if choice == "pan":
             shot.motion = "pan_left" if rng.random() < 0.5 else "pan_right"
         elif choice == "punch":
+            # punch seco: o corte para um enquadramento mais fechado, parado (sem curva: não há movimento)
             shot.motion = "static"
-            shot.easing = "snap"
             base = shot.framing or ShotFraming()
             shot.framing = ShotFraming(scale=round(min(1.8, max(base.scale, rng.uniform(*PUNCH_CAMERA))), 3),
                                        x=base.x, y=base.y)
@@ -959,19 +1148,17 @@ class _Planner:
         lo, hi = self.g.punch_scale.min, self.g.punch_scale.max
         if self._try("punch", beat, word, params={"scale": round(rng.uniform((lo + hi) / 2, hi), 3)}):
             self._sfx(beat, word, "reveal", rng)
-        if self.g.music_drop_before_reveal and self.g.intensity > 0:
-            prev_beat, prev_word = self._word_before(beat, word)
-            if prev_word is not None and prev_beat is not None and prev_beat.editable:
-                dur = int(min(600, max(300, round((word.start - prev_word.start) * 1000))))
-                self._add(prev_beat, prev_word, "music_drop", dur_ms=dur)
+            self._music_drop(beat, word, rng)
 
-    def _word_before(self, beat: _Beat, word: _W) -> tuple[_Beat | None, _W | None]:
-        if word.index > 0:
-            return beat, beat.words[word.index - 1]
-        if beat.pos == 0:
-            return None, None
-        prev = self.beats[beat.pos - 1]
-        return prev, prev.words[-1]
+    def _music_drop(self, beat: _Beat, word: _W, rng: random.Random) -> bool:
+        """A trilha some antes da palavra e volta nela (o `at` é o fim da queda). Espaçada: no máximo uma a cada
+        `MUSIC_DROP_GAP_S / escala` segundos; nada na intensidade 0."""
+        if not self.g.music_drop_before_reveal or self.g.intensity <= 0:
+            return False
+        if not self._free(beat, word, "music_drop", spacing=MUSIC_DROP_GAP_S / self.scale):
+            return False
+        self._add(beat, word, "music_drop", dur_ms=int(rng.uniform(*MUSIC_DROP_MS)))
+        return True
 
     def _gag_word(self, beat: _Beat) -> _W | None:
         word = next((w for w in beat.words if w.gag), None)
@@ -995,26 +1182,28 @@ class _Planner:
         if not self.budget.take("meme", word.start):
             return
         rng = self._rng(beat, "gag")
+        seed = seed_from(self.doc.seed, beat.scene.id, "edit", "meme")
+        tag = gag.tag or gag.payoff
         item = None
         if gag.payoff == "meme" or gag.tag:
-            pick_args: tuple[Any, ...] = (gag.tag or gag.payoff, seed_from(self.doc.seed, beat.scene.id, "edit", "meme"),
-                                          self.recent | self.used_lib)
-            presenter = self._presenter()
-            item = _pick_meme(*pick_args, presenter) if presenter is not None else _pick_meme(*pick_args)
-        if item is not None:
+            item = _pick_meme(tag, seed, self.recent | self.used_lib, self._presenter())
+        media = _meme_params(item) if item is not None else None
+        if item is not None and media is not None:
             lib_id = str(getattr(item, "id", "") or "")
             max_ms = getattr(item, "max_ms", None) or 900
-            params: dict[str, Any] = {"lib_id": lib_id, "tag": gag.tag, "variant": "corner"}
-            file = getattr(item, "file", None)
-            if isinstance(file, str) and file:
-                # o arquivo vai junto (relativo à pasta de dados): o renderer desenha `src` (png) ou `video` (webm)
-                params["video" if getattr(item, "media", "png") == "webm" else "src"] = file
-            self._add(beat, word, "meme", dur_ms=int(min(1500, max(400, max_ms))), params=params)
+            self._add(beat, word, "meme", dur_ms=int(min(1500, max(400, max_ms))),
+                      params={**media, "lib_id": lib_id, "tag": gag.tag, "variant": "corner"})
             self.used_lib.add(lib_id)
             sfx_id = getattr(item, "sfx_id", None)
             self._sfx(beat, word, "gag", rng, lib_id=str(sfx_id) if sfx_id else None)
             return
-        # "meme sem meme": congela + punch forte + SFX cômico + a frase da piada
+        # "meme sem meme": o template da biblioteca para a etiqueta, quando ela existe
+        if gag.payoff == "meme":
+            events = _meme_template(tag, seed, word.at, _short_text(gag.line))
+            if events:
+                self._apply_template(beat, word, events, rng)
+                return
+        # "meme sem meme" do planejador: congela + punch forte + SFX cômico + a frase da piada
         payoff = gag.payoff if gag.payoff != "meme" else "freeze"
         if payoff == "freeze":
             self._add(beat, word, "freeze", dur_ms=int(rng.uniform(600, 900)))
@@ -1023,6 +1212,26 @@ class _Planner:
         if payoff in ("freeze", "text") and (gag.line or payoff == "text"):
             self._try("text_pop", beat, word, params={"text": _short_text(gag.line) or _at_text(word.text)})
         self._sfx(beat, word, "gag" if payoff != "text" else "text_pop", rng)
+
+    def _apply_template(self, beat: _Beat, word: _W, events: list[FxEvent], rng: random.Random) -> None:
+        """Os eventos do template no gatilho da piada, com as cotas e travas de sempre (o freeze já pagou a do meme)."""
+        for event in events:
+            params = dict(event.params)
+            if event.type == "punch":
+                self._try("punch", beat, word, params={"scale": params.get("scale", 1.3)}, dur_ms=event.dur_ms)
+            elif event.type == "text_pop":
+                if params.get("text"):
+                    self._try("text_pop", beat, word, params=params, dur_ms=event.dur_ms)
+            elif event.type == "sfx":
+                ref = str(params.get("lib_id") or params.get("kind") or "")
+                if ref in PROCEDURAL_SFX or not ref:
+                    self._sfx(beat, word, "gag", rng, kind=ref or None)
+                else:
+                    self._sfx(beat, word, "gag", rng, lib_id=ref)
+            elif event.type == "music_drop":
+                self._music_drop(beat, word, rng)
+            elif _budget_kind(event.type) is None and self._free(beat, word, event.type, spacing=0.0):
+                self._add(beat, word, event.type, dur_ms=event.dur_ms, params=params)
 
     def _highlight(self, beat: _Beat) -> None:
         media = beat.media
@@ -1037,6 +1246,22 @@ class _Planner:
             self._add(beat, word, "zoom_rect", params={"rect": rect})
             self._sfx(beat, word, "highlight", self._rng(beat, "highlight"))
 
+    def _still_spans(self, beat: _Beat) -> list[tuple[float, float]]:
+        """Os trechos parados da batida: cada plano de imagem (do editor ou do usuário) ou a cena inteira."""
+        if beat.keep_shots:
+            shots = beat.scene.shots
+            starts = [self._time_of(beat, s.at) if s.at else beat.start for s in shots]
+            order = sorted(range(len(shots)), key=lambda k: starts[k])
+            spans: list[tuple[float, float]] = []
+            for n, k in enumerate(order):
+                end = starts[order[n + 1]] if n + 1 < len(order) else beat.end
+                if shots[k].motion != "none" and end > starts[k]:
+                    spans.append((starts[k], end))
+            return spans
+        if beat.shots:
+            return [(s.t, s.end) for s in beat.shots if s.motion != "none"]
+        return [(beat.start, beat.end)]
+
     def _max_still(self) -> None:
         """Nenhum plano parado passa de `max_still_s`: punch no meio (ou o corte já resolve)."""
         limit = self.g.max_still_s
@@ -1044,12 +1269,10 @@ class _Planner:
             if not beat.editable or beat.card or not beat.framed or beat.clip:
                 continue
             # todo plano de imagem conta: um push lento de 20 s também é "parado" para quem assiste
-            spans = ([(s.t, s.end) for s in beat.shots if s.motion != "none"] if beat.shots
-                     else [(beat.start, beat.end)])
-            for start, end in spans:
+            for start, end in self._still_spans(beat):
                 if end - start <= limit:
                     continue
-                marks = sorted([start, end, *(e.t for e in self.events if e.beat is beat
+                marks = sorted([start, end, *(e.t for e in self.events if e.beat is beat and start < e.t < end
                                                 and e.type in ("punch", "zoom_rect", "shake"))])
                 for a, b in zip(marks, marks[1:], strict=False):
                     pieces = math.ceil((b - a) / (limit * 0.8) - 1e-9)  # folga: a palavra fica perto do alvo
@@ -1077,6 +1300,8 @@ class _Planner:
                 noise = jitter.random() * 0.3
                 if word.start > beat.latest_start() or word.start > self.total - TAIL_S:
                     continue
+                if word.in_number:
+                    continue  # o número entra pela primeira palavra dele, inteiro
                 if fx_type == "text_pop" and not (word.number or word.emph or (word.content and len(word.key) >= 6)):
                     continue
                 base = 5.0 if word.emph else 4.0 if word.number else 3.0 if word.chapter else 2.0 if word.gag \
@@ -1112,45 +1337,95 @@ class _Planner:
             if fx_type == "punch":
                 self._add(beat, word, "punch", params={"scale": round(rng.uniform(rng_scale.min, rng_scale.max), 3)})
             elif fx_type == "text_pop":
-                self._add(beat, word, "text_pop", params={"text": self._pop_text(beat, word)}, dur_ms=900)
+                self._add(beat, word, "text_pop", params={"text": self._pop_text(word)}, dur_ms=900)
             elif fx_type == "shake":
-                self._add(beat, word, "shake", params={"strength": round(rng.uniform(0.6, 1.2), 3)},
+                amount = round(rng.uniform(0.6, 1.2), 3)
+                self._add(beat, word, "shake", params={"strength": amount, "amount": amount},
                           dur_ms=int(rng.uniform(300, 500)))
             for j, (_b, other, _s) in enumerate(cands):
                 gaps[j] = min(gaps[j], abs(other.start - word.start))
 
-    def _pop_text(self, beat: _Beat, word: _W) -> str:
-        if word.number:
-            run = []
-            for w in beat.words[word.index:]:
-                if not w.number or len(run) >= 3:
-                    break
-                run.append(_at_text(w.text))
-            return " ".join(r for r in run if r) or _at_text(word.text)
+    @staticmethod
+    def _pop_text(word: _W) -> str:
+        if word.number and word.number_text:
+            return word.number_text
         return _at_text(word.text)
 
     # --- SFX ------------------------------------------------------------------------------------------------------------
 
-    def _sfx(self, beat: _Beat, word: _W, purpose: str, rng: random.Random, *, lib_id: str | None = None) -> bool:
+    def _sfx(self, beat: _Beat, word: _W, purpose: str, rng: random.Random, *, lib_id: str | None = None,
+             kind: str | None = None) -> bool:
         if not self._free(beat, word, "sfx") or not self.budget.take("sfx", word.start):
             return False
         params: dict[str, Any] = {"purpose": purpose}
-        if lib_id:
-            params["kind"] = _available_kind("boom")
+        serious = beat.mark.serious
+        if lib_id and self._lib_ok(lib_id, serious):
+            item = self._lib_item(lib_id)
+            fallback = str(getattr(item, "kind", "") or "boom")
+            params["kind"] = _available_kind(fallback if fallback in PROCEDURAL_SFX else "boom")
             params["lib_id"] = lib_id
             self.used_lib.add(lib_id)
+        elif kind:
+            if not self.g.sfx_tonal_ok and kind in TONAL_SFX:
+                kind = "impact"
+            if serious and kind in COMIC_SFX:
+                kind = "impact"
+            params["kind"] = _available_kind(kind)
+            chosen_lib = self._lib_for_kind(kind, rng, serious)
+            if chosen_lib:
+                params["lib_id"] = chosen_lib
+                self.used_lib.add(chosen_lib)
         else:
-            choice = self._sfx_choice(purpose, rng, serious=beat.mark.serious)
+            choice = self._sfx_choice(purpose, rng, serious=serious)
             if choice is None:
                 self.budget.left["sfx"][self.budget.slot(word.start)] += 1
                 return False
-            kind, chosen_lib = choice
-            params["kind"] = kind
+            chosen_kind, chosen_lib = choice
+            params["kind"] = chosen_kind
             if chosen_lib:
                 params["lib_id"] = chosen_lib
                 self.used_lib.add(chosen_lib)
         self._add(beat, word, "sfx", params=params)
         return True
+
+    @staticmethod
+    def _lib_item(lib_id: str) -> Any | None:
+        lib = _sfx_module()
+        get = getattr(lib, "get", None) if lib is not None else None
+        if get is None:
+            return None
+        try:
+            return get(lib_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _lib_ok(self, lib_id: str, serious: bool) -> bool:
+        """O som da biblioteca pode entrar sozinho: existe, licença conhecida, trava tonal e nada cômico em cena
+        séria. Sem a biblioteca não há como conferir: fica de fora."""
+        item = self._lib_item(lib_id)
+        if item is None or not _sfx_auto(item, self.g.sfx_tonal_ok):
+            return False
+        return not (serious and _sfx_comic(item))
+
+    def _lib_for_kind(self, kind: str, rng: random.Random, serious: bool) -> str | None:
+        """Um som importado pelo usuário para o tipo (`sfx_library.pick`, fora dos usados nos últimos vídeos e neste),
+        quando há um que entra no automático. O procedural embutido (sem arquivo) não vira `lib_id`."""
+        lib = _sfx_module()
+        pick = getattr(lib, "pick", None) if lib is not None else None
+        if pick is None:
+            return None
+        seed = rng.randrange(2**31)
+        try:
+            item = pick(kind, seed, self.recent | self.used_lib, tonal_ok=self.g.sfx_tonal_ok)
+        except Exception as exc:  # noqa: BLE001 - biblioteca com problema: fica o procedural
+            log.warning("a biblioteca de SFX falhou: %s", exc)
+            return None
+        if item is None or not getattr(item, "file", None):
+            return None
+        lib_id = str(getattr(item, "id", "") or "")
+        if not lib_id or not _sfx_auto(item, self.g.sfx_tonal_ok) or (serious and _sfx_comic(item)):
+            return None
+        return lib_id
 
     def _sfx_choice(self, purpose: str, rng: random.Random, *, serious: bool) -> tuple[str, str | None] | None:
         palette = DEFAULT_SFX.get(purpose, DEFAULT_SFX["accent"])
@@ -1158,10 +1433,13 @@ class _Planner:
             palette = self.g.sfx_palette
         weights: list[tuple[str, float]] = []
         for key, weight in palette.items():
-            if not self.g.sfx_tonal_ok and key in TONAL_SFX:
-                continue
-            if serious and key in COMIC_SFX:
-                continue
+            if key in PROCEDURAL_SFX:
+                if not self.g.sfx_tonal_ok and key in TONAL_SFX:
+                    continue
+                if serious and key in COMIC_SFX:
+                    continue
+            elif not self._lib_ok(key, serious):
+                continue  # id da biblioteca sem licença, tonal sem permissão ou cômico em cena séria
             if key in self.recent:
                 weight *= 0.25
             weights.append((key, weight))
@@ -1169,8 +1447,10 @@ class _Planner:
         if choice is None:
             return None
         if choice in PROCEDURAL_SFX:
-            return _available_kind(choice), None
-        return _available_kind("impact"), choice  # id da biblioteca do usuário
+            return _available_kind(choice), self._lib_for_kind(choice, rng, serious)
+        item = self._lib_item(choice)
+        kind = str(getattr(item, "kind", "") or "impact")
+        return _available_kind(kind if kind in PROCEDURAL_SFX else "impact"), choice  # id da biblioteca do usuário
 
     def _fill_sfx(self) -> None:
         if self.budget.total("sfx") <= 0:
@@ -1232,6 +1512,8 @@ class _Planner:
                 scene.fx = [e for e in scene.fx if e.locked or e.origin == "user"]
                 if not any(s.locked or s.origin == "user" for s in scene.shots):
                     scene.shots = []
+                if scene.mark is not None and scene.mark.origin == "planner":
+                    scene.mark = None
 
     @staticmethod
     def _subshot(shot: _Shot) -> SubShot:
@@ -1267,6 +1549,28 @@ def _tagset(values: Iterable[str]) -> set[str]:
 
 def _is_content(key: str) -> bool:
     return len(key) >= 4 and key not in _FUNCTION_WORDS and not key.isdigit()
+
+
+def _phrase_starts(keys: list[str], phrases: Iterable[str]) -> set[int]:
+    """Índices onde começa cada expressão de ênfase na fala (todas as ocorrências; a de várias palavras é a
+    sequência inteira, "dois mil e treze")."""
+    out: set[int] = set()
+    for phrase in phrases:
+        tokens = [k for k in (word_key(t) for t in phrase.split()) if k]
+        n = len(tokens)
+        if not n:
+            continue
+        for i in range(len(keys) - n + 1):
+            if keys[i:i + n] == tokens:
+                out.add(i)
+    return out
+
+
+def _number_display(tokens: list[str], lang: str) -> str:
+    """O número como a legenda mostra: por extenso vira algarismo ("trezentos e quarenta e dois" → "342")."""
+    merged = merge_number_words([Word(t, 0.0, 0.0) for t in tokens], lang)
+    parts = [m.text.strip().strip(_EDGE_PUNCT) for m in merged]
+    return " ".join(p for p in parts if p)[:40]
 
 
 def _at_text(token: str) -> str:

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from studio.config import get_settings
 from studio.core.agent import editor
+from studio.core.editing.stale import drop_stale_edit
 from studio.core.glossary import glossary_of
 from studio.core.project import service
 from studio.core.project.document import ProjectDoc
@@ -214,6 +215,12 @@ def update_doc(project_id: str, body: DocUpdate) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=f"documento inválido: {exc}") from exc
     if doc.id != project_id:
         raise HTTPException(status_code=400, detail="o documento pertence a outro projeto")
+    try:
+        current = service.get_doc(project_id)
+    except service.ProjectNotFound:
+        current = None
+    if current is not None:
+        drop_stale_edit(current, doc)  # fala ou imagem da cena mudou: a edição automática dela fica velha
     version = service.commit(project_id, doc, body.message)
     return {"version": version}
 

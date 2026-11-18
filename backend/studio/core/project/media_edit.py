@@ -2,13 +2,15 @@
 
 Ficam fora de `ops.py` de propósito: o agente de edição por IA só conhece as operações de lá (`EDIT_OPS`) e não tem
 como baixar arquivos. Anexar mídia só põe `visual.media`: prompt, `reuse_of`, imagem fixada e semente ficam de
-reserva, e tirar a mídia devolve a cena exatamente ao que era.
+reserva, e tirar a mídia devolve a cena ao que era. A exceção é a edição automática (ADR 0004): os subplanos e eventos
+que o planejador escolheu para a mídia anterior saem (`core.editing.stale`); os do usuário e os travados ficam.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from studio.core.editing.stale import drop_stale_edit
 from studio.core.project.document import REAL_KINDS, MediaRef, ProjectDoc, RealHint, Scene
 from studio.core.project.ops import OpError
 from studio.core.styles.visual import FOCUS_POINTS, pick
@@ -37,7 +39,9 @@ def scene_label(doc: ProjectDoc, scene_id: str) -> str:
     return "Cena"
 
 
-def _done(doc: ProjectDoc) -> ProjectDoc:
+def _done(doc: ProjectDoc, before: ProjectDoc | None = None) -> ProjectDoc:
+    if before is not None:
+        drop_stale_edit(before, doc)  # a mídia mostrada mudou: os subplanos e eventos automáticos da cena ficam velhos
     return ProjectDoc.model_validate(doc.model_dump())
 
 
@@ -45,7 +49,7 @@ def attach_media(doc: ProjectDoc, scene_id: str, media: MediaRef) -> ProjectDoc:
     """Cópia do documento com a mídia na cena (nada mais muda)."""
     new_doc = doc.model_copy(deep=True)
     _scene(new_doc, scene_id).visual.media = MediaRef.model_validate(media.model_dump())
-    return _done(new_doc)
+    return _done(new_doc, doc)
 
 
 def _spaces(value: object, limit: int) -> str:
@@ -92,7 +96,7 @@ def update_media(doc: ProjectDoc, scene_id: str, patch: dict[str, Any]) -> Proje
             texts.pop(lang, None)
         data["headline"] = texts
     scene.visual.media = MediaRef.model_validate(data)
-    return _done(new_doc)
+    return _done(new_doc, doc)
 
 
 def remove_media(doc: ProjectDoc, scene_id: str) -> ProjectDoc:
@@ -102,7 +106,7 @@ def remove_media(doc: ProjectDoc, scene_id: str) -> ProjectDoc:
     if scene.visual.media is None:
         raise OpError("a cena não tem mídia real")
     scene.visual.media = None
-    return _done(new_doc)
+    return _done(new_doc, doc)
 
 
 def set_real(doc: ProjectDoc, scene_id: str, real: RealHint | None) -> ProjectDoc:
