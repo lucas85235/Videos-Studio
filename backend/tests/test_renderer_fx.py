@@ -386,6 +386,25 @@ out.framedShift = m.keptFraming({ scale: 1.25, x: 0.411, y: 0.396 }, [0.16, 0.14
 out.framedShrink = m.keptFraming({ scale: 1.5, x: 0.5, y: 0.5 }, [0.05, 0.3, 0.9, 0.1]);
 out.framedNone = m.keptFraming({ scale: 1.25, x: 0.3, y: 0.3 }, null);
 out.framedFree = m.keptFraming({ scale: 1.25, x: 0.5, y: 0.5 }, [0.4, 0.4, 0.2, 0.1]);
+// Plano 1,25x da matéria da Malwarebytes na janela: a linha de categoria (0,31) subia para baixo da faixa do topo
+// (0,055-0,135). A janela sobe o mínimo até ela sair; sem saída na escala, aproxima menos; nada no caminho, igual.
+const chipZone = [0.35, 0.055, 0.3, 0.08];
+const category = [0.15, 0.3, 0.35, 0.03];
+const golpeLetters = [category, [0.15, 0.35, 0.4, 0.3], [0.62, 0.2, 0.25, 0.2]];
+const golpeKeep = [0.15, 0.3, 0.4, 0.35];
+out.clearShift = m.clearFraming({ scale: 1.25, x: 0.4, y: 0.6 }, golpeLetters, [chipZone], golpeKeep);
+out.clearShiftHits = (() => {
+  const f = out.clearShift;
+  return golpeLetters.map((r) => m.rectThroughFraming(r, f)).filter(Boolean)
+    .some((r) => r[0] < 0.65 + m.CLEAR_GAP - 1e-6 && r[0] + r[2] > 0.35 - m.CLEAR_GAP + 1e-6 && r[1] < 0.135 + m.CLEAR_GAP - 1e-6 && r[1] + r[3] > 0.055 - m.CLEAR_GAP + 1e-6);
+})();
+// Manchete alta que começa logo abaixo da linha: subir o bastante tiraria o pé dela da janela; a escala desce um passo.
+out.clearShrink = m.clearFraming({ scale: 1.5, x: 0.5, y: 0.6 }, [[0.2, 0.3, 0.6, 0.03], [0.2, 0.35, 0.6, 0.5]], [chipZone], [0.2, 0.3, 0.6, 0.55]);
+out.clearFree = m.clearFraming({ scale: 1.25, x: 0.5, y: 0.5 }, [[0.3, 0.5, 0.4, 0.1]], [chipZone], null);
+out.clearNoZone = m.clearFraming({ scale: 1.25, x: 0.4, y: 0.6 }, golpeLetters, [], golpeKeep);
+out.clearFull = m.clearFraming({ scale: 1, x: 0.5, y: 0.5 }, golpeLetters, [chipZone], golpeKeep);
+// Selo já sobre letras no quadro inteiro (página toda texto): nenhuma janela ajuda, fica igual.
+out.clearStuck = m.clearFraming({ scale: 1.25, x: 0.5, y: 0.5 }, [[0, 0, 1, 1]], [chipZone], null);
 // Cursor do tratamento "tela": nunca sobre material real; nas outras, nunca sobre letras.
 out.cursor = {
   capture: m.screenCursorShown('capture', 'window', [0.5, 0.5], []),
@@ -768,6 +787,33 @@ def test_framing_keeps_the_headline_inside_the_window(fx_math: dict) -> None:
     assert fx_math["framedFree"] == {"scale": 1.25, "x": 0.5, "y": 0.5}
 
 
+def test_shot_framing_clears_the_chip_and_counter(fx_math: dict) -> None:
+    """Revisão r4 (2:48): a faixa do topo fica parada na cena inteira e o plano 1,25x subia a linha de categoria
+    ("GOLPES, INTELIGÊNCIA DE AMEAÇAS") para baixo dela. O enquadramento do plano anda o mínimo até as letras saírem
+    do selo, sem tirar a manchete guardada da janela; sem posição livre, aproxima menos; sem selo, sem letras no
+    caminho, no quadro inteiro ou sem saída nenhuma, igual."""
+    shift = fx_math["clearShift"]
+    assert shift["scale"] == pytest.approx(1.25)
+    assert fx_math["clearShiftHits"] is False
+    win = 1 / shift["scale"]
+    top = shift["y"] - win / 2
+    assert top < 0.6 - win / 2  # a janela subiu
+    assert top <= 0.3 - 0.03 + 1e-6 and top + win >= 0.65 + 0.03 - 1e-6  # manchete guardada inteira
+    shrink = fx_math["clearShrink"]
+    assert shrink["scale"] == pytest.approx(1.45)
+    win = 1 / shrink["scale"]
+    top = shrink["y"] - win / 2
+    assert (0.3 - top) * shrink["scale"] >= 0.135 + 0.012 - 1e-6  # a linha desceu para baixo da faixa
+    assert top + win >= 0.85 + 0.03 - 1e-6  # e o pé da manchete continua na janela
+    assert fx_math["clearFree"] == {"scale": 1.25, "x": 0.5, "y": 0.5}
+    assert fx_math["clearNoZone"] == {"scale": 1.25, "x": 0.4, "y": 0.6}
+    assert fx_math["clearFull"] == {"scale": 1, "x": 0.5, "y": 0.5}
+    assert fx_math["clearStuck"] == {"scale": 1.25, "x": 0.5, "y": 0.5}
+    src = _read(COMP / "SceneView.tsx")
+    assert "const framing = clearFraming(shot.framing, letters, zones, keep);" in src
+    assert "const cleared = clearSlots(keptSlots, first);" in src
+
+
 def test_screen_cursor_never_on_proof_nor_on_letters(fx_math: dict) -> None:
     """QA: cursor do mouse na key art (sobre o logo), sobre "THEFT" no pré-venda e na manchete da ESET. Ele vinha do
     tratamento "tela" do renderer (a captura do Playwright não tem cursor): sai do material real e das letras."""
@@ -788,7 +834,7 @@ def test_letters_follow_event_camera_and_short_shots_weigh_less(fx_math: dict) -
     assert brief == pytest.approx(full * 0.2)
     src = _read(COMP / "SceneView.tsx")
     assert "const imageText = [...plainText, ...throughCamera(plainText)];" in src
-    assert "timeWeighted(selfRects(shot?.framing ?? null, shot?.motion || scene.motion), share)" in src
+    assert "out.push(...timeWeighted(slotTextOnScreen(scene, ctx, slot, which, slot.shot?.framing ?? null), share));" in src
     assert "keptFraming(shot.framing, shot.src ? (pRects({ rect: shot.keep })[0] ?? null) : sceneKeep)" in src
 
 

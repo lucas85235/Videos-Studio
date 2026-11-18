@@ -263,25 +263,36 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 # oficial): no mínimo esta área e esta largura (fração da imagem). Menor que isso é letreiro ou legenda solta.
 KEEP_MIN_AREA = 0.02
 KEEP_MIN_W = 0.15
+# ... e no máximo esta área: o bloco que toma mais que isso da imagem é a página inteira (ou textura que a detecção
+# juntou), não uma manchete, e como `keep` travaria o zoom e o reenquadramento do plano perto de 1x. O logo grande da
+# key art (GTA VI: 0,34) cabe.
+KEEP_MAX_AREA = 0.4
+# Só material em que as letras SÃO o assunto ganha manchete pela detecção: a imagem oficial (key art, página da
+# loja) e a captura. Foto (do canal, livre, de banco), meme e imagem gerada não: a detecção é por bordas e confunde
+# tela de neon, mão levantada no show e teclado com letra; lá a caixa continua só obstáculo "macio" (`text_rects`).
+KEEP_PROVS = frozenset({"official", "capture"})
 
 
 def main_block(rects: Iterable[Rect]) -> Rect | None:
     """O maior bloco de letras da imagem (logo, título, manchete) quando ele é grande o bastante para ser o assunto
-    dela; None sem um. O renderer nunca o corta no zoom, no punch e no reenquadramento do plano, e nada da tela pousa
-    nele (QA: "PRE-ORDEI" e "GRAND THEFT AUTO" sem o VI na página de pré-venda, que não tinha manchete guardada)."""
+    dela e não é a imagem inteira; None sem um. O renderer nunca o corta no zoom, no punch e no reenquadramento do
+    plano, e nada da tela pousa nele (QA: "PRE-ORDEI" e "GRAND THEFT AUTO" sem o VI na página de pré-venda, que não
+    tinha manchete guardada). Só para material oficial ou captura (`KEEP_PROVS`, quem chama decide)."""
     boxes = [list(map(float, r)) for r in rects if len(r) >= 4 and r[2] > 0 and r[3] > 0]
     if not boxes:
         return None
     big = max(boxes, key=lambda r: r[2] * r[3])
-    if big[2] * big[3] < KEEP_MIN_AREA or big[2] < KEEP_MIN_W:
+    area = big[2] * big[3]
+    if area < KEEP_MIN_AREA or area > KEEP_MAX_AREA or big[2] < KEEP_MIN_W:
         return None
     return [round(v, 4) for v in big]
 
 
 def annotate_timeline(timeline: dict[str, Any], resolve: Callable[[str], Path]) -> None:
     """Grava `text_rects` (caixas de letras no arquivo que o renderer recebe) em cada cena e em cada subplano com
-    imagem própria. Cena sem imagem (ou com vídeo) fica como está. Imagem sem manchete guardada (`keep`, a da captura)
-    ganha o maior bloco de letras dela (`main_block`) como `keep`."""
+    imagem própria. Cena sem imagem (ou com vídeo) fica como está. Imagem oficial ou captura (`prov` do plano ou, sem
+    ele, da cena) sem manchete guardada (`keep`) ganha o maior bloco de letras dela (`main_block`) como `keep`; foto e
+    imagem gerada, não (falso positivo da detecção viraria regra dura na tela e limite da câmera)."""
     memo: dict[str, list[Rect]] = {}
 
     def of(rel: Any) -> list[Rect]:
@@ -291,17 +302,17 @@ def annotate_timeline(timeline: dict[str, Any], resolve: Callable[[str], Path]) 
             memo[rel] = rects_for(resolve(rel))
         return memo[rel]
 
-    def mark(item: dict[str, Any], rects: list[Rect]) -> None:
+    def mark(item: dict[str, Any], rects: list[Rect], prov: Any) -> None:
         if not rects:
             return
         item["text_rects"] = rects
-        if not item.get("keep"):
+        if not item.get("keep") and prov in KEEP_PROVS:
             keep = main_block(rects)
             if keep:
                 item["keep"] = keep
 
     for scene in timeline.get("scenes", []):
-        mark(scene, of(scene.get("src")))
+        mark(scene, of(scene.get("src")), scene.get("prov"))
         for shot in scene.get("shots") or []:
             if isinstance(shot, dict) and shot.get("src") and not shot.get("video"):
-                mark(shot, of(shot.get("src")))
+                mark(shot, of(shot.get("src")), shot.get("prov") or scene.get("prov"))

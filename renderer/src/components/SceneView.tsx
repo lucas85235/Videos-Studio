@@ -27,6 +27,7 @@ import {
   cameraAt,
   cameraFx,
   cardBackdropOff,
+  clearFraming,
   cardDim,
   cutsOf,
   entryFrames,
@@ -220,44 +221,63 @@ const rectsOf = (item: { text_rects?: number[][]; keep?: number[] } | null | und
  * saída).
  */
 const imageTextOnScreen = (scene: TimelineScene, ctx: ImageTextContext, which: ImageRects = 'text'): Rect[] => {
-  const { kind, slots, sceneBox, zoom, width, height } = ctx;
+  const { kind, slots } = ctx;
   if (kind === 'document' || ctx.news || ctx.clip) return [];
   const own = rectsOf(scene, which);
-  // A manchete vai sem o envelope do movimento (a câmera já a mantém no quadro, `keepTransform`): o envelope a
-  // esticava até o topo e nenhuma faixa cabia mais acima dela. Só o enquadramento de cada plano vale.
-  const still = which === 'keep';
   const hasShotText = slots.some((s) => s.shot?.src && !s.shot.video && rectsOf(s.shot, which).length);
   if (!own.length && !hasShotText) return [];
-  const aspect = width / height;
-  const focus = focusXY(scene.focus);
-  // Visual da própria cena num trecho: no tratamento "tela" a imagem fica dentro da moldura; senão, com câmera.
-  const selfRects = (framing: ShotFraming | null, motion: string) => {
-    if (ctx.treatment === 'screen') {
-      const variant = sceneScreenVariant(scene, width, height);
-      const { media } = screenFrame(variant, width, height);
-      const smax = still ? 1 : screenInnerMax(scene.motion, zoom, variant === 'feed');
-      return textInScreen(own, sceneBox?.aspect ?? aspect, media, focus, smax, width, height)
-        .map((r) => rectThroughFraming(r, framing))
-        .filter((r): r is Rect => r !== null);
-    }
-    return textOnScreen([{ rects: own, box: sceneBox, framing, motion: still ? 'none' : motion }], zoom, focus, aspect);
-  };
-  if (!slots.length) return selfRects(null, scene.motion);
+  if (!slots.length) return slotTextOnScreen(scene, ctx, null, which, null);
   const out: Rect[] = [];
   const frames = Math.max(1, scene.durationInFrames);
   for (const slot of slots) {
-    const shot = slot.shot;
-    if (shot?.video) continue;
     const share = (slot.to - slot.from) / frames;
-    if (shot?.src) {
-      // Imagem de outra origem: já vem no tamanho do vídeo, com o foco no centro.
-      const layer: TextLayer = { rects: rectsOf(shot, which), box: null, framing: shot.framing ?? null, motion: still ? 'none' : shot.motion || scene.motion };
-      out.push(...timeWeighted(textOnScreen([layer], zoom, [0.5, 0.5], aspect), share));
-    } else {
-      out.push(...timeWeighted(selfRects(shot?.framing ?? null, shot?.motion || scene.motion), share));
-    }
+    out.push(...timeWeighted(slotTextOnScreen(scene, ctx, slot, which, slot.shot?.framing ?? null), share));
   }
   return out;
+};
+
+/**
+ * Letras (ou a manchete guardada) de um trecho da cena na tela com o enquadramento `framing` (null: o quadro inteiro,
+ * para o reenquadramento do plano medir antes de escolher a janela). `slot` null: a cena sem planos. Plano de vídeo:
+ * nada.
+ */
+const slotTextOnScreen = (scene: TimelineScene, ctx: ImageTextContext, slot: ShotSlot | null, which: ImageRects, framing: ShotFraming | null): Rect[] => {
+  const { sceneBox, zoom, width, height } = ctx;
+  const shot = slot?.shot;
+  if (shot?.video) return [];
+  // A manchete vai sem o envelope do movimento (a câmera já a mantém no quadro, `keepTransform`): o envelope a
+  // esticava até o topo e nenhuma faixa cabia mais acima dela. Só o enquadramento de cada plano vale.
+  const still = which === 'keep';
+  const aspect = width / height;
+  const motion = shot?.motion || scene.motion;
+  if (shot?.src) {
+    // Imagem de outra origem: já vem no tamanho do vídeo, com o foco no centro.
+    const layer: TextLayer = { rects: rectsOf(shot, which), box: null, framing, motion: still ? 'none' : motion };
+    return textOnScreen([layer], zoom, [0.5, 0.5], aspect);
+  }
+  const own = rectsOf(scene, which);
+  if (!own.length) return [];
+  const focus = focusXY(scene.focus);
+  // Visual da própria cena num trecho: no tratamento "tela" a imagem fica dentro da moldura; senão, com câmera.
+  if (ctx.treatment === 'screen') {
+    const variant = sceneScreenVariant(scene, width, height);
+    const { media } = screenFrame(variant, width, height);
+    const smax = still ? 1 : screenInnerMax(scene.motion, zoom, variant === 'feed');
+    return textInScreen(own, sceneBox?.aspect ?? aspect, media, focus, smax, width, height)
+      .map((r) => rectThroughFraming(r, framing))
+      .filter((r): r is Rect => r !== null);
+  }
+  return textOnScreen([{ rects: own, box: sceneBox, framing, motion: still ? 'none' : motion }], zoom, focus, aspect);
+};
+
+/** União (caixa que cobre todas) das caixas `rects`; null sem nenhuma. */
+const unionRect = (rects: Rect[]): Rect | null => {
+  if (!rects.length) return null;
+  const x0 = Math.min(...rects.map((r) => r[0]));
+  const y0 = Math.min(...rects.map((r) => r[1]));
+  const x1 = Math.max(...rects.map((r) => r[0] + r[2]));
+  const y1 = Math.max(...rects.map((r) => r[1] + r[3]));
+  return [x0, y0, x1 - x0, y1 - y0];
 };
 
 /** Uma cena: fundo com câmera + texturas + cartão + sobreposições + legendas + transição de entrada. */
@@ -409,45 +429,48 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // Cada plano enquadra sem cortar a manchete guardada (a da captura ou o maior bloco de letras da imagem): a janela
   // anda até contê-la e, se ela não cabe, aproxima menos ("PRE-ORDEI" na borda direita da página de pré-venda).
   const sceneKeep = ownImage ? keepRect(scene, width, height) : null;
-  const slots = rawSlots.map((sl) => {
+  const keptSlots = rawSlots.map((sl) => {
     const shot = sl.shot;
     if (!shot || shot.video || (!shot.src && !ownImage)) return sl;
     const framing = keptFraming(shot.framing, shot.src ? (pRects({ rect: shot.keep })[0] ?? null) : sceneKeep);
     return framing && framing !== shot.framing ? { ...sl, shot: { ...shot, framing } } : sl;
   });
-  // O `zoom_rect` vai para a câmera já na tela (arquivo → recorte → enquadramento do plano em que ele começa).
-  const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
-  // A manchete da captura na tela neste quadro (já com o movimento da imagem, o zoom de dentro da moldura e o
-  // enquadramento do plano): a câmera por eventos também não a corta.
-  const camKeepAt = (frame: number): Rect | null => {
-    if (!(fx ?? []).length) return null;
-    const motion = { fps, width, height, zoomStrength: style.zoomStrength, transitionFrames: entry, blur, hasImage: true };
-    if (!slots.length) {
-      if (ownImage) return keepOnScreen(scene, frame, motion);
-      return treatment && url ? treatmentKeep(scene, treatment, width, height, style.zoomStrength, frame) : null;
-    }
-    const i = slots.findIndex((sl) => frame >= sl.from && frame < sl.to);
-    const slot = slots[i];
-    if (!slot || slot.shot?.video || (!slot.shot?.src && !ownImage)) return null;
-    const onScreen = keepOnScreen(shotScene(scene, slot, i), frame - slot.from, { ...motion, easing: isEasing(slot.shot?.easing) ? slot.shot?.easing : undefined });
-    return onScreen ? rectThroughFraming(onScreen, slot.shot?.framing) : null;
-  };
-  const camKeep = () => camKeepAt(frame);
-  // As letras da imagem também onde a câmera por eventos as leva (zoom no retângulo, punch), no auge de cada evento e
-  // com o peso do tempo dele: a faixa parada no topo não pode cair sobre a manchete ampliada no meio do plano.
-  const throughCamera = (rects: Rect[]): Rect[] => {
-    const camCtx = { fps, frames: scene.durationInFrames, cuts, width, height, seed: scene.seed };
-    const out: Rect[] = [];
-    for (const e of camFx ?? []) {
-      if (e.type !== 'punch' && e.type !== 'zoom_rect') continue;
-      const span = fxSpan(e, camCtx);
-      const peak = Math.min(span.to - 1, span.from + Math.round(fps * 0.5));
-      const cam = cameraAt(peak, camFx, { ...camCtx, keep: camKeepAt(peak) });
-      if (cam.scale <= 1.001) continue;
-      const moved = rects.map((r) => rectThroughCamera(r, cam)).filter((r): r is Rect => r !== null);
-      out.push(...timeWeighted(moved, (span.to - span.from) / Math.max(1, scene.durationInFrames)));
-    }
-    return out;
+  // Câmera por eventos sobre os planos `slots` (o enquadramento de cada plano muda o lugar do `zoom_rect` e da manchete).
+  const cameraOf = (slots: ShotSlot[]) => {
+    // O `zoom_rect` vai para a câmera já na tela (arquivo → recorte → enquadramento do plano em que ele começa).
+    const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
+    // A manchete da captura na tela neste quadro (já com o movimento da imagem, o zoom de dentro da moldura e o
+    // enquadramento do plano): a câmera por eventos também não a corta.
+    const camKeepAt = (frame: number): Rect | null => {
+      if (!(fx ?? []).length) return null;
+      const motion = { fps, width, height, zoomStrength: style.zoomStrength, transitionFrames: entry, blur, hasImage: true };
+      if (!slots.length) {
+        if (ownImage) return keepOnScreen(scene, frame, motion);
+        return treatment && url ? treatmentKeep(scene, treatment, width, height, style.zoomStrength, frame) : null;
+      }
+      const i = slots.findIndex((sl) => frame >= sl.from && frame < sl.to);
+      const slot = slots[i];
+      if (!slot || slot.shot?.video || (!slot.shot?.src && !ownImage)) return null;
+      const onScreen = keepOnScreen(shotScene(scene, slot, i), frame - slot.from, { ...motion, easing: isEasing(slot.shot?.easing) ? slot.shot?.easing : undefined });
+      return onScreen ? rectThroughFraming(onScreen, slot.shot?.framing) : null;
+    };
+    // As letras da imagem também onde a câmera por eventos as leva (zoom no retângulo, punch), no auge de cada evento e
+    // com o peso do tempo dele: a faixa parada no topo não pode cair sobre a manchete ampliada no meio do plano.
+    const throughCamera = (rects: Rect[]): Rect[] => {
+      const camCtx = { fps, frames: scene.durationInFrames, cuts, width, height, seed: scene.seed };
+      const out: Rect[] = [];
+      for (const e of camFx ?? []) {
+        if (e.type !== 'punch' && e.type !== 'zoom_rect') continue;
+        const span = fxSpan(e, camCtx);
+        const peak = Math.min(span.to - 1, span.from + Math.round(fps * 0.5));
+        const cam = cameraAt(peak, camFx, { ...camCtx, keep: camKeepAt(peak) });
+        if (cam.scale <= 1.001) continue;
+        const moved = rects.map((r) => rectThroughCamera(r, cam)).filter((r): r is Rect => r !== null);
+        out.push(...timeWeighted(moved, (span.to - span.from) / Math.max(1, scene.durationInFrames)));
+      }
+      return out;
+    };
+    return { camFx, camKeepAt, throughCamera };
   };
   const captionsShown = !hideCaptions && style.captions.style !== 'none';
 
@@ -456,20 +479,25 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // (faixa do topo, contador, carimbo, texto que pula) desvia delas quando há lugar, e a tarja da legenda escurece e
   // desfoca o que fica atrás dela. A manchete guardada (`keep`) é obstáculo duro: nunca coberta quando há saída.
   // Tudo isto depende só da cena e do estilo (não do quadro): conta uma vez por cena, não a cada quadro.
-  const placed = React.useMemo(() => {
-    const textCtx: ImageTextContext = {
-      kind,
-      news: Boolean(news),
-      clip: Boolean(clipUrl),
-      treatment: treatment && url ? treatment : undefined,
-      slots,
-      sceneBox,
-      zoom: style.zoomStrength,
-      width,
-      height,
-    };
-    // Cartão com o fundo já desfocado desde o corte (`textBehind`): as letras de trás não se leem, não atrapalham.
-    const lettersVisible = !(textBehind && cardFrom === 0);
+  const textCtxOf = (slots: ShotSlot[]): ImageTextContext => ({
+    kind,
+    news: Boolean(news),
+    clip: Boolean(clipUrl),
+    treatment: treatment && url ? treatment : undefined,
+    slots,
+    sceneBox,
+    zoom: style.zoomStrength,
+    width,
+    height,
+  });
+  // Cartão com o fundo já desfocado desde o corte (`textBehind`): as letras de trás não se leem, não atrapalham.
+  const lettersVisible = !(textBehind && cardFrom === 0);
+  // `fixed`: a faixa e o contador já postos (a segunda conta, depois do reenquadramento, não os move: os planos foram
+  // reenquadrados para deixar livre justamente aquele lugar).
+  type Fixed = { headX?: number; headY?: number; counterAt: Record<number, Rect> };
+  const placeFor = (slots: ShotSlot[], fixed?: Fixed) => {
+    const { throughCamera } = cameraOf(slots);
+    const textCtx = textCtxOf(slots);
     const plainText = lettersVisible ? imageTextOnScreen(scene, textCtx) : [];
     const plainKeep = lettersVisible ? imageTextOnScreen(scene, textCtx, 'keep') : [];
     const imageText = [...plainText, ...throughCamera(plainText)];
@@ -481,9 +509,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     // Faixa do topo na cena de imagem: no topo de sempre quando livre; senão, a altura livre mais perto e, quando a
     // coluna de texto da captura ocupa o meio inteiro, de lado (nunca sobre a legenda, o avatar ou a manchete).
     // Cartões e notícia ficam como sempre (o painel mora embaixo).
-    let headY: number | undefined;
-    let headX: number | undefined;
-    if (headline && kind === 'image' && !news && position !== 'top' && imageLetters) {
+    let headY: number | undefined = fixed?.headY;
+    let headX: number | undefined = fixed?.headX;
+    if (!fixed && headline && kind === 'image' && !news && position !== 'top' && imageLetters) {
       const top = headlineRect(headline, cards, lang, width, height);
       const half = top[3] / 2;
       const hard: Rect[] = captionRect ? [captionRect] : [];
@@ -518,9 +546,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
 
     // Contador ("3/5"): no canto de cima quando livre; sobre letras da imagem, o ponto livre mais perto (QA: o "3/5"
     // encostava em "PRE-ORDER").
-    const counterAt: Record<number, Rect> = {};
+    const counterAt: Record<number, Rect> = fixed ? { ...fixed.counterAt } : {};
     (fx ?? []).forEach((e, i) => {
-      if (e.type !== 'counter') return;
+      if (fixed || e.type !== 'counter') return;
       const base = counterRect(e.params ?? {}, width, height, band.top);
       if (!base) return;
       const yLo = base[1] + base[3] / 2;
@@ -552,9 +580,42 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     // O texto que pula desvia de tudo isso (e da manchete da imagem); sem lugar, ele não entra.
     const popAvoid: Rect[] = [...screenText.filter((r) => r !== captionRect), ...Object.values(counterAt), ...imageKeep];
     if (stampBox) popAvoid.push(stampBox);
-    return { imageText, imageKeep, captionRect, headX, headY, counterAt, stampSpot, stampScale, popAvoid };
+    return { imageText, imageKeep, captionRect, headX, headY, headRect, counterAt, stampSpot, stampScale, popAvoid };
+  };
+  // Plano aproximado que levaria letras da imagem para baixo da faixa do topo ou do contador (parados na cena
+  // inteira): a janela anda (ou aproxima menos) até deixá-los livres, sem tirar a manchete guardada do quadro (QA:
+  // "GOLPE 1 · AGO 2026" sobre a linha de categoria no plano 1,25x da matéria).
+  const clearSlots = (slots: ShotSlot[], placed: ReturnType<typeof placeFor>): ShotSlot[] => {
+    if (!lettersVisible) return slots;
+    const ctx = textCtxOf(slots);
+    let changed = false;
+    const out = slots.map((sl) => {
+      const shot = sl.shot;
+      if (!shot || shot.video || (!shot.src && !ownImage && !ctx.treatment)) return sl;
+      const zones: Rect[] = placed.headRect ? [placed.headRect] : [];
+      (fx ?? []).forEach((e, i) => {
+        const counter = placed.counterAt[i];
+        if (counter && e.from < sl.to && e.from + Math.max(1, e.dur) > sl.from) zones.push(counter);
+      });
+      if (!zones.length) return sl;
+      const letters = slotTextOnScreen(scene, ctx, sl, 'text', null);
+      const keep = unionRect(slotTextOnScreen(scene, ctx, sl, 'keep', null));
+      const framing = clearFraming(shot.framing, letters, zones, keep);
+      if (!framing || framing === shot.framing) return sl;
+      changed = true;
+      return { ...sl, shot: { ...shot, framing } };
+    });
+    return changed ? out : slots;
+  };
+  const plan = React.useMemo(() => {
+    const first = placeFor(keptSlots);
+    const cleared = clearSlots(keptSlots, first);
+    return cleared === keptSlots ? { slots: keptSlots, placed: first } : { slots: cleared, placed: placeFor(cleared, first) };
   }, [scene, style, width, height, lang, fps]);
-  const { imageText, imageKeep, headX, headY, counterAt, stampSpot, stampScale, popAvoid } = placed;
+  const slots = plan.slots;
+  const { camFx, camKeepAt } = cameraOf(slots);
+  const camKeep = () => camKeepAt(frame);
+  const { imageText, imageKeep, headX, headY, counterAt, stampSpot, stampScale, popAvoid } = plan.placed;
   // A legenda deixa livre a faixa do avatar enquanto ele está na tela (a ponta dela encostava no recorte).
   const captionReserve: CaptionReserve | undefined =
     avatarRect && scene.presenter

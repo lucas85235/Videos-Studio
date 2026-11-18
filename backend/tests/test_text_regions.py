@@ -109,23 +109,36 @@ def test_small_text_on_dark_page_is_found():
 def test_main_block_becomes_keep_when_the_image_has_none(tmp_path: Path):
     """QA r3: a página de pré-venda (oficial, sem manchete guardada) saía "PRE-ORDEI" no punch e no plano 1,25x. O maior
     bloco de letras vira o `keep` da cena e do plano; a manchete da captura (`keep` que já veio) fica como está; letreiro
-    pequeno não vira `keep`."""
+    pequeno não vira `keep`. Revisão r4: só material oficial ou captura (`prov` do plano ou da cena); foto de banco,
+    do canal e imagem gerada ficam sem `keep` (a detecção por bordas confunde tela de neon, mão e teclado com letra),
+    e o bloco que toma a imagem inteira também não vira `keep` (travaria o zoom perto de 1x)."""
     page = tmp_path / "cache" / "media" / "aa" / "image.jpg"
     page.parent.mkdir(parents=True)
     _page().save(page, quality=92)
+    src = "cache/media/aa/image.jpg"
     timeline = {"scenes": [
-        {"id": "a", "src": "cache/media/aa/image.jpg"},
-        {"id": "b", "src": "cache/media/aa/image.jpg", "keep": [0.1, 0.1, 0.5, 0.2]},
-        {"id": "c", "src": None, "shots": [{"from": 0, "src": "cache/media/aa/image.jpg"}]},
+        {"id": "a", "src": src, "prov": "official"},
+        {"id": "b", "src": src, "prov": "capture", "keep": [0.1, 0.1, 0.5, 0.2]},
+        {"id": "c", "src": None, "prov": "official", "shots": [{"from": 0, "src": src}]},
+        {"id": "d", "src": src, "prov": "stock", "shots": [{"from": 0, "src": src, "prov": "capture"}]},
+        {"id": "e", "src": src, "prov": "own"},
+        {"id": "f", "src": src, "prov": "ai", "shots": [{"from": 0, "src": src, "prov": "free"}]},
+        {"id": "g", "src": src},
     ]}
     text_regions.annotate_timeline(timeline, lambda rel: tmp_path / rel)
-    a, b, c = timeline["scenes"]
+    a, b, c, d, e, f, g = timeline["scenes"]
     assert a["keep"] == text_regions.main_block(a["text_rects"])
     x, y, w, h = a["keep"]
     assert x <= 130 / 1920 and y <= 200 / 1080 and x + w >= 1000 / 1920 and y + h >= 420 / 1080
     assert b["keep"] == [0.1, 0.1, 0.5, 0.2]
     assert c["shots"][0]["keep"] == a["keep"] and "keep" not in c
+    # Foto, imagem gerada e timeline antiga (sem `prov`): as letras ficam como obstáculo macio, sem `keep`.
+    assert "keep" not in d and d["shots"][0]["keep"] == a["keep"]
+    for item in (e, f, f["shots"][0], g):
+        assert item["text_rects"] and "keep" not in item
     assert text_regions.main_block([[0.4, 0.4, 0.1, 0.05]]) is None
+    assert text_regions.main_block([[0.09, 0.15, 0.82, 0.65]]) is None  # a imagem inteira, não uma manchete
+    assert text_regions.main_block([[0.16, 0.14, 0.68, 0.36]]) == [0.16, 0.14, 0.68, 0.36]
     assert text_regions.main_block([]) is None
 
 

@@ -156,6 +156,80 @@ export const keptFraming = (framing: ShotFraming | null | undefined, keep: Rect 
   return { ...framing, scale: Math.round(s * 1e4) / 1e4, x: Math.round(x * 1e4) / 1e4, y: Math.round(y * 1e4) / 1e4 };
 };
 
+/** Folga (fração da tela) entre as letras da imagem e um selo da tela no reenquadramento do plano. */
+export const CLEAR_GAP = 0.012;
+/** Passo da escala quando o plano aproxima menos para deixar o selo livre. */
+const CLEAR_STEP = 0.05;
+
+/**
+ * Enquadramento do plano aproximado que deixa livre o lugar dos selos da tela (`zones`, fração da tela: a faixa do
+ * topo, o contador) das letras da imagem (`letters`, fração da tela ANTES do enquadramento do plano), sem tirar a
+ * manchete guardada (`keep`, idem) da janela: a faixa e o contador ficam parados na cena inteira, e o plano 1,25x
+ * subia a linha de categoria da matéria para baixo da faixa do topo (QA: "GOLPE 1 · AGO 2026" sobre "GOLPES,
+ * INTELIGÊNCIA DE AMEAÇAS"). A janela anda o mínimo até as letras saírem do selo; sem posição livre, aproxima menos (o
+ * passo de `CLEAR_STEP`) até achar uma. Sem saída nem perto do quadro inteiro, o enquadramento fica como estava (o
+ * selo já cobria letras no quadro inteiro: aproximar menos não ajuda). Plano no quadro inteiro, sem selo ou sem
+ * letras: igual.
+ */
+export const clearFraming = (
+  framing: ShotFraming | null | undefined,
+  letters: Rect[],
+  zones: Rect[],
+  keep: Rect | null,
+  margin = 0.03,
+): ShotFraming | null | undefined => {
+  if (!framing || !zones.length || !letters.length) return framing;
+  const box0 = framingBox(framing);
+  if (box0.scale <= 1 + CLEAR_STEP / 2) return framing;
+  const grown: Rect[] = zones.map((z) => [z[0] - CLEAR_GAP, z[1] - CLEAR_GAP, z[2] + 2 * CLEAR_GAP, z[3] + 2 * CLEAR_GAP]);
+  const hits = (s: number, left: number, top: number) =>
+    letters.some((r) => {
+      const m = clipRect((r[0] - left) * s, (r[1] - top) * s, r[2] * s, r[3] * s);
+      return m !== null && grown.some((z) => overlapArea(m, z) > 1e-6);
+    });
+  if (!hits(box0.scale, box0.left, box0.top)) return framing;
+  const win0 = 1 / box0.scale;
+  const cx0 = box0.left + win0 / 2;
+  const cy0 = box0.top + win0 / 2;
+  for (let s = box0.scale; s > 1 + 1e-6; s = Math.round((s - CLEAR_STEP) * 1e4) / 1e4) {
+    const win = 1 / s;
+    // Janela (canto) em que a manchete guardada cabe inteira com margem (a margem some na borda da imagem); null
+    // quando ela não cabe nesta escala (a próxima aproxima menos).
+    const range = (a: number, len: number): [number, number] | null => {
+      const lo = clamp(a + len + margin - win, 0, 1 - win);
+      const hi = clamp(a - margin, 0, 1 - win);
+      return lo <= hi + 1e-9 ? [lo, Math.max(lo, hi)] : null;
+    };
+    const xr = keep ? range(keep[0], keep[2]) : [0, 1 - win];
+    const yr = keep ? range(keep[1], keep[3]) : [0, 1 - win];
+    if (!xr || !yr) continue;
+    const fitX = (v: number) => clamp(v, xr[0], xr[1]);
+    const fitY = (v: number) => clamp(v, yr[0], yr[1]);
+    // Candidatos: a janela de antes e as que encostam cada letra (com folga) num lado de cada selo.
+    const lefts = [fitX(cx0 - win / 2), xr[0], xr[1]];
+    const tops = [fitY(cy0 - win / 2), yr[0], yr[1]];
+    for (const r of letters) {
+      for (const z of grown) {
+        lefts.push(fitX(r[0] - (z[0] + z[2]) / s), fitX(r[0] + r[2] - z[0] / s));
+        tops.push(fitY(r[1] - (z[1] + z[3]) / s), fitY(r[1] + r[3] - z[1] / s));
+      }
+    }
+    let best: { left: number; top: number; d: number } | null = null;
+    for (const left of uniqSorted(lefts)) {
+      for (const top of uniqSorted(tops)) {
+        if (hits(s, left, top)) continue;
+        const d = Math.hypot(left + win / 2 - cx0, top + win / 2 - cy0);
+        if (!best || d < best.d - 1e-9) best = { left, top, d };
+      }
+    }
+    if (best) {
+      const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+      return { ...framing, scale: r4(s), x: r4(best.left + win / 2), y: r4(best.top + win / 2) };
+    }
+  }
+  return framing;
+};
+
 /** `transform` CSS (origem 0 0) do enquadramento; null no quadro inteiro. */
 export const framingTransform = (framing: ShotFraming | null | undefined) => {
   const { scale, left, top } = framingBox(framing);
