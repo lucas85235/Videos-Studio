@@ -88,6 +88,15 @@ def test_pace_regular_shots_micro_and_windows():
     assert pace["hook_cuts_per_min"] == 6.0
 
 
+def test_old_shot_list_keeps_the_micro_shots_aside():
+    from studio.media import reference_video
+
+    micro: list[dict] = []
+    shots = reference_video.shots_from([0.1, 1.0, 1.2, 2.0], 3.0, micro)
+    assert [s["k"] for s in shots] == [1, 2, 3]  # a folha e o ritmo antigo continuam iguais
+    assert micro == [{"a": 1.0, "dur": 0.2}]
+
+
 def test_freeze_effect_is_inside_a_running_shot():
     shots = cuts.shots_from_cuts([5.0], 10.0)
     freezes = [(0.0, 3.0), (2.0, 3.5), (5.05, 9.0)]
