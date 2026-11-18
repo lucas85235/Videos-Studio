@@ -40,8 +40,9 @@ STYLE = "curiosidades-longo"
 
 
 def lavfi_clip(path: Path, *, cut_at: float = 2.0, total: float = 4.0, first: str = "testsrc2",
-               second: str = "color=c=0x2060c0") -> Path:
-    """Vídeo 320x180 a 30 q/s com um corte em `cut_at` (dois geradores diferentes) e um tom de áudio."""
+               second: str = "smptebars") -> Path:
+    """Vídeo 320x180 a 30 q/s com um corte em `cut_at` (dois geradores diferentes) e um tom de áudio. Os dois têm
+    textura: cor lisa é quadro morto e sai dos planos (`clips.trim_dead`)."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     def gen(source: str, dur: float) -> str:

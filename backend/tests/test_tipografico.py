@@ -534,4 +534,5 @@ def test_typographic_background_is_lifted_above_the_black_detector(isolated_sett
     scene = (COMP / "SceneView.tsx").read_text(encoding="utf-8")
     # a frase do cartão deixa a legenda da fala, menos quando repete a fala inteira (a mesma frase duas vezes)
     assert "!(kind === 'text' && filled(scene.text) && !titleEchoesSpeech(scene))" in scene
-    assert "!spokenAtCut && url ?" in scene  # o cartão de dado sem fundo entra no corte
+    # o cartão de dado sem fundo entra no corte (só o número espera a fala, `valueFrom`)
+    assert "const cardFrom = bare ? 0 : revealFrom;" in scene

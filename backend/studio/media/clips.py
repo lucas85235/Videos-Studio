@@ -7,6 +7,8 @@ sem áudio, modo `hold`):
   `title.txt` ao lado (escrito depois do sucesso): sobra de download que falhou (`video.f137.mp4`) não vale;
 - `cut`: planos entre os cortes, cada um com no máximo `max_clip_s` (plano longo vira pedaços iguais), sem os
   micro-planos (flash, corte duplo) e com até `max_shots` planos espalhados pelo vídeo;
+- `dead_frame` / `trim_dead`: quadro morto (tela preta, branca ou lisa, fade, cartela legal ou final com texto ou logo
+  sobre fundo liso) não é material: o plano fica só com o trecho vivo e, sem trecho vivo que sirva, sai;
 - `analyze`: cortes, pôster JPEG e descrição de cada plano, em cache pela impressão do arquivo. Não faz proxy: o
   proxy sai sob demanda, só do plano que uma cena escolheu (`proxy_for_project`);
 - `make_proxy`: h264 mudo no tamanho e no fps finais do vídeo, GOP de 15 quadros (busca rápida no Remotion), com o
@@ -25,6 +27,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -32,6 +35,8 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from studio.config import get_settings
 from studio.media import reference_video
@@ -47,7 +52,8 @@ PROXY_GOP = 15
 PROXY_CRF = 20
 POSTER_WIDTH = 960
 SIGNATURE_BYTES = 4 << 20
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
+"""3: os planos perdem os quadros mortos (`trim_dead`); o corte antigo tinha a cartela do ESRB e a tela final."""
 VIDEO_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
 BLUR_ASPECT_RATIO = 1.4
 """Vídeo de origem com proporção tão diferente assim do quadro final (16:9 num Short 9:16) entra inteiro sobre o
@@ -62,6 +68,26 @@ MATERIAL_WORDS = {
     "facecam": "rosto", "mascot": "mascote", "meme_reaction": "meme", "stock_video": "banco de vídeo",
 }
 MOOD_WORDS = {"dark": "escuro", "bright": "claro", "neutral": ""}
+
+# Quadro morto (`dead_frame`), medido no quadro em cinza (0 a 1) da passada dos cortes. O "fundo" é o tom mediano do
+# quadro; o que fica a menos de DEAD_TOL dele é fundo liso.
+DEAD_TOL = 0.03
+DEAD_FLAT_SHARE = 0.85
+"""Fundo liso em tanto do quadro: tela preta, branca ou de uma cor, fade, cartela final com logo ou data pequenos."""
+SLATE_BG_SHARE = 0.6
+SLATE_FAR = 0.45
+SLATE_TWO_TONE = 0.5
+"""Cartela (aviso legal, classificação etária, texto sobre fundo liso): fundo liso em SLATE_BG_SHARE do quadro e, do
+que sobra, pelo menos esta parte em contraste duro com ele (letra ou moldura branca no preto). Arte com fundo liso
+(a capa no meio de um fundo cinza) tem meio-tom de sobra e fica."""
+# Texto de cartela legal lido pela visão no plano (`texto "..."` da descrição): aviso de classificação etária, direitos
+# e marca registrada. Vale também para a análise já em cache (feita antes da medida dos quadros).
+_SLATE_TEXT_RE = re.compile(
+    r"\b(esrb|pegi|classind|rating information|content (?:may be )?inappropriate|may contain content|"
+    r"all rights reserved|todos os direitos reservados|registered trademarks?|trademarks? of|"
+    r"not affiliated with|not endorsed by|classifica[cç][aã]o indicativa|n[aã]o recomendado para menores)\b",
+    re.IGNORECASE)
+_DESC_TEXT_RE = re.compile(r'texto "([^"]*)"')
 
 
 class ClipError(RuntimeError):
@@ -310,21 +336,102 @@ def prune_sources(*, max_bytes: int = SOURCES_MAX_BYTES, keep: set[str] | None =
 # --------------------------------------------------------------------------------------------
 
 
-def detect_cuts(path: Path) -> list[float]:
-    """Instantes dos cortes do vídeo pelo mesmo extrator da referência (`media/refprofile`): uma passada do ffmpeg
-    (`decode.scan_and_gray`) dá a diferença entre quadros e os quadros em cinza; dois limiares (duro e suave, para
-    gameplay e trailer), rajadas coladas viradas num corte só e o candidato que é a mesma imagem ampliada descartado
-    (punch, não corte). O plano curto que sobra entre cortes sai em `cut` (`min_shot_s`)."""
+def scan(path: Path) -> tuple[list[float], list[tuple[float, bool]]]:
+    """Cortes e quadros mortos numa passada só, pelo mesmo extrator da referência (`media/refprofile`): uma passada
+    do ffmpeg (`decode.scan_and_gray`) dá a diferença entre quadros e os quadros em cinza; dois limiares (duro e
+    suave, para gameplay e trailer), rajadas coladas viradas num corte só e o candidato que é a mesma imagem ampliada
+    descartado (punch, não corte). Os mesmos quadros em cinza dizem quais instantes são quadro morto (`dead_frame`):
+    `(instante, morto)` de cada quadro analisado."""
     from studio.media.refprofile import cuts as ref_cuts
     from studio.media.refprofile import decode, motion
 
     info = reference_video.probe(path)
-    scan, frames, times = decode.scan_and_gray(path, int(info["w"]), int(info["h"]), float(info.get("dur") or 0) or None)
-    cands = ref_cuts.merge_bursts(ref_cuts.candidates(scan.times, scan.mafd))
+    found_scan, frames, times = decode.scan_and_gray(path, int(info["w"]), int(info["h"]),
+                                                     float(info.get("dur") or 0) or None)
+    marks = [(float(t), dead_frame(f) is not None) for f, t in zip(frames, times, strict=False)]
+    cands = ref_cuts.merge_bursts(ref_cuts.candidates(found_scan.times, found_scan.mafd))
     if not cands:
-        return []
+        return [], marks
     found, _punches = motion.verify_cuts(cands, frames, times)
-    return found
+    return found, marks
+
+
+def detect_cuts(path: Path) -> list[float]:
+    """Instantes dos cortes do vídeo (`scan`). O plano curto que sobra entre cortes sai em `cut` (`min_shot_s`)."""
+    return scan(path)[0]
+
+
+def scan_step() -> float:
+    """Intervalo (s) entre os quadros medidos em `scan`."""
+    from studio.media.refprofile import motion
+
+    return 1.0 / float(motion.FPS)
+
+
+def dead_frame(gray: np.ndarray) -> str | None:
+    """Por que o quadro (em cinza, 0–255 ou 0–1) não serve de material, ou None. "tela lisa": quase tudo num tom só
+    (preto, branco, cor lisa, fade, cartela final com logo ou data pequenos no meio); "cartela": texto ou moldura em
+    contraste duro sobre fundo liso (aviso de classificação etária, aviso legal). Imagem escura de verdade (cena
+    noturna) tem meio-tom e não cai aqui; arte sobre fundo liso (a capa do jogo num fundo cinza) também não."""
+    g = np.asarray(gray, dtype=np.float32)
+    if g.size == 0:
+        return None
+    if float(g.max()) > 1.0:
+        g = g / 255.0
+    dev = np.abs(g - float(np.median(g)))
+    bg = float((dev < DEAD_TOL).mean())
+    if bg >= DEAD_FLAT_SHARE:
+        return "tela lisa"
+    far = float((dev > SLATE_FAR).mean())
+    if bg >= SLATE_BG_SHARE and far >= SLATE_TWO_TONE * (1.0 - bg):
+        return "cartela"
+    return None
+
+
+def live_span(a: float, dur: float, marks: list[tuple[float, bool]], *, step: float,
+              min_s: float = MIN_POOL_SHOT_S) -> tuple[float, float] | None:
+    """O trecho vivo `(início, duração)` do plano `[a, a+dur]`: a maior sequência de quadros que não são mortos
+    (`marks`, um a cada `step` s). O plano que começa ou acaba num fade, na cartela ou na tela preta perde só esse
+    pedaço; sem trecho vivo de `min_s`, None (o plano sai). Sem quadro medido dentro do plano, ele fica como está."""
+    inside = [(t, dead) for t, dead in marks if a - 1e-6 <= t < a + dur - 1e-6]
+    if not inside:
+        return a, dur
+    best: tuple[int, int] | None = None
+    i = 0
+    while i < len(inside):
+        if inside[i][1]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(inside) and not inside[j + 1][1]:
+            j += 1
+        if best is None or j - i > best[1] - best[0]:
+            best = (i, j)
+        i = j + 1
+    if best is None:
+        return None
+    start = a if best[0] == 0 else inside[best[0]][0]
+    end = a + dur if best[1] == len(inside) - 1 else min(a + dur, inside[best[1]][0] + step)
+    if end - start < min_s - 1e-6:
+        return None
+    return round(start, 3), round(end - start, 3)
+
+
+def trim_dead(planned: list[dict[str, Any]], marks: list[tuple[float, bool]], *, step: float,
+              min_s: float = MIN_POOL_SHOT_S) -> list[dict[str, Any]]:
+    """Os planos de `cut` só com o trecho vivo (`live_span`); o que não tem trecho vivo sai."""
+    out: list[dict[str, Any]] = []
+    for shot in planned:
+        span = live_span(float(shot["a"]), float(shot["dur"]), marks, step=step, min_s=min_s)
+        if span is not None:
+            out.append({**shot, "a": span[0], "dur": span[1]})
+    return out
+
+
+def slate_text(desc: str) -> bool:
+    """A visão leu na tela texto de cartela legal (classificação etária, direitos, marca registrada): o plano é a
+    cartela, não material de cena."""
+    return any(_SLATE_TEXT_RE.search(text) for text in _DESC_TEXT_RE.findall(desc or ""))
 
 
 def cut(cut_times: list[float], dur: float, *, max_clip_s: float, min_shot_s: float = MIN_POOL_SHOT_S,
@@ -345,10 +452,15 @@ def cut(cut_times: list[float], dur: float, *, max_clip_s: float, min_shot_s: fl
         step = length / pieces
         for i in range(pieces):
             out.append({"k": k, "a": round(a + i * step, 3), "dur": round(step, 3)})
-    if len(out) > max_shots > 0:
-        picks = sorted({round(i * (len(out) - 1) / (max_shots - 1)) for i in range(max_shots)}) if max_shots > 1 else [0]
-        out = [out[i] for i in picks]
-    return out
+    return spread(out, max_shots)
+
+
+def spread(shots: list[dict[str, Any]], max_shots: int) -> list[dict[str, Any]]:
+    """Com mais de `max_shots` planos, ficam planos espalhados pelo vídeo inteiro (não só o começo)."""
+    if len(shots) > max_shots > 0:
+        picks = sorted({round(i * (len(shots) - 1) / (max_shots - 1)) for i in range(max_shots)}) if max_shots > 1 else [0]
+        shots = [shots[i] for i in picks]
+    return shots
 
 
 def needs_blur(src_w: int, src_h: int, width: int, height: int) -> bool:
@@ -500,8 +612,13 @@ def _load_json(path: Path) -> Any:
 
 def analyze(src: Path, *, max_clip_s: float, label: str = "", max_shots: int = MAX_SHOTS,
             cuts_of: Callable[[Path], list[float]] | None = None, cached_only: bool = False,
-            cancelled: Callable[[], bool] | None = None) -> list[ClipShot] | None:
-    """Planos do vídeo com pôster e descrição (sem proxy: ele sai só para o plano escolhido).
+            cancelled: Callable[[], bool] | None = None,
+            scan_of: Callable[[Path], tuple[list[float], list[tuple[float, bool]]]] | None = None
+            ) -> list[ClipShot] | None:
+    """Planos do vídeo com pôster e descrição (sem proxy: ele sai só para o plano escolhido). Os planos ficam só com
+    o trecho vivo (`trim_dead`: sem a cartela legal, a tela preta ou branca, o fade e a cartela final) e o plano cuja
+    tela a visão leu como cartela legal (`slate_text`) sai. `cuts_of` (só os cortes, sem medir os quadros) ou
+    `scan_of` (cortes e quadros mortos) trocam a passada do ffmpeg.
 
     Cache em `library/clips/<arquivo>/<parâmetros>/`: `shots.json` (cortes e pôsteres; não depende do tamanho do
     vídeo final, então Short e longo usam a mesma análise) e `desc-<visão>-<rótulo>.json` (a descrição, refeita só
@@ -530,8 +647,13 @@ def analyze(src: Path, *, max_clip_s: float, label: str = "", max_shots: int = M
             info = reference_video.probe(src)
         except (reference_video.ReferenceVideoError, FFmpegError) as exc:
             raise ClipError(f"Não consegui ler o vídeo: {exc}") from exc
-        times = (cuts_of or detect_cuts)(src)
-        planned = cut(times, float(info["dur"]), max_clip_s=max_clip_s, max_shots=max_shots)
+        if cuts_of is not None:
+            times, marks = cuts_of(src), []
+        else:
+            times, marks = (scan_of or scan)(src)
+        # Os mortos saem antes de espalhar: a cartela tirada não leva junto a vaga de um plano vivo.
+        planned = cut(times, float(info["dur"]), max_clip_s=max_clip_s, max_shots=0)
+        planned = spread(trim_dead(planned, marks, step=scan_step()), max_shots)
         shots = []
         for i, shot in enumerate(planned, 1):
             if cancelled is not None and cancelled():
@@ -557,4 +679,4 @@ def analyze(src: Path, *, max_clip_s: float, label: str = "", max_shots: int = M
             write_text_atomic(desc_file, json.dumps(descs, ensure_ascii=False))
     for shot, (desc, material) in zip(shots, descs, strict=False):
         shot.desc, shot.material = str(desc) or plain_desc(label, shot.k, shot.a), str(material)
-    return shots
+    return [s for s in shots if not slate_text(s.desc)]

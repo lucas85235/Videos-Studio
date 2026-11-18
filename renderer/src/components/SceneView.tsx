@@ -118,6 +118,9 @@ const NO_CAPTIONS = new Set<SceneKind>(['text', 'quote']);
 const PANEL_KINDS = new Set<SceneKind>(['stat', 'compare', 'chart']);
 /** O cartão começa estes quadros antes do número dito: o painel já está entrando quando o impacto bate. */
 const REVEAL_LEAD = 3;
+/** Cartão de dado sem fundo para ler (só o fundo do estilo): esperar o número deixaria a tela vazia, quadro morto. */
+const bareBackdrop = (url: string | null, clipUrl: string | null, scene: TimelineScene) =>
+  !url && !clipUrl && !(scene.shots ?? []).some((s) => Boolean(s.src || s.video));
 /** Tempo (s) em que o fundo do cartão de dado escurece e desfoca quando o cartão entra depois do corte. */
 const BACKDROP_RAMP_S = 0.4;
 const CLAMP = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
@@ -341,14 +344,25 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
 
   // Cartão de dado entra quando o número é dito (dito logo no corte, entra junto com a cena). Número dito na cena
   // entra parado ("pop"), sem contar: a contagem passaria por valores que a fala e a legenda não dizem no mesmo quadro.
+  // Sem fundo para ler antes do número (cartão sobre o fundo do estilo), o painel entra no corte e só o número espera
+  // a fala (`valueFrom`): a tela nunca fica vazia até o número ser dito.
   const reveal = inPanel && typeof scene.reveal === 'number' ? scene.reveal : undefined;
   const spokenAtCut = reveal !== undefined && reveal <= Math.round(fps * 0.3);
-  // Sem imagem de fundo, o cartão entra no corte: esperar o número deixaria o fundo do estilo vazio na tela (o QA
-  // achou 3 s de gradiente sem nada antes do "2013").
-  const cardFrom = reveal !== undefined && !spokenAtCut && url ? Math.max(0, reveal - REVEAL_LEAD) : 0;
+  const revealFrom = reveal !== undefined && !spokenAtCut ? Math.max(0, reveal - REVEAL_LEAD) : 0;
+  const bare = revealFrom > 0 && bareBackdrop(url, clipUrl, scene);
+  const cardFrom = bare ? 0 : revealFrom;
   const avatarRect = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
   const card = Card ? (
-    <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={reveal !== undefined} avoid={avatarRect} />
+    <Card
+      scene={scene}
+      style={cards}
+      uppercase={style.captions.uppercase}
+      lang={lang}
+      band={band}
+      pop={reveal !== undefined}
+      valueFrom={bare ? revealFrom : undefined}
+      avoid={avatarRect}
+    />
   ) : null;
   // A frase do cartão tipográfico que repete a fala ("O cookie é o pior" sobre "o cookie é o pior") dispensa a
   // legenda: a mesma frase duas vezes, em duas cores, na mesma tela.
@@ -684,6 +698,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       )}
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
       {headline ? <Headline text={headline} style={cards} lang={lang} y={headY} x={headX} /> : null}
+      {/* A transição de entrada (flash, fade, luz) passa por baixo da tarja e da legenda: a legenda fica sempre opaca
+          e com o contraste da tarja, mesmo no quadro do corte. */}
+      <TransitionIn type={scene.transition} frames={entry} seed={scene.seed} />
       {scrim ? <CaptionScrim center={captionMid} half={captionHalf} opacity={scrimOpacity} alpha={scrimAlpha} soften={scrimAlpha !== undefined} /> : null}
       {stamp && stampSpot ? <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} spot={stampSpot} entryScale={stampScale} /> : null}
       {sourceChip && sourceFrom > 0 ? (
@@ -696,8 +713,6 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       {scene.presenter ? (
         <PresenterLayer presenter={scene.presenter} words={scene.words} assetBaseUrl={assetBaseUrl} minTop={band.top} />
       ) : null}
-      {/* A transição de entrada (flash, fade, luz) passa por baixo da legenda: a legenda fica sempre opaca. */}
-      <TransitionIn type={scene.transition} frames={entry} seed={scene.seed} />
       {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} reserve={captionReserve} />}
     </AbsoluteFill>
   );

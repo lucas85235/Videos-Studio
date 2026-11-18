@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from studio.core import sources as tiers
+from studio.core import verdict
 from studio.core.hashing import seed_from
 from studio.core.numbers import card_number, is_number_token, notable_number_runs, number_runs, text_numbers
 from studio.core.project.document import (
@@ -718,6 +719,29 @@ def fix_verdict_stamps(doc: ProjectDoc, beats: list[Beat], pool: Pool | None = N
                             f'O carimbo "{stamp}" saiu: a cena mostra material oficial ou de imprensa, e o carimbo '
                             "diria que ele é que é falso. Veredito negativo só sobre o material do golpe ou sobre o "
                             "cartão com a afirmação.", beat.key, scene.id))
+    return issues
+
+
+def fix_ambiguous_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """Veredito positivo ("CONFIRMADO") ao lado de frase negativa na tela ("PC: NÃO ANUNCIADO", "NÃO EXISTE") sai:
+    a leitura rápida é contraditória (confirmado o quê?). O texto e a fonte do cartão já dizem quem afirma
+    (`core.verdict.ambiguous_positive`)."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None:
+            continue
+        stamp = (scene.card.stamp.get(lang) or "").strip()
+        texts = [scene.overlay_text.get(lang) or "", scene.card.headline.get(lang, ""), scene.card.value.get(lang, ""),
+                 scene.card.label.get(lang, "")]
+        if not stamp or not verdict.ambiguous_positive(stamp, texts, lang):
+            continue
+        scene.card.stamp = {}
+        scene.card = scene.card if scene.card.resolved(lang) else None
+        issues.append(Issue("carimbo_ambiguo", CORRIGIDO,
+                            f'O carimbo "{stamp}" saiu: ao lado de uma frase negativa na tela ele lê como contradição '
+                            "(confirmado o quê?). O texto e a fonte já dizem quem afirma.", beat.key, scene.id))
     return issues
 
 
@@ -1779,6 +1803,7 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     issues += fix_echo_stamps(doc, beats)
     issues += fix_label_stamps(doc, beats)
     issues += fix_verdict_stamps(doc, beats, pool)
+    issues += fix_ambiguous_stamps(doc, beats)
     issues += fix_repeated_headlines(doc, beats)
     issues += _check_sources(doc, beats)
     issues += fix_fact_sources(doc, beats)

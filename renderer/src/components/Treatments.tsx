@@ -15,7 +15,7 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { hasEffect, imageFilter } from '../look';
-import { keepTransform, pRects, type PxRect, rectThrough, screenCursorShown, screenFrame } from './fx/math';
+import { keepTransform, pRects, type PxRect, rectThrough, screenCursorShown, screenFrame, washAt, ZOOM_BLUR_PX, ZOOM_BLUR_SCALE } from './fx/math';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type SceneTreatment, type TextCardStyle, type TimelineScene } from '../types';
 
 export type TreatmentProps = {
@@ -675,14 +675,22 @@ const VIEWS: Record<SceneTreatment, React.FC<TreatmentProps>> = { whiteboard: Wh
  * Entrada que mexe no quadro (a mesma do VisualLayer): `zoom_blur` aproxima e desfoca nos primeiros quadros, `glitch`
  * treme; o efeito `vhs` treme sempre. Sem isso a transição sorteada viraria corte seco nas cenas com tratamento.
  */
-export const treatmentEntry = (transition: string, frame: number, transitionFrames: number, seed: number, effects: EffectSpec[]) => {
+export const treatmentEntry = (
+  transition: string,
+  frame: number,
+  transitionFrames: number,
+  seed: number,
+  effects: EffectSpec[],
+  fps = 30,
+  side = 1080,
+) => {
   const tf = Math.max(1, transitionFrames);
   let scale = 1;
   let blur = 0;
   if (transition === 'zoom_blur' && frame < tf) {
     const k = 1 - frame / tf;
-    scale = 1 + 0.14 * k;
-    blur = 10 * k;
+    scale = 1 + ZOOM_BLUR_SCALE * k;
+    blur = (ZOOM_BLUR_PX * washAt(frame, tf, fps) * side) / 1080;
   }
   let jitter = 0;
   if (transition === 'glitch' && frame < tf) jitter = (random(`${seed}-g-${frame}`) - 0.5) * 60;
@@ -695,7 +703,8 @@ export const treatmentEntry = (transition: string, frame: number, transitionFram
 export const TreatmentLayer: React.FC<TreatmentProps & { treatment: SceneTreatment }> = ({ treatment, ...props }) => {
   const frame = useCurrentFrame();
   const View = VIEWS[treatment];
-  const { scale, blur, jitter } = treatmentEntry(props.scene.transition, frame, props.transitionFrames, props.scene.seed, props.effects);
+  const { fps, width, height } = useVideoConfig();
+  const { scale, blur, jitter } = treatmentEntry(props.scene.transition, frame, props.transitionFrames, props.scene.seed, props.effects, fps, Math.min(width, height));
   if (scale === 1 && blur === 0 && jitter === 0) return <View {...props} />;
   return (
     <AbsoluteFill style={{ transform: `translateX(${jitter}px) scale(${scale})`, filter: blur ? `blur(${blur}px)` : undefined }}>

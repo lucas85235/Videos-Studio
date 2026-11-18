@@ -121,6 +121,8 @@ PUNCH_CAMERA = (1.15, 1.30)
 CLIP_END_PAD_S = 0.5
 """Trecho seguinte do clipe: a entrada fica a pelo menos 0,5 s do fim do material."""
 CLOSING_STILL_S = 5.0
+CARD_STILL_S = 5.0
+"""Teto de cartão (título, texto, dado) parado sem evento: o punch no meio quebra o que passa disso."""
 """O plano parado mais longo na última cena do vídeo (o CTA e a tela final ficam na tela: o QA do prj_gq4krrs11w
 achou ~9 s no mesmo plano congelado)."""
 
@@ -1501,18 +1503,24 @@ class _Planner:
         corte já resolve). O clipe que toca não é parado; o plano do clipe que dura mais que o trecho útil dele é
         (`_frozen_clip_spans`) e corta antes, onde o clipe acaba (`_unfreeze`)."""
         for beat in self.beats:
-            if not beat.editable or beat.card or not beat.framed:
+            if not beat.editable or not (beat.card or beat.framed):
                 continue
             limit = self.g.max_still_s
             if beat is self.beats[-1]:
                 limit = min(limit, CLOSING_STILL_S)  # o fim fica na tela: plano parado ali é quadro morto
-            if beat.clip:
-                self._unfreeze(beat)
-            # todo plano de imagem conta: um push lento de 20 s também é "parado" para quem assiste
-            spans = self._frozen_clip_spans(beat) if beat.clip else self._still_spans(beat)
+            if beat.card:
+                # Cartão (título, texto, dado) é texto parado sobre fundo escurecido: sem evento, ele cansa antes da
+                # imagem ("PC: NÃO ANUNCIADO" 9 s na tela, QA do prj_gq4krrs11w). O punch no meio o quebra.
+                limit = min(limit, CARD_STILL_S)
+                spans = [(beat.start, beat.end)]
+            else:
+                if beat.clip:
+                    self._unfreeze(beat)
+                # todo plano de imagem conta: um push lento de 20 s também é "parado" para quem assiste
+                spans = self._frozen_clip_spans(beat) if beat.clip else self._still_spans(beat)
             # A captura de página não tem corte nem punch (só o `zoom_rect` no trecho): sem a folga dos cortes, a
             # duração estimada aqui pode passar do limite na timeline final; ela já quebra a partir de 80% dele.
-            threshold = limit * 0.8 if beat.page else limit
+            threshold = limit * 0.8 if beat.page and not beat.card else limit
             for start, end in spans:
                 if end - start <= threshold:
                     continue
@@ -1527,7 +1535,7 @@ class _Planner:
                                                                                 else 0.0), default=None)
                         if word is None:
                             continue
-                        if beat.page:
+                        if beat.page and not beat.card:
                             # Captura: o punch cortaria a manchete; quem quebra o plano parado é o `zoom_rect` no
                             # trecho marcado (enquadra o texto inteiro). Sem trecho não há enquadramento seguro.
                             if beat.capture and self._free(beat, word, "zoom_rect"):

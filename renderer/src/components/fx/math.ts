@@ -1041,12 +1041,36 @@ export const cardDim = (dim: number, luma: number | undefined) => {
 
 // --- transição de entrada --------------------------------------------------------------------------------------------
 
-/** Teto da transição de entrada (desfoque, flash, fade): mais longa, ela vira quadro morto sem nada nítido. */
-export const ENTRY_MAX_S = 0.4;
+/** Teto da transição de entrada (desfoque, flash, fade): mais longa, ela vira quadro morto sem nada nítido. É o
+ *  teto de um cross-dissolve curto: até 0,3 s. */
+export const ENTRY_MAX_S = 0.3;
 
 /** Quadros da transição de entrada: os do estilo, até ENTRY_MAX_S (o estilo aceita até 2 s). */
 export const entryFrames = (transitionFrames: number, fps: number) =>
   Math.max(1, Math.min(Math.round(num(transitionFrames, 1)), Math.round(ENTRY_MAX_S * fps)));
+
+/** O que lava o quadro na entrada (flash branco, fade preto, luz, queima, chuvisco, desfoque) some em até WASH_MAX_S:
+ *  um quadro amostrado no começo da cena nunca fica branco, preto ou borrado a ponto de esconder a imagem. */
+export const WASH_MAX_S = 0.2;
+/** Opacidade no corte de cada camada que lava o quadro: nunca tela cheia branca ou preta (fade longo). */
+export const WASH_PEAK: Record<string, number> = { flash: 0.5, fade_black: 0.7, light_leak: 0.6, film_burn: 0.6, static_burst: 0.45 };
+/** Desfoque (px a 1080) no corte do `zoom_blur`; some junto com a lavagem. */
+export const ZOOM_BLUR_PX = 4;
+/** Ampliação extra no corte do `zoom_blur` (volta a 1 até o fim da entrada). */
+export const ZOOM_BLUR_SCALE = 0.08;
+
+/** Quadros em que a lavagem da entrada ainda aparece: os da entrada, até WASH_MAX_S. */
+export const washFrames = (entry: number, fps: number) =>
+  Math.max(1, Math.min(Math.round(num(entry, 1)), Math.round(WASH_MAX_S * fps)));
+
+/** Quanto da lavagem fica no quadro (0 a 1): 1 no corte e cai em curva quadrática até 0 em `washFrames` (na metade
+ *  dela, só 1/4 sobra: o quadro já está quase nítido). */
+export const washAt = (frame: number, entry: number, fps: number) => {
+  const n = washFrames(entry, fps);
+  if (!(frame >= 0) || frame >= n) return 0;
+  const k = 1 - frame / n;
+  return k * k;
+};
 
 // --- câmera ----------------------------------------------------------------------------------------------------------
 

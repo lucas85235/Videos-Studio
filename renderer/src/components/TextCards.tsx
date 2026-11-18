@@ -5,15 +5,20 @@ import type { TextCardStyle, TimelineScene } from '../types';
 import { KINETIC_CENTER_Y, kineticMarks, pageAt, type Rect, scenePages } from './fx/math';
 
 /** Entrada dos cartões conforme a animação do estilo (`delay` em quadros). */
+/** A entrada do cartão fica opaca nos primeiros quadros (`ENTRANCE_OPAQUE` da mola): o movimento continua, mas o
+ *  cartão nunca passa quadros semitransparente, como um fantasma sobre o fundo. */
+const ENTRANCE_OPAQUE = 0.4;
+
 export const useEntrance = (animation: TextCardStyle['animation'], seed: number, delay = 0) => {
   const frame = useCurrentFrame() - delay;
   const { fps } = useVideoConfig();
   const s = spring({ frame, fps, config: { damping: 15, stiffness: 140, mass: 0.7 } });
+  const opacity = Math.min(1, s / ENTRANCE_OPAQUE);
   switch (animation) {
     case 'pop':
-      return { transform: `scale(${interpolate(s, [0, 1], [0.6, 1])})`, opacity: s };
+      return { transform: `scale(${interpolate(s, [0, 1], [0.6, 1])})`, opacity };
     case 'slide':
-      return { transform: `translateX(${interpolate(s, [0, 1], [-120, 0])}px)`, opacity: s };
+      return { transform: `translateX(${interpolate(s, [0, 1], [-120, 0])}px)`, opacity };
     case 'flicker': {
       const on = frame > 18 || random(`${seed}-fl-${frame}`) > 0.45;
       return { opacity: on ? 1 : 0.15 };
@@ -22,7 +27,7 @@ export const useEntrance = (animation: TextCardStyle['animation'], seed: number,
       return { opacity: 1 };
     case 'fade_up':
     default:
-      return { transform: `translateY(${interpolate(s, [0, 1], [40, 0])}px)`, opacity: s };
+      return { transform: `translateY(${interpolate(s, [0, 1], [40, 0])}px)`, opacity };
   }
 };
 

@@ -13,7 +13,8 @@ export type CardBand = { top: number; bottom: number };
 
 /** `pop`: o número é dito na cena (no corte ou quando o painel entra, e a legenda mostra o valor): entra parado, sem
  *  contar. Contando, o painel mostraria "87 GB+" no quadro em que a fala e a legenda dizem "100 gigabytes". */
-/** `avoid`: o retângulo (fração da tela) que o texto do cartão deixa livre, o do avatar na cena. */
+/** `avoid`: o retângulo (fração da tela) que o texto do cartão deixa livre, o do avatar na cena.
+ *  `valueFrom`: quadro em que o número do cartão aparece (o painel e o rótulo já estão na tela desde o corte). */
 export type CardViewProps = {
   scene: TimelineScene;
   style: TextCardStyle;
@@ -22,6 +23,7 @@ export type CardViewProps = {
   band?: CardBand;
   pop?: boolean;
   avoid?: Rect | null;
+  valueFrom?: number;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -494,7 +496,7 @@ export const Panel: React.FC<{
 // Cartões
 
 /** Número grande: conta até o valor (ano entra com "pop"), com rótulo embaixo. */
-export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, pop: popValue }) => {
+export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, pop: popValue, valueFrom }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { portrait, u, panelW } = useLayout();
@@ -505,7 +507,8 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
   const parsed = parseValue(raw);
   // Ordinal ("1º TRI 2027"): o valor entra inteiro, com o indicador desenhado (`withOrdinals`), sem contar.
   const p = parsed && !isCompound(parsed) && !hasOrdinal(raw) ? parsed : null;
-  const counted = useCountedValue(p, 4, popValue);
+  const vf = Math.max(0, Math.round(valueFrom ?? 0));
+  const counted = useCountedValue(p, 4 + vf, popValue);
   const pad = u * (portrait ? 0.06 : 0.05);
   const inner = panelW - pad * 2;
   const font = style.font;
@@ -517,7 +520,7 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
   const suffixRatio = affixRatioOf(suffix);
   const affixChars = (prefix ? (prefix.length + 0.6) * prefixRatio : 0) + (suffix ? (suffix.length + 0.6) * suffixRatio : 0);
   const size = Math.min(u * (portrait ? 0.3 : 0.25) * boost(font), inner / Math.max(1, (main.length + affixChars) * charEm(font)));
-  const pop = spring({ frame: frame - 2, fps, config: { damping: 11, stiffness: 140, mass: 0.7 } });
+  const pop = spring({ frame: frame - 2 - vf, fps, config: { damping: 11, stiffness: 140, mass: 0.7 } });
   const scale = counted.counting ? 1 : interpolate(pop, [0, 1], [1.5, 1]);
   const labelSize = raw
     ? fitLines(label, font, inner, u * (portrait ? 0.066 : 0.058), u * 0.04, 2)
@@ -537,7 +540,7 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
         lineHeight: 1,
         fontVariantNumeric: 'tabular-nums',
         transform: `scale(${scale})`,
-        opacity: counted.counting ? 1 : Math.min(1, pop * 1.4),
+        opacity: frame < vf ? 0 : counted.counting ? 1 : Math.min(1, pop * 1.4),
         whiteSpace: 'nowrap',
       }}
     >

@@ -60,7 +60,7 @@ def _seed_acervo(project_id: str) -> None:
     shutil.copyfile(ACERVO / "farol.jpg", folder / "farol.jpg")
     shutil.copyfile(ACERVO / "ilha.jpg", folder / "ilha.jpg")
     lavfi_clip(folder / "mergulho.mp4", first="testsrc", second="smptebars")
-    lavfi_clip(folder / "costa.mp4", cut_at=1.5, total=4.5, first="rgbtestsrc", second="color=c=0x40a060")
+    lavfi_clip(folder / "costa.mp4", cut_at=1.5, total=4.5, first="rgbtestsrc", second="smptehdbars")
     _seed_capture(project_id)
     _seed_link(project_id)
 

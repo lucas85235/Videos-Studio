@@ -670,6 +670,7 @@ def build_timeline(
             if grammar is not None:
                 drop_foreign_source(doc, scene, resolved, pool)
             drop_false_verdict(doc, scene, resolved, pool if pool is not None else verdict_pool)
+            drop_ambiguous_verdict(scene, resolved, lang)
             if resolved["motion"] == PARALLAX:
                 layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
                 if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
@@ -980,6 +981,26 @@ def _own_material(scene: Scene, prov: str, material: MediaRef | PoolItem | None,
         return False
     file_name = (material.url or "").split("?", 1)[0].rsplit("/", 1)[-1]
     return not shows_search_page(file_name, _pool_desc(material, pool), getattr(material, "desc", "") or "")
+
+
+def screen_texts(scene: Scene, resolved: dict[str, Any], lang: str) -> list[str]:
+    """As frases da própria cena na tela: o texto grande, a faixa do topo, o valor e o rótulo do cartão."""
+    card = resolved.get("card") or {}
+    texts = [str(resolved.get("text") or scene.overlay_text.get(lang) or "")]
+    texts += [str(card.get(key) or "") for key in ("headline", "value", "label")]
+    return [t for t in texts if t.strip()]
+
+
+def drop_ambiguous_verdict(scene: Scene, resolved: dict[str, Any], lang: str) -> None:
+    """Tira da tela o veredito positivo ao lado de frase negativa ("CONFIRMADO" com "PC: NÃO ANUNCIADO",
+    `verdict.ambiguous_positive`). O documento não muda: a revisão do storyboard (`fix_ambiguous_stamps`) tira dele."""
+    card = resolved.get("card")
+    if not card or not verdict.ambiguous_positive(card.get("stamp"), screen_texts(scene, resolved, lang), lang):
+        return
+    for key in ("stamp", "stamp_at", "stamp_from"):
+        card.pop(key, None)
+    if not card:
+        resolved.pop("card")
 
 
 def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:

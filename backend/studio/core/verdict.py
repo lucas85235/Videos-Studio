@@ -10,6 +10,11 @@ descrição dele diz que é o artefato do golpe ("Site copia o Extended Look e a
 
 Usado na revisão do storyboard (`storyboard_check.fix_verdict_stamps`, que tira o carimbo do documento) e na
 resolução da timeline (`timeline.drop_false_verdict`, que tira só da tela, para o projeto já pronto e a edição à mão).
+
+Veredito positivo (CONFIRMADO, VERDADE) ao lado de uma frase negativa na tela ("PC: NÃO ANUNCIADO", "NÃO EXISTE")
+lê como contradição: confirmado o quê? O carimbo só casa com o texto quando confirma uma afirmação; ao lado da negação
+ele sai (`ambiguous_positive`), na revisão do storyboard (`storyboard_check.fix_ambiguous_stamps`) e na timeline
+(`timeline.drop_ambiguous_verdict`).
 """
 
 from __future__ import annotations
@@ -68,12 +73,13 @@ def _plain(text: str) -> str:
     return "".join(ch for ch in text if not unicodedata.combining(ch))
 
 
-# Veredito positivo explícito: quem confirma é a fonte do cartão ("CONFIRMADO" com "Fonte: Rockstar Games"). Aviso
-# ("ATENÇÃO", "ALERTA", "CUIDADO", "DICA") e rótulo do vídeo ("BOATO", "MITO") não são afirmação de fonte nenhuma.
+# Veredito positivo explícito: quem confirma é a fonte do cartão ("CONFIRMADO" com "Fonte: Rockstar Games"); ao lado
+# de frase negativa na tela ele confunde (`ambiguous_positive`). Aviso ("ATENÇÃO", "ALERTA", "CUIDADO", "DICA") e
+# rótulo do vídeo ("BOATO", "MITO") não são afirmação de fonte nenhuma. Sem acento, minúsculo.
 POSITIVE_VERDICTS = frozenset({
-    "confirmado", "confirmada", "confirmados", "confirmadas", "confirmed", "confirmo", "verificado", "verificada",
-    "verified", "oficial", "official", "verdade", "verdadeiro", "verdadeira", "true", "fato", "fact", "real",
-    "anunciado", "anunciada", "announced", "comprovado", "comprovada", "proven",
+    "confirmado", "confirmada", "confirmados", "confirmadas", "confirma", "confirmed", "confirmo", "verificado",
+    "verificada", "verified", "oficial", "official", "verdade", "verdadeiro", "verdadeira", "true", "fato", "fact",
+    "real", "anunciado", "anunciada", "announced", "comprovado", "comprovada", "proven", "certo", "cierto", "verdad",
 })  # fmt: skip
 
 
@@ -81,11 +87,36 @@ def _stamp_words(stamp: str | None) -> list[str]:
     return [normalize_token(w) for w in re.split(r"[\s·•|/—–:,.!?()-]+", stamp or "") if w]
 
 
+# Palavra que faz da frase da tela uma negação ("NÃO ANUNCIADO", "NEM DEMO", "SEM DATA", "NUNCA SAIU", "NOT ON PC").
+# "no" e "sin" só fora do português ("no site" é "em o site").
+_TEXT_NEGATORS = frozenset({"nao", "nem", "nunca", "jamais", "sem", "nenhum", "nenhuma", "nada", "inexistente",
+                            "not", "never", "none", "without", "nope", "ningun", "ninguna", "tampoco"})
+_TEXT_NEGATORS_FOREIGN = frozenset({"no", "sin", "ni"})
+
+
+def _tokens(text: str | None) -> list[str]:
+    return [t for w in re.split(r"[\s·•|/—–:,.!?()\-]+", text or "") if (t := normalize_token(w))]
+
+
 def is_positive(stamp: str | None) -> bool:
-    """O carimbo afirma que o que a cena diz é verdade ("CONFIRMADO", "OFICIAL", "É REAL"), sem negação antes
-    ("NÃO CONFIRMADO" não afirma). Aviso ("ATENÇÃO", "CUIDADO") e rótulo ("BOATO") não são positivos."""
-    words = _stamp_words(stamp)
-    return any(word in POSITIVE_VERDICTS and not any(w in _NEGATORS for w in words[:i]) for i, word in enumerate(words))
+    """O carimbo confirma a afirmação da tela ("CONFIRMADO", "É VERDADE", "OFICIAL: CONFIRMADO")."""
+    words = _tokens(stamp)
+    positive = any(
+        w in POSITIVE_VERDICTS and not any(n in _NEGATORS for n in words[:i]) for i, w in enumerate(words)
+    )
+    return positive and not is_negative(stamp)
+
+
+def negates(text: str | None, lang: str = "pt-BR") -> bool:
+    """A frase da tela é uma negação ("PC: NÃO ANUNCIADO", "PC HOJE: NÃO EXISTE", "SEM DATA", "NOT ON PC")."""
+    extra = _TEXT_NEGATORS_FOREIGN if not (lang or "").lower().startswith("pt") else frozenset()
+    return any(t in _TEXT_NEGATORS or t in extra for t in _tokens(text))
+
+
+def ambiguous_positive(stamp: str | None, texts: list[str], lang: str = "pt-BR") -> bool:
+    """Veredito positivo ao lado de frase negativa na tela: "CONFIRMADO" com "PC: NÃO ANUNCIADO" lê como contradição
+    (confirma a negação? confirma o PC?). O carimbo sai; o texto e a fonte do cartão já dizem quem afirma."""
+    return is_positive(stamp) and any(negates(t, lang) for t in texts if t)
 
 
 def is_negative(stamp: str | None) -> bool:

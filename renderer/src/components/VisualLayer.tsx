@@ -4,7 +4,7 @@ import { frameLayout, sceneImageBox } from '../frame';
 import { hasEffect, imageFilter } from '../look';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type ShotEasing, type TextCardStyle, type TimelineScene } from '../types';
 import { MotionBackground } from './DataCards';
-import { EASE, isEasing, keepTransform, pRects, type Rect, rectThrough, rectToContainer } from './fx/math';
+import { EASE, isEasing, keepTransform, pRects, type Rect, rectThrough, rectToContainer, washAt, ZOOM_BLUR_PX, ZOOM_BLUR_SCALE } from './fx/math';
 
 type Props = {
   scene: TimelineScene;
@@ -177,10 +177,12 @@ export const imageMotion = (scene: TimelineScene, frame: number, opts: MotionOpt
   let extraFilter = '';
   let entryScale = 1;
   if (scene.transition === 'zoom_blur' && frame < tf) {
+    // Aproxima na entrada inteira; o desfoque é lavagem (`washAt`): some em até 0,2 s, nunca borra o meio da cena.
     const k = 1 - frame / tf;
-    entryScale = 1 + 0.14 * k;
+    entryScale = 1 + ZOOM_BLUR_SCALE * k;
     scale *= entryScale;
-    extraFilter = ` blur(${10 * k}px)`;
+    const wash = washAt(frame, tf, fps);
+    if (wash > 0) extraFilter = ` blur(${(ZOOM_BLUR_PX * wash * Math.min(width, height)) / 1080}px)`;
   }
   let jitter = 0;
   if (scene.transition === 'glitch' && frame < tf) {

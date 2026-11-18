@@ -1110,6 +1110,16 @@ def is_mockup(item: dict[str, Any]) -> bool:
     return describes_empty_screen(str(item.get("desc") or ""), str(item.get("page_url") or ""))
 
 
+def is_slate(item: dict[str, Any]) -> bool:
+    """Plano de vídeo cuja tela a visão leu como cartela legal (classificação etária, direitos): não é material de
+    cena. A análise nova já tira o plano pelos pixels (`clips.trim_dead`); isto pega a análise antiga em cache."""
+    if item.get("media") != "clip":
+        return False
+    from studio.media import clips
+
+    return clips.slate_text(str(item.get("desc") or ""))
+
+
 def is_synthetic(item: dict[str, Any] | PoolItem) -> bool:
     """Arte de fã ou gerada por IA que a própria fonte declara (`sources.looks_synthetic` na descrição e no crédito,
     nunca no endereço): não é material real e sai do acervo antes do pedido do storyboard. Material próprio e
@@ -1343,7 +1353,7 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
                         "acervo\" para incluí-los.")
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    mockups = synthetic = 0
+    mockups = synthetic = slates = 0
     misfits: dict[str, int] = {}
     for item in raw:
         sid = str(item.get("source_id") or "")
@@ -1352,6 +1362,9 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
         seen.add(sid)
         if is_mockup(item):
             mockups += 1
+            continue
+        if is_slate(item):
+            slates += 1
             continue
         if is_synthetic(item):
             synthetic += 1
@@ -1366,6 +1379,9 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
     if mockups:
         warnings.append(f"{mockups} item(ns) de banco com a tela de chroma ou em branco (mockup) ficaram fora do "
                         "acervo.")
+    if slates:
+        warnings.append(f"{slates} trecho(s) de vídeo com a cartela legal (classificação etária, direitos) ficaram "
+                        "fora do acervo.")
     if synthetic:
         warnings.append(f"{synthetic} item(ns) de arte de fã ou gerada por IA ficaram fora do acervo (não são "
                         "material real).")

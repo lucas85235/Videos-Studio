@@ -421,6 +421,11 @@ out.costWeighted = [m.boxCost([0, 0, 0.5, 0.5], [], [[0, 0, 1, 0.5]]), m.boxCost
 out.flow = m.flowRows([300, 200, 900, 100, 100], 40, 1000);
 out.entry = [9, 12, 30, 60, 0].map((f) => m.entryFrames(f, 30));
 out.entryMax = m.ENTRY_MAX_S;
+// Lavagem da entrada (flash, fade, desfoque): no corte, na metade, no fim e depois, com a entrada de 9 quadros a 30 q/s.
+out.wash = [0, 3, 6, 9, -1].map((f) => m.washAt(f, 9, 30));
+out.washFrames = [m.washFrames(9, 30), m.washFrames(3, 30), m.washFrames(9, 60)];
+out.washPeak = m.WASH_PEAK;
+out.zoomBlur = [m.ZOOM_BLUR_PX, m.ZOOM_BLUR_SCALE];
 console.log(JSON.stringify(out));
 """
 
@@ -878,14 +883,50 @@ def test_flow_rows_wrap_like_flex(fx_math: dict) -> None:
 
 
 def test_entry_transition_is_capped(fx_math: dict) -> None:
-    """Transição de entrada (desfoque, flash, fade) de no máximo 0,4 s: o estilo aceita até 2 s, que viravam quadro morto."""
-    assert fx_math["entryMax"] == pytest.approx(0.4)
-    assert fx_math["entry"] == [9, 12, 12, 12, 1]
+    """Transição de entrada (desfoque, flash, fade) de no máximo 0,3 s (dissolve curto): o estilo aceita até 2 s, que
+    viravam quadro morto."""
+    assert fx_math["entryMax"] == pytest.approx(0.3)
+    assert fx_math["entry"] == [9, 9, 9, 9, 1]
+
+
+def test_entry_wash_fades_fast_and_never_fills_the_screen(fx_math: dict) -> None:
+    """QA r3 do prj_gq4krrs11w: o quadro do começo da cena saía quase branco (flash), preto ou borrado (zoom_blur) a
+    ponto de a legenda e a imagem sumirem. A lavagem some em até 0,2 s, em curva que cai rápido (na metade só 1/4
+    sobra), e começa abaixo da tela cheia."""
+    at0, mid, end, after, before = fx_math["wash"]
+    assert at0 == pytest.approx(1) and mid == pytest.approx(0.25) and end == 0 and after == 0 and before == 0
+    assert fx_math["washFrames"] == [6, 3, 9]  # até 0,2 s; entrada mais curta encurta junto
+    peaks = fx_math["washPeak"]
+    assert set(peaks) == {"flash", "fade_black", "light_leak", "film_burn", "static_burst"}
+    assert all(0 < v <= 0.7 for v in peaks.values()) and peaks["flash"] <= 0.5
+    blur_px, scale = fx_math["zoomBlur"]
+    assert blur_px <= 4 and scale <= 0.08
+    trans = _read(COMP / "TransitionIn.tsx")
+    assert "frame >= tf * 1.5" not in trans  # a cauda de 50% depois da entrada saiu
+    assert "washAt(frame, tf, fps)" in trans
+    for name in ("VisualLayer.tsx", "Treatments.tsx"):
+        assert "washAt(frame, tf, fps)" in _read(COMP / name), name
+
+
+def test_card_never_enters_as_ghost_nor_waits_on_empty_screen() -> None:
+    """O cartão fica opaco logo na entrada (sem quadros semitransparentes, o "200 MB" fantasma do QA) e o cartão de
+    dado sem fundo para ler entra no corte, com só o número esperando a fala (a tela vazia até o número era quadro
+    morto)."""
+    text = _read(COMP / "TextCards.tsx")
+    assert "const opacity = Math.min(1, s / ENTRANCE_OPAQUE);" in text
+    entrance = text[text.index("export const useEntrance"):text.index("const Typewriter")]
+    assert "opacity: s }" not in entrance
+    scene = _read(COMP / "SceneView.tsx")
+    assert "const cardFrom = bare ? 0 : revealFrom;" in scene
+    assert "valueFrom={bare ? revealFrom : undefined}" in scene
+    data = _read(COMP / "DataCards.tsx")
+    assert "opacity: frame < vf ? 0 :" in data and "frame: frame - 2 - vf" in data
 
 
 def test_sceneview_places_stamp_scrim_and_transition_under_captions() -> None:
     """O carimbo solto passa pelo `placeStamp` com o texto conhecido da tela; a tarja fica sob a legenda no fundo de
-    imagem em brilho cheio; a transição de entrada usa o teto e fica ABAIXO da legenda (o flash lavava a fala)."""
+    imagem em brilho cheio; a transição de entrada usa o teto e fica ABAIXO da tarja e da legenda (o flash lavava a
+    fala)."""
     src = _read(COMP / "SceneView.tsx")
     assert "const entry = entryFrames(style.transitionFrames, fps);" in src
     assert "style.transitionFrames}" not in src  # nenhuma peça usa a duração sem teto
@@ -901,7 +942,7 @@ def test_sceneview_places_stamp_scrim_and_transition_under_captions() -> None:
     i_stamp = src.index("<Stamp text={stamp}")
     i_trans = src.index("<TransitionIn type={scene.transition} frames={entry}")
     i_caps = src.index("<Captions lines=")
-    assert i_scrim < i_stamp < i_trans < i_caps
+    assert i_trans < i_scrim < i_stamp < i_caps  # a tarja fica sobre a lavagem: a legenda nunca perde o contraste
     # O aparelho do tratamento "tela" não entra transparente (os primeiros quadros ficavam só no fundo desfocado).
     screen = _read(COMP / "Treatments.tsx")
     device = screen[screen.index("const deviceStyle"):screen.index("// Coordenadas do conteúdo")]
