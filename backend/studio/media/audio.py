@@ -341,20 +341,47 @@ def generate_music(mood: str | None, duration: float, seed: int, out_path: Path)
 # SFX procedurais
 # --------------------------------------------------------------------------------------------
 
-SFX_KINDS = ("whoosh", "impact", "glitch", "static", "riser")
-SFX_VERSION = 3
-"""Versão dos arquivos de efeito no cache. v3: glitch e riser sem tom agudo afinado (passam na guarda de apito, regra 13
-do padrão do estúdio); v2: impacto em camadas e loudness normalizada por arquivo."""
+TRANSITION_SFX_KINDS = ("whoosh", "impact", "glitch", "static", "riser")
+"""Os efeitos de antes do ADR 0004 (transição, cartão e carimbo): a timeline adianta cada um pelo `SFX_LEAD`."""
+EVENT_SFX_KINDS = ("pop", "tick", "click", "thump", "boom", "scratch", "shutter", "swish", "bass_drop", "riser_short")
+"""Efeitos de evento (ADR 0004 §3.8), presos a palavras: todos sem tom afinado, gerados em numpy com semente fixa."""
+SFX_KINDS = TRANSITION_SFX_KINDS + EVENT_SFX_KINDS
+SFX_VERSION = 4
+"""Versão dos arquivos de efeito no cache. v4: efeitos de evento (`EVENT_SFX_KINDS`); os cinco de antes não mudaram
+de som (um tipo novo pedido antes dela saía como whoosh e ficou no cache com a chave da v3). v3: glitch e riser sem tom
+agudo afinado (passam na guarda de apito, regra 13 do padrão do estúdio); v2: impacto em camadas e loudness
+normalizada por arquivo."""
 SFX_RETUNED = frozenset({"glitch", "riser"})
-"""Tipos que mudaram de som na última `SFX_VERSION`: um mix com eles leva a versão na chave (é refeito) e a conferência
-acusa a prévia montada com a versão antiga (que tinha apito)."""
+"""Tipos que mudaram de som em `SFX_RETUNED_VERSION`: um mix com eles leva essa versão na chave (é refeito) e a
+conferência acusa a prévia montada antes dela (que tinha apito)."""
+SFX_RETUNED_VERSION = 3
+"""Versão em que os `SFX_RETUNED` mudaram de som. Fica separada da `SFX_VERSION`: subir a versão por causa de um tipo
+novo não refaz nem acusa o mix de quem não mudou."""
 
 VOICE_LUFS = -16.0
 """Loudness da narração no mix, antes do master. Os SFX são normalizados nessa mesma referência."""
-SFX_TRIM_DB = {"whoosh": 0.0, "impact": 0.0, "glitch": -4.0, "static": -4.0, "riser": -3.0}
+SFX_TRIM_DB = {
+    "whoosh": 0.0, "impact": 0.0, "glitch": -4.0, "static": -4.0, "riser": -3.0,
+    # Efeitos de evento: os curtos (tick, click, pop, shutter) ficam abaixo da referência porque a loudness
+    # momentânea mede 400 ms; com o pico em -1 dBFS eles já soam como um estalo forte.
+    "pop": -9.0, "tick": -14.0, "click": -13.0, "thump": -4.0, "boom": -1.0, "scratch": -5.0, "shutter": -10.0,
+    "swish": -4.0, "bass_drop": -2.0, "riser_short": -4.0,
+}
 """Ajuste fino por tipo sobre a referência: glitch e chiado são ásperos, o riser é longo."""
 SFX_HIT_S = {"whoosh": 0.35, "impact": 0.0, "glitch": 0.0, "static": 0.05, "riser": 1.5}
-"""Onde fica o ponto forte de cada efeito, em s desde o início do arquivo (o pico do whoosh, o golpe do impacto)."""
+"""Onde fica o ponto forte de cada efeito de transição, em s desde o início do arquivo (o pico do whoosh, o golpe do
+impacto). É o mesmo número do `SFX_LEAD` da timeline (conferido nos testes)."""
+EVENT_SFX_HIT_S = {
+    "pop": 0.0, "tick": 0.0, "click": 0.0, "thump": 0.0, "boom": 0.0, "scratch": 0.0, "shutter": 0.0,
+    "swish": 0.12, "bass_drop": 0.0, "riser_short": 0.6,
+}
+"""Ponto forte dos efeitos de evento. A timeline não adianta estes: o evento chega com `at` (a palavra) e a mixagem
+põe o arquivo em `at - hit_s` (`sfx_library.event_start`)."""
+
+
+def sfx_hit_s(kind: str) -> float:
+    """Ponto forte (s desde o início do arquivo) de um efeito procedural; 0 para tipo desconhecido."""
+    return SFX_HIT_S.get(kind, EVENT_SFX_HIT_S.get(kind, 0.0))
 _PEAK_CEILING = 10 ** (-1 / 20)  # -1 dBFS
 
 # Ponderação K do BS.1770 a 48 kHz: prateleira de agudos + passa-altas RLB (coeficientes b, a de cada biquad).
@@ -445,18 +472,197 @@ def _sfx_args(kind: str) -> list[str]:
     ]
 
 
+# --- efeitos de evento (numpy, semente fixa) ------------------------------------------------------------------------
+# Nenhum tem tom afinado acima de 1 kHz (guarda de apito, regra 13) nem nota sustentada: ruído filtrado, varreduras
+# graves e estalos. O `sfx_library.tonal_metrics` confere (testes).
+
+
+def _t(dur: float) -> np.ndarray:
+    return np.arange(int(round(dur * SAMPLE_RATE))) / SAMPLE_RATE
+
+
+def _sweep(f_start: float, f_end: float, dur: float, curve: float = 6.0) -> np.ndarray:
+    """Seno que desliza de `f_start` a `f_end` (aproximação exponencial, rápida no começo)."""
+    t = _t(dur)
+    freq = f_end + (f_start - f_end) * np.exp(-curve * t / dur)
+    return np.sin(2 * np.pi * np.cumsum(freq) / SAMPLE_RATE)
+
+
+def _band_noise(rng: np.random.Generator, dur: float, center: Any, width: float = 0.6, block: int = 1024) -> np.ndarray:
+    """Ruído branco filtrado por FFT em blocos (overlap-add com Hann), com o centro da banda (`center(t)`, Hz)
+    variando por bloco: a "varredura de filtro" do scratch e do swish, sem nota (a banda tem centenas de Hz)."""
+    n = int(round(dur * SAMPLE_RATE))
+    hop = block // 2
+    x = rng.standard_normal(n + block)
+    out = np.zeros(n + block)
+    window = np.hanning(block)
+    freqs = np.fft.rfftfreq(block, 1 / SAMPLE_RATE)
+    for i in range(0, n, hop):
+        c = float(center(i / SAMPLE_RATE))
+        sigma = max(120.0, c * width)
+        mask = np.exp(-0.5 * ((freqs - c) / sigma) ** 2)
+        out[i:i + block] += np.fft.irfft(np.fft.rfft(x[i:i + block] * window) * mask, block)
+    return out[:n]
+
+
+def _lowpass(x: np.ndarray, cutoff: float) -> np.ndarray:
+    spec = np.fft.rfft(x)
+    freqs = np.fft.rfftfreq(x.size, 1 / SAMPLE_RATE)
+    spec *= 1.0 / np.sqrt(1.0 + (freqs / cutoff) ** 4)
+    return np.fft.irfft(spec, x.size)
+
+
+def _highpass(x: np.ndarray, cutoff: float) -> np.ndarray:
+    spec = np.fft.rfft(x)
+    freqs = np.fft.rfftfreq(x.size, 1 / SAMPLE_RATE)
+    spec *= 1.0 / np.sqrt(1.0 + (cutoff / np.maximum(freqs, 1.0)) ** 4)
+    return np.fft.irfft(spec, x.size)
+
+
+def _decay(dur: float, rate: float) -> np.ndarray:
+    return np.exp(-rate * _t(dur))
+
+
+def _fade_out(x: np.ndarray, dur: float) -> np.ndarray:
+    n = min(x.size, int(dur * SAMPLE_RATE))
+    if n > 0:
+        x = x.copy()
+        x[-n:] *= np.linspace(1.0, 0.0, n)
+    return x
+
+
+def _mix(*parts: np.ndarray) -> np.ndarray:
+    n = max(p.size for p in parts)
+    out = np.zeros(n)
+    for p in parts:
+        out[: p.size] += p
+    return out
+
+
+def _sfx_pop(rng: np.random.Generator) -> np.ndarray:
+    # "Ploc" de bolha: estalo de ruído médio (sem nota) sobre um corpo grave curto que desce de 420 a 140 Hz.
+    body = 0.5 * _sweep(420, 140, 0.09, curve=8) * _decay(0.09, 45)
+    snap = 0.6 * _lowpass(rng.standard_normal(int(0.03 * SAMPLE_RATE)), 2200) * _decay(0.03, 160)
+    return _fade_out(_mix(body, snap), 0.01)
+
+
+def _sfx_tick(rng: np.random.Generator) -> np.ndarray:
+    # Tique de relógio: ruído agudo de 6 ms, sem corpo.
+    burst = _highpass(rng.standard_normal(int(0.05 * SAMPLE_RATE)), 2500) * _decay(0.05, 700)
+    return _fade_out(burst, 0.005)
+
+
+def _sfx_click(rng: np.random.Generator) -> np.ndarray:
+    # Clique de mouse: dois estalos (aperta e solta) de ruído filtrado.
+    one = _band_noise(rng, 0.03, lambda _t: 3200, width=0.5, block=256) * _decay(0.03, 380)
+    two = 0.6 * _band_noise(rng, 0.03, lambda _t: 2600, width=0.5, block=256) * _decay(0.03, 420)
+    out = np.zeros(int(0.09 * SAMPLE_RATE))
+    out[: one.size] += one
+    gap = int(0.05 * SAMPLE_RATE)
+    out[gap:gap + two.size] += two[: out.size - gap]
+    return _fade_out(out, 0.005)
+
+
+def _sfx_thump(rng: np.random.Generator) -> np.ndarray:
+    # Baque surdo: grave de 95 a 48 Hz e ruído abafado.
+    body = 0.8 * _sweep(95, 48, 0.4, curve=5) * _decay(0.4, 11)
+    knock = 0.5 * _lowpass(rng.standard_normal(int(0.12 * SAMPLE_RATE)), 600) * _decay(0.12, 40)
+    return _fade_out(_mix(body, knock), 0.05)
+
+
+def _sfx_boom(rng: np.random.Generator) -> np.ndarray:
+    # "Vine boom" sem tom: varredura senoidal grave (110 → 32 Hz) com cauda longa de ronco, um golpe de ruído médio
+    # no início (o que o celular toca) e saturação leve. Saturar mais cria harmônicos que a trava tonal acusa.
+    dur = 1.6
+    body = _sweep(110, 32, dur, curve=6) * _decay(dur, 2.6)
+    hit = 0.6 * _band_noise(rng, 0.25, lambda _t: 700, width=0.9) * _decay(0.25, 18)
+    rumble = 0.35 * _lowpass(rng.standard_normal(int(dur * SAMPLE_RATE)), 140) * _decay(dur, 3.0)
+    x = np.tanh(1.2 * _mix(0.8 * body, hit, rumble))
+    return _fade_out(x, 0.25)
+
+
+def _sfx_scratch(rng: np.random.Generator) -> np.ndarray:
+    # Arranhão de disco: ruído numa banda que varre para cima e para baixo duas vezes (vai e volta da agulha).
+    dur = 0.42
+    sweep = lambda t: 350 + 1900 * abs(np.sin(np.pi * t / 0.21))  # noqa: E731 - centro da banda no tempo
+    x = _band_noise(rng, dur, sweep, width=0.45, block=512)
+    t = _t(dur)
+    env = np.clip(np.sin(np.pi * t / 0.21), 0, None) ** 0.5 * (0.6 + 0.4 * np.cos(2 * np.pi * t / dur))
+    return _fade_out(x * env, 0.02)
+
+
+def _sfx_shutter(rng: np.random.Generator) -> np.ndarray:
+    # Obturador: dois estalos mecânicos (abre e fecha) e um ruído curto de mola entre eles.
+    def snap(amp: float) -> np.ndarray:
+        return amp * _highpass(rng.standard_normal(int(0.03 * SAMPLE_RATE)), 1500) * _decay(0.03, 260)
+
+    out = np.zeros(int(0.16 * SAMPLE_RATE))
+    for start, amp in ((0.0, 1.0), (0.075, 0.8)):
+        s = snap(amp)
+        a = int(start * SAMPLE_RATE)
+        out[a:a + s.size] += s[: out.size - a]
+    spring = 0.15 * _band_noise(rng, 0.07, lambda _t: 900, width=0.6, block=256) * np.hanning(int(0.07 * SAMPLE_RATE))
+    a = int(0.01 * SAMPLE_RATE)
+    out[a:a + spring.size] += spring
+    return _fade_out(out, 0.01)
+
+
+def _sfx_swish(rng: np.random.Generator) -> np.ndarray:
+    # Whoosh curto (passagem rápida): banda que sobe de 600 a 2400 Hz, pico em 0,12 s.
+    dur = 0.26
+    x = _band_noise(rng, dur, lambda t: 600 + 1800 * t / dur, width=0.7, block=512)
+    t = _t(dur)
+    env = np.where(t < 0.12, (t / 0.12) ** 2, np.exp(-(t - 0.12) * 22))
+    return _fade_out(x * env, 0.02)
+
+
+def _sfx_bass_drop(rng: np.random.Generator) -> np.ndarray:
+    # Queda de grave: varredura de 160 a 30 Hz saturada, com ruído grave no golpe.
+    dur = 1.3
+    body = np.tanh(2.5 * _sweep(160, 30, dur, curve=3) * _decay(dur, 2.2))
+    rumble = 0.3 * _lowpass(rng.standard_normal(int(0.4 * SAMPLE_RATE)), 250) * _decay(0.4, 8)
+    return _fade_out(_mix(0.9 * body, rumble), 0.2)
+
+
+def _sfx_riser_short(rng: np.random.Generator) -> np.ndarray:
+    # Subida curta até o corte (0,6 s): ruído com banda que sobe de 400 a 3000 Hz e volume crescente.
+    dur = 0.62
+    x = _band_noise(rng, dur, lambda t: 400 + 2600 * (t / dur) ** 2, width=0.8, block=512)
+    t = _t(dur)
+    env = np.minimum(1.0, (t / 0.6) ** 2.2)
+    return _fade_out(x * env, 0.02)
+
+
+_EVENT_SFX: dict[str, tuple[Any, int]] = {
+    "pop": (_sfx_pop, 21), "tick": (_sfx_tick, 22), "click": (_sfx_click, 23), "thump": (_sfx_thump, 24),
+    "boom": (_sfx_boom, 25), "scratch": (_sfx_scratch, 26), "shutter": (_sfx_shutter, 27), "swish": (_sfx_swish, 28),
+    "bass_drop": (_sfx_bass_drop, 29), "riser_short": (_sfx_riser_short, 30),
+}
+"""Tipo → (gerador, semente): o arquivo sai sempre igual."""
+
+
+def _event_sfx(kind: str) -> np.ndarray:
+    make, seed = _EVENT_SFX[kind]
+    return np.asarray(make(np.random.default_rng(seed)), dtype=np.float32)
+
+
 def generate_sfx(kind: str, out_path: Path) -> Path:
     """Gera o efeito e normaliza a loudness: `audio.sfx.volume_db` vale o mesmo para todos os tipos.
 
-    Com volume 0 dB, o momento mais forte do efeito soa tão alto quanto a narração (`VOICE_LUFS`).
+    Com volume 0 dB, o momento mais forte do efeito soa tão alto quanto a narração (`VOICE_LUFS`). Os efeitos de
+    transição saem do FFmpeg; os de evento (`EVENT_SFX_KINDS`), do numpy. Tipo desconhecido vira whoosh (como antes;
+    quem resolve um nome da biblioteca do usuário é o `sfx_library.resolve`).
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    raw = out_path.with_suffix(".f32")
-    run_ffmpeg([*_sfx_args(kind), "-map", "[out]", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", str(raw)])
-    try:
-        audio = np.fromfile(raw, dtype="<f4")
-    finally:
-        raw.unlink(missing_ok=True)
+    if kind in _EVENT_SFX:
+        audio = _event_sfx(kind)
+    else:
+        raw = out_path.with_suffix(".f32")
+        run_ffmpeg([*_sfx_args(kind), "-map", "[out]", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", str(raw)])
+        try:
+            audio = np.fromfile(raw, dtype="<f4")
+        finally:
+            raw.unlink(missing_ok=True)
     return write_wav(out_path, normalize_sfx(audio, VOICE_LUFS + SFX_TRIM_DB.get(kind, 0.0)))
 
 
@@ -568,6 +774,42 @@ def _music_gain(music: Path, music_db: float, highpass: float, total: float | No
     return _gain_to(VOICE_LUFS + music_db + 10.0, measured)
 
 
+MUSIC_DROP_S = (0.3, 0.6)
+"""Duração mínima e máxima de uma queda da trilha (`timeline.music_drops`): o silêncio antes do reveal."""
+MUSIC_DROP_FADE_S = 0.03
+"""Rampa de cada lado da queda (sem estalo)."""
+
+
+def clamp_drops(drops: list[dict[str, Any]] | None, total: float) -> list[tuple[float, float]]:
+    """`[{at, dur}]` da timeline → [(início, fim)] em s, com a duração presa em `MUSIC_DROP_S`, dentro do vídeo e
+    sem sobreposição (as que se tocam viram uma)."""
+    lo, hi = MUSIC_DROP_S
+    spans: list[tuple[float, float]] = []
+    for d in sorted(drops or [], key=lambda d: float(d.get("at", 0.0))):
+        try:
+            at, dur = float(d["at"]), float(d.get("dur") or lo)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(at) and math.isfinite(dur)) or at >= total:
+            continue
+        a = max(0.0, at)
+        b = min(total, a + min(hi, max(lo, dur)))
+        if spans and a <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        else:
+            spans.append((a, b))
+    return [(round(a, 3), round(b, 3)) for a, b in spans]
+
+
+def _drop_filter(spans: list[tuple[float, float]]) -> str:
+    """Filtro de volume que zera a trilha em cada trecho, com rampa de `MUSIC_DROP_FADE_S` de cada lado (avaliado
+    por quadro de áudio: vale o produto dos portões, 1 fora das quedas e 0 dentro)."""
+    f = MUSIC_DROP_FADE_S
+    gates = [f"clip(max(({a:.3f}-t)/{f},(t-{b:.3f})/{f}),0,1)" for a, b in spans]
+    # quadros de 256 amostras (~5 ms): o volume é avaliado uma vez por quadro, e o quadro do demuxer chega a 85 ms
+    return f"asetnsamples=n=256:p=0,volume='{'*'.join(gates)}':eval=frame"
+
+
 def _premix(
     voice: Path,
     music: Path | None,
@@ -578,9 +820,11 @@ def _premix(
     short: bool,
     highpass: float = MUSIC_HIGHPASS_HZ,
     voice_gain: float = 0.0,
+    drops: list[tuple[float, float]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Entradas e grafo do FFmpeg até [mx]: voz (com `voice_gain` dB) + trilha (passa-altas, `music_gain` dB e
-    ducking) + SFX, sem o master.
+    ducking) + SFX, sem o master. `drops` (início, fim em s): a trilha some nesses trechos (−∞, com rampa curta),
+    antes do sidechain; sem quedas o grafo é o de antes.
 
     Toda entrada segue em silêncio depois do fim (apad) e só o atrim depois do amix encerra o grafo: [mx] tem
     exatamente `total` s. Sem isso, o sidechaincompress acabava junto com a voz (o sidechain) e jogava fora a trilha
@@ -593,9 +837,10 @@ def _premix(
     if music is not None:
         inputs += ["-i", str(music)]
         fade_in, fade_out = (min(d, total / 4) for d in MUSIC_FADES["short" if short else "long"])
+        drop = f"{_drop_filter(drops)}," if drops else ""
         graph.append(
             f"[1:a]{_music_chain(highpass)},volume={music_gain:.2f}dB,afade=t=in:d={fade_in:.2f},"
-            f"afade=t=out:st={total - fade_out:.3f}:d={fade_out:.2f},apad[m]"
+            f"afade=t=out:st={total - fade_out:.3f}:d={fade_out:.2f},{drop}apad[m]"
         )
         if ducking:
             graph.append("[vn]asplit=2[vout][vsc]")
@@ -630,6 +875,7 @@ def mix_tracks(
     short: bool = False,
     music_highpass: float = MUSIC_HIGHPASS_HZ,
     music_ref_s: float | None = None,
+    music_drops: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo (ou WAV, se `out_path` termina em .wav).
 
@@ -642,11 +888,14 @@ def mix_tracks(
     referência da trilha e dos SFX; o mix é medido e o master aplica o ganho exato até `loudness`, com um limitador
     sobreamostrado (pega os picos entre amostras). Se o limitador comer loudness, mede de novo e compensa.
     `music_ref_s` (várias faixas): o ganho da trilha é medido só na 1ª cama (ver `_music_gain`).
+    `music_drops` (`timeline.music_drops`, `[{at, dur}]` em s): a trilha some de 0,3 a 0,6 s em cada um (ver
+    `clamp_drops`), por cima do ducking. O ganho da trilha é medido sem as quedas.
     """
     total = wav_duration(voice) if total is None else total
     voice_gain = voice_gain_db(voice)
     music_gain = _music_gain(music, music_db, music_highpass, total, music_ref_s) if music is not None else 0.0
-    inputs, graph = _premix(voice, music, music_gain, ducking, sfx, total, short, music_highpass, voice_gain)
+    drops = clamp_drops(music_drops, total) if music is not None else []
+    inputs, graph = _premix(voice, music, music_gain, ducking, sfx, total, short, music_highpass, voice_gain, drops)
     # Mede e limita já em estéreo (o mono vira dois canais a -3 dB): é o que o arquivo final tem.
     stereo = "[mx]aformat=channel_layouts=stereo"
     # Depois do limitador e da volta a 48 kHz: duração exata de novo e um fade curto que acaba em silêncio antes do fim.
@@ -695,6 +944,7 @@ def music_stem(
     short: bool = False,
     music_highpass: float = MUSIC_HIGHPASS_HZ,
     music_ref_s: float | None = None,
+    music_drops: list[dict[str, Any]] | None = None,
 ) -> tuple[Path, float]:
     """Só a trilha como ela entra no mix (passa-altas, ganho e ducking pela voz), com o mesmo grafo do `_premix`, em WAV
     mono de 48 kHz. Devolve (arquivo, ganho da voz em dB): a conferência de áudio põe a voz no mesmo nível do mix.
@@ -703,7 +953,8 @@ def music_stem(
     total = wav_duration(voice) if total is None else total
     voice_gain = voice_gain_db(voice)
     music_gain = _music_gain(music, music_db, music_highpass, total, music_ref_s)
-    inputs, graph = _premix(voice, music, music_gain, ducking, None, total, short, music_highpass, voice_gain)
+    inputs, graph = _premix(voice, music, music_gain, ducking, None, total, short, music_highpass, voice_gain,
+                            clamp_drops(music_drops, total))
     branch = "[md]" if ducking else "[m]"
     end = round(total * SAMPLE_RATE)
     # a voz segue em silêncio (apad) para sempre: sem o atrim, o anullsink nunca deixa o grafo terminar

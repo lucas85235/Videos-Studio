@@ -21,12 +21,11 @@ import numpy as np
 
 from studio.config import get_settings
 from studio.core.graph.store import ArtifactStore
-from studio.core.hashing import hash_obj
 from studio.core.project import service
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.media import audio as audio_mod
-from studio.media import audio_check
+from studio.media import audio_check, sfx_library
 from studio.media.ffmpeg import read_wav
 from studio.models import QualityReport
 
@@ -45,21 +44,17 @@ class AudioCheckError(RuntimeError):
 
 def sfx_path(store: ArtifactStore, kind: str) -> Path:
     """Arquivo do efeito procedural no cache (a mesma chave do `Builder.sfx_file`)."""
-    h = hash_obj({"sfx": kind, "v": audio_mod.SFX_VERSION})
-    cached = store.lookup("sfx", h)
-    if cached:
-        return store.abs(cached["path"])
-    path = audio_mod.generate_sfx(kind, store.dir_for("sfx", h) / f"{kind}.wav")
-    store.save("sfx", h, {"path": store.rel(path), "files": [store.rel(path)]}, "procedural")
-    return path
+    return sfx_library.procedural_path(kind, store)
 
 
-def sfx_guard_item(store: ArtifactStore, kind: str) -> dict[str, Any]:
-    """Relatório de apito de um tipo de efeito: medida do `tone_report`, fração tonal e se é banido."""
-    sound, _rate = read_wav(sfx_path(store, kind))
+def sfx_guard_item(store: ArtifactStore, kind: str, path: Path | None = None,
+                   banned: bool | None = None) -> dict[str, Any]:
+    """Relatório de apito de um tipo de efeito (ou de um efeito da biblioteca, com `path` e `banned`): medida do
+    `tone_report`, fração tonal e se é banido."""
+    sound, _rate = read_wav(path or sfx_path(store, kind))
     report = audio_check.tone_report(sound)
     frac, hz = audio_check.tonal_fraction(sound)
-    banned = kind in audio_check.SFX_BANNED
+    banned = kind in audio_check.SFX_BANNED if banned is None else banned
     return {"kind": kind, **report, "tonal_fraction": round(frac, 2), "tonal_hz": int(round(hz)), "banned": banned,
             "blocked": bool(banned or report["apito"])}
 
@@ -97,7 +92,7 @@ def stale_sfx_item(store: ArtifactStore, mix_rel: str, kinds: set[str], source: 
     if not retuned:
         return None
     saved = store.lookup("mix", Path(mix_rel).parent.name) or {}
-    if saved.get("sfx_v") == audio_mod.SFX_VERSION:
+    if int(saved.get("sfx_v") or 0) >= audio_mod.SFX_RETUNED_VERSION:
         return None
     what = "a prévia" if source == "preview" else "o vídeo final"
     names = ", ".join(f"'{k}'" for k in retuned)
@@ -149,12 +144,29 @@ def measure(project_id: str, lang: str | None = None, source: str = "preview",
         tick(0.1, "Recolocando a voz")
         voice_path = audio_mod.place_clips(
             [(builder.store.abs(n["path"]), n["start"], 1.0) for n in timeline["narration"]], total, work / "voice.wav")
-        # efeitos: guarda de apito por tipo (como no mix) e a trilha dos que ficaram
-        kinds = sorted({e["type"] for e in timeline.get("sfx", [])})
-        files = [sfx_guard_item(builder.store, k) for k in kinds]
-        blocked = {f["kind"] for f in files if f["blocked"]}
-        events_tl = [e for e in timeline.get("sfx", []) if e["type"] not in blocked]
-        sfx_gain = 10 ** (style.audio.sfx.volume_db / 20)
+        # efeitos: guarda de apito por tipo ou id da biblioteca (como no mix) e a trilha dos que ficaram. Evento do
+        # ADR 0004 (`at`, `lib_id`) vira início e arquivo como no `Builder.sfx_plan`.
+        tonal_ok = builder.sfx_tonal_ok
+        events_all = []
+        for e in timeline.get("sfx", []):
+            ref, explicit = sfx_library.event_ref(e)
+            events_all.append({**e, "ref": ref, "explicit": explicit, "gain_db": float(e.get("gain_db") or 0.0),
+                               "start": sfx_library.event_start(e, tonal_ok=tonal_ok)})
+        files = []
+        blocked: set[tuple[str, bool]] = set()
+        for ref, explicit in sorted({(e["ref"], e["explicit"]) for e in events_all}):
+            item = sfx_library.lookup(ref, tonal_ok=tonal_ok, explicit=explicit)
+            if item is None or item.procedural:
+                guard = sfx_guard_item(builder.store, item.kind if item else ref)
+            else:
+                guard = {**sfx_guard_item(builder.store, ref, builder.sfx_source(ref, explicit), item.banned),
+                         "kind": ref}
+            if guard["blocked"]:
+                blocked.add((ref, explicit))
+            if guard not in files:
+                files.append(guard)
+        events_tl = [e for e in events_all if (e["ref"], e["explicit"]) not in blocked]
+        sfx_gain_db = style.audio.sfx.volume_db
         tick(0.25, "Montando a trilha")
         found = builder.music_track(timeline)
         short = style.format.type == "short"
@@ -164,7 +176,8 @@ def measure(project_id: str, lang: str | None = None, source: str = "preview",
             stem, voice_gain = audio_mod.music_stem(
                 voice_path, music_path, work / "music.wav", music_db=info["volume_db"],
                 ducking=style.audio.music.ducking, total=total, short=short,
-                music_highpass=audio_mod.music_highpass(info.get("mood")), music_ref_s=music_ref_s(info))
+                music_highpass=audio_mod.music_highpass(info.get("mood")), music_ref_s=music_ref_s(info),
+                music_drops=timeline.get("music_drops"))
             music, _ = read_wav(stem)
         else:
             # sem trilha o mix também leva a voz a VOICE_LUFS (a referência dos efeitos): sem isso o `vs_voz` saía
@@ -191,8 +204,9 @@ def measure(project_id: str, lang: str | None = None, source: str = "preview",
             items.append(audio_check.item("music_none", "ok", "vídeo sem trilha", "Nada a conferir na música."))
         events: list[dict[str, Any]] = []
         if events_tl:
-            sfx_path_all = audio_mod.place_clips([(sfx_path(builder.store, e["type"]), e["start"], sfx_gain)
-                                                  for e in events_tl], total, work / "sfx.wav")
+            sfx_path_all = audio_mod.place_clips([(builder.sfx_source(e["ref"], e["explicit"]), e["start"],
+                                                   10 ** ((sfx_gain_db + e["gain_db"]) / 20)) for e in events_tl],
+                                                 total, work / "sfx.wav")
             sfx, _ = read_wav(sfx_path_all)
             events = audio_check.sfx_events(sfx, voice)
             for e in events:

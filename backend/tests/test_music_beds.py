@@ -162,7 +162,7 @@ def test_one_cue_keeps_v3_mix_and_two_cues_switch_beds(isolated_settings):
         "v": 3,
     }
     if any(e["type"] in audio.SFX_RETUNED for e in timeline["sfx"]):
-        key["sfx_v"] = audio.SFX_VERSION
+        key["sfx_v"] = audio.SFX_RETUNED_VERSION
     expected = hash_obj(key)
     assert expected in entry["mix"]
     assert preview["music"]["beds"][0]["start_s"] == 0.0 and len(preview["music"]["beds"]) == 1
