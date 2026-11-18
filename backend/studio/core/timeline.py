@@ -26,7 +26,15 @@ from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, Projec
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
-from studio.core.sources import REAL_TIERS, ai_weight, prov_of_item, prov_of_media, prov_of_scene, visual_prov
+from studio.core.sources import (
+    REAL_TIERS,
+    ai_weight,
+    prov_of_item,
+    prov_of_media,
+    prov_of_scene,
+    title_backs_source,
+    visual_prov,
+)
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, EditGrammar, StyleSpec, grammar_for, treatment_pool
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
@@ -897,7 +905,12 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
         return
     own = (prov_of_scene(scene, doc), doc.shown_media(scene))
     owners = [own, *(_shot_owner(doc, scene, shot, pool, own) for shot in scene.shots)]
-    if all(_credits_source(prov, material, source) for prov, material in owners):
+    # Título que só tem a fonte para apoiar (sem faixa nem carimbo) e não diz nada dela ("2. TAMANHO QUE NÃO BATE"):
+    # a fonte sai também sobre fundo do app, senão credita a uma fonte só a conclusão que junta fatos de várias.
+    lone_title = scene.kind == "title" and not (card.get("headline") or card.get("stamp"))
+    backed = not lone_title or title_backs_source(str(resolved.get("text") or ""), source, doc.sources,
+                                                  doc.primary_language)
+    if backed and all(_credits_source(prov, material, source) for prov, material in owners):
         return
     card.pop("source", None)
     if not card:

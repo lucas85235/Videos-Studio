@@ -702,10 +702,14 @@ def fix_repeated_headlines(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 _TEXT_KINDS = ("title", "count", "quote", "text", "document")
 
 
-def _backs_scene_text(scene: Scene, lang: str) -> bool:
+def _backs_scene_text(scene: Scene, lang: str, source: str = "", sources: list[Source] | None = None) -> bool:
     """A fonte apoia algo da própria cena fora do cartão (a mesma conta do renderer): o texto em destaque (título,
-    citação, contador, a fala em tipografia) ou o cartão de notícia da mídia real."""
-    if scene.kind in _TEXT_KINDS and ((scene.overlay_text.get(lang) or "").strip() or scene.kind == "text"
+    citação, contador, a fala em tipografia) ou o cartão de notícia da mídia real. No título, só quando ele diz algo
+    da fonte citada (`title_backs_source`): "2. TAMANHO QUE NÃO BATE" não é dado de ninguém."""
+    title = (scene.overlay_text.get(lang) or "").strip()
+    if scene.kind == "title" and title and source and not tiers.title_backs_source(title, source, sources or [], lang):
+        return False
+    if scene.kind in _TEXT_KINDS and (title or scene.kind == "text"
                                       or (scene.kind == "count" and scene.number is not None)):
         return True
     media = scene.visual.media
@@ -725,7 +729,7 @@ def fix_lone_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
             continue
         shown = scene.card.resolved(lang)
         source = shown.pop("source", "")
-        if shown or (source and _backs_scene_text(scene, lang)):
+        if shown or (source and _backs_scene_text(scene, lang, source, doc.sources)):
             continue
         scene.card = None
         if source:

@@ -215,6 +215,54 @@ def _match_digits(tokens: list[str], i: int, lang: str, names: bool) -> _Run | N
     return run
 
 
+_DECIMAL_PT = "virgula"
+
+
+def _decimal_tail_pt(tokens: list[str], j: int) -> tuple[float, int, int, int | None] | None:
+    """Parte decimal falada depois do inteiro (`tokens[j]` é "vírgula"), como `number_words` escreve: "vírgula um",
+    "vírgula setenta e cinco", "vírgula zero cinco" (zeros da frente um a um), com a escala depois ("um vírgula cinco
+    milhão"). Devolve (fração, fim exclusivo, escala, índice da escala) ou None: "uma vírgula aqui" não é número."""
+    n = len(tokens)
+    if j + 1 >= n or normalize_token(tokens[j]) != _DECIMAL_PT or _ends_clause(tokens[j]):
+        return None
+    k = j + 1
+    text = ""
+    group: int | None = None
+    joined = False
+    while k < n:
+        key = normalize_token(tokens[k])
+        if key in _UNITS:
+            val = _UNITS[key]
+            if group is None:
+                group = val
+            elif joined and val < group:
+                group += val  # "setenta e cinco"
+            elif not joined and group <= 9 and val <= 9:
+                text += str(group)  # dígito a dígito ("sete cinco", "zero cinco")
+                group = val
+            else:
+                break
+            joined = False
+            k += 1
+            if _ends_clause(tokens[k - 1]):
+                break
+        elif (key == "e" and group is not None and not joined and k + 1 < n
+              and normalize_token(tokens[k + 1]) in _UNITS and _UNITS[normalize_token(tokens[k + 1])] < group):
+            joined = True
+            k += 1
+        else:
+            break
+    if group is None:
+        return None
+    frac = float(f"0.{text}{group}")
+    if k < n and not _ends_clause(tokens[k - 1]):
+        key = normalize_token(tokens[k])
+        scale = _SCALES_PT.get(key) or (1000 if key == _MIL else None)
+        if scale:
+            return frac, k + 1, scale, k
+    return frac, k, 1, None
+
+
 def _match_words_pt(tokens: list[str], i: int) -> _Run | None:
     total = 0.0
     current = 0.0
@@ -270,9 +318,17 @@ def _match_words_pt(tokens: list[str], i: int) -> _Run | None:
             break
     if j == i:
         return None
-    if j - i == 1 and normalize_token(tokens[i]) in _ARTICLES:
+    value = total + current
+    # Decimal falado ("um vírgula um megabyte", "dois vírgula cinco milhões"): só depois de um inteiro simples.
+    tail = _decimal_tail_pt(tokens, j) if last_kind == "unit" and not total and not _ends_clause(tokens[j - 1]) else None
+    if tail is not None:
+        frac, j, scale, at = tail
+        value = (current + frac) * scale
+        if scale > 1:
+            big_scale, scale_at = scale, at
+    elif j - i == 1 and normalize_token(tokens[i]) in _ARTICLES:
         return None  # "um dia", "uma vez": artigo
-    run = _Run(i, j, total + current, scale_at=scale_at, scale=big_scale)
+    run = _Run(i, j, value, scale_at=scale_at, scale=big_scale)
     new_end = _percent_after(tokens, j)
     run.percent = new_end != j
     run.i1 = new_end

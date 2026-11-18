@@ -11,10 +11,12 @@ import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from studio.core.numbers import text_numbers
 from studio.core.project.document import CARD_KINDS, DATA_KINDS, PROVS, MediaRef, Prov, Visual
+from studio.core.text import normalize_token
 
 if TYPE_CHECKING:
-    from studio.core.project.document import ProjectDoc, Scene
+    from studio.core.project.document import ProjectDoc, Scene, Source
     from studio.core.project.pool import PoolItem
 
 TIERS: tuple[str, ...] = PROVS
@@ -298,3 +300,51 @@ def reuse_problem(others: Iterable[tuple[float, float]], mine: Iterable[tuple[fl
             if (c - b if c >= b else a - d) < gap_s - 1e-6:
                 return "gap"
     return None
+
+
+# --- "Fonte:" sobre título ---------------------------------------------------------------------
+
+# Índice de lista no começo do título ("2. TAMANHO QUE NÃO BATE", "3) PIX", "#4 —"): numeração do vídeo, não dado.
+_LIST_INDEX_RE = re.compile(r"^\s*#?\d{1,2}\s*[.)ºª°:\-–—]\s*")
+# Palavras de 4+ letras que não dizem de onde veio o texto.
+_FILLER = frozenset({
+    "para", "pelo", "pela", "pelos", "pelas", "como", "mais", "menos", "muito", "sobre", "entre", "sempre", "nunca",
+    "isso", "esse", "essa", "este", "esta", "aqui", "agora", "ainda", "cada", "todo", "toda", "todos", "todas",
+    "voce", "seus", "suas", "quem", "qual", "quando", "onde", "porque", "with", "from", "that", "this", "your",
+    "what", "when", "will", "have", "about", "they", "their", "pero",
+})  # fmt: skip
+
+
+def _compact_name(text: str) -> str:
+    return "".join(ch for ch in normalize_token(text) if ch.isalnum())
+
+
+def _content_words(text: str) -> set[str]:
+    out = set()
+    for raw in re.split(r"[^\w]+", text or ""):
+        token = normalize_token(raw)
+        if len(token) >= 4 and not token.isdigit() and token not in _FILLER:
+            out.add(token)
+    return out
+
+
+def title_backs_source(title: str, cited: str, sources: Iterable[Source], lang: str) -> bool:
+    """O título da cena diz algo da fonte que o "Fonte: X" cita? Diz quando traz um número dela (fora o índice de
+    lista: "2." numera o vídeo) ou uma palavra do título ou da nota dela ("VIDAR: LADRÃO DE DADOS" com a fonte que
+    fala do Vidar). Sem isso ("2. TAMANHO QUE NÃO BATE" com "Fonte: Malwarebytes", numa conclusão que junta o 1,1 MB
+    da Malwarebytes e a ISO da ESET), a fonte vira crédito de uma ideia que não é dela e contradiz o crédito que o
+    mesmo fato tem no resto do vídeo. Fonte fora do roteiro (não dá para conferir) passa."""
+    key = _compact_name(cited)
+    if not key:
+        return True
+    own = [s for s in sources if key in _compact_name(s.title or "")]
+    if not own:
+        return True
+    body = _LIST_INDEX_RE.sub("", title or "")
+    if not body.strip():
+        return False
+    refs = " ".join(f"{s.title}. {s.note}" for s in own)
+    numbers = text_numbers(body, lang, names=True)
+    if numbers and {float(v) for v in numbers} & {float(v) for v in text_numbers(refs, lang, names=True)}:
+        return True
+    return bool(_content_words(body) & _content_words(refs))

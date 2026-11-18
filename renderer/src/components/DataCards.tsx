@@ -11,7 +11,8 @@ import { useEntrance } from './TextCards';
 /** Faixa livre da tela para o painel, em fração da altura: de baixo da faixa do topo até acima da legenda. */
 export type CardBand = { top: number; bottom: number };
 
-/** `pop`: o número já é dito no corte (a legenda já mostra o valor): entra parado, sem contar. */
+/** `pop`: o número é dito na cena (no corte ou quando o painel entra, e a legenda mostra o valor): entra parado, sem
+ *  contar. Contando, o painel mostraria "87 GB+" no quadro em que a fala e a legenda dizem "100 gigabytes". */
 export type CardViewProps = { scene: TimelineScene; style: TextCardStyle; uppercase: boolean; lang: string; band?: CardBand; pop?: boolean };
 
 // ---------------------------------------------------------------------------------------------
@@ -83,6 +84,64 @@ export const fitLines = (text: string, font: string, maxWidth: number, maxSize: 
 const fitPreferOne = (text: string, font: string, maxWidth: number, maxSize: number, minSize: number, lines: number, minSingle: number) => {
   const one = fitSize(text, font, maxWidth, maxSize, 0);
   return one >= minSingle * boost(font) ? one : fitLines(text, font, maxWidth, maxSize, minSize, lines);
+};
+
+/** Altura da maiúscula e do "x" (em em) das fontes do app (OS/2 de cada uma): põem o indicador ordinal no alto. */
+const FONT_CAPS: Record<string, [number, number]> = {
+  Anton: [0.86, 0.73],
+  'Bebas Neue': [0.7, 0.7],
+  Oswald: [0.81, 0.58],
+  Cinzel: [0.7, 0.5],
+  'IBM Plex Sans': [0.7, 0.52],
+  Montserrat: [0.7, 0.52],
+  'Noto Sans': [0.71, 0.54],
+  VT323: [0.56, 0.4],
+};
+
+/** Tamanho do indicador ordinal em relação ao número. */
+const ORDINAL_RATIO = 0.42;
+const ORDINAL_RE = /(\d)([ºª])/gu;
+
+/** O texto tem número ordinal ("1º TRI 2027", "2ª FASE"). */
+export const hasOrdinal = (text: string) => /\d[ºª]/u.test(text);
+
+/**
+ * Número ordinal com o indicador desenhado: "o"/"a" pequeno, com o topo na altura da maiúscula e sublinhado (a forma
+ * do "º" em português). O glifo "º" de algumas fontes condensadas (Anton) é um oval alto sem traço, que no cartão se lê
+ * como expoente ("1⁰ TRI 2027"); desenhado aqui, fica igual em todas as fontes.
+ */
+export const withOrdinals = (text: string, font: string): React.ReactNode => {
+  if (!hasOrdinal(text)) return text;
+  const [cap, x] = FONT_CAPS[font] ?? [0.7, 0.52];
+  // `vertical-align` em em do próprio indicador: sobe a linha de base dele até o topo do "o" encostar na maiúscula.
+  const raise = (cap - x * ORDINAL_RATIO) / ORDINAL_RATIO;
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(ORDINAL_RE)) {
+    const at = (m.index ?? 0) + m[1].length;
+    out.push(text.slice(last, at));
+    out.push(
+      <span
+        key={at}
+        style={{
+          display: 'inline-block',
+          fontSize: `${ORDINAL_RATIO}em`,
+          lineHeight: 1,
+          verticalAlign: `${raise.toFixed(3)}em`,
+          borderBottom: '0.11em solid currentColor',
+          padding: '0 0.06em',
+          marginLeft: '0.05em',
+          textTransform: 'none',
+          letterSpacing: 0,
+        }}
+      >
+        {m[2] === 'ª' ? 'a' : 'o'}
+      </span>,
+    );
+    last = at + m[2].length;
+  }
+  out.push(text.slice(last));
+  return out;
 };
 
 export const upper = (text: string, lang: string) => {
@@ -414,7 +473,8 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
   const label = upper((card.label ?? (card.value ? '' : scene.text)).trim(), lang);
   // Horário, placar, razão ("22H15", "10X1", "24/7"): o valor entra inteiro, com "pop", sem contar.
   const parsed = parseValue(raw);
-  const p = parsed && !isCompound(parsed) ? parsed : null;
+  // Ordinal ("1º TRI 2027"): o valor entra inteiro, com o indicador desenhado (`withOrdinals`), sem contar.
+  const p = parsed && !isCompound(parsed) && !hasOrdinal(raw) ? parsed : null;
   const counted = useCountedValue(p, 4, popValue);
   const pad = u * (portrait ? 0.06 : 0.05);
   const inner = panelW - pad * 2;
@@ -452,7 +512,7 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
       }}
     >
       {prefix ? <span style={affix(prefixRatio)}>{prefix}</span> : null}
-      <span style={{ fontSize: size, textShadow: `0 ${u * 0.008}px ${u * 0.03}px rgba(0,0,0,0.35)` }}>{p ? counted.text : raw}</span>
+      <span style={{ fontSize: size, textShadow: `0 ${u * 0.008}px ${u * 0.03}px rgba(0,0,0,0.35)` }}>{p ? counted.text : withOrdinals(raw, font)}</span>
       {suffix ? <span style={affix(suffixRatio)}>{suffix}</span> : null}
     </div>
   ) : null;
@@ -472,7 +532,7 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
             textWrap: 'balance',
           }}
         >
-          {label}
+          {withOrdinals(label, font)}
         </div>
       ) : null}
     </Panel>
@@ -611,7 +671,7 @@ const CompareBars: React.FC<{ rows: CompareRow[]; highlight: number | null; styl
             >
               <span style={{ fontSize: labelSize, letterSpacing: '0.03em', color: withAlpha(style.color, on ? 0.95 : 0.7), textAlign: 'left' }}>{row.label}</span>
               <span style={{ fontSize: valueSize, color: highlight === i ? style.accent : style.color, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                {row.value}
+                {withOrdinals(row.value, font)}
               </span>
             </div>
             <div style={{ height: barH, borderRadius: barH / 2, backgroundColor: withAlpha(style.color, 0.1), overflow: 'hidden' }}>
@@ -672,7 +732,7 @@ const CompareTiles: React.FC<{ rows: CompareRow[]; highlight: number | null; sty
                   {row.label}
                 </div>
               ) : null}
-              <div style={{ fontSize: valueSize, lineHeight: 1, color: on ? style.accent : style.color, textWrap: 'balance' }}>{row.value}</div>
+              <div style={{ fontSize: valueSize, lineHeight: 1, color: on ? style.accent : style.color, textWrap: 'balance' }}>{withOrdinals(row.value, font)}</div>
             </div>
           </React.Fragment>
         );

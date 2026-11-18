@@ -339,7 +339,8 @@ const Emoji: React.FC<{ emoji: string; from: number; size: number }> = ({ emoji,
  * Palavra de ênfase (`emph`) nos modos karaokê e linha. No modo linha, cor de destaque desde que a linha entra; no
  * karaokê, apagada como as outras palavras ainda não ditas e acesa (com o pop) só quando é dita, para não entregar a
  * punchline antes da hora. `pop` e `emoji` crescem até 1,3 quando ela é dita (com sobra de mola) e ficam assim até a
- * linha sair, no espaço que a fileira já guardou (sem empurrar as vizinhas). Substitui o realce de +6% só nelas.
+ * linha sair; o espaço abre junto com a escala (as vizinhas se afastam só o que ela cresceu, sem buraco antes da
+ * hora), e a fileira já foi medida com o tamanho final. Substitui o realce de +6% só nelas.
  */
 const EmphWord: React.FC<{
   word: CaptionWord;
@@ -356,8 +357,12 @@ const EmphWord: React.FC<{
   const pop = frame < word.from ? 0 : spring({ frame: frame - word.from, fps, config: { damping: 9, stiffness: 260, mass: 0.45 } });
   const scale = grows(word) ? interpolate(pop, [0, 1], [1, EMPH_SCALE]) : 1;
   const emoji = emojiOf(word);
-  // Espaço guardado pela escala (metade de cada lado); o do emoji fica no próprio emoji.
-  const room = grows(word) ? Math.max(0, extra - (emoji ? 2 : 0)) * em * fontSize : 0;
+  // Espaço da escala (metade de cada lado), aberto junto com ela: só o que a palavra cresceu até agora. Guardado
+  // inteiro desde a entrada da linha, abria buracos entre as palavras ainda não ditas ("DE UM ··· MEGABYTE ···
+  // PROMETENDO") e a fileira parecia fora de ordem. A conta das fileiras (`captionRows`) continua guardando o tamanho
+  // final, então a palavra crescida cabe sem quebrar a linha. O do emoji fica no próprio emoji.
+  const full = grows(word) ? Math.max(0, extra - (emoji ? 2 : 0)) * em * fontSize : 0;
+  const room = full * Math.min(1, Math.max(0, (scale - 1) / (EMPH_SCALE - 1)));
   return (
     <span style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>
       <span

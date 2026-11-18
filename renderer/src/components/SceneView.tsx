@@ -214,11 +214,12 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // O cartão de notícia não desce até a fonte solta (no vertical ela fica entre o painel e a legenda).
   if (news && source) band.bottom = Math.min(band.bottom, sourceY - sourceChipHalf(width, height) - 0.012);
 
-  // Cartão de dado entra quando o número é dito; dito logo no corte, entra parado ("pop"), sem contar.
+  // Cartão de dado entra quando o número é dito (dito logo no corte, entra junto com a cena). Número dito na cena
+  // entra parado ("pop"), sem contar: a contagem passaria por valores que a fala e a legenda não dizem no mesmo quadro.
   const reveal = inPanel && typeof scene.reveal === 'number' ? scene.reveal : undefined;
   const spokenAtCut = reveal !== undefined && reveal <= Math.round(fps * 0.3);
   const cardFrom = reveal !== undefined && !spokenAtCut ? Math.max(0, reveal - REVEAL_LEAD) : 0;
-  const card = Card ? <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={spokenAtCut} /> : null;
+  const card = Card ? <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={reveal !== undefined} /> : null;
   const hideCaptions = NO_CAPTIONS.has(kind) || (kind === 'title' && titleEchoesSpeech(scene));
   const sourceChip = source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null;
 
