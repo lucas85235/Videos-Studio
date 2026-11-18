@@ -4,7 +4,8 @@
 - grave: justifica pedir a correção ao Claude (número sem cartão, motivo proibido, estilo ou marca no
   prompt, número inventado no cartão, imagens novas quase todas na mesma hora do dia, imagem reaproveitada para
   outra data ou outro evento quando ainda há vaga para imagem nova);
-- corrigido: o código já arrumou no documento (plano repetido, gancho sem imagem nova, cartão sem fundo, carimbo
+- corrigido: o código já arrumou no documento (plano repetido, gancho sem imagem nova, fala em destaque sobre a
+  imagem desfocada no gancho, cartão sem fundo, carimbo
   "INÉDITO" ou que é rótulo e não veredito ("IMPRENSA", "SINAL 2"), faixa que só repete a fala, fonte do cartão que não traz o número ou que ficou sozinha, personagem de
   ficção sem rosto);
 - aviso: o usuário vê, nada muda (motivo repetido, cartões seguidos ou demais, comparação de medidas diferentes, a
@@ -476,6 +477,29 @@ def fix_hook(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool: Pool | 
     scene.visual.seed = seed_from(doc.seed, beat.segment_id, beat.part)
     return [Issue("gancho_sem_imagem", CORRIGIDO, "A primeira cena virou imagem nova com o gancho da direção.",
                   beat.key, scene.id)]
+
+
+def fix_hook_text(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """No gancho, a fala em destaque (`text`) sobre a imagem da cena vira a própria imagem: o cartão de texto
+    escurece e desfoca o fundo, e no gancho isso dava segundos de tela escura só com tipografia, sem nada nítido para
+    reconhecer (o que a thumb prometeu tem de aparecer). A legenda volta com a fala. Sem imagem na cena (fundo liso
+    do estilo) o cartão fica."""
+    if not doc.segments:
+        return []
+    hook_ids = {seg.id for seg in doc.segments if seg.role == "hook"} or {doc.segments[0].id}
+    out: list[Issue] = []
+    for beat in beats:
+        if beat.segment_id not in hook_ids:
+            continue
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.kind != "text":
+            continue
+        if scene.visual.media is None and not scene.visual.asset and not scene.visual.reuse_of:
+            continue
+        scene.kind = "image"
+        out.append(Issue("gancho_texto_desfocado", CORRIGIDO, "No gancho, o cartão de texto sobre a imagem "
+                         "desfocada virou a própria imagem (nítida, com a legenda).", beat.key, scene.id))
+    return out
 
 
 def fix_repeated_shots(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
@@ -1706,6 +1730,7 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     fica liso (o storyboard já pôs o real de fundo onde cabia).
     """
     issues = fix_hook(doc, style, beats, pool)
+    issues += fix_hook_text(doc, beats)
     issues += fix_entity_names(doc, beats)
     issues += fix_real_reserve(doc, beats)
     issues += fix_repeated_shots(doc, beats)

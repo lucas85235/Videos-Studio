@@ -111,6 +111,9 @@ HOOK_BOOST = 2.0
 """Sem `grammar.hook`, a janela do gancho tem o dobro da densidade de punch, texto, SFX e troca de material."""
 BREATH_S = (5.0, 9.0)
 BURST_S = (0.5, 1.5)
+THUMB_OPEN_S = (1.2, 2.5)
+"""Plano de abertura do gancho com o elemento central da thumb escolhida (`hook_thumb`): tempo de reconhecer, e o
+visual da própria cena ainda entra dentro dos primeiros 3 s."""
 REFRAME_SCALE = 1.25
 TEXT_MARGIN = 0.04
 """Folga (fração do quadro) em volta do trecho da captura no reenquadramento: a manchete não encosta na borda."""
@@ -616,6 +619,7 @@ class _Planner:
         self.official_s = 0.0
         self._last_reveal = -math.inf
         self._presenter_cache: tuple[Any] | None = None
+        self._thumb_hook: tuple[Any] | None = None
         self.beats = self._beats()
         self.total = max((b.end for b in self.beats), default=0.0)
         self.budget = _Budget(grammar, self.scale, self.total)
@@ -874,10 +878,57 @@ class _Planner:
         value = math.exp(math.log(self._median(t)) + sigma * rng.gauss(0.0, 1.0))
         return max(MIN_SHOT_S, min(self.g.shot_max_s, value))
 
+    def _hook_anchor(self, beat: _Beat) -> _Shot | None:
+        """O plano de abertura do gancho com o elemento central da thumb escolhida (a figura ou a prova; o avatar é
+        do `presenter.assign`): só na 1ª batida do vídeo, quando a cena ainda não mostra esse material e o item passa
+        nas regras de direitos do gancho. None: a cena abre com o próprio visual, como sempre."""
+        if beat.pos != 0 or beat.seg_role != "hook" or not beat.words:
+            return None
+        if self._thumb_hook is None:
+            from studio.workers.pipeline.hook_thumb import thumb_hook
+
+            try:
+                self._thumb_hook = (thumb_hook(self.doc, self.pool),)
+            except Exception as exc:  # noqa: BLE001 - a thumb não derruba a edição
+                log.warning("elemento da thumb para o gancho indisponível: %s", exc)
+                self._thumb_hook = (None,)
+        hook = self._thumb_hook[0]
+        if hook is None:
+            return None
+        shown = media_tokens(beat.media) if beat.media is not None else frozenset()
+        for anchor in hook.anchors:
+            item = anchor.item
+            if not (item.path or item.poster) or item.media == "meme":
+                continue
+            if (beat.item is not None and item.id == beat.item.id) or (shown & item_tokens(item)):
+                return None  # a cena já abre com o elemento da thumb
+            if not self._pool_ok(item, beat, beat.words[0]):
+                continue
+            self.pool_uses[item.id] += 1
+            self.shown.append((item_tokens(item), beat.start, beat.end))
+            framing = None
+            if anchor.focus is not None and not item.rects and item.media != "clip":
+                framing = ShotFraming(scale=max(1.0, min(1.8, anchor.zoom)), x=max(0.0, min(1.0, anchor.focus[0])),
+                                      y=max(0.0, min(1.0, anchor.focus[1])))
+            motion = "none" if item.media == "clip" else "static" if item.rects else None
+            return _Shot(t=beat.start, word=None, prov=item.tier, source="pool", pool_id=item.id, framing=framing,
+                         motion=motion)
+        return None
+
     def _plan_shots(self, beat: _Beat, recent_durs: list[float], prov_run: list[str]) -> None:
         rng = self._rng(beat, "shots")
         role = beat.mark.role
         shots = [_Shot(t=beat.start, word=None, prov=beat.prov)]
+        anchor = self._hook_anchor(beat)
+        if anchor is not None:
+            # o gancho abre com o que a thumb prometeu e volta para o visual da cena ainda nos primeiros segundos
+            shots = [anchor]
+            lo, hi = THUMB_OPEN_S
+            back = self._cut_word(beat, beat.start, beat.start + rng.uniform(lo, hi), recent_durs,
+                                  hard_end=beat.start + hi)
+            if back is not None and back.start - beat.start >= lo * 0.75:
+                shots[-1].end = back.start
+                shots.append(_Shot(t=back.start, word=back, prov=beat.prov))
         # o respiro longo é para o clipe próprio; trecho oficial (trailer, gameplay) fica curto (Content ID)
         breath_clip = role == "breath" and beat.clip and beat.prov != "official"
         max_clip = self.sources.official_max_clip_s
@@ -885,8 +936,10 @@ class _Planner:
         burst = 0
         if role in ("hook", "joke", "list") and rng.random() < self.g.burst_prob:
             burst = rng.randint(2, 4) - 1  # cortes da rajada (planos - 1)
-        t = beat.start
+        t = shots[-1].t
         guard = 0
+        if anchor is not None and len(shots) == 1:
+            guard = MAX_SCENE_SHOTS  # batida curta demais para voltar ao visual: a thumb fica a cena toda
         while guard < MAX_SCENE_SHOTS - 1 and len(shots) < MAX_SCENE_SHOTS:
             guard += 1
             if forced is not None and forced.start > t + MIN_SHOT_S and forced.index > 0:
@@ -928,7 +981,7 @@ class _Planner:
         if breath_clip:
             for shot in shots:
                 shot.motion = "none"
-        if len(shots) > 1 or breath_clip:
+        if len(shots) > 1 or breath_clip or anchor is not None:
             for shot in shots:
                 if shot.motion is None:
                     self._camera(beat, shot, rng)
@@ -980,7 +1033,10 @@ class _Planner:
                     prov_run: list[str]) -> _Shot | None:
         """Fonte do novo plano: próximo trecho do clipe > acervo com afinidade > reenquadramento. Com 3 planos
         seguidos do mesmo nível, o acervo de outro nível passa na frente."""
-        own = next(s for s in reversed(shots) if s.source == "self")  # o primeiro plano é sempre o da cena
+        # o primeiro plano é o da cena (no gancho que abre com a thumb, o que volta para ela logo depois)
+        own = next((s for s in reversed(shots) if s.source == "self"), None)
+        if own is None:
+            return _Shot(t=word.start, word=word, prov=beat.prov)
         run = [*prov_run, *(s.prov for s in shots)]
         tired = len(run) >= MAX_SAME_PROV and len(set(run[-MAX_SAME_PROV:])) == 1
         avoid = run[-1] if tired else None

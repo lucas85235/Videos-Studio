@@ -10,7 +10,10 @@
   5. nunca em cenas adjacentes (`video.min_gap_scenes`, no mínimo 2 de distância);
   6. nunca a mesma pose duas vezes seguidas;
   7. pose inexistente vira a mais próxima pela emoção e depois a `default_pose`;
-  8. fixas: abertura `oculos`, CTA (e pedido final) `feliz`.
+  8. fixas: abertura `oculos`, CTA (e pedido final) `feliz`;
+  9. a thumb escolhida tem o avatar: a mesma pose entra na 1ª cena do gancho, desde o começo dela (quem clicou na
+     thumb reconhece o apresentador nos primeiros segundos), por cima da regra "nem na primeira cena" e do tipo da
+     cena; cena séria e o manual continuam valendo.
 Os avisos saem no formato do `storyboard_check` (`Issue` com AVISO/CORRIGIDO).
 """
 
@@ -241,6 +244,16 @@ def assign(
     def free(slot: _Slot) -> bool:
         return slot.blocked is None and slot.index not in manual_off and slot.index not in chosen
 
+    # 9. a pose da thumb escolhida no começo do gancho (antes de tudo: as outras regras desviam dela).
+    thumb_pose = _thumb_pose(doc)
+    first = slots[0] if slots else None
+    if thumb_pose and first is not None and first.index not in chosen and first.index not in manual_off and (
+            first.blocked is None or first.blocked == "primeira cena" or first.blocked.startswith("cena de ")):
+        pose = resolve_pose(presenter, thumb_pose)
+        if pose is not None:
+            chosen[first.index] = (ScenePresenter(pose=pose.id, mode="reacao"), "fixa")
+            hints.pop(first.index, None)
+
     # 8. fixas: CTA (feliz), sem a regra do tempo, mas nunca adjacente a outra aparição.
     run_done = False  # uma aparição por trecho de CTA (cenas seguidas de CTA)
     for slot in slots:
@@ -354,6 +367,13 @@ def assign(
             avatar.off = False
             slots[index].scene.presenter = avatar
     return issues
+
+
+def _thumb_pose(doc: ProjectDoc) -> str | None:
+    """A pose do avatar na thumb escolhida (None: sem thumb escolhida ou thumb sem avatar)."""
+    cand = doc.chosen_package()
+    layer = cand.layers.presenter if cand is not None else None
+    return layer.pose if layer is not None and layer.pose else None
 
 
 def _at_of(words: list[str], word: str | None) -> str | None:
