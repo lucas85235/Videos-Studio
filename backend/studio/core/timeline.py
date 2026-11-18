@@ -14,6 +14,7 @@ import functools
 import hashlib
 import math
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -21,11 +22,11 @@ from typing import TYPE_CHECKING, Any
 from studio.core import edit_resolve
 from studio.core.hashing import hash_obj, seed_from
 from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
-from studio.core.project.document import MediaRef, Presenter, ProjectDoc, Scene
+from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, ProjectDoc, Scene, SubShot
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
-from studio.core.sources import prov_of_scene
+from studio.core.sources import REAL_TIERS, prov_of_media, prov_of_scene
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, EditGrammar, StyleSpec, grammar_for, treatment_pool
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
@@ -35,7 +36,7 @@ from studio.media.link_preview import clean_headline, site_label
 from studio.providers.base import Word
 
 if TYPE_CHECKING:
-    from studio.core.project.pool import Pool
+    from studio.core.project.pool import Pool, PoolItem
 
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
 # Cartões que entram com o som de impacto (quando a cena não escolheu outro).
@@ -644,6 +645,8 @@ def build_timeline(
                 for i in range(len(scene_lines) - 1):
                     scene_lines[i]["to"] = min(scene_lines[i]["to"], scene_lines[i + 1]["from"]) or scene_lines[i]["to"]
             resolved = resolve_scene(doc, style, scene, lang, is_first=(index == 0 and k == 0), grammar=grammar)
+            if grammar is not None:
+                drop_foreign_source(doc, scene, resolved, pool)
             if resolved["motion"] == PARALLAX:
                 layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
                 if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
@@ -818,6 +821,85 @@ def _real_media_keys(doc: ProjectDoc, scene: Scene, lang: str, out: dict[str, An
             if own.asset:
                 news["image"] = own.asset  # original (miniatura do cartão); o `src` da cena é a versão enquadrada
             out["news"] = news
+
+
+def _compact(text: str) -> str:
+    """Só letras e números, sem acento e sem caixa ("WeLiveSecurity (ESET)" → "welivesecurityeset")."""
+    folded = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(ch for ch in folded if ch.isalnum() and not unicodedata.combining(ch))
+
+
+def _owner_names(material: MediaRef | PoolItem) -> list[str]:
+    """Quem fez o material: o veículo, cada parte do crédito ("Autor / Pexels") e o site da página e do arquivo."""
+    names = [getattr(material, "outlet", "") or "", *(material.credit or "").split("/")]
+    names += [site_label(url) for url in (material.page_url, material.url) if url]
+    return [name.strip() for name in names if name.strip()]
+
+
+def _names_source(source: str, names: list[str]) -> bool:
+    """A fonte do cartão é quem fez o material? "WeLiveSecurity (ESET)" ~ "welivesecurity.com", "Rockstar Games" ~
+    "rockstargames.com". Compara o nome inteiro e cada parte (fora e dentro do parêntese); o host vale também por
+    rótulo ("canaltech" de "canaltech.com.br")."""
+    wanted = {_compact(part) for part in (source, *re.split(r"[()\[\]·|,/]", source))}
+    wanted = {w for w in wanted if len(w) >= 3}
+    for name in names:
+        parts = {_compact(name)}
+        if "." in name and " " not in name:
+            parts |= {_compact(label) for label in name.split(".")}
+        parts = {p for p in parts if len(p) >= 3}
+        if wanted & parts or any(min(len(w), len(p)) >= 5 and (w in p or p in w) for w in wanted for p in parts):
+            return True
+    return False
+
+
+def _credits_source(prov: str, material: MediaRef | PoolItem | None, source: str) -> bool:
+    """O "Fonte: X" solto pode ficar sobre este material? Sobre fundo desenhado pelo app (`graphic`) e material do
+    próprio usuário (`own`: só ele sabe de onde veio), sim; sobre IA e meme, nunca; sobre material real de terceiros
+    (captura, oficial, foto livre, banco), só quando a fonte é quem fez o material (a captura daquela matéria, a arte
+    daquele estúdio). Sem isso, a fonte da matéria parece crédito da imagem."""
+    if prov in ("graphic", "own"):
+        return True
+    if material is None or prov not in REAL_TIERS:
+        return False
+    return _names_source(source, _owner_names(material))
+
+
+def _shot_owner(doc: ProjectDoc, scene: Scene, shot: SubShot, pool: Pool | None,
+                own: tuple[str, MediaRef | PoolItem | None]) -> tuple[str, MediaRef | PoolItem | None]:
+    """Nível e material de um subplano (a mesma origem de `edit_resolve._shot_material`; o que falta cai no visual
+    da cena)."""
+    if shot.source == "media" and shot.media is not None:
+        return prov_of_media(shot.media), shot.media
+    if shot.source == "pool":
+        item = pool.item(shot.pool_id) if pool is not None and shot.pool_id else None
+        return (item.tier, item) if item is not None else own
+    if shot.source == "reuse":
+        target = next((s for s in doc.scenes if s.id == shot.reuse_of), None)
+        return (prov_of_scene(target, doc), doc.shown_media(target)) if target is not None else own
+    if shot.source == "ai" and scene.visual.type in ("ai_image", "ai_video"):
+        return "ai", None
+    return own
+
+
+def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:
+    """Tira da cena resolvida a fonte do cartão que ficaria solta sobre material que não é dela (camada de edição).
+
+    A fonte cita a matéria do dado; sozinha sobre uma imagem, ela vira o crédito da imagem ("Fonte: ESET" sobre arte
+    de IA, "Fonte: Canaltech" sobre foto de banco, "Fonte: Rockstar Games" sobre a captura da GamesBeat). Fica no
+    cartão de dado (o painel mostra a fonte, o fundo vai desfocado atrás), no cartão de notícia e sobre a captura (ou o
+    material) daquela fonte. Um subplano de outro material na cena também tira a fonte: ela ficaria na tela durante
+    ele. O documento não muda (a fonte continua no cartão, na checagem e na descrição)."""
+    card = resolved.get("card")
+    source = str((card or {}).get("source") or "").strip()
+    if not source or scene.kind in DATA_KINDS or "news" in resolved:
+        return
+    own = (prov_of_scene(scene, doc), doc.shown_media(scene))
+    owners = [own, *(_shot_owner(doc, scene, shot, pool, own) for shot in scene.shots)]
+    if all(_credits_source(prov, material, source) for prov, material in owners):
+        return
+    card.pop("source", None)
+    if not card:
+        resolved.pop("card")
 
 
 def scene_motion(doc: ProjectDoc, style: StyleSpec, scene: Scene) -> str:

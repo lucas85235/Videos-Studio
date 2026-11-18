@@ -327,6 +327,84 @@ def test_reveal_cuts_on_the_emphasis_with_punch_sfx_and_music_drop(isolated_sett
     assert not [e for e in doc.scenes[0].fx if e.type == "music_drop"]
 
 
+def _counters(doc: ProjectDoc) -> list[tuple[str, str, str]]:
+    return [(sid, e.params["text"], e.at) for sid, e in _fx(doc, "counter")]
+
+
+def test_list_counter_follows_the_spoken_item_not_the_scene(isolated_settings):
+    """"5 sinais" em 6 cenas: o contador saía 1/6..6/6 pela posição da cena ("3/6" no "Dois:", nada no "Quatro").
+    Agora sai na palavra do número dito, com o total de itens ditos."""
+    style = get_style(LONG)
+    doc = _doc([
+        LONG_TEXT,
+        "Pra não cair, cinco sinais. Um: até a Rockstar anunciar no site oficial dela, não existe versão de PC.",
+        "Então todo download de PC que aparece hoje é golpe, não importa o site.",
+        "Dois: o tamanho não bate, tipo um arquivinho minúsculo ou uma imagem gigante.",
+        "Três: pediu cripto ou cartão-presente, fuja. Quatro: site que imita a Rockstar com botão de jogar agora.",
+        "Cinco, o maior alarme de todos: pediu pra desativar o antivírus antes de instalar.",
+        "Nenhum jogo legítimo precisa disso, nem os da loja oficial do seu console.",
+    ])
+    for scene in doc.scenes[1:]:
+        scene.mark = BeatMark(role="list")
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert _counters(doc) == [("scn1", "1/5", "Um"), ("scn3", "2/5", "Dois"), ("scn4", "3/5", "Três"),
+                              ("scn4", "4/5", "Quatro"), ("scn5", "5/5", "Cinco")]
+
+
+def test_list_counter_starts_on_the_beat_before_and_skips_incoherent_counts(isolated_settings):
+    style = get_style(LONG)
+    # "Primeira:" vem na batida antes da lista; "Segunda:" está nela.
+    doc = _doc([
+        LONG_TEXT,
+        "Mas tem duas pegadinhas. Primeira: no lançamento, a nuvem é só para os consoles da marca.",
+        "O próprio fabricante confirmou que o computador fica de fora desse serviço por enquanto.",
+        "Segunda: o jogo é comprado à parte, e para usar a nuvem você ainda precisa da assinatura.",
+    ])
+    for scene in doc.scenes[2:]:
+        scene.mark = BeatMark(role="list")
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert _counters(doc) == [("scn1", "1/2", "Primeira"), ("scn3", "2/2", "Segunda")]
+
+    # Só "Primeiro:" dito (o resto da lista está longe): número nenhum fecha com a fala, então não há contador.
+    lone = _doc([
+        LONG_TEXT,
+        "São três jeitos, e um deles pode destruir todos os seus arquivos de uma vez só.",
+        "Primeiro: o site falso de demonstração, que a empresa de segurança encontrou em agosto.",
+        "Com nomes tipo demonstração grátis, copiando a divulgação oficial do estúdio do jogo.",
+    ])
+    for scene in lone.scenes[2:]:
+        scene.mark = BeatMark(role="list")
+    edit_plan.plan(lone, style, Pool(), recent=set())
+    assert _counters(lone) == []
+
+
+def test_list_counter_without_spoken_numbers_counts_the_scenes(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([
+        LONG_TEXT,
+        "Ativa a verificação em duas etapas em todas as contas onde ela ainda não estiver ligada.",
+        "E se pagou alguma coisa, fala com o seu banco o quanto antes e guarda o comprovante.",
+    ])
+    for scene in doc.scenes[1:]:
+        scene.mark = BeatMark(role="list")
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert [(sid, text) for sid, text, _at in _counters(doc)] == [("scn1", "1/2"), ("scn2", "2/2")]
+
+
+def test_list_counter_follows_a_countdown(isolated_settings):
+    style = get_style(LONG)
+    doc = _doc([
+        LONG_TEXT,
+        "Número três: o farol que guiou navios por quase um século inteiro na costa sul.",
+        "Número dois: a ilha que ninguém visita desde que a marinha abandonou a construção.",
+        "Número um: a porta trancada por dentro na noite em que o faroleiro desapareceu.",
+    ])
+    for scene in doc.scenes[1:]:
+        scene.mark = BeatMark(role="list")
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert [(sid, text) for sid, text, _at in _counters(doc)] == [("scn1", "3/3"), ("scn2", "2/3"), ("scn3", "1/3")]
+
+
 def test_locked_and_user_items_are_preserved(isolated_settings):
     style = get_style(LONG)
     doc = _doc([LONG_TEXT, LONG_TEXT, LONG_TEXT])

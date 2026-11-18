@@ -231,6 +231,52 @@ def test_clean_appears_by_tier():
     assert [s.get("clean") for s in scenes] == [None, True, None, True, True]
 
 
+def _source_doc(*, edited: bool = True) -> ProjectDoc:
+    """Cartões com "Fonte:" sobre materiais diferentes (o vídeo do GTA 6 no PC: a fonte da matéria saía sobre arte de
+    IA, foto de banco e a captura de outro veículo)."""
+    capture = MediaRef(kind="capture", source="capture", asset="uploads/prj_tl/media/0123456789abcdef.jpg",
+                       page_url="https://gamesbeat.com/gta-6-pc/", credit="gamesbeat.com")
+    eset = MediaRef(kind="capture", source="capture", asset="uploads/prj_tl/media/fedcba9876543210.jpg",
+                    page_url="https://www.welivesecurity.com/pt/golpes/gta-6/")
+    stock = MediaRef(kind="photo", source="pexels", asset="uploads/prj_tl/media/00112233445566aa.jpg",
+                     credit="Kindel Media / Pexels")
+    art = MediaRef(kind="official", source="link", asset="uploads/prj_tl/media/aabbccddeeff0011.jpg",
+                   credit="Rockstar Games")
+    head = {"pt-BR": "GOLPE 3 · PAGAMENTO"}
+    return _doc(
+        _scene(0, mark=BeatMark(role="hook") if edited else None,
+               card=SceneCard(headline=head, source="WeLiveSecurity (ESET)")),  # IA
+        _scene(1, visual=Visual(prompt="x", media=stock), card=SceneCard(stamp={"pt-BR": "GOLPE"}, source="Canaltech")),
+        _scene(2, visual=Visual(prompt="x", media=capture), card=SceneCard(headline=head, source="GamesBeat")),
+        _scene(3, kind="text", visual=Visual(reuse_of="scn_2"), card=SceneCard(source="Rockstar Games")),
+        _scene(4, visual=Visual(prompt="x", media=eset), card=SceneCard(headline=head, source="WeLiveSecurity (ESET)")),
+        _scene(5, kind="stat", visual=Visual(prompt="x", media=stock),
+               card=SceneCard(value={"pt-BR": "US$ 250"}, source="Malwarebytes")),
+        _scene(6, visual=Visual(prompt="x", media=art), card=SceneCard(headline=head, source="Rockstar Games")),
+        _scene(7, visual=Visual(prompt="x", media=capture), card=SceneCard(headline=head, source="GamesBeat"),
+               shots=[SubShot(at="pessoal", source="pool", pool_id="p2")] if edited else []),
+    )
+
+
+def test_card_source_only_over_the_material_of_that_source():
+    pool = Pool(items=[PoolItem(id="p2", tier="stock", media="image", path="uploads/prj_tl/pool/p2.jpg",
+                                credit="Autor / Pexels")])
+    scenes = _timeline(_source_doc(), pool=pool)["scenes"]
+    sources = [(s.get("card") or {}).get("source") for s in scenes]
+    # sobre IA, foto de banco, a captura de outro veículo e o subplano de banco, a fonte sai; fica sobre a captura e a
+    # arte daquela fonte e no cartão de dado
+    assert sources == [None, None, "GamesBeat", None, "WeLiveSecurity (ESET)", "Malwarebytes", "Rockstar Games",
+                       None]
+    # o resto do cartão fica; o cartão que só tinha a fonte sai inteiro
+    assert scenes[0]["card"] == {"headline": "GOLPE 3 · PAGAMENTO"} and scenes[1]["card"]["stamp"] == "GOLPE"
+    assert "card" not in scenes[3]
+
+
+def test_card_source_stays_in_old_projects_without_the_edit_layer():
+    scenes = _timeline(_source_doc(edited=False))["scenes"]
+    assert [(s.get("card") or {}).get("source") for s in scenes][:2] == ["WeLiveSecurity (ESET)", "Canaltech"]
+
+
 def test_global_effects_policy_has_no_clean():
     style = STYLE.model_copy(deep=True)
     style.edit.grammar = EditGrammar(effects_policy="global")

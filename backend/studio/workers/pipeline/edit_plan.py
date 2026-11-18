@@ -144,6 +144,20 @@ DEFAULT_SFX: dict[str, dict[str, float]] = {
     "reveal": {"impact": 1.0},
     "gag": {"boom": 0.5, "scratch": 0.5},
 }
+LIST_MARKERS: dict[str, int] = {
+    "um": 1, "uma": 1, "dois": 2, "duas": 2, "tres": 3, "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8,
+    "nove": 9, "dez": 10,
+    "primeiro": 1, "primeira": 1, "segundo": 2, "segunda": 2, "terceiro": 3, "terceira": 3, "quarto": 4,
+    "quarta": 4, "quinto": 5, "quinta": 5, "sexto": 6, "sexta": 6, "setimo": 7, "setima": 7, "oitavo": 8,
+    "oitava": 8, "nono": 9, "nona": 9, "decimo": 10, "decima": 10,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8,
+    "ninth": 9, "tenth": 10,
+    "uno": 1, "dos": 2, "cuatro": 4, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "primero": 1, "primera": 1,
+    "tercero": 3, "tercera": 3, "cuarto": 4, "cuarta": 4, "septimo": 7, "octavo": 8, "noveno": 9,
+}  # fmt: skip
+"""Número do item dito em voz alta na lista ("Dois:", "Primeiro,", "Number three:"), por palavra dobrada."""
+_LIST_PREFIX = frozenset({"numero", "number"})
 _SENTENCE_END = (".", "!", "?", "…")
 _CLAUSE_END = (",", ";", ":", "—", "–")
 _CLOSERS = "\"'”’»)]}"
@@ -1113,7 +1127,7 @@ class _Planner:
         return True
 
     def _structural(self) -> None:
-        lists = self._list_runs()
+        counters = self._list_counters() if self.g.intensity > 0 else {}
         meme_gap = MEME_GAP_S["short" if self.short else "long"]
         for beat in self.beats:
             if not beat.editable:
@@ -1123,15 +1137,21 @@ class _Planner:
                 self._reveal(beat)
             if beat.mark.gag is not None and not beat.mark.serious and self.g.humor != "none":
                 self._gag(beat, meme_gap)
-            if beat.scene.id in lists and self.g.intensity > 0:
-                k, n = lists[beat.scene.id]
-                word = beat.words[0]
+            for word, text in counters.get(beat.scene.id, []):
                 if self._free(beat, word, "counter", spacing=0.5):
-                    self._add(beat, word, "counter", params={"text": f"{k}/{n}"}, dur_ms=1500)
+                    self._add(beat, word, "counter", params={"text": text}, dur_ms=1500)
             if beat.capture and beat.media is not None:
                 self._highlight(beat)
 
-    def _list_runs(self) -> dict[str, tuple[int, int]]:
+    def _list_counters(self) -> dict[str, list[tuple[_W, str]]]:
+        """Contador ("2/5") das listas: duas ou mais batidas seguidas com o papel `list` (ou cartão `count`).
+
+        O número é o do item dito, não a posição da cena na sequência: a lista que conta em voz alta ("Um: ...",
+        "Dois: ...", "Primeiro, ...") ganha o contador na palavra do número, com o total de itens ditos (a cena que só
+        continua um item não ganha outro, e uma cena com dois itens ganha os dois). A contagem pode começar na batida
+        logo antes da sequência ("duas pegadinhas. Primeira: ...") e pode ser regressiva ("Número dez", ..., "Número
+        um"). Contagem dita que não fecha (pula, começa no meio, só um item) fica sem contador: qualquer número na tela
+        contradiria a fala. Lista sem número dito conta as cenas, como antes."""
         runs: list[list[_Beat]] = []
         for beat in self.beats:
             is_list = beat.mark.role == "list" or beat.scene.kind == "count"
@@ -1139,11 +1159,24 @@ class _Planner:
                 runs[-1].append(beat)
             elif is_list:
                 runs.append([beat])
-        out: dict[str, tuple[int, int]] = {}
+        out: dict[str, list[tuple[_W, str]]] = {}
         for run in runs:
-            if len(run) >= 2:
+            if len(run) < 2:
+                continue
+            said = [(beat, word, k) for beat in run for word, k in _list_markers(beat.words)]
+            before = self.beats[run[0].pos - 1] if run[0].pos > 0 else None
+            lead = _list_markers(before.words)[-1:] if before is not None else []
+            items = None
+            if lead:
+                items = _counted([(before, lead[0][0], lead[0][1]), *said])
+            if items is None and said:
+                items = _counted(said)
+            if items is not None:
+                for beat, word, text in items:
+                    out.setdefault(beat.scene.id, []).append((word, text))
+            elif not said:
                 for k, beat in enumerate(run, 1):
-                    out[beat.scene.id] = (k, len(run))
+                    out[beat.scene.id] = [(beat.words[0], f"{k}/{len(run)}")]
         return out
 
     def _reveal(self, beat: _Beat) -> None:
@@ -1571,6 +1604,36 @@ def _reframe_key(beat: _Beat) -> str:
 
 def _similar(a: float, b: float) -> bool:
     return a > 0 and b > 0 and abs(a - b) <= SIMILAR * max(a, b)
+
+
+def _clause_start(words: list[_W], i: int) -> bool:
+    return i == 0 or words[i - 1].text.rstrip(_CLOSERS).endswith(_SENTENCE_END + _CLAUSE_END)
+
+
+def _list_markers(words: list[_W]) -> list[tuple[_W, int]]:
+    """Números de item ditos na fala: a palavra do número (`LIST_MARKERS` ou algarismo até 20) no começo de uma
+    oração, ou depois de "número" no começo dela, e seguida de pausa ("Dois:", "Primeiro,", "Número três:"). "cinco
+    sinais" e "um arquivinho" não contam."""
+    out: list[tuple[_W, int]] = []
+    for i, word in enumerate(words):
+        k = LIST_MARKERS.get(word.key)
+        if k is None and word.key.isdecimal() and 0 < int(word.key) <= 20:
+            k = int(word.key)
+        if k is None or not word.text.rstrip(_CLOSERS).endswith(_CLAUSE_END):
+            continue
+        if _clause_start(words, i) or (i > 0 and words[i - 1].key in _LIST_PREFIX and _clause_start(words, i - 1)):
+            out.append((word, k))
+    return out
+
+
+def _counted(said: list[tuple[_Beat, _W, int]]) -> list[tuple[_Beat, _W, str]] | None:
+    """A contagem dita fecha? De um em um a partir do um, ou regressiva até o um, com pelo menos 2 itens: o contador
+    de cada item ("3/5", o total é o maior número dito). Senão, None."""
+    values = [k for _beat, _word, k in said]
+    n = len(values)
+    if n < 2 or (values != list(range(1, n + 1)) and values != list(range(n, 0, -1))):
+        return None
+    return [(beat, word, f"{k}/{n}") for beat, word, k in said]
 
 
 def _tagset(values: Iterable[str]) -> set[str]:
