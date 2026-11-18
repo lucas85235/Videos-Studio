@@ -2651,10 +2651,13 @@ def _title_overlap(thumb_text: str, title: str) -> tuple[str, list[str]]:
 def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent: Any = None, *,
                concept: str = "", text: str = "", notes: list[str] | None = None) -> str | None:
     """Pose do avatar para uma thumb do pacote, sem nunca inverter o tom (`pose_tone`): a citada em `hint` (id,
-    apelido ou emoção) ou, sem ela, a citada pelo nome no `concept` ("o avatar com a mão na testa"); senão a do tom
-    do texto da thumb (`text`: título, palavra, conceito; golpe/vírus/falso → alerta) ainda não usada e menos vista
-    nas thumbs recentes (`recent`: `thumb_variety.Usage`), depois a neutra; sem tom no texto, a neutra e as outras
-    que não são de festa vêm antes das positivas. None sem nenhuma pose que sirva.
+    apelido ou emoção) ou, sem ela, a citada pelo nome no `concept` logo depois da menção ao avatar ("o avatar com a
+    mão na testa"). Sem pose citada, pelo tom: a cara que o conceito pede ao avatar ("avatar chocado") e o tom do
+    texto da thumb (`text`: título, palavra e promessa; sem tom nele, o do `concept`; golpe/vírus/adiado → alerta,
+    "sem golpe" não conta), ainda não usada e menos vista nas thumbs recentes (`recent`: `thumb_variety.Usage`),
+    depois a neutra. A pose de festa só entra sem ninguém citar quando a neutra acabou: o texto "positivo" erra mais
+    ("ninguém ganhou dublagem") e a festa na notícia ruim é o erro que se vê. Sem tom, a neutra e as que não são de
+    festa vêm antes das positivas. None sem nenhuma pose que sirva.
 
     Variedade: a citada que o pacote já usa (`used`) ou que o canal já usou nas thumbs recentes dá lugar a outra da
     mesma emoção ou, sem ela, do mesmo tom (menos vista); sem nenhuma, a citada FICA (com aviso de repetição em
@@ -2670,7 +2673,11 @@ def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent
         if notes is not None:
             notes.append(msg)
 
-    want = pose_tone.text_tone(text)
+    def repeat(pid: str, why: str = " (nenhuma outra pose do mesmo tom)") -> str:
+        note(f"AVISO: a pose {pid} repete outra thumb do pacote{why}")
+        return pid
+
+    want = pose_tone.text_tone(text) or pose_tone.text_tone(concept)
     tone_of = {p["id"]: pose_tone.pose_tone(p) for p in poses}
     name = normalize_token(str(hint or ""))
     matches: list[dict[str, Any]] = []
@@ -2698,33 +2705,36 @@ def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent
         alts = [p for p in poses if p["id"] != cited["id"] and p["id"] not in used
                 and (p in matches or pose_tone.can_swap(cited, p))]
         if cited["id"] in used:
-            if alts:
-                return min(alts, key=rank)["id"]
-            note(f"AVISO: a pose {cited['id']} repete outra thumb do pacote (nenhuma outra pose do mesmo tom)")
-            return cited["id"]
+            return min(alts, key=rank)["id"] if alts else repeat(cited["id"])
         fresher = [p for p in alts if seen(p["id"]) < seen(cited["id"])]
-        if fresher:
-            return min(fresher, key=rank)["id"]
-        return cited["id"]
+        return min(fresher, key=rank)["id"] if fresher else cited["id"]
+
+    face = pose_tone.avatar_tone(concept)
+    order = [face] if face and pose_tone.fits(face, want) else []
+    if want == pose_tone.POSITIVO:
+        order += [pose_tone.NEUTRO, pose_tone.POSITIVO]
+    elif want:
+        order += [want, pose_tone.NEUTRO]
+    order = list(dict.fromkeys(order))
     free = [p for p in poses if p["id"] not in used]
-    if want:
-        for pool in ([p for p in free if tone_of[p["id"]] == want],
-                     [p for p in free if tone_of[p["id"]] == pose_tone.NEUTRO]):
-            if pool:
-                return min(pool, key=lambda p: seen(p["id"]))["id"]
-        same = [p for p in poses if tone_of[p["id"]] == want]
+    for tone in order:
+        pool = [p for p in free if tone_of[p["id"]] == tone]
+        if pool:
+            return min(pool, key=lambda p: seen(p["id"]))["id"]
+    if order:
+        same = [p for p in poses if tone_of[p["id"]] == order[0]]
         if same:
-            pick = min(same, key=lambda p: seen(p["id"]))["id"]
-            note(f"AVISO: a pose {pick} repete outra thumb do pacote (nenhuma outra pose do mesmo tom)")
-            return pick
-        rest = [p for p in free if pose_tone.fits(tone_of[p["id"]], want)]
-        return min(rest, key=lambda p: seen(p["id"]))["id"] if rest else None
+            return repeat(min(same, key=lambda p: seen(p["id"]))["id"])
 
     def safe(p: dict[str, Any]) -> tuple[bool, bool, float]:
         tone = tone_of[p["id"]]
         return tone == pose_tone.POSITIVO, tone != pose_tone.NEUTRO, seen(p["id"])
 
-    return min(free or poses, key=safe)["id"]
+    rest = [p for p in free or poses if pose_tone.fits(tone_of[p["id"]], want)]
+    if not rest:
+        return None
+    pick = min(rest, key=safe)["id"]
+    return pick if free else repeat(pick, "")
 
 
 def _frame_layer(frame: dict[str, Any] | None, template: str) -> dict[str, Any]:
@@ -3124,6 +3134,19 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             chars = []
         chars = _pick_characters(chars, assets.cutouts, recent, batch, notes, template=template,
                                  avoid_keyart=_uses_keyart(batch, frame_ids, "background"))
+        pose_id = None
+        wants_pose = template in ("avatar-reage", "numero-lista", "prova") or item.get("presenter_pose")
+        if is_long and assets.poses and wants_pose and template != "objeto":
+            pose_id = _pick_pose(item.get("presenter_pose"), assets.poses, used_poses, recent,
+                                 concept=str(item.get("concept") or ""),
+                                 text=" ".join([title, thumb_text, str(item.get("promise") or "")]), notes=notes)
+            if pose_id:
+                used_poses.add(pose_id)
+            elif template in _TEMPLATE_NEEDS_PRESENTER and not chars:
+                # nenhuma pose combina com o tom (só festa numa thumb de alerta): sem avatar nem figura, a thumb
+                # sairia só fundo e texto: vira a palavra grande sobre o quadro (o fallback de sempre)
+                notes.append(f"CORRIGIDO: {template} sem pose do avatar que combine com o tom; usei heroi-palavra")
+                template = "heroi-palavra"
         frame = None
         backdrop = None
         if not card:
@@ -3144,15 +3167,6 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             places = [f for f in frames if not {"personagem", "keyart"} & set(f.get("tags") or [])] or frames
             backdrop = str(min(places[turn % len(places):] + places[:turn % len(places)], key=lambda f: (
                 thumb_variety.penalty("background", str(f["id"]), recent, batch)))["id"])
-        pose_id = None
-        wants_pose = template in ("avatar-reage", "numero-lista", "prova") or item.get("presenter_pose")
-        if is_long and assets.poses and wants_pose and template != "objeto":
-            concept = str(item.get("concept") or "")
-            pose_id = _pick_pose(item.get("presenter_pose"), assets.poses, used_poses, recent, concept=concept,
-                                 text=" ".join([title, thumb_text, concept, str(item.get("promise") or "")]),
-                                 notes=notes)
-            if pose_id:
-                used_poses.add(pose_id)
         if pose_id and chars and template != "versus":
             # Um foco só: avatar e personagem recortado juntos se atropelam no mesmo lado da thumb.
             if template in ("avatar-reage", "numero-lista"):

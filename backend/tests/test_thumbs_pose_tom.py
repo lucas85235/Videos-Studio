@@ -44,6 +44,53 @@ def test_tom_do_texto():
         == PT.MISTERIO
     assert PT.text_tone("GTA 6 de graça: finalmente chegou", "GRÁTIS") == PT.POSITIVO
     assert PT.text_tone("GTA 6 no PC: quando sai?") is None
+    assert PT.text_tone("Não seja hackeado no GTA 6") == PT.ALERTA  # "seja" não é enchimento: não nega
+
+
+def test_negacao_e_noticia_ruim():
+    # a palavra negada não conta: nem a festa de "ninguém ganhou" nem o alerta de "sem golpe"
+    assert PT.text_tone("GTA 6: NENHUM idioma foi dublado", "SÓ INGLÊS",
+                        "o fato surpreendente de que ninguém ganhou dublagem") is None
+    assert PT.text_tone("GTA 6 grátis na Epic: CONFIRMADO e sem golpe") == PT.POSITIVO
+    assert PT.text_tone("GTA 6 rodou no PC fraco SEM ERRO") is None
+    assert PT.text_tone("Rockstar liberou: GTA 6 sem risco de ban, finalmente") == PT.POSITIVO
+    assert PT.text_tone("GTA 6 não é vírus?") is None
+    assert PT.text_tone("GTA 6 no PC: NÃO baixe esse arquivo") == PT.ALERTA  # a frase com "não" é o alerta
+    # notícia ruim é alerta; "chegou", "lançou" e "confirmado" sozinhos não são festa
+    for title in ("GTA 6 ADIADO: adiamento confirmado", "GTA 6 chegou cheio de BUG", "GTA 6 foi cancelado no PC",
+                  "A pior polêmica do GTA 6"):
+        assert PT.text_tone(title) == PT.ALERTA, title
+    assert PT.text_tone("GTA 6 lançou sem modo online") is None
+
+
+def test_noticia_ruim_nao_ganha_festa():
+    # pacote real prj_iedujm3t5m: "ninguém ganhou dublagem" dava texto positivo e a pose comemorando
+    concept = "Ângulo lacuna de curiosidade: o fato surpreendente de que ninguém ganhou dublagem, não só o Brasil."
+    assert authoring._pick_pose(None, POSES, set(), concept=concept,
+                                text="GTA 6: NENHUM idioma foi dublado SÓ INGLÊS") == "apontando"
+    for title in ("GTA 6 ADIADO: adiamento confirmado", "GTA 6 chegou cheio de BUG", "GTA 6 lançou sem modo online"):
+        pick = authoring._pick_pose(None, POSES, set(KEPT), text=title)
+        assert PT.pose_tone(next(p for p in POSES if p["id"] == pick)) != PT.POSITIVO, (title, pick)
+
+
+def test_alerta_negado_nao_tira_a_festa_da_boa_noticia():
+    for title in ("GTA 6 grátis na Epic: CONFIRMADO e sem golpe", "GTA 6 rodou no PC fraco SEM ERRO",
+                  "Rockstar liberou: GTA 6 sem risco de ban, finalmente"):
+        notes: list[str] = []
+        assert authoring._pick_pose("comemorando", POSES, set(), text=title, notes=notes) == "comemorando", title
+        assert not notes
+
+
+def test_pose_citada_so_perto_do_avatar():
+    concept = "Ângulo dinheiro: quanto dinheiro a Rockstar perdeu com o vazamento; avatar chocado"
+    assert PT.cited_in(concept, POSES) == []  # "dinheiro" não fala do avatar
+    assert PT.avatar_tone(concept) == PT.ALERTA
+    pick = authoring._pick_pose(None, POSES, set(), concept=concept, text="Quanto a Rockstar perdeu US$ 2 BI")
+    assert pick in {"surpreso", "mao-na-testa"}
+    assert [p["id"] for p in PT.cited_in("o avatar pequeno, sobre o quadro de dinheiro", POSES)] == []
+    assert [p["id"] for p in PT.cited_in("O avatar grande com a mão na testa reage ao erro", POSES)] ==         ["mao-na-testa"]
+    # sem menção ao avatar, vale o texto inteiro
+    assert [p["id"] for p in PT.cited_in("fazendo segredo sobre a nuvem", POSES)] == ["segredo"]
 
 
 def test_1_1_mb_rouba_senhas_nao_comemora():
@@ -102,7 +149,10 @@ def test_comemorando_continua_em_thumb_positiva():
     text = _text("GTA 6 de graça: finalmente chegou", "GRÁTIS", "o apresentador animado")
     assert authoring._pick_pose("comemorando", POSES, set(), text=text) == "comemorando"
     assert authoring._pick_pose(None, POSES, set(), concept="o apresentador animado", text=text) == "comemorando"
-    assert authoring._pick_pose(None, POSES, {"comemorando"}, text=text) == "dinheiro"  # o mesmo tom
+    assert authoring._pick_pose("comemorando", POSES, {"comemorando"}, text=text) == "dinheiro"  # o mesmo tom
+    # sem ninguém citar a festa, o texto positivo pega a neutra antes (o "positivo" do texto erra mais)
+    assert authoring._pick_pose(None, POSES, set(), text=text) == "apontando"
+    assert authoring._pick_pose(None, POSES, {"apontando"}, text=text) == "comemorando"
 
 
 def _layers(pose: str) -> ThumbLayers:
@@ -122,6 +172,8 @@ def test_troca_do_render_fica_no_mesmo_tom():
     # positiva troca por positiva
     swapped = tasks._swap_pose(_layers("comemorando"), POSES, lambda pid: 0.0)
     assert swapped is not None and swapped[1] == "dinheiro"
+    # a outra de alerta já está num vizinho do pacote: trocar só muda a repetição de lugar, a pose fica
+    assert tasks._swap_pose(_layers("surpreso"), POSES, lambda pid: 0.0, {"mao-na-testa"}) is None
 
 
 def test_pacote_com_os_tres_casos_reais():
@@ -141,3 +193,15 @@ def test_pacote_com_os_tres_casos_reais():
                                             is_long=True, used_poses=set(KEPT))
     poses = {c.thumb_text: c.layers.presenter.pose for c in cands}
     assert poses == {"1,1 MB": "surpreso", "SÓ XBOX": "segredo", "VÍRUS": "mao-na-testa"}
+
+
+def test_avatar_reage_sem_pose_que_combine_vira_heroi_palavra():
+    # só poses de festa numa thumb de golpe: sem avatar nem figura, o avatar-reage sairia só fundo e texto
+    party = [p for p in POSES if p["id"] in ("comemorando", "dinheiro")]
+    raw = [{"title": "Esse GTA 6 de PC rouba suas SENHAS", "thumb_text": "1,1 MB", "template": "avatar-reage",
+            "concept": "o apresentador grande", "presenter_pose": None, "promise": "p", "background_hint": None,
+            "characters_hint": [], "pill": None, "cards": []}]
+    cands = authoring._normalize_candidates(raw, assets=authoring.PackageAssets(poses=party),
+                                            templates=["avatar-reage", "heroi-palavra"], is_long=True)
+    assert cands[0].layers.template == "heroi-palavra" and cands[0].layers.presenter is None
+    assert any("avatar-reage sem pose do avatar que combine com o tom" in n for n in cands[0].score["notes"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import Any
 
 from studio.config import get_settings
@@ -337,9 +338,11 @@ def _fix_low_figures(layers: Any, cutouts: list[dict[str, Any]], low: dict[str, 
     return out, notes
 
 
-def _swap_pose(layers: Any, poses: list[dict[str, Any]], cost: Any) -> tuple[Any, str] | None:
+def _swap_pose(layers: Any, poses: list[dict[str, Any]], cost: Any,
+               taken: Collection[str] = ()) -> tuple[Any, str] | None:
     """As camadas com outra pose do avatar: a menos usada da mesma emoção ou, sem ela, do mesmo tom
-    (`pose_tone.can_swap`: a variedade nunca troca a cara de alerta pela de festa). None sem outra compatível (a
+    (`pose_tone.can_swap`: a variedade nunca troca a cara de alerta pela de festa) que nenhum outro candidato do
+    pacote usa (`taken`: trocar pela pose do vizinho só muda a repetição de lugar). None sem outra compatível (a
     pose fica e a thumb segue com o aviso de parecida)."""
     from studio.media import pose_tone
 
@@ -347,7 +350,7 @@ def _swap_pose(layers: Any, poses: list[dict[str, Any]], cost: Any) -> tuple[Any
         return None
     cur = layers.presenter.pose
     current = next((p for p in poses if p["id"] == cur), {"id": cur})
-    alts = [p for p in poses if p["id"] != cur and pose_tone.can_swap(current, p)]
+    alts = [p for p in poses if p["id"] != cur and p["id"] not in taken and pose_tone.can_swap(current, p)]
     if not alts:
         return None
     pick = min(alts, key=lambda p: (not pose_tone.shares_emotion(current, p), cost(p["id"])))
@@ -481,7 +484,8 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
             if cutouts and any(c.asset in cutout_items for c in layers.characters):
                 steps.append(("figura", lambda L: _swap_figure(L, cutouts, cost_of("character"))))
             if poses and layers.presenter is not None:
-                steps.append(("pose", lambda L: _swap_pose(L, poses, cost_of("pose"))))
+                taken = {v for v, c in batch.counts.get("pose", {}).items() if c > 0}
+                steps.append(("pose", lambda L, t=taken: _swap_pose(L, poses, cost_of("pose"), t)))
             for what, swap in steps:
                 if rec[2] is None:
                     break
