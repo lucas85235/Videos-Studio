@@ -275,7 +275,8 @@ def test_card_source_only_over_the_material_of_that_source():
 def _verdict_doc() -> ProjectDoc:
     """Vereditos do vídeo do GTA 6 no PC: "GOLPE" sobre o quadro do trailer, "FALSO" sobre a matéria da Dexerto e a
     arte oficial de Jason e Lucia (QA: o espectador lê que o trailer, a imprensa ou a arte é que são falsos); "GOLPE"
-    sobre o print do site falso fica, como sobre ilustração e no cartão de texto com a afirmação."""
+    sobre o print do site falso fica, como sobre ilustração e no cartão de texto com a afirmação sobre fundo liso; o
+    cartão de texto sobre o trailer desfocado ("FALSO" com "Fonte: Rockstar Games" sobre o letreiro VICE) perde."""
     trailer = MediaRef(kind="official", source="library", asset="uploads/prj_tl/media/0123456789abcdef.jpg",
                        credit="Rockstar Games (trailer)")
     dexerto = MediaRef(kind="capture", source="capture", asset="uploads/prj_tl/media/fedcba9876543210.jpg",
@@ -295,6 +296,8 @@ def _verdict_doc() -> ProjectDoc:
         _scene(6, visual=Visual(prompt="x", media=trailer), card=SceneCard(stamp={"pt-BR": "CONFIRMADO"})),
         _scene(7, visual=Visual(prompt="x", media=scam), card=SceneCard(stamp=golpe),
                shots=[SubShot(at="pessoal", source="pool", pool_id="p30")]),
+        _scene(8, kind="text", visual=Visual(type="none"), card=SceneCard(stamp=falso, source="Rockstar Games")),
+        _scene(9, visual=Visual(prompt="x", media=trailer), card=SceneCard(stamp={"pt-BR": "NÃO É GOLPE"})),
     )
 
 
@@ -311,9 +314,10 @@ VERDICT_POOL = Pool(items=[
 def test_negative_verdict_never_over_official_or_press_material():
     scenes = _timeline(_verdict_doc(), pool=VERDICT_POOL)["scenes"]
     stamps = [(s.get("card") or {}).get("stamp") for s in scenes]
-    # trailer, Dexerto e arte oficial perdem o carimbo; o site falso, a IA e o cartão de texto ficam com ele;
-    # veredito positivo fica; o subplano do trailer dentro da cena do site falso também tira o "GOLPE"
-    assert stamps == [None, None, None, "GOLPE", "GOLPE", "FALSO", "CONFIRMADO", None]
+    # trailer, Dexerto, arte oficial e o cartão sobre o trailer desfocado perdem o carimbo; o site falso, a IA e o
+    # cartão de fundo liso ficam com ele; veredito positivo ("CONFIRMADO", "NÃO É GOLPE") fica; o subplano do trailer
+    # dentro da cena do site falso também tira o "GOLPE"
+    assert stamps == [None, None, None, "GOLPE", "GOLPE", None, "CONFIRMADO", None, "FALSO", "NÃO É GOLPE"]
     assert "card" not in scenes[0] and scenes[1]["card"] == {"headline": "PC"}
     assert "stamp_at" not in (scenes[2].get("card") or {})
 
@@ -326,10 +330,10 @@ def test_storyboard_review_drops_negative_verdict_over_true_material():
                                    words=TEXT.split(), seconds=3.0) for i in range(len(doc.scenes))]
     issues = storyboard_check.fix_verdict_stamps(doc, beats, VERDICT_POOL)
     assert [(i.code, i.severity, i.scene_id) for i in issues] == [
-        ("carimbo_sobre_material_real", "corrigido", f"scn_{k}") for k in (0, 1, 2, 7)]
+        ("carimbo_sobre_material_real", "corrigido", f"scn_{k}") for k in (0, 1, 2, 5, 7)]
     assert issues[0].message.startswith('O carimbo "GOLPE" saiu: a cena mostra material oficial ou de imprensa')
     assert doc.scenes[0].card is None and doc.scenes[1].card.headline == {"pt-BR": "PC"}
-    assert doc.scenes[3].card.stamp == {"pt-BR": "GOLPE"} and doc.scenes[5].card.stamp == {"pt-BR": "FALSO"}
+    assert doc.scenes[3].card.stamp == {"pt-BR": "GOLPE"} and doc.scenes[8].card.stamp == {"pt-BR": "FALSO"}
     # Cena travada pelo usuário não muda; a revisão inteira roda a correção.
     doc = _verdict_doc()
     doc.scenes[0].locked = True
@@ -337,6 +341,45 @@ def test_storyboard_review_drops_negative_verdict_over_true_material():
     import inspect
 
     assert "fix_verdict_stamps(doc, beats, pool)" in inspect.getsource(storyboard_check.check)
+
+
+def test_verdict_reads_pool_without_edit_layer(monkeypatch):
+    """Sem camada de edição o build não passa o acervo: a timeline lê `pool.json` só quando um veredito negativo cai
+    sobre material oficial, e o "GOLPE" sobre o site falso (descrição do acervo) continua na tela."""
+    from studio.core import timeline as tl
+
+    calls: list[str] = []
+
+    def fake_pool(doc):
+        calls.append(doc.id)
+        return VERDICT_POOL
+
+    monkeypatch.setattr(tl, "project_pool", fake_pool)
+    doc = _verdict_doc()
+    doc.scenes[7].shots = []  # sem subplano: sem camada de edição, o build não passa acervo nenhum
+    assert not edit_resolve.edit_active(doc)
+    scenes = _timeline(doc)["scenes"]
+    stamps = [(s.get("card") or {}).get("stamp") for s in scenes]
+    assert stamps == [None, None, None, "GOLPE", "GOLPE", None, "CONFIRMADO", "GOLPE", "FALSO", "NÃO É GOLPE"]
+    assert calls == ["prj_tl"]  # uma leitura só
+    # Sem veredito negativo sobre material real, o acervo nem é lido.
+    calls.clear()
+    _timeline(_doc(_scene(0, card=SceneCard(stamp={"pt-BR": "FALSO"})), _scene(1)))
+    assert calls == []
+
+
+def test_scam_artifact_description_and_negated_verdict():
+    from studio.core import verdict
+
+    artifact = ["Sites falsos de GTA 6 no Google", "Downloads falsos do GTA 6 em fórum",
+                "Instaladores falsos espalhados no Discord", "Anúncios falsos de GTA 6 no Facebook",
+                "Site copia o Extended Look e adiciona botão falso 'Play Now'", "Pop-up com alerta falso de vírus"]
+    not_artifact = ["Rockstar alerta: cuidado com download falso", "GTA 6 vira isca para roubar dados",
+                    "casal-conversivel · personagem · jason · lucia", "Como se proteger de sites falsos do GTA 6"]
+    assert all(verdict.describes_scam(t) for t in artifact)
+    assert not any(verdict.describes_scam(t) for t in not_artifact)
+    assert all(verdict.is_negative(t) for t in ("FALSO", "É GOLPE", "FAKE", "GOLPE · PAGAMENTO"))
+    assert not any(verdict.is_negative(t) for t in ("NÃO É GOLPE", "NÃO É FALSO", "NOT FAKE", "CONFIRMADO", "BOATO"))
 
 
 def test_card_source_stays_in_old_projects_without_the_edit_layer():

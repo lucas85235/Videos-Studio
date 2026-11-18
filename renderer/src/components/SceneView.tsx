@@ -383,10 +383,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     const lo = STAMP_SAFE + half;
     const hi = (captionsShown ? captionMid - captionHalf - STAMP_GAP : 1 - STAMP_SAFE) - half;
     const y = placeBand(top[1] + half, top[2], half, hard, imageText, lo, hi);
-    if (Math.abs(y - (top[1] + half)) > 1e-6) {
-      headY = y;
-      band.top = 0.06; // a faixa saiu do topo: o avatar e o contador voltam a poder subir
-    }
+    // O avatar (já posto abaixo da faixa) e o contador ficam onde estavam: `band.top` não muda, para o avatar
+    // desenhado ser o mesmo retângulo que a faixa e o carimbo evitam.
+    if (Math.abs(y - (top[1] + half)) > 1e-6) headY = y;
   }
 
   // Carimbo solto: no lugar da composição da imagem quando está livre; senão, desvia de todo texto conhecido na tela
@@ -478,6 +477,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         captionsShown={captionsShown}
         minTop={band.top}
         lang={lang}
+        imageText={imageText}
       />
       {card && cardFrom > 0 ? (
         <Sequence from={cardFrom} layout="none" name="Cartão">

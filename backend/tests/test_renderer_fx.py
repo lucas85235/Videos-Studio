@@ -333,6 +333,10 @@ out.entryMid = m.stampEntryScale({ side: 'right', y: 0.5 }, geom);
 out.bandFree = m.placeBand(0.1, 0.5, 0.035, [caption], [[0.0, 0.3, 1, 0.1]], 0.085, 0.65);
 out.bandMoved = m.placeBand(0.1, 0.5, 0.035, [caption], [[0.02, 0.03, 0.1, 0.03], [0.02, 0.11, 0.8, 0.36]], 0.085, 0.65);
 out.bandStuck = m.placeBand(0.1, 0.5, 0.035, [caption], [[0, 0, 1, 0.7]], 0.085, 0.65);
+// Texto que pula ("JANEIRO") sobre o logo do meio da tela (0,1-0,55): sai para baixo dele, acima da legenda (0,8).
+out.popFree = m.textPopY(0.42, 600, 120, 1920, 1080, [[0.3, 0.6, 0.1, 0.05]], 0.8, 0.06);
+out.popLogo = m.textPopY(0.42, 600, 120, 1920, 1080, [[0.25, 0.1, 0.5, 0.45]], 0.8, 0.06);
+out.popPop = { half: (120 * 0.62) / 1080 };
 // Letras da imagem na tela: parada, com pan para baixo (o envelope cobre todo o caminho) e no plano ampliado.
 const head = [[0.1, 0.2, 0.6, 0.1]];
 out.textStatic = m.textOnScreen([{ rects: head, box: null, framing: null, motion: 'none' }], 0.14, [0.5, 0.5], 16 / 9);
@@ -615,6 +619,15 @@ def test_headline_band_leaves_the_capture_headline(fx_math: dict) -> None:
     assert fx_math["bandStuck"] == pytest.approx(0.1)
 
 
+def test_text_pop_leaves_the_logo_letters(fx_math: dict) -> None:
+    """QA: "JANEIRO" (texto que pula) sobre as letras do logo do GTA VI. Livre, fica na altura pedida; sobre o logo,
+    vai para a altura livre mais perto, sem encostar na legenda."""
+    assert fx_math["popFree"] == pytest.approx(0.42)
+    half = fx_math["popPop"]["half"]
+    y = fx_math["popLogo"]
+    assert y - half >= 0.55 - 1e-9 and y + half <= 0.8 - 0.06 + 1e-9
+
+
 def test_image_letters_follow_camera_framing_and_screen_window(fx_math: dict) -> None:
     """As caixas do backend (fração do arquivo) vão para a tela pelo mesmo caminho da imagem."""
     (static,) = fx_math["textStatic"]
@@ -648,6 +661,8 @@ def test_sceneview_feeds_image_letters_to_stamp_band_and_scrim() -> None:
     assert "<Headline text={headline} style={cards} lang={lang} y={headY} />" in src
     assert "entryScale={stampScale}" in src and "alpha={scrimAlpha}" in src
     assert "reserve={captionReserve}" in src
+    assert "imageText={imageText}" in src  # o texto que pula também desvia
+    assert "textPopY(y, label.length" in _read(COMP / "fx" / "FxLayer.tsx")
     assert "obstacles.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);" in src
     captions = _read(COMP / "Captions.tsx")
     assert "const side = captionSides(height > width ? SIDE : SIDE_WIDE, reserve, line.from, line.to);" in captions

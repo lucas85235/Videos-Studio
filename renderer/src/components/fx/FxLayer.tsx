@@ -22,6 +22,7 @@ import {
   pStr,
   type Rect,
   SCREEN_FX,
+  textPopY,
 } from './math';
 
 // Eventos dentro da cena (ADR 0004, `scene.fx`), já em quadros relativos à cena. Parâmetros lidos de `params` (as
@@ -76,10 +77,25 @@ type ScreenProps = {
   /** Topo livre (abaixo da faixa do topo), para o contador. */
   minTop: number;
   lang: string;
+  /** Letras da própria imagem na tela (manchete da captura, logo: `text_rects`), fração da tela: o texto que pula
+   * desvia delas quando há altura livre ("JANEIRO" sobre o "grand theft auto" do logo). */
+  imageText?: Rect[];
 };
 
 /** Eventos de tela por cima do fundo e das texturas, abaixo do cartão e das legendas. Sem evento de tela: nada. */
-export const FxLayer: React.FC<ScreenProps> = ({ scene, fx, style, assetBaseUrl, cuts, captionMid, captionHalf, captionsShown, minTop, lang }) => {
+export const FxLayer: React.FC<ScreenProps> = ({
+  scene,
+  fx,
+  style,
+  assetBaseUrl,
+  cuts,
+  captionMid,
+  captionHalf,
+  captionsShown,
+  minTop,
+  lang,
+  imageText = [],
+}) => {
   const { fps } = useVideoConfig();
   const ctx: FxContext = { fps, frames: scene.durationInFrames, cuts };
   const items = (fx ?? []).filter((e) => SCREEN_FX.has(e.type));
@@ -102,6 +118,8 @@ export const FxLayer: React.FC<ScreenProps> = ({ scene, fx, style, assetBaseUrl,
                 text={pStr(params, 'text') || wordAt(scene, span.from)}
                 style={style}
                 avoid={captionsShown ? captionMid : null}
+                captionHalf={captionHalf}
+                imageText={imageText}
                 seed={`${scene.seed}-${span.from}`}
                 lang={lang}
               />
@@ -152,9 +170,11 @@ const TextPop: React.FC<{
   text: string;
   style: RenderStyle;
   avoid: number | null;
+  captionHalf?: number;
+  imageText?: Rect[];
   seed: string;
   lang: string;
-}> = ({ params, len, text, style, avoid, seed, lang }) => {
+}> = ({ params, len, text, style, avoid, captionHalf = 0, imageText = [], seed, lang }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 3);
@@ -170,6 +190,11 @@ const TextPop: React.FC<{
   let y = pNum(params, 'y', portrait ? 0.4 : 0.42);
   if (avoid !== null && Math.abs(y - avoid) < 0.17) y = avoid > 0.5 ? avoid - 0.22 : avoid + 0.22;
   y = Math.min(0.85, Math.max(0.15, y));
+  // Sobre letras da imagem (logo, manchete), a altura livre mais perto entre o topo seguro e a legenda; sem altura
+  // livre, a de menor sobreposição. Sem letra na imagem, a altura de sempre.
+  if (imageText.length) {
+    y = textPopY(y, label.length * charEm(font) * size + (emoji ? size * 1.2 : 0), size, width, height, imageText, avoid, captionHalf);
+  }
   // Bounce: mola frouxa (passa de 1 e volta), rotação de ±4° pela semente, que assenta um pouco.
   const pop = spring({ frame: f, fps, config: { damping: 7, stiffness: 210, mass: 0.55 } });
   const out = exitK(f, len, 4);

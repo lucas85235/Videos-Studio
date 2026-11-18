@@ -603,6 +603,15 @@ def build_timeline(
         pool = edit_pool(doc)
     music_drops: list[dict[str, Any]] = []
     edit_warnings: list[str] = []
+    # Sem camada de edição o acervo não é lido; o veredito negativo sobre material oficial precisa da descrição do item
+    # (o site falso do golpe é "official" com descrição que diz isso): lido uma vez, só quando um carimbo pede.
+    pool_memo: list[Pool | None] = []
+
+    def verdict_pool() -> Pool | None:
+        if not pool_memo:
+            pool_memo.append(project_pool(doc))
+        return pool_memo[0]
+
     for index, (seg, start, clip) in enumerate(placements):
         scenes = doc.scenes_of(seg.id)
         if not scenes:
@@ -656,7 +665,7 @@ def build_timeline(
                                      pool=pool)
             if grammar is not None:
                 drop_foreign_source(doc, scene, resolved, pool)
-            drop_false_verdict(doc, scene, resolved, pool)
+            drop_false_verdict(doc, scene, resolved, pool if pool is not None else verdict_pool)
             if resolved["motion"] == PARALLAX:
                 layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
                 if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
@@ -905,17 +914,38 @@ def _pool_desc(material: MediaRef | PoolItem | None, pool: Pool | None) -> str:
     return item.desc if item is not None else ""
 
 
-def false_verdict_on_true_material(doc: ProjectDoc, scene: Scene, stamp: str | None, pool: Pool | None) -> bool:
-    """O carimbo é veredito negativo (FALSO, GOLPE) e a cena mostra, a tela cheia, material oficial ou de imprensa
-    que não é o artefato do golpe (`core.verdict`): o carimbo acusaria o trailer, a arte ou a matéria. Cartão de
-    texto (título, texto, citação, número) mostra a afirmação: o veredito vale sobre ela."""
-    if not verdict.is_negative(stamp) or scene.kind not in ("image", "video", "document"):
+def false_verdict_on_true_material(doc: ProjectDoc, scene: Scene, stamp: str | None,
+                                   pool: Pool | Callable[[], Pool | None] | None) -> bool:
+    """O carimbo é veredito negativo (FALSO, GOLPE) e a cena mostra material oficial ou de imprensa que não é o
+    artefato do golpe (`core.verdict`): o carimbo acusaria o trailer, a arte ou a matéria. Vale também para o cartão de
+    texto sobre o fundo desfocado desse material ("FALSO" com "Fonte: Rockstar Games" sobre o letreiro do trailer);
+    o cartão de dado (painel que cobre o fundo) e o cartão sobre fundo liso ou ilustração ficam com o veredito.
+    `pool`: o acervo, ou quem o lê só quando precisa (a descrição do item diz se o material oficial é o do golpe)."""
+    if not verdict.is_negative(stamp):
         return False
-    return not all(verdict.allows_negative(prov, material, _pool_desc(material, pool))
-                   for prov, material in scene_owners(doc, scene, pool))
+    owners = scene_owners(doc, scene, None if callable(pool) else pool)
+    from_pool = any(shot.source == "pool" for shot in scene.shots)
+    if all(prov not in verdict.TRUE_MATERIAL_TIERS for prov, _ in owners) and not (callable(pool) and from_pool):
+        return False
+    if callable(pool):
+        pool = pool()
+        owners = scene_owners(doc, scene, pool)
+    return not all(verdict.allows_negative(prov, material, _pool_desc(material, pool)) for prov, material in owners)
 
 
-def drop_false_verdict(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:
+def project_pool(doc: ProjectDoc) -> Pool | None:
+    """O acervo gravado do projeto (`pool.json`), mesmo sem camada de edição; None quando o id não vira pasta
+    (documento de teste)."""
+    from studio.core.project.pool import load_pool
+
+    try:
+        return load_pool(doc.id)
+    except (ValueError, OSError):
+        return None
+
+
+def drop_false_verdict(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
+                       pool: Pool | Callable[[], Pool | None] | None) -> None:
     """Tira da tela o veredito negativo sobre material verdadeiro (`false_verdict_on_true_material`). O documento
     não muda: a revisão do storyboard (`storyboard_check.fix_verdict_stamps`) é quem tira do documento."""
     card = resolved.get("card")

@@ -25,9 +25,13 @@ from PIL import Image, ImageFilter
 log = logging.getLogger(__name__)
 
 # Versão da detecção: muda o cache em disco (arquivo `<imagem>.text.json`) quando a conta muda.
-VERSION = 1
-# Larguras de trabalho: a fina pega texto de corpo e manchete; a grossa, logo e título gigante.
-SCALES = (640, 200)
+VERSION = 2
+# Larguras de trabalho: 1280 pega o corpo da matéria (letra miúda), 640 a manchete, 200 o logo e o título gigante e
+# 96 a letra que ocupa meia tela (o "VI" do logo).
+SCALES = (1280, 640, 200, 96)
+# Na escala mais fina, só linha de texto (comprida) conta: pontinho isolado lá é luz de cidade, não letra.
+FINE_WIDTH = 1000
+FINE_MIN_COLS = 6
 # Gradiente (0-255) que conta como borda de letra.
 EDGE = 48
 # Tamanho da célula (px na largura de trabalho) e fração de borda que marca a célula como "tem letra".
@@ -43,6 +47,10 @@ MIN_CELLS = 3
 MERGE_GAP = 0.012
 # Teto de caixas por imagem (a timeline não precisa de mais).
 MAX_RECTS = 12
+# Letra é traço reto: dentro da caixa, a fração da borda que é horizontal ou vertical (±15°). Texto, manchete e logo
+# ficam em 0,45-0,9; fogos de artifício, cabelo, rosto e folhagem (bordas em todas as direções) ficam abaixo de 0,35.
+AXIS_MIN = 0.36
+AXIS_TOL = 15.0
 
 Rect = list[float]
 
@@ -119,7 +127,7 @@ def _scale_rects(img: Image.Image, width: int) -> list[Rect]:
     out: list[Rect] = []
     for r0, c0, r1, c1, n in _components(mask):
         bw, bh = c1 - c0, r1 - r0
-        if n < MIN_CELLS or bw < 2:
+        if n < MIN_CELLS or bw < 2 or (width > FINE_WIDTH and bw < FINE_MIN_COLS):
             continue
         area = (bw * bh) / (rows * cols)
         if area > MAX_AREA:
@@ -158,6 +166,28 @@ def merge(rects: Iterable[Rect], gap: float = MERGE_GAP) -> list[Rect]:
     return boxes
 
 
+def _axis_share(img: Image.Image) -> Callable[[Rect], float]:
+    """Fração (0-1) das bordas de uma caixa que são horizontais ou verticais (`AXIS_MIN`). Sem borda: 1."""
+    width = min(640, img.size[0])
+    height = max(CELL, round(img.size[1] * width / max(1, img.size[0])))
+    g = np.asarray(img.convert("L").resize((width, height), Image.Resampling.BILINEAR)).astype(np.float32)
+    gx = np.zeros_like(g)
+    gy = np.zeros_like(g)
+    gx[:, 1:-1] = g[:, 2:] - g[:, :-2]
+    gy[1:-1, :] = g[2:, :] - g[:-2, :]
+    edge = np.hypot(gx, gy) > 60
+    ang = np.degrees(np.arctan2(np.abs(gy), np.abs(gx)))
+    axis = edge & ((ang < AXIS_TOL) | (ang > 90 - AXIS_TOL))
+
+    def share(box: Rect) -> float:
+        x0, y0 = int(box[0] * width), int(box[1] * height)
+        x1, y1 = int((box[0] + box[2]) * width) + 1, int((box[1] + box[3]) * height) + 1
+        n = int(edge[y0:y1, x0:x1].sum())
+        return float(axis[y0:y1, x0:x1].sum()) / n if n >= 20 else 1.0
+
+    return share
+
+
 def detect(img: Image.Image) -> list[Rect]:
     """Caixas [x, y, w, h] (0 a 1 da imagem) onde há letras, maiores primeiro (no máximo `MAX_RECTS`)."""
     found: list[Rect] = []
@@ -165,6 +195,9 @@ def detect(img: Image.Image) -> list[Rect]:
         found += _scale_rects(img, width)
     boxes = merge(found)
     boxes = [b for b in boxes if b[2] * b[3] <= MAX_AREA * 1.2]
+    if boxes:
+        share = _axis_share(img)
+        boxes = [b for b in boxes if share(b) >= AXIS_MIN]  # bordas em todas as direções: textura, não letra
     boxes.sort(key=lambda b: b[2] * b[3], reverse=True)
     return [[round(max(0.0, v), 4) for v in b] for b in boxes[:MAX_RECTS]]
 

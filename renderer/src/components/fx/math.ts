@@ -529,6 +529,26 @@ export const placeBand = (preferred: number, w: number, half: number, hard: Rect
   return best;
 };
 
+/** Altura (centro, fração) do texto que pula desviando das letras da imagem (`placeBand`): largura `textW` e corpo
+ * `size` em px; a legenda (centro `avoid`, meia altura `captionHalf`) é obstáculo duro. */
+export const textPopY = (
+  y: number,
+  textW: number,
+  size: number,
+  width: number,
+  height: number,
+  imageText: Rect[],
+  avoid: number | null,
+  captionHalf: number,
+) => {
+  const w = Math.min(0.96, (textW * 1.08) / width);
+  const half = (size * 0.62) / height;
+  const hard: Rect[] = avoid !== null ? [[0, avoid - captionHalf, 1, captionHalf * 2]] : [];
+  const lo = Math.max(0.15, STAMP_SAFE + half);
+  const hi = Math.min(0.85, (avoid !== null && avoid > 0.5 ? avoid - captionHalf - 0.02 : 1 - STAMP_SAFE) - half);
+  return hi > lo ? placeBand(y, w, half, hard, imageText, lo, hi) : y;
+};
+
 /** Área (fração da tela) das caixas `rects` coberta pela faixa horizontal [top, bottom]. */
 export const bandOverlap = (top: number, bottom: number, rects: Rect[]) =>
   rects.reduce((sum, r) => sum + overlapArea([0, top, 1, bottom - top], r), 0);

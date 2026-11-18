@@ -4,7 +4,8 @@ O carimbo girado fala do que está NA TELA. "GOLPE" sobre um quadro do trailer, 
 sobre a arte oficial de Jason e Lucia diz ao espectador que o trailer, a imprensa ou a arte é que são falsos (QA do
 prj_gq4krrs11w). Veredito negativo só cabe sobre o material do golpista (o site falso, o instalador, o post de acesso
 pago, o print do malware), sobre ilustração (IA, banco, foto livre, desenho do app) ou sobre o cartão de texto que
-mostra a afirmação. Material oficial e de imprensa (`official`, `capture`) só leva veredito negativo quando a
+mostra a afirmação em fundo liso ou ilustração (o cartão com o trailer desfocado de fundo e "Fonte: Rockstar Games"
+também acusa a Rockstar). Material oficial e de imprensa (`official`, `capture`) só leva veredito negativo quando a
 descrição dele diz que é o artefato do golpe ("Site copia o Extended Look e adiciona botão falso").
 
 Usado na revisão do storyboard (`storyboard_check.fix_verdict_stamps`, que tira o carimbo do documento) e na
@@ -14,6 +15,7 @@ resolução da timeline (`timeline.drop_false_verdict`, que tira só da tela, pa
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
 from studio.core.text import normalize_token
@@ -31,34 +33,63 @@ NEGATIVE_VERDICTS = frozenset({
 # Material que é do mundo real e de quem não aplica golpe: o carimbo negativo sobre ele acusa a fonte.
 TRUE_MATERIAL_TIERS = frozenset({"official", "capture"})
 
-# Descrição de material que É o artefato do golpe: o site/página/botão/download/instalador/anúncio falso, o print do
-# malware, a cópia do site oficial. Só o título de uma matéria SOBRE golpe ("GTA 6 vira isca para roubar dados") não
-# basta: a foto de abertura da matéria é arte ou trailer.
-_EVIDENCE_RE = re.compile(
-    r"\b(site|pagina|página|botao|botão|download|instalador|installer|anuncio|anúncio|post|perfil|app|aplicativo|"
-    r"loja|checkout|link|e-?mail|mensagem|janela|tela|arquivo|iso|exe|demo|launcher|page|website|button|ad|store)"
-    r"\b[^.;|—]{0,40}\b(fals[oa]s?|fake|golpe|golpista|fraudulent[oa]s?|clonad[oa]s?|malicios[oa]s?|"
-    r"infectad[oa]s?|phishing|scam|fraud)\b"
-    r"|\b(fals[oa]s?|fake|clonad[oa]s?|malicios[oa]s?|fraudulent[oa]s?)\b[^.;|—]{0,20}\b(site|pagina|página|"
-    r"botao|botão|download|instalador|installer|anuncio|anúncio|post|perfil|app|loja|link|iso|demo|launcher|page|"
-    r"website|store)\b"
-    r"|\b(print|captura|screenshot)\b[^.;|—]{0,30}\b(golpe|malware|phishing|scam|virus|vírus|golpista)\b"
-    r"|\bsite\s+cop(ia|ia-se|iando)\b|\bphishing\b|\bgolpista\b",
-    re.IGNORECASE,
+# Descrição de material que É o artefato do golpe: o site/página/botão/download/instalador/anúncio falso (singular ou
+# plural), o print do malware, a cópia do site oficial. Só o título de uma matéria SOBRE golpe ("GTA 6 vira isca para
+# roubar dados") não basta: a foto de abertura da matéria é arte ou trailer. Casado sobre o texto sem acento e minúsculo
+# (`_plain`).
+_THING = (
+    r"(sites?|paginas?|bot(?:ao|oes)|downloads?|instaladore?s?|installers?|anuncios?|posts?|perf(?:il|is)|apps?|"
+    r"aplicativos?|lojas?|checkouts?|links?|e-?mails?|mensage(?:m|ns)|janelas?|telas?|arquivos?|isos?|exes?|demos?|"
+    r"launchers?|pages?|websites?|buttons?|ads?|stores?|pop-?ups?|alertas?|avisos?)"
 )
+_FAKE = r"(fals[oa]s?|fakes?|golpes?|golpistas?|fraudulent[oa]s?|clonad[oa]s?|malicios[oa]s?|infectad[oa]s?|phishing|scams?|fraud)"
+_FAKE_BEFORE = r"(fals[oa]s?|fakes?|clonad[oa]s?|malicios[oa]s?|fraudulent[oa]s?)"
+_EVIDENCE_RE = re.compile(
+    rf"\b{_THING}\b[^.;|—]{{0,40}}\b{_FAKE}\b"
+    rf"|\b{_FAKE_BEFORE}\b[^.;|—]{{0,20}}\b{_THING}\b"
+    r"|\b(print|captura|screenshot)s?\b[^.;|—]{0,30}\b(golpes?|malware|phishing|scams?|virus|golpistas?)\b"
+    r"|\bsite\s+cop(ia|iado|iando)\b|\bphishing\b|\bgolpistas?\b"
+)
+# Aviso sobre o golpe (o post oficial "Rockstar alerta: cuidado com download falso", a dica de como se proteger): o
+# material é de quem avisa, não do golpista; o carimbo negativo sobre ele acusaria quem avisa.
+_WARNING_RE = re.compile(
+    r"\b(alert(a|am|ou|ando)?|avis(o|a|am|ou)|cuidado|advert(e|em|encia|iu)|warn(s|ing|ed)?|beware|alerts?|"
+    r"comunicado|nota oficial|como (se proteger|identificar|evitar)|dicas?|protej[ae])\b"
+)
+# "Alerta falso de vírus", "aviso fake": o pop-up do golpe, não um aviso sobre ele.
+_FAKE_WARNING_RE = re.compile(r"\b(alert(a|as|s)?|avisos?|warnings?)\s+(fals[oa]s?|fakes?)\b")
+# Palavra que nega o veredito que vem depois dela: "NÃO É GOLPE", "NADA DE FAKE", "NOT FAKE" é veredito positivo.
+_NEGATORS = frozenset({"nao", "nem", "nada", "sem", "nunca", "not", "no", "never", "jamais"})
+
+
+def _plain(text: str) -> str:
+    """Minúsculo e sem acento (a pontuação fica: ela separa as frases da descrição)."""
+    text = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
 
 
 def is_negative(stamp: str | None) -> bool:
-    """O carimbo acusa o que está na tela de ser falso ou golpe ("FALSO", "É GOLPE", "FAKE")."""
-    words = re.split(r"[\s·•|/—–:,.!?()-]+", stamp or "")
-    return any(normalize_token(w) in NEGATIVE_VERDICTS for w in words if w)
+    """O carimbo acusa o que está na tela de ser falso ou golpe ("FALSO", "É GOLPE", "FAKE"). Com negação antes do
+    veredito ("NÃO É GOLPE", "NOT FAKE"), não acusa: é o veredito positivo."""
+    words = [normalize_token(w) for w in re.split(r"[\s·•|/—–:,.!?()-]+", stamp or "") if w]
+    for i, word in enumerate(words):
+        if word in NEGATIVE_VERDICTS and not any(w in _NEGATORS for w in words[:i]):
+            return True
+    return False
+
+
+def describes_scam(text: str) -> bool:
+    """A descrição diz que o material é o artefato do golpe (o site, o download, o anúncio falso; o print do golpe), e
+    não um aviso sobre ele."""
+    plain = _plain(text)
+    return bool(_EVIDENCE_RE.search(plain)) and not _WARNING_RE.search(_FAKE_WARNING_RE.sub(" ", plain))
 
 
 def _describes_scam(material: MediaRef | PoolItem | None, extra: str = "") -> bool:
     if material is None:
         return False
     texts = [extra, getattr(material, "desc", ""), getattr(material, "title", "")]
-    return any(_EVIDENCE_RE.search(t or "") for t in texts)
+    return any(describes_scam(t or "") for t in texts)
 
 
 def allows_negative(prov: str, material: MediaRef | PoolItem | None, extra: str = "") -> bool:

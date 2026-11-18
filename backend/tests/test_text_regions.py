@@ -64,6 +64,28 @@ def test_smooth_photo_has_no_text():
     assert text_regions.detect(Image.fromarray(arr)) == []
 
 
+def test_radial_texture_is_not_text_and_body_text_is_found():
+    """Fogos de artifício (raios em todas as direções) não viram caixa (pesavam como logo e empurravam carimbo e faixa);
+    o corpo de matéria em letra miúda vira caixa por linha (a escala de 1280)."""
+    img = Image.new("RGB", (1920, 1080), (8, 8, 20))
+    draw = ImageDraw.Draw(img)
+    rng = np.random.default_rng(3)
+    for cx, cy in ((500, 400), (1300, 380)):
+        for k in range(90):
+            a = k * 2 * np.pi / 90 + rng.uniform(-0.02, 0.02)
+            r = rng.uniform(150, 260)
+            draw.line([cx, cy, cx + r * np.cos(a), cy + r * np.sin(a)], fill=(255, 200, 120), width=3)
+    assert not _covers(text_regions.detect(img), (300 / 1920, 200 / 1080, 1500 / 1920, 600 / 1080), share=0.1)
+
+    page = Image.new("RGB", (1920, 1080), (250, 250, 250))
+    draw = ImageDraw.Draw(page)
+    font = ImageFont.truetype(str(FONT), 30)
+    for i in range(3):
+        draw.text((160, 640 + i * 52), "Cibercriminosos exploram a expectativa pelo lançamento com downloads", font=font,
+                  fill=(60, 60, 60))
+    assert _covers(text_regions.detect(page), (200 / 1920, 650 / 1080, 900 / 1920, 780 / 1080), share=0.5)
+
+
 def test_merge_joins_touching_boxes_only():
     merged = text_regions.merge([[0.1, 0.1, 0.2, 0.05], [0.305, 0.1, 0.1, 0.05], [0.7, 0.7, 0.1, 0.1]])
     got = sorted([round(v, 6) for v in r] for r in merged)

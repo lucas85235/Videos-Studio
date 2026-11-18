@@ -641,8 +641,8 @@ def fix_label_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 def fix_verdict_stamps(doc: ProjectDoc, beats: list[Beat], pool: Pool | None = None) -> list[Issue]:
     """Veredito negativo (FALSO, GOLPE, FAKE) sobre material oficial ou de imprensa sai: sobre o quadro do trailer, a
     arte oficial ou a matéria, ele diz que o trailer, a arte ou a imprensa é que são falsos. Fica sobre o artefato do
-    golpe (site falso, instalador, post de acesso pago), sobre ilustração e sobre o cartão de texto com a afirmação
-    (`core.verdict`)."""
+    golpe (site falso, instalador, post de acesso pago), sobre ilustração e sobre o cartão de texto com a afirmação em
+    fundo liso ou ilustração; o cartão com o trailer ou a matéria de fundo perde o carimbo (`core.verdict`)."""
     lang = doc.primary_language
     issues: list[Issue] = []
     for beat in beats:
