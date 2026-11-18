@@ -125,7 +125,8 @@ Prioridade: **P0** = MVP · **P1** = primeira versão completa · **P2** = evolu
 
 ### 3.5 Visuais / cenas
 - **P0** Storyboard automático: segmentos → cenas com prompt visual.
-- **P0** Fontes por cena: **imagem IA** (cadeia de provedores, §8.1), **stock** (Pexels/Pixabay), **vídeo IA** ou **upload próprio**.
+- **P0** Fontes por cena, **real primeiro** (ADR 0004): o **acervo** do projeto (material próprio, trailer e gameplay oficiais por link, capturas, fotos livres e stock) é coletado antes do storyboard e anexado sem clique; a **imagem IA** (cadeia de provedores, §8.1) é apoio declarado, com teto medido em tempo de tela. Também **vídeo IA** e **upload próprio**.
+- **P0** Edição como camada própria e determinística: vários **subplanos** por cena e **eventos** presos a palavras (punch, texto, SFX, inserts) pelo planejador; botão "Reeditar" com intensidade, sem gastar cota. Índice **"cara de IA"** (0 a 100) na revisão do storyboard, na prévia e na conferência final (`studio edit-metrics`).
 - **P0** Imagens geradas **sem texto**; todo texto (thumbnail, títulos na tela) é sobreposto por código, o que serve a todos os idiomas.
 - **P1** Consistência visual: bíblia de estilo + imagens de referência de personagens.
 - **P1** Image-to-video em cenas-chave (API); galeria de variações por cena.
@@ -174,14 +175,18 @@ flowchart LR
     C --> D[Narração por trecho + QA por ASR]
     T --> D
     D --> E[Timestamps por palavra]
-    C --> F[Storyboard / cenas]
+    C --> K[Acervo real<br/>próprio · oficial · captura · livre]
+    K --> F
+    C --> F[Storyboard / cenas<br/>real primeiro, IA com teto]
     E --> F
-    F --> G[Visuais por cena<br/>cadeia de provedores]
+    F --> Q[Planejador de edição<br/>subplanos e eventos]
+    Q --> G[Visuais por cena<br/>anexo do acervo + cadeia de provedores]
     D --> H[Música + SFX + mix por idioma]
     G --> I[Render por blocos]
     E --> I
     H --> I
     I --> P{Prévia}
+    P -->|índice cara de IA / Reeditar| Q
     P -->|instrução de IA| X[Agente de edição]
     X -->|patch| C & F & G & H
     P -->|ok| J[Thumbnail + SEO por idioma e rede]
@@ -272,10 +277,24 @@ art:                                  # eixo de arte
   anchors: []                         # 3–8 imagens aprovadas que fixam o estilo
   image_chain: [codex_cli, flux3_klein_api, local_sdcpp]
   thumbnail_chain: [codex_cli, gpt_image_api]
+  sources:                            # de onde vem o que aparece na tela (ADR 0004): real primeiro
+    mix: { official: 0.25, capture: 0.15, free: 0.15, stock: 0.10, graphic: 0.15, ai: 0.20 }
+    ai_max_share: 0.20                # teto de IA em TEMPO DE TELA, não em número de cenas
+    hook: [own, official, capture, free]   # níveis aceitos nos primeiros segundos
+    official_max_share: 0.35          # trailer/gameplay oficial (risco de Content ID)
 
 edit:                                 # eixo de edição
   shot_seconds: { min: 1.8, max: 3.2 }
   camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 1, punch_zoom: 1 }   # pesos sorteados por cena
+  grammar:                            # gramática de edição (ADR 0004): o planejador vira subplanos e eventos
+    intensity: 2                      # 0 calmo … 3 agitado ("Reeditar" sem gastar cota)
+    shot_median_s: 2.6
+    shot_cv: 0.6
+    punch_per_min: 3
+    sfx_per_min: 4
+    max_still_s: 6
+    slow_zoom_share: 0.30             # Ken Burns em no máximo 30% do tempo de imagem
+    humor: light                      # none | light | meme (memes só da biblioteca com licença)
   transitions: { cut: 6, flash: 1, glitch: 1 }
   effects:
     - { type: grain, amount: 0.35 }

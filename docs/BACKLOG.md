@@ -1,6 +1,6 @@
 # Backlog
 
-Itens que ficaram para depois ou que dependem de algo que não dá para resolver sozinho (contas, chaves, decisões suas). Cada item diz **por que** ficou aqui. Atualizado em 16/11/2026.
+Itens que ficaram para depois ou que dependem de algo que não dá para resolver sozinho (contas, chaves, decisões suas). Cada item diz **por que** ficou aqui. Atualizado em 18/11/2026.
 
 ## Depende de você (contas, chaves, testes)
 
@@ -21,6 +21,15 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [ ] **Rodar a importação do canais** (Configurações › Importar do canais, ou `python -m studio importar-canais --dry-run` e depois sem `--dry-run`): traz o histórico e preenche os campos novos de cada canal e as ofertas de afiliado a partir do `canal.toml` de `C:\Users\lucas\canais`. Depois, conferir em Canais o que o importador não reconhece: a voz final do Money Rerun (o `canal.toml` não traz o id da voz) e o motivo de cada horário.
 - [ ] **Lançar a receita das lojas** (Amazon, Mercado Livre etc.) todo mês em Dinheiro: não há API das lojas; a tela Hoje lembra nos dias 1 a 10.
 - [ ] **Primeira coleta real de métricas e primeiro Short cortado de um longo real**: até aqui, só com API simulada e banco de teste.
+
+- [ ] **Anti-cara de IA (ADR 0004), o que só você pode fazer:**
+  - **faster-whisper** para a fala da referência (`cd backend`, `uv sync --extra asr`; o modelo small já está no cache do HF). Sem ele a análise profunda da referência grava `speech` com confiança 0. Atenção: um `uv sync` **sem** `--extra asr --extra cutout` desinstala o faster-whisper e o rembg do ambiente.
+  - **Chave do Pexels** (vídeo e foto livres no acervo; sem ela o acervo usa Commons e Openverse) e, opcional, **chave do Freesound** (`VS_FREESOUND_API_KEY`, só SFX CC0, um por um).
+  - **Links de trailer e gameplay oficiais** por projeto (painel Acervo) e a decisão de risco de Content ID (o teto padrão é 35% do tempo, trechos de até 4 s, mudos e com crédito).
+  - **Biblioteca de memes própria**, com licença declarada por item (nenhum meme vem embutido; Tenor e GIPHY não são integrados).
+  - Rodar **`studio fix-reference-names`** sobre os dados reais (primeiro com `--dry-run`), com o seu consentimento: limpa os nomes das referências e estilos que vieram do arquivo baixado.
+  - Confirmar a licença da **Pricedown** (fonte do GTA) se quiser usá-la; o padrão é a OFL mais próxima.
+  - Gerar storyboard novo (ou "Reeditar") nos 4 projetos GTA e conferir o índice na Prévia; a linha de base de 18/11/2026 está no DEVLOG.
 
 ## Funcionalidades planejadas (README), ainda não feitas
 
@@ -75,6 +84,21 @@ Itens que ficaram para depois ou que dependem de algo que não dá para resolver
 - [x] Outlier finder: aba "Vídeos fora da curva" do Radar, vídeo vira ideia (onda 2, 15/11/2026).
 - [x] **Caixa de comentários** (página Comentários, 15/11/2026): `commentThreads.list` com `allThreadsRelatedToChannelId` (1 unidade por página de 100, até 3 páginas; para na página que já chega no que foi lido antes), filtros não respondidos/perguntas/não lidos/por vídeo, resposta sugerida pelo LLM no tom da persona do canal, resposta pelo app só depois de confirmar (`comments.insert`, 50 unidades, escopo `youtube.force-ssl`, que já estava nos escopos do Vulto), marcar como lido (só no Vulto), cota gasta somada no medidor do provedor `youtube`, perguntas sem resposta e falta de permissão em Hoje, leitura na rotina da manhã para canais que já usam a caixa. Só testado com o Google simulado. Ficou de fora: moderar (aprovar/rejeitar comentários retidos, `setModerationStatus`), curtir/fixar (a API não permite) e ler todas as respostas de um fio longo (`comments.list` por `parentId`): em fio com muitas respostas a do canal pode não vir, e o fio aparece como não respondido até marcar como lido.
 - [x] Séries com piloto automático agendado (página **Séries**): tema, instruções, formato, estilo, cadência e estoque por série; episódios de uma fila de temas ou das ideias aprovadas do canal; a rotina da manhã completa o estoque e cada episódio para no roteiro esperando revisão (nunca publica). Ficou de fora: agendar a publicação do episódio pronto na cadência da série (hoje a cadência só mede a cobertura do estoque; o envio continua pela Agenda) e gerar temas novos por LLM quando a fila acaba (hoje vira pendência em Hoje).
+
+### Anti-cara de IA (ADR 0004, 17 e 18/11/2026)
+
+Feito (12 itens, todos mesclados no `develop`): nome legível no card da referência e do estilo, com renomear (`card-nome`); contratos compartilhados (`SourcePolicy` por tempo de tela, `EditGrammar`, `Scene.shots`/`Scene.fx`, `pool.json`, `EditProfile`); análise profunda da referência que vira perfil medido em `stats["profile"]` (`ref-perfil`); perfil → gramática, fontes e voz do roteiro (`perfil-estilo`); acervo real antes do storyboard com anexo automático (`acervo-real`); storyboard real primeiro e IA declarada com teto (`storyboard-real`); planejador determinístico de subplanos e eventos e "Reeditar" (`editor-planejador`); subplanos e eventos resolvidos em quadros na timeline (`timeline-fx`); biblioteca de SFX e memes com licença registrada (`biblioteca-inserts`); planos, câmera por eventos e eventos de tela no Remotion (`renderer-fx`); índice "cara de IA", conferência da edição e `studio edit-metrics` (`metricas-cara-ia`); telas de perfil, fontes, gramática, acervo e trilha de edição (`ui-edicao`).
+
+Ficou de fora ou pendente:
+- [ ] **Correções das revisões ainda não mescladas**: os ramos `feat/*-revisao` (fundação, emenda do ritmo, timeline-fx, renderer-fx, biblioteca-inserts, editor-planejador, métricas, ref-perfil, acervo-real, storyboard-real, perfil-estilo e ui-edicao) têm os achados da revisão de cada item e **não estão no `develop`**; a mesclagem tem conflitos em vários arquivos (authoring, media_pool, edit_plan, edit_resolve, profile, types.ts, api.ts). Entre eles, o teto de material oficial no storyboard (`teto_oficial`): sem ele o storyboard offline encheu até 99% da tela com material oficial.
+- [ ] Pixabay (cache de 24 h obrigatório, veta download em massa).
+- [ ] Colagem híbrida `cutout_on_real` (rembg já no extra `cutout`).
+- [ ] Transições que dependem do quadro anterior (slide e push reais) e split screen JOGO x VIDA REAL.
+- [ ] TransNetV2, PaddleOCR, Demucs e audfprint para mais precisão na referência.
+- [ ] Cartelas e CTA (porte de `chapters.tsx` e `cta.tsx` do canais).
+- [ ] IA fotorrealista com o rótulo de conteúdo sintético do YouTube.
+- [ ] Medir o custo de render com vídeo e várias `Sequence` (estimativa: +30% a 60%).
+- [ ] O índice não pesa a fração de material oficial; ela só aparece como aviso (`perfil.material`). Um vídeo 99% oficial pode sair "verde".
 
 ### Gestão de canal (ADR 0002)
 
