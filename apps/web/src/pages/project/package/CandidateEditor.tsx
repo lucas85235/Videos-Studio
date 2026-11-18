@@ -16,6 +16,7 @@ import {
 } from '../../../api';
 import {
   localWarnings,
+  MIRRORABLE_TEMPLATES,
   PACKAGE_TITLE_MAX,
   syncTextLayer,
   TEMPLATE_LABELS,
@@ -287,7 +288,10 @@ export const CandidateEditor: React.FC<{
             options={[
               { id: 'top', label: 'Topo' },
               { id: 'left', label: 'Esquerda' },
-              { id: 'right', label: 'Direita' },
+              // à direita o molde inteiro espelha: só nos templates que espelham (ou se o candidato já está assim)
+              ...(MIRRORABLE_TEMPLATES.includes(layers.template) || layers.text?.pos === 'right'
+                ? [{ id: 'right' as const, label: 'Direita' }]
+                : []),
               { id: 'center', label: 'Centro' },
             ]}
           />

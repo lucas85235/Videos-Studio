@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from studio.core.project.document import BgLayer, CutoutLayer, PresenterThumbLayer, ThumbLayers
 from studio.media import thumb_assets as A
@@ -460,3 +460,95 @@ def test_manifesto_grava_trechos_retos_e_le_sem_manifesto(tmp_path):
     segs = A.straight_cuts_of(path)  # recorte antigo: medido na hora
     assert segs and segs[0]["side"] == "left"
     assert A.straight_cuts_of(path, {"straight_cuts": []}) == []  # o do manifesto vale mais
+
+
+# --- revisão: reta colada na base, moldura, folha de regressão e orçamento de tempo -----------------------------------
+def _car_door_figure() -> Image.Image:
+    """Dois "personagens" que terminam numa reta levemente inclinada (a porta do carro) a ~6% da base, com margem
+    transparente embaixo: o que o casal-carro da biblioteca tem."""
+    im = Image.new("RGBA", (900, 500), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.ellipse((60, 20, 380, 520), fill=(200, 150, 120, 255))
+    d.ellipse((480, 60, 860, 560), fill=(60, 60, 70, 255))
+    # tudo abaixo da porta (de y=462 à esquerda a y=472 à direita) sai: reta quase horizontal
+    mask = Image.new("L", im.size, 255)
+    ImageDraw.Draw(mask).polygon([(0, 462), (900, 472), (900, 500), (0, 500)], fill=0)
+    im.putalpha(ImageChops.multiply(im.getchannel("A"), mask))
+    im.putpixel((5, 499), (0, 0, 0, 0))
+    return im
+
+
+def test_reta_colada_na_base_vira_lado_cortado(tmp_path):
+    im = _car_door_figure()
+    path = tmp_path / "porta.png"
+    im.save(path)
+    fig, edges, straight, _ = A.prepared_cutout(path, {"cut_edges": []})
+    assert "bottom" in edges
+    a = fig.getchannel("A")
+    row = [a.getpixel((x, a.height - 1)) for x in range(0, a.width, 10)]
+    assert sum(v > 128 for v in row) / len(row) > 0.6  # a base aparada é a figura, não a margem
+    assert not any(s["side"] == "bottom" for s in straight)
+    # no quadro: a base encosta na borda (nenhuma reta com contorno flutuando acima dela)
+    r = _kit(tmp_path, {"porta": (im, [])})
+    lay = C.render(_hero("porta", x=0.72, y=1.0, h=0.95), T.CANVAS, r).info["layout"]
+    f = lay["figures"][0]
+    assert "bottom" in f["cut_edges"] and f["bbox"][3] == T.CANVAS[1]
+
+
+def test_lado_cortado_perde_a_moldura(tmp_path):
+    im = _figure((400, 600), (0.1, 0.1, 0.9, 1.4))
+    ImageDraw.Draw(im).rectangle((0, 597, 399, 599), fill=(53, 20, 37, 255))  # a moldura roxa da keyart
+    path = tmp_path / "moldura.png"
+    im.save(path)
+    fig, edges, _, _ = A.prepared_cutout(path, {"cut_edges": ["bottom"]})
+    assert edges == ["bottom"]
+    last = fig.convert("RGB").getpixel((fig.width // 2, fig.height - 1))
+    assert last != (53, 20, 37)
+
+
+def test_trecho_inclinado_e_detectado_e_some_no_degrade():
+    im = Image.new("L", (400, 600), 0)
+    ImageDraw.Draw(im).polygon([(150, 100), (390, 100), (390, 580), (165, 580)], fill=255)  # lado esquerdo ~1,8°
+    segs = [s for s in A.detect_straight_cuts(im) if s["side"] == "left"]
+    assert segs and abs(segs[0]["pos_a"] - segs[0]["pos_b"]) > 0.02
+    body, line = C._fade_mask((460, 660), 30, 400, 600, [], segs, 720)
+    # o contorno some antes do corpo: onde o corpo ainda aparece pela metade, nada de branco por baixo
+    import numpy as np
+    b, o = np.asarray(body, dtype=np.int16), np.asarray(line, dtype=np.int16)
+    assert (o <= b).all() and ((b > 60) & (b < 200) & (o > 10)).sum() == 0
+
+
+@pytest.mark.parametrize("x", [0.72, 0.28])
+def test_folha_de_regressao_dos_recortes(tmp_path, x):
+    """Cada tipo de recorte da biblioteca (lado cortado, dois lados, reta de dentro, reta perto da base) no
+    heroi-palavra dos dois lados: lado cortado sempre encostado na borda, e nada flutuando acima da base."""
+    figs = {
+        "base": (_figure((400, 600), (0.1, 0.1, 0.9, 1.4)), ["bottom"]),
+        "base-lado": (_figure((400, 600), (0.1, 0.1, 1.4, 1.4)), ["bottom", "right"]),
+        "reta": (_straight_figure(), []),
+        "porta": (_car_door_figure(), []),
+    }
+    r = _kit(tmp_path, figs)
+    W, H = T.CANVAS
+    for cid in figs:
+        img = C.render(_hero(cid, x=x, y=1.0, h=0.95), T.CANVAS, r)
+        f = img.info["layout"]["figures"][0]
+        if "bottom" in f["cut_edges"]:
+            assert f["bbox"][3] == H
+            alpha_row = [img.getpixel((xx, H - 1)) for xx in range(f["bbox"][0], f["bbox"][2], 8)]
+            assert alpha_row  # a figura chega na base
+        side = "left" if x < 0.5 else "right"
+        if {"left", "right"} & set(f["cut_edges"]):
+            assert side in f["cut_edges"] and (f["bbox"][0] == 0 if side == "left" else f["bbox"][2] == W)
+
+
+def test_render_de_uma_figura_cabe_no_orcamento(tmp_path):
+    import time
+
+    big = _figure((1400, 1500), (0.05, 0.05, 0.95, 1.3))
+    r = _kit(tmp_path, {"grande": (big, ["bottom"])})
+    layers = _hero("grande", x=0.72, y=1.0, h=0.95)
+    C.render(layers, T.CANVAS, r)  # 1ª: mede e guarda o recorte preparado
+    t0 = time.perf_counter()
+    C.render(layers, T.CANVAS, r)
+    assert time.perf_counter() - t0 < 1.5

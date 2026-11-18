@@ -440,6 +440,8 @@ export type ThumbLayers = {
   strike: boolean;
   /** Marcação vermelha sobre a prova (templates `prova` e `objeto`). */
   mark?: 'x' | 'circle' | null;
+  /** Quadro da biblioteca atrás do cartão da prova (escurecido); sem ele, o degradê do canal. */
+  backdrop?: string | null;
 };
 /** Saída da checagem de legibilidade (`thumb_check`): métricas e avisos (nunca bloqueia). */
 export type ThumbScore = {

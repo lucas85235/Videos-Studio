@@ -95,6 +95,10 @@ export const TEMPLATE_LABELS: Record<string, string> = {
   objeto: 'Objeto em close',
 };
 
+/** Templates que aceitam o texto à direita (o molde inteiro espelha); espelho de `MIRRORABLE` em
+ * `media/thumb_templates.py`. Nos outros, "Direita" não aparece no editor. */
+export const MIRRORABLE_TEMPLATES: readonly string[] = ['heroi-palavra', 'avatar-reage', 'numero-lista', 'lugar-mapa', 'objeto'];
+
 export const EMPTY_PACKAGE: PackageDoc = { candidates: [], chosen_id: null, locked: false, references: [], generated_at: null };
 
 /* ------------------------------------------------------------------ normalização */

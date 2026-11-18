@@ -951,6 +951,9 @@ class ThumbLayers(BaseModel):
     """Risco vermelho sobre a palavra."""
     mark: Literal["x", "circle"] | None = None
     """Marcação vermelha sobre a prova (templates `prova` e `objeto`): um X ou um círculo."""
+    backdrop: str | None = None
+    """Quadro da biblioteca atrás do cartão da prova (escurecido): a cara de canal de jogo em volta do print. Sem
+    ele, o degradê do canal."""
 
 
 class PackageCandidate(BaseModel):

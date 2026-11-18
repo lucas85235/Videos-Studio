@@ -101,16 +101,18 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "figure_min_face": 0.25,
     },
     # Prova: a captura/print do próprio vídeo (matéria, site falso, janela do instalador) grande, como um cartão
-    # inclinado com marcação vermelha (X ou círculo), 1 palavra na coluna da esquerda e o avatar pequeno embaixo
-    # dela. O fundo é o degradê do canal (ou o próprio quadro desfocado, quando ele é colorido).
+    # inclinado com marcação vermelha (X ou círculo, fora da manchete), 1 palavra no alto da coluna da esquerda e o
+    # avatar grande embaixo dela. O fundo é um quadro do jogo escurecido (`ThumbLayers.backdrop`), o próprio quadro
+    # desfocado (quando ele é colorido) ou o degradê do canal.
     "prova": {
         "bg": {"target_x": 0.5, "target_y": 0.42, "zoom": 1.0},
         "backdrop": "vice",
         "card": {"box": (0.385, 0.08, 0.59, 0.76), "tilt": -2.5, "zoom": 1.0, "border": 7},
         "mark": "x",
-        "text": {"left": (0.035, 0.07, 0.335, 0.42), "top": (0.035, 0.07, 0.335, 0.42),
-                 "center": (0.035, 0.07, 0.335, 0.42), "size": 0.26, "sub": 0.62},
-        "presenter": {"side": "left", "crop": "meio", "h_max": 0.52},
+        "text": {"left": (0.03, 0.075, 0.345, 0.26), "top": (0.03, 0.075, 0.345, 0.26),
+                 "center": (0.03, 0.075, 0.345, 0.26), "size": 0.26, "sub": 0.62},
+        # avatar grande de corpo embaixo da palavra (o rosto ainda lê a 168 px), do lado de fora do print
+        "presenter": {"side": "left", "crop": "meio", "h_max": 0.64},
         "logo": {"anchor": "none", "w": 0.12},
         "figure_min_face": 0.0,
     },

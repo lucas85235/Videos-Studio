@@ -286,17 +286,93 @@ STRAIGHT_TEXT_KEY = "vs:straight"
 """Chave do texto no PNG do recorte com os trechos retos de dentro da imagem (`straight_cuts`, em JSON)."""
 STRAIGHT_MIN_FRAC = 0.05
 """Trecho reto mínimo, em fração do lado: contorno de gente não fica reto (±1 px) por 5% da altura."""
+STRAIGHT_SLOPE_MAX = 0.055
+"""Inclinação máxima de um trecho "reto" (~3°): a porta do carro ou o crop levemente torto também contam."""
+
+
+def _first_opaque(grid: Any) -> Any:
+    """Para cada linha de `grid` (lado já virado para a esquerda), o índice da 1ª coluna opaca (alfa ≥ 128); -1 sem
+    figura na linha."""
+    import numpy as np
+
+    solid = grid >= 128
+    return np.where(solid.any(axis=1), solid.argmax(axis=1), -1)
+
+
+def _line_fit(p: Any, a: int, b: int, tol: float, slope_max: float) -> bool:
+    """`p[a..b]` cabe numa reta (mínimos quadrados) com inclinação ≤ `slope_max` e desvio ≤ `tol` px."""
+    import numpy as np
+
+    y = p[a:b + 1].astype(np.float64)
+    if len(y) < 3:
+        return True
+    x = np.arange(len(y), dtype=np.float64)
+    slope, icpt = np.polyfit(x, y, 1)
+    return abs(slope) <= slope_max and float(np.abs(y - (slope * x + icpt)).max()) <= tol
+
+
+def _linear_runs(p: Any, ok: Any, need: int, *, tol: float = 1.25,
+                 slope_max: float = STRAIGHT_SLOPE_MAX) -> list[tuple[int, int]]:
+    """Trechos [a, b] (inclusivos, com pelo menos `need` linhas) em que o perfil `p` anda em linha reta: passo de no
+    máximo 1 px entre linhas vizinhas, só onde `ok`, e cabendo numa reta (`_line_fit`). Guloso: cada trecho cresce
+    o quanto der (busca exponencial + binária) e o próximo começa depois dele."""
+    n = len(p)
+    out: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and ok[j + 1] and abs(int(p[j + 1]) - int(p[j])) <= 1:
+            j += 1
+        a = i
+        while j - a + 1 >= need:
+            lo = a + need - 1
+            if not _line_fit(p, a, lo, tol, slope_max):
+                a += max(1, need // 4)
+                continue
+            hi, step = lo, need
+            while hi < j and _line_fit(p, a, min(j, hi + step), tol, slope_max):
+                hi, step = min(j, hi + step), step * 2
+            left, right = hi, min(j, hi + step)
+            while left < right:
+                mid = (left + right + 1) // 2
+                if _line_fit(p, a, mid, tol, slope_max):
+                    left = mid
+                else:
+                    right = mid - 1
+            out.append((a, left))
+            a = left + 1
+        i = j + 1
+    return out
+
+
+def _bent(p: Any, limit: float = 0.5) -> bool:
+    """O perfil `p` faz curva: a parábola que melhor cabe nele se afasta da reta mais que `limit` px no trecho."""
+    import numpy as np
+
+    if len(p) < 5:
+        return False
+    x = np.arange(len(p), dtype=np.float64)
+    return abs(float(np.polyfit(x, np.asarray(p, dtype=np.float64), 2)[0]) * (len(p) / 2) ** 2) > limit
+
+
+def _side_grid(a: Any, side: str) -> Any:
+    return {"left": a, "right": a[:, ::-1], "top": a.T, "bottom": a.T[:, ::-1]}[side]
 
 
 def detect_straight_cuts(alpha: Image.Image, *, min_frac: float = STRAIGHT_MIN_FRAC, min_px: int = 24,
-                         tol: int = 1, hard_px: int = 3, max_std: float = 12.0) -> list[dict[str, Any]]:
+                         tol: float = 1.25, hard_px: int = 4, max_std: float = 12.0) -> list[dict[str, Any]]:
     """Trechos retos do contorno que NÃO encostam na borda da imagem: a linha que sobra quando o recorte veio de um
-    quadro já cortado (crop da semente), de uma figura tirada da frente (`minus`) ou de um objeto que tapava o corpo.
-    Para cada lado, a primeira coluna/linha opaca (alfa ≥ 128) vista daquele lado: um trecho de pelo menos
-    `min_frac` do lado (e `min_px`) em que ela não anda mais que `tol` px, com borda dura (o alfa vai de < 40 a
-    > 200 em `hard_px` px) e uniforme (nas colunas da transição o alfa quase não muda de uma linha para outra:
-    desvio ≤ `max_std`; o cabelo reto de verdade oscila meio pixel e não conta), vira {side, pos, start, end} em
-    fração da imagem. Quem chama encosta o lado na borda da thumb (se for o caso) ou some com ele num degradê."""
+    quadro já cortado (crop da semente), de uma figura tirada da frente (`minus`) ou de um objeto que tapava o corpo
+    (a porta do carro). Para cada lado, a primeira coluna/linha opaca (alfa ≥ 128) vista daquele lado: um trecho de
+    pelo menos `min_frac` do lado (e `min_px`) que cabe numa reta de até ~3° (`STRAIGHT_SLOPE_MAX`, desvio ≤ `tol`
+    px), com borda firme (o alfa vai de < 50 a > 190 em `hard_px` px: aceita o degradê curto do recorte) e uniforme
+    (o perfil do alfa através da linha, alinhado pela posição dela, quase não muda de uma linha para outra: desvio ≤
+    `max_std`; o cabelo reto de verdade oscila e não conta), vira {side, pos, pos_a, pos_b, start, end} em fração
+    da imagem (`pos_a`/`pos_b`: onde a linha está no começo e no fim do trecho; `pos`, a mediana). Quem chama
+    encosta o lado na borda da thumb (se for o caso) ou some com ele num degradê."""
     import numpy as np
 
     a = np.asarray(alpha if alpha.mode == "L" else alpha.convert("L"), dtype=np.int16)
@@ -304,37 +380,138 @@ def detect_straight_cuts(alpha: Image.Image, *, min_frac: float = STRAIGHT_MIN_F
     if not h or not w:
         return []
     out: list[dict[str, Any]] = []
+    k = np.arange(-hard_px, hard_px + 1)
     for side in CUT_SIDES:
-        grid = {"left": a, "right": a[:, ::-1], "top": a.T, "bottom": a.T[:, ::-1]}[side]
+        grid = _side_grid(a, side)
         n, depth = grid.shape
-        solid = grid >= 128
-        has = solid.any(axis=1)
-        first = np.where(has, solid.argmax(axis=1), -1)
+        first = _first_opaque(grid)
+        ok = (first > 1) & (first < depth - 2)  # sem figura, ou encostado na borda (é `cut_edges`)
         need = max(min_px, round(n * min_frac))
-        i = 0
-        while i < n:
-            if first[i] <= 1 or first[i] >= depth - 2:  # sem figura, ou encostado na borda (é `cut_edges`)
-                i += 1
+        for i, j in _linear_runs(first, ok, need, tol=tol):
+            rows = np.arange(i, j + 1)
+            p = first[rows]
+            x = np.arange(len(p), dtype=np.float64)
+            slope, icpt = np.polyfit(x, p.astype(np.float64), 1) if len(p) >= 3 else (0.0, float(p[0]))
+            prof = grid[rows[:, None], np.clip(p[:, None] + k[None, :], 0, depth - 1)]
+            core = max(1, (j - i + 1) // 10)  # as pontas do trecho entram e saem da linha: mede o miolo
+            if abs(slope) < 0.01:
+                # reta em pé/deitada: as mesmas colunas em todas as linhas (o topo de uma curva, que anda meio
+                # pixel aqui e ali, não passa)
+                med_i = int(np.median(p))
+                mid = grid[i + core:j + 1 - core, max(0, med_i - hard_px):min(depth, med_i + hard_px + 1)]
+            else:
+                # inclinada: longa (o dobro do mínimo), sem curvatura (o flanco de uma curva também cabe numa reta
+                # por alguns px) e com o perfil alinhado pela posição da linha igual em todas as linhas
+                if len(p) < 2 * need or _bent(p):
+                    continue
+                mid = prof[core:len(rows) - core]
+            uniform = mid.size and float(mid.std(axis=0).max()) <= max_std
+            if not uniform or np.mean((prof[:, 0] < 50) & (prof[:, -1] > 190)) < 0.8:
                 continue
-            j = i
-            while j + 1 < n and first[j + 1] > 1 and abs(int(first[j + 1]) - int(first[i])) <= tol:
-                j += 1
-            if j - i + 1 >= need:
-                rows = np.arange(i, j + 1)
-                p = first[rows]
-                outside = grid[rows, np.clip(p - hard_px, 0, depth - 1)]
-                inside = grid[rows, np.clip(p + hard_px, 0, depth - 1)]
-                mid = int(np.median(p))
-                core = max(1, (j - i + 1) // 10)  # as pontas do trecho entram e saem da linha: mede o miolo
-                cols = grid[i + core:j + 1 - core, max(0, mid - hard_px):min(depth, mid + hard_px + 1)]
-                uniform = cols.size and float(cols.std(axis=0).max()) <= max_std
-                if uniform and np.mean((outside < 40) & (inside > 200)) >= 0.8:
-                    pos = float(np.median(p))
-                    pos = pos if side in ("left", "top") else depth - 1 - pos
-                    out.append({"side": side, "pos": round(pos / max(1, depth - 1), 4),
-                                "start": round(i / n, 4), "end": round((j + 1) / n, 4)})
-            i = j + 1
+            ends = [icpt, icpt + slope * (len(p) - 1)]
+            if side in ("right", "bottom"):
+                ends = [depth - 1 - e for e in ends]
+            med = float(np.median(p))
+            med = med if side in ("left", "top") else depth - 1 - med
+            span = max(1, depth - 1)
+            out.append({"side": side, "pos": round(med / span, 4), "pos_a": round(float(ends[0]) / span, 4),
+                        "pos_b": round(float(ends[1]) / span, 4), "start": round(i / n, 4),
+                        "end": round((j + 1) / n, 4)})
     return out
+
+
+NEAR_EDGE_FRAC = 0.10
+"""Trecho reto a menos disso (fração do lado) da borda da figura aparada é corte, não contorno: a porta do carro
+que tapa a cintura, o crop torto. A figura é aparada ali e o lado vira lado cortado (ancorado na borda da thumb)."""
+NEAR_EDGE_MIN_RUN = 0.15
+"""Comprimento mínimo do trecho reto perto da borda, em fração do lado."""
+EDGE_TRIM_PX = 3
+"""Px aparados de cada lado cortado: a última linha às vezes traz a moldura do quadro original (roxo da keyart)."""
+
+
+def near_edge_cuts(alpha: Image.Image, *, frac: float = NEAR_EDGE_FRAC, min_run: float = NEAR_EDGE_MIN_RUN,
+                   tol: float = 2.0) -> dict[str, int]:
+    """{lado: px a aparar} dos lados em que o contorno tem um trecho reto longo (≥ `min_run` do lado, até ~3°)
+    a menos de `frac` da borda da figura aparada, sem encostar nela: aparando até a parte de dentro do trecho, a
+    figura passa a terminar reta naquele lado inteiro, e o compositor encosta esse lado na borda da thumb em vez de
+    deixar a reta (com contorno e sombra) flutuando dentro do quadro."""
+    import numpy as np
+
+    a = np.asarray(alpha if alpha.mode == "L" else alpha.convert("L"), dtype=np.int16)
+    h, w = a.shape
+    out: dict[str, int] = {}
+    if h < 32 or w < 32:
+        return out
+    for side in CUT_SIDES:
+        grid = _side_grid(a, side)
+        n, depth = grid.shape
+        first = _first_opaque(grid)
+        ok = (first > 2) & (first <= frac * depth)
+        runs = [(i, j) for i, j in _linear_runs(first, ok, max(24, round(n * min_run)), tol=tol)
+                # o flanco de uma curva (ombro, cabeça) não é corte; a porta do carro, longa, entorta ~2 px em 700
+                if not _bent(first[i:j + 1], max(0.5, 0.004 * (j + 1 - i)))]
+        if runs:
+            out[side] = int(max(int(first[i:j + 1].max()) for i, j in runs)) + 1
+    return out
+
+
+@lru_cache(maxsize=32)
+def _prepared_cached(path: str, mtime: float, size: int, edges_key: str,
+                     straight_key: str) -> tuple[Image.Image, tuple[str, ...], str, tuple[int, int, int, int],
+                                                 tuple[int, int]]:
+    im = open_rgba(Path(path))
+    box = im.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    if box:
+        im = im.crop(box)
+    edges = set(json.loads(edges_key))
+    stored = _norm_straight(json.loads(straight_key))
+    w0, h0 = im.size
+    crop = {s: 0 for s in CUT_SIDES}
+    for side, px in near_edge_cuts(im.getchannel("A")).items():
+        if side in edges or anchorable(edges | {side}):
+            crop[side] = max(crop[side], px)
+            edges.add(side)
+    for side in edges:
+        crop[side] = max(crop[side], EDGE_TRIM_PX)
+    left, top, right, bottom = crop["left"], crop["top"], crop["right"], crop["bottom"]
+    if left + right < w0 - 16 and top + bottom < h0 - 16 and (left or top or right or bottom):
+        im = im.crop((left, top, w0 - right, h0 - bottom))
+    else:
+        left = top = right = bottom = 0
+    big = any(v > EDGE_TRIM_PX for v in (left, top, right, bottom))
+    straight = detect_straight_cuts(im.getchannel("A")) if (stored is None or big) else stored
+    # o trecho colado num lado cortado é o próprio corte (vai para a borda da thumb), não uma reta de dentro
+    straight = [s for s in straight if not (s["side"] in edges and (
+        s["pos"] < 0.02 if s["side"] in ("left", "top") else s["pos"] > 0.98))]
+    return (im, tuple(s for s in CUT_SIDES if s in edges), json.dumps(straight), (left, top, right, bottom),
+            (w0, h0))
+
+
+def prepared_cutout(path: Path, meta: dict[str, Any] | None = None
+                    ) -> tuple[Image.Image, list[str], list[dict[str, Any]], dict[str, Any]]:
+    """O recorte pronto para o compositor: aparado no alfa, com os lados cortados de verdade (`cut_edges_of` mais os
+    trechos retos colados na borda, `near_edge_cuts`, aparados até ficarem retos), `EDGE_TRIM_PX` a menos em cada
+    lado cortado (sem a moldura do quadro original) e os trechos retos de dentro (`straight_cuts_of`, medidos de novo
+    quando a figura foi aparada). O `meta` volta com o `face_box` nas frações da figura aparada. Cache pela data do
+    arquivo: o compositor chama a cada render. Não altere a imagem devolvida."""
+    stat = path.stat()
+    edges = cut_edges_of(path, meta)
+    stored = straight_cuts_of(path, meta)
+    im, cut, straight, (left, top, right, bottom), (w0, h0) = _prepared_cached(
+        str(path), stat.st_mtime, stat.st_size, json.dumps(sorted(edges)), json.dumps(stored))
+    out_meta = dict(meta or {})
+    fb = out_meta.get("face_box")
+    if (left or top or right or bottom) and isinstance(fb, (list, tuple)) and len(fb) == 4:
+        w1, h1 = max(1, w0 - left - right), max(1, h0 - top - bottom)
+
+        def fx(v: float) -> float:
+            return round(min(1.0, max(0.0, (float(v) * w0 - left) / w1)), 4)
+
+        def fy(v: float) -> float:
+            return round(min(1.0, max(0.0, (float(v) * h0 - top) / h1)), 4)
+
+        out_meta["face_box"] = [fx(fb[0]), fy(fb[1]), fx(fb[2]), fy(fb[3])]
+    return im, list(cut), json.loads(straight), out_meta
 
 
 def _norm_straight(value: Any) -> list[dict[str, Any]] | None:
@@ -349,7 +526,9 @@ def _norm_straight(value: Any) -> list[dict[str, Any]] | None:
     for seg in value if isinstance(value, list) else []:
         try:
             if seg.get("side") in CUT_SIDES:
-                out.append({"side": seg["side"], "pos": float(seg["pos"]), "start": float(seg["start"]),
+                pos = float(seg["pos"])
+                out.append({"side": seg["side"], "pos": pos, "pos_a": float(seg.get("pos_a", pos)),
+                            "pos_b": float(seg.get("pos_b", pos)), "start": float(seg["start"]),
                             "end": float(seg["end"])})
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
@@ -983,7 +1162,7 @@ def cutout_quality(item: dict[str, Any], kit_dir: Path | None = None) -> str:
     """"baixa" quando o recorte não serve para thumb (marcado na semente ou cortado de um jeito que não encaixa na
     borda); "ok" no resto. O seletor de ativos do pacote deixa os de qualidade baixa de fora. Item sem `cut_edges`
     (enviado pela tela, recorte antigo) é medido no arquivo com `kit_dir`, como o compositor faz (`cut_edges_of`)."""
-    if str(item.get("quality") or "").lower() == QUALITY_LOW:
+    if str(item.get("quality") or "").lower() == QUALITY_LOW or item.get("no_thumb"):
         return QUALITY_LOW
     edges = _norm_edges(item.get("cut_edges"))
     if edges is None and kit_dir is not None and item.get("file"):

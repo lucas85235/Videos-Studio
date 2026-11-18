@@ -2550,14 +2550,15 @@ def project_proofs(doc: ProjectDoc, allow_editorial: bool, limit: int = PROOF_MA
 
 def thumb_templates_for(style: StyleSpec, assets: PackageAssets) -> list[str]:
     """Templates que o pacote deste projeto oferece: os do estilo, sem `avatar-reage` quando não há avatar, mais
-    `prova` (e `objeto`) quando o projeto tem material próprio para mostrar ou a biblioteca tem objetos. Short: só
-    `livre`."""
+    `prova` quando o projeto tem material próprio para mostrar e `objeto` quando a biblioteca tem objetos (o objeto
+    é o item do kit em close; print de matéria é a prova, não objeto). Short: só `livre`."""
     if style.format.type == "short":
         return ["livre"]
     templates = [t for t in style.thumbnail.templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses]
+    templates = [t for t in templates if t != "objeto" or assets.objects]
     if assets.proofs and "prova" not in templates:
         templates.append("prova")
-    if (assets.objects or len(assets.proofs) >= 2) and "objeto" not in templates:
+    if assets.objects and "objeto" not in templates:
         templates.append("objeto")
     return templates or ["heroi-palavra"]
 
@@ -2642,8 +2643,9 @@ def _title_overlap(thumb_text: str, title: str) -> tuple[str, list[str]]:
 
 def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent: Any = None) -> str | None:
     """Pose citada (id, apelido ou emoção) que existe; senão a ainda não usada que o canal menos usou nas thumbs
-    recentes (`recent`: `thumb_variety.Usage`); senão None. A citada que o canal já usou nas thumbs recentes dá
-    lugar a outra com a mesma emoção e menos uso, quando houver."""
+    recentes (`recent`: `thumb_variety.Usage`); senão None. A citada que o canal já usou nas thumbs recentes (mesmo
+    só vista, sem ser escolhida) dá lugar a outra com a mesma emoção e menos uso; sem outra da mesma emoção, à
+    menos usada de outra emoção (a mesma cara repetida é o que o público reconhece)."""
     if not poses:
         return None
 
@@ -2657,13 +2659,14 @@ def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent
                 values = pose.get(key)
                 names = [values] if isinstance(values, str) else list(values or [])
                 if any(normalize_token(v) == name for v in names) and pose["id"] not in used:
-                    if seen(pose["id"]) >= 1:
+                    if seen(pose["id"]) > 0:
                         emotions = {normalize_token(e) for e in pose.get("emotions") or []}
-                        alt = [p for p in poses if p["id"] not in used and p["id"] != pose["id"]
-                               and emotions & {normalize_token(e) for e in p.get("emotions") or []}
-                               and seen(p["id"]) < seen(pose["id"])]
-                        if alt:
-                            return min(alt, key=lambda p: seen(p["id"]))["id"]
+                        fresher = [p for p in poses if p["id"] not in used and p["id"] != pose["id"]
+                                   and seen(p["id"]) < seen(pose["id"])]
+                        same = [p for p in fresher
+                                if emotions & {normalize_token(e) for e in p.get("emotions") or []}]
+                        if same or fresher:
+                            return min(same or fresher, key=lambda p: seen(p["id"]))["id"]
                     return pose["id"]
     free = [p for p in poses if p["id"] not in used]
     if not free:
@@ -2782,53 +2785,104 @@ def _subject_tags(item: dict[str, Any] | None) -> set[str]:
     return {str(t) for t in (item or {}).get("tags") or []} - _GENERIC_TAGS
 
 
+def _is_keyart(item: dict[str, Any] | None) -> bool:
+    return "keyart" in set((item or {}).get("tags") or [])
+
+
+def _uses_keyart(batch: Any, items: dict[str, dict[str, Any]], kind: str) -> bool:
+    """O pacote já usa (no `batch`) um item de keyart daquele tipo: a capa oficial e os recortes dela têm a mesma
+    arte (o Jason com a arma), então não entram os dois no mesmo pacote."""
+    if batch is None:
+        return False
+    return any(c > 0 and _is_keyart(items.get(v)) for v, c in batch.counts.get(kind, {}).items())
+
+
 def _pick_frame(hint_frame: dict[str, Any] | None, frames: list[dict[str, Any]], template: str, turn: int,
-                recent: Any, batch: Any, need_face: bool,
-                has_figure: bool = False) -> tuple[dict[str, Any] | None, str | None]:
-    """O quadro de fundo: o citado pelo LLM quando ele não repete as thumbs recentes do canal nem outro candidato;
-    senão o menos usado com o mesmo assunto (tags); sem citação, o menos usado da biblioteca (o de rosto quando o
-    template precisa de rosto e não tem recorte). Devolve (quadro, nota)."""
+                recent: Any, batch: Any, need_face: bool, has_figure: bool = False,
+                avoid_keyart: bool = False) -> tuple[dict[str, Any] | None, str | None]:
+    """O quadro de fundo: o citado pelo LLM quando ele não repete nada das thumbs recentes do canal nem de outro
+    candidato (qualquer uso conta: o dono viu todas); senão o menos usado com o mesmo assunto (tags); sem citação,
+    o menos usado da biblioteca (o de rosto quando o template precisa de rosto e não tem recorte). Capa (keyart)
+    repetida dá lugar a um quadro que não é capa (as capas têm a mesma arte), e com `avoid_keyart` (um recorte da
+    keyart já está no pacote) nenhuma capa entra. Devolve (quadro, nota)."""
     if not frames:
         return None, None
 
     def cost(f: dict[str, Any]) -> float:
         return thumb_variety.penalty("background", str(f["id"]), recent, batch)
 
+    def fits(f: dict[str, Any]) -> bool:
+        tags = set(f.get("tags") or [])
+        return not (has_figure and {"personagem", "keyart"} & tags) and not (avoid_keyart and "keyart" in tags)
+
     k = turn % len(frames)
     ordered = frames[k:] + frames[:k]
     if hint_frame is not None:
-        if cost(hint_frame) < 1:
+        clash = avoid_keyart and _is_keyart(hint_frame)
+        hint_cost = cost(hint_frame)
+        if hint_cost <= 0 and not clash:
             return hint_frame, None
+        no_keyart = clash or _is_keyart(hint_frame)
         tags = _subject_tags(hint_frame)
-        same = [f for f in ordered if f is not hint_frame and tags & _subject_tags(f) and cost(f) < cost(hint_frame)
-                and not (has_figure and {"personagem", "keyart"} & set(f.get("tags") or []))]
+        cands = [f for f in ordered if f is not hint_frame and fits(f) and not (no_keyart and _is_keyart(f))
+                 and (clash or cost(f) < hint_cost)]
+        light = {"claro", "noite"} & set(hint_frame.get("tags") or [])  # a capa clara dá lugar a um quadro claro
+        fallback = ([f for f in cands if light & set(f.get("tags") or [])] or cands) if no_keyart else []
+        same = [f for f in cands if tags & _subject_tags(f)] or fallback
         if same:
             pick = min(same, key=cost)
-            return pick, (f"CORRIGIDO: fundo {hint_frame['id']} repetia as thumbs recentes (ou outro candidato); "
-                          f"usei {pick['id']}")
+            why = ("tem a mesma arte de um recorte deste pacote" if clash
+                   else "repetia as thumbs recentes (ou outro candidato)")
+            return pick, f"CORRIGIDO: fundo {hint_frame['id']} {why}; usei {pick['id']}"
         return hint_frame, None
-    pool = [f for f in ordered if f.get("face_box")] if need_face else []
-    if not need_face and has_figure:  # atrás de um personagem recortado, lugar e não outro personagem
-        pool = [f for f in ordered if not {"personagem", "keyart"} & set(f.get("tags") or [])]
+    pool = [f for f in ordered if f.get("face_box") and fits(f)] if need_face else []
+    if not need_face:
+        pool = [f for f in ordered if fits(f)]
     return min(pool or ordered, key=cost), None
 
 
+def _framing(item: dict[str, Any] | None) -> str:
+    """Enquadramento do recorte: "corpo" (corpo inteiro, rosto pequeno) ou "rosto" (close/busto)."""
+    return "corpo" if "corpo" in set((item or {}).get("tags") or []) else "rosto"
+
+
+def _same_kind(a: dict[str, Any] | None, b: dict[str, Any] | None, template: str) -> bool:
+    """`b` substitui `a` na thumb: o mesmo personagem (tag de assunto em comum), a mesma quantidade (solo com solo,
+    casal com casal) e o mesmo enquadramento (rosto com rosto); no heroi-palavra, nunca corpo inteiro (o rosto
+    some a 168 px)."""
+    ta, tb = _subject_tags(a) - {"personagem"}, _subject_tags(b) - {"personagem"}
+    if ("casal" in ta) != ("casal" in tb) or not (ta - {"casal"}) & (tb - {"casal"}):
+        return False
+    if template == "heroi-palavra" and _framing(b) == "corpo":
+        return False
+    return _framing(a) == _framing(b) or (template == "heroi-palavra" and _framing(a) == "corpo")
+
+
 def _pick_characters(chars: list[str], cutouts: list[dict[str, Any]], recent: Any, batch: Any,
-                     notes: list[str]) -> list[str]:
-    """Troca a figura que o canal acabou de usar (ou que já está em outro candidato) por outra do mesmo personagem
-    (mesma tag de nome) e menos usada, quando houver."""
+                     notes: list[str], *, template: str = "heroi-palavra", avoid_keyart: bool = False) -> list[str]:
+    """Troca a figura que o canal acabou de usar ou mostrar (qualquer uso conta), que já está em outro candidato,
+    que é corpo inteiro no heroi-palavra ou que tem a mesma arte de uma capa do pacote (`avoid_keyart`) por outra
+    do mesmo tipo (`_same_kind`: mesmo personagem, solo com solo, rosto com rosto) e menos usada, quando houver."""
     by_id = {str(c["id"]): c for c in cutouts}
+
+    def cost(cid: str) -> float:
+        return thumb_variety.penalty("character", cid, recent, batch)
+
     out: list[str] = []
     for cid in chars:
-        cost = thumb_variety.penalty("character", cid, recent, batch)
-        if cost >= 1:
-            tags = _subject_tags(by_id.get(cid)) - {"personagem"}
+        item = by_id.get(cid)
+        clash = avoid_keyart and _is_keyart(item)
+        body = template == "heroi-palavra" and _framing(item) == "corpo"
+        if cost(cid) > 0 or clash or body:
             alt = [str(c["id"]) for c in cutouts if str(c["id"]) not in (cid, *out)
-                   and tags & (_subject_tags(c) - {"personagem"})
-                   and thumb_variety.penalty("character", str(c["id"]), recent, batch) < cost]
+                   and _same_kind(item, c, template) and not (avoid_keyart and _is_keyart(c))
+                   and (clash or body or cost(str(c["id"])) < cost(cid))]
             if alt:
-                pick = min(alt, key=lambda a: thumb_variety.penalty("character", a, recent, batch))
-                notes.append(f"CORRIGIDO: figura {cid} repetia as thumbs recentes (ou outro candidato); usei {pick}")
+                pick = min(alt, key=cost)
+                why = ("tem a mesma arte da capa usada neste pacote" if clash else
+                       "é de corpo inteiro (o rosto some na thumb pequena)" if body and cost(cid) <= 0 else
+                       "repetia as thumbs recentes (ou outro candidato)")
+                notes.append(f"CORRIGIDO: figura {cid} {why}; usei {pick}")
                 cid = pick
         out.append(cid)
     return out
@@ -2836,15 +2890,14 @@ def _pick_characters(chars: list[str], cutouts: list[dict[str, Any]], recent: An
 
 def _text_side(template: str, recent: Any, batch: Any, turn: int) -> str:
     """Onde vai o texto: o lado que o canal e o pacote menos usaram entre os que o template aceita (o molde inteiro
-    espelha: texto à direita, figura e avatar à esquerda)."""
+    espelha: texto à direita, figura e avatar à esquerda). O padrão do template vem primeiro (desempate)."""
     from studio.media import thumb_templates as T
 
     default = {"livre": "center", "lugar-mapa": "center", "heroi-palavra": "top"}.get(template, "left")
     if template not in T.MIRRORABLE:
         return default
-    options = ["top", "left", "right"] if template == "heroi-palavra" else ["left", "right"]
-    options.remove(default)
-    options.insert(0, default)
+    base = ["top", "left", "right"] if template == "heroi-palavra" else ["left", "right"]
+    options = [default] + [o for o in base if o != default]
     return thumb_variety.least_used("side", options, recent, batch, turn) or default
 
 
@@ -2912,6 +2965,7 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
     frame_ids = {str(f["id"]): f for f in frames}
     cutouts, objects = assets.ids("cutouts"), assets.ids("objects") | assets.ids("cutouts")
     proofs = {str(p["id"]): p for p in assets.proofs} if is_long else {}
+    cutout_items = {str(c["id"]): c for c in assets.cutouts}
     seen_titles = {normalize_token(t) for t in existing_titles or []}
     used_poses = used_poses if used_poses is not None else set()
     recent = history
@@ -2950,20 +3004,25 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             template = allowed[turn % len(allowed)]
         hint = str(item.get("background_hint") or "").strip()
         proof = proofs.get(hint)
-        if proof is not None and template not in thumb_variety.CARD_TEMPLATES:
-            if "prova" in allowed:  # a captura do próprio vídeo não vira fundo de tela cheia: vira a prova
+        # um cartão de captura por pacote: dois prints brancos lado a lado parecem a mesma thumb
+        captures_used = any(k.startswith("media:") and c > 0 for k, c in batch.counts.get("background", {}).items())
+        fallback = [t for t in allowed if t not in thumb_variety.CARD_TEMPLATES] or ["heroi-palavra"]
+        if proof is not None and template != "prova":
+            if "prova" in allowed and not captures_used:  # a captura não vira fundo de tela cheia: vira a prova
                 notes.append(f"CORRIGIDO: a captura {hint} entrou como prova (template prova)")
                 template = "prova"
             else:
                 proof = None
-        if template in thumb_variety.CARD_TEMPLATES and proof is None:
-            if proofs:  # sem citação: a captura mais ligada ao tema que este pacote ainda não usou
-                proof = min(proofs.values(), key=lambda p: (
-                    batch.n("background", "media:" + p["file"].rsplit("/", 1)[-1]), -p.get("relevance", 0)))
-            elif template == "prova" or not assets.objects:
-                fallback = [t for t in allowed if t not in thumb_variety.CARD_TEMPLATES] or ["heroi-palavra"]
-                notes.append(f"CORRIGIDO: {template} sem material do próprio vídeo; usei {fallback[turn % len(fallback)]}")
-                template = fallback[turn % len(fallback)]
+        if template == "prova" and proof is None and proofs and not captures_used:
+            # sem citação: a captura mais ligada ao tema
+            proof = max(proofs.values(), key=lambda p: p.get("relevance", 0))
+        if template == "prova" and (proof is None or captures_used):
+            why = "já há uma prova neste pacote" if captures_used else "sem material do próprio vídeo"
+            notes.append(f"CORRIGIDO: prova {why}; usei {fallback[turn % len(fallback)]}")
+            template, proof = fallback[turn % len(fallback)], None
+        if template == "objeto" and not assets.objects:
+            notes.append(f"CORRIGIDO: objeto sem objeto na biblioteca; usei {fallback[turn % len(fallback)]}")
+            template = fallback[turn % len(fallback)]
         card = template in thumb_variety.CARD_TEMPLATES
         chars = [str(c) for c in _list(item.get("characters_hint")) if str(c) in cutouts][:2]
         missing = [str(c) for c in _list(item.get("characters_hint")) if str(c) not in cutouts]
@@ -2971,16 +3030,28 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             notes.append(f"CORRIGIDO: sem recorte de {', '.join(missing[:3])} (o personagem fica no fundo)")
         if card:
             chars = []
-        chars = _pick_characters(chars, assets.cutouts, recent, batch, notes)
+        chars = _pick_characters(chars, assets.cutouts, recent, batch, notes, template=template,
+                                 avoid_keyart=_uses_keyart(batch, frame_ids, "background"))
         frame = None
+        backdrop = None
         if not card:
             hint_frame = frame_ids.get(hint)
             if hint_frame is None and hint and hint not in proofs:
                 notes.append(f"CORRIGIDO: fundo {hint} não existe na biblioteca")
+            keyart_cut = (_uses_keyart(batch, cutout_items, "character")
+                          or any(_is_keyart(cutout_items.get(c)) for c in chars))
+            # o avatar grande também é "a figura": atrás dele, o fundo trocado é um lugar e não outro personagem
             frame, note = _pick_frame(hint_frame, frames, template, turn, recent, batch,
-                                      need_face=template == "heroi-palavra" and not chars, has_figure=bool(chars))
+                                      need_face=template == "heroi-palavra" and not chars,
+                                      has_figure=bool(chars) or template in ("avatar-reage", "numero-lista"),
+                                      avoid_keyart=keyart_cut)
             if note:
                 notes.append(note)
+        elif template == "prova" and frames:
+            # atrás do print, um quadro do jogo (escurecido): a cara de canal de jogo, não um cartão no degradê
+            places = [f for f in frames if not {"personagem", "keyart"} & set(f.get("tags") or [])] or frames
+            backdrop = str(min(places[turn % len(places):] + places[:turn % len(places)], key=lambda f: (
+                thumb_variety.penalty("background", str(f["id"]), recent, batch)))["id"])
         pose_id = None
         wants_pose = template in ("avatar-reage", "numero-lista", "prova") or item.get("presenter_pose")
         if is_long and assets.poses and wants_pose and template != "objeto":
@@ -3019,13 +3090,14 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         else:
             background = _frame_layer(frame, template)
         figures = [{"asset": c, "x": 0.72 - 0.18 * i, "y": 1.0, "h": 0.95} for i, c in enumerate(chars)]
-        if template == "objeto" and proof is None:
+        if template == "objeto":
             obj = next((str(c) for c in _list(item.get("characters_hint")) if str(c) in assets.ids("objects")),
                        next(iter(sorted(assets.ids("objects"))), None))
             if obj:
                 figures = [{"asset": f"object:{obj}", "x": 0.70, "y": 0.96, "h": 0.86}]
         if mirrored:
-            figures = [{**f, "x": round(1 - f["x"], 3)} for f in figures]
+            # o molde inteiro espelhado: a figura vai para a esquerda olhando para o mesmo lado de antes (o texto)
+            figures = [{**f, "x": round(1 - f["x"], 3), "flip": True} for f in figures]
         layers: dict[str, Any] = {
             "template": template,
             "background": background,
@@ -3040,21 +3112,23 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             # prova: X no que é falso/perigoso, círculo no resto; objeto em close: círculo (destaca o item)
             "mark": (thumb_variety.mark_for(thumb_text) if template == "prova" else "circle")
             if card and (proof or figures) else None,
+            "backdrop": backdrop,
         }
         if pose_id:
+            facing = next((str(p.get("facing") or "center") for p in assets.poses if p["id"] == pose_id), "center")
             if template == "prova":
-                # avatar pequeno de corpo embaixo da coluna de texto (o foco é a captura)
-                layers["presenter"] = {"pose": pose_id, "side": "left", "crop": "meio", "h": 0.52,
-                                       "outline_px": assets.presenter_outline}
+                # avatar grande de corpo embaixo da palavra, do lado de fora do print
+                side_p, crop, h = "left", "meio", 0.64
             else:
                 # Busto do lado oposto ao texto em todos, menos no heroi-palavra (avatar pequeno de corpo embaixo do
                 # texto): do lado do texto, o busto ficaria embaixo da coluna.
                 busto = template != "heroi-palavra"
                 side_p = ("left" if mirrored else "right") if busto else ("right" if mirrored else "left")
-                layers["presenter"] = {"pose": pose_id, "side": side_p,
-                                       "crop": assets.presenter_crop if busto else "meio",
-                                       "h": assets.presenter_height if busto else 0.9,
-                                       "outline_px": assets.presenter_outline}
+                crop = assets.presenter_crop if busto else "meio"
+                h = assets.presenter_height if busto else 0.9
+            # a pose que olha/aponta para um lado vira para dentro da thumb (para o texto), nunca para a borda
+            layers["presenter"] = {"pose": pose_id, "side": side_p, "crop": crop, "h": h,
+                                   "outline_px": assets.presenter_outline, "flip": facing == side_p}
         thumb_layers = ThumbLayers.model_validate(layers)
         repeats = thumb_variety.repeated(thumb_layers, recent)
         if repeats:
@@ -3101,7 +3175,8 @@ def package_ideas(doc: ProjectDoc, channel: dict[str, Any], style: StyleSpec, n_
                   lessons: list[dict[str, Any]] | None = None, existing_titles: list[str] | None = None,
                   today: date | None = None, project_id: str | None = None,
                   job_id: str | None = None, publish_date: date | None = None,
-                  history: Any = None) -> tuple[list[PackageCandidate], str]:
+                  history: Any = None, kept: list[PackageCandidate] | None = None
+                  ) -> tuple[list[PackageCandidate], str]:
     """Candidatos do pacote (título + thumb), já normalizados, e o provedor usado. Pede `max(n_titles, n_thumbs)`
     pares com pelo menos `n_thumbs` conceitos de thumb diferentes. Título gerado acima do teto é descartado e o LLM
     refaz os que faltam uma vez; o que ainda passar fica de fora, com aviso no 1º candidato. No Short: só título e
@@ -3109,7 +3184,8 @@ def package_ideas(doc: ProjectDoc, channel: dict[str, Any], style: StyleSpec, n_
     `publish_date`: publicação prevista (o prompt pede para não prometer prazo que vença antes dela; sem ela, vale
     hoje). Se a 2ª chamada falhar, seguem os candidatos da 1ª (com o aviso dos descartados). `history`
     (`thumb_variety.Usage` das thumbs recentes do canal) entra no pedido e no pós-processamento (fundo, figura, pose,
-    cor e lado do texto fogem do que o canal acabou de usar)."""
+    cor e lado do texto fogem do que o canal acabou de usar). `kept`: os candidatos que ficam na tela (manuais,
+    escolhido, aprovados): os novos também fogem do que eles usam."""
     today = today or date.today()
     publish_date = publish_date or today
     is_long = style.format.type != "short"
@@ -3156,6 +3232,10 @@ Ativos disponíveis (cite só estes ids):
     rejected: list[str] = []
     used_poses: set[str] = set()
     batch = thumb_variety.Usage()
+    for other in kept or []:
+        batch.add_layers(other.layers)
+        if other.layers.presenter is not None:
+            used_poses.add(other.layers.presenter.pose)
     candidates = _normalize_candidates(data.get("candidates"), assets=assets, templates=templates, is_long=is_long,
                                        existing_titles=existing_titles, rejected=rejected, used_poses=used_poses,
                                        publish_date=publish_date, history=history, batch=batch,

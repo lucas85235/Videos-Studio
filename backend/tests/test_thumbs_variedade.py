@@ -199,7 +199,10 @@ def test_molde_espelhado_e_cartao_da_prova(tmp_path):
     from studio.media.thumb_assets import AssetResolver
 
     img = Image.new("RGB", (1200, 700), (250, 250, 250))
-    ImageDraw.Draw(img).rectangle((100, 100, 700, 300), fill=(20, 20, 20))  # o "título" da matéria
+    draw = ImageDraw.Draw(img)
+    for top in (100, 210):  # o "título" da matéria: 2 linhas de "letras" (tinta esparsa, não um bloco cheio)
+        for x in range(100, 700, 22):
+            draw.rectangle((x, top, x + 9, top + 80), fill=(20, 20, 20))
     img.save(tmp_path / "cap.jpg")
     r = AssetResolver(None, media=lambda ref: tmp_path / "cap.jpg")
     right = ThumbLayers.model_validate({"template": "numero-lista", "logo": "none",
@@ -214,9 +217,14 @@ def test_molde_espelhado_e_cartao_da_prova(tmp_path):
     card = next(f for f in lay["figures"] if f["kind"] == "card")
     assert card["bbox"][0] > T.CANVAS[0] * 0.35 and lay["objects"] >= 1
     assert lay["text_bbox"][2] < card["bbox"][0]  # texto e prova não se cobrem
-    cx, cy = (card["bbox"][0] + card["bbox"][2]) // 2, (card["bbox"][1] + card["bbox"][3]) // 2
+    # a manchete (as 2 linhas de "letras") foi achada e o X fica fora dela, no pedaço livre de baixo do cartão
+    hx0, hy0, hx1, hy1 = card["headline"]
+    assert hx0 < card["bbox"][0] + 80 and hx1 > card["bbox"][2] - 80  # a janela tem a manchete inteira
+    row = [out.getpixel((x, (hy0 + hy1) // 2)) for x in range(hx0, hx1, 3)]
+    assert not any(p[0] > 180 and p[1] < 90 for p in row)  # nenhum vermelho em cima da manchete
+    cx, cy = (card["bbox"][0] + card["bbox"][2]) // 2, (hy1 + card["bbox"][3]) // 2
     px = out.getpixel((cx, cy))
-    assert px[0] > 180 and px[1] < 90  # o X vermelho cruza o meio do cartão
+    assert px[0] > 180 and px[1] < 90  # o X vermelho no meio do pedaço livre
     assert lay["text_fill"] == list(C.fill_rgb("red", C._palette(None)))
 
 
@@ -274,3 +282,206 @@ def test_parecida_sem_troca_possivel_avisa_e_vai_para_o_fim():
     assert [c.id for c in cands] == [b.id, a.id]  # a parecida foi para o fim
     assert cands[1].score["recent_dup"] < thumb_history.RECENT_MIN_DISTANCE
     assert any("parecida demais com uma thumb recente" in w for w in cands[1].score["warnings"])
+
+
+# --- revisão: espelho, atributos, candidatos do dono, orientação -------------------------------------------------------
+@pytest.mark.parametrize("template", sorted(set(T.MIRRORABLE) | set(T.TEMPLATES)))
+def test_lado_do_texto_aceita_todos_os_templates(template):
+    for turn in range(3):
+        side = authoring._text_side(template, _history(_old()), V.Usage(), turn)
+        assert side in ("top", "left", "right", "center")
+    assert authoring._text_side("lugar-mapa", None, None, 0) == "center"  # o padrão vem primeiro no desempate
+
+
+def test_lugar_mapa_no_pacote_nao_derruba(monkeypatch):
+    _online()
+    cid = _channel()
+    _fake_llm(monkeypatch, _raw(3, template="lugar-mapa", pose=None), [])
+    doc = service.create_project(title="Mapa", topic="mapa", style_id=LONG, channel_id=cid)
+    style = get_style(LONG).model_copy(deep=True)
+    style.thumbnail.templates = ["lugar-mapa", "heroi-palavra"]
+    cands, _ = authoring.package_ideas(doc, {"style_bible": BIBLE}, style, 3, 3, history=_history(_old()))
+    assert cands and {c.layers.template for c in cands} == {"lugar-mapa"}
+
+
+def test_espelho_nao_engana_a_semelhanca():
+    img = Image.new("RGB", (640, 360), (30, 30, 60))
+    ImageDraw.Draw(img).rectangle((20, 40, 260, 340), fill=(250, 210, 0))
+    ImageDraw.Draw(img).ellipse((400, 60, 600, 300), fill=(200, 60, 90))
+    direct, _ = thumb_history.image_hashes(img)
+    hist = thumb_history.ChannelThumbs(thumbs=[{"dhash": direct, "landscape": True}])
+    mirrored = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    assert hist.nearest(thumb_history.image_hashes(mirrored)[0])[0] > 0  # só o dHash: "outra" imagem
+    assert hist.nearest(thumb_history.image_hashes(mirrored))[0] == 0  # com o espelho na conta, é a mesma
+
+
+def test_mesmo_fundo_e_mesma_pose_ou_palavra_e_repeticao():
+    old = _old(bg="neon", pose="surpreso")
+    hist = thumb_history.ChannelThumbs(thumbs=[{"landscape": True, "title": "Antigo",
+                                                "feats": thumb_history.recent_features(old, "NÃO!")}])
+    mirrored = old.model_copy(deep=True)
+    mirrored.text.pos = "right"
+    mirrored.presenter.side = "left"
+    found = hist.like(mirrored)
+    assert found is not None and "pose" in found[1]  # do outro lado continua a mesma thumb
+    other_pose = _old(bg="neon", pose="lupa")
+    assert hist.like(other_pose, "nao") is not None  # mesmo fundo e mesma palavra (sem acento e pontuação)
+    assert hist.like(other_pose, "SAIU") is None
+    assert hist.like(_old(bg="praia", pose="surpreso"), "SAIU") is None
+
+
+def test_candidato_do_dono_parecido_so_ganha_aviso():
+    cid = _channel()
+    same = _old(bg="praia", pose="surpreso").model_copy(update={"logo": "none"})
+    _with_package(cid, "Vídeo antigo", same, chosen=True)
+    new = service.create_project(title="Novo", style_id=LONG, channel_id=cid)
+    manual = PackageCandidate(title="Manual", thumb_text="X", layers=same, source="manual")
+    chosen = PackageCandidate(title="Escolhido", thumb_text="X", layers=same.model_copy(deep=True))
+    auto = PackageCandidate(title="Auto", thumb_text="X", layers=same.model_copy(deep=True))
+    new.package.candidates = [manual, chosen, auto]
+    new.package.chosen_id = chosen.id
+    service.commit(new.id, new, "pacote")
+    tasks.render_package_thumbs(new.id)
+    cands = {c.id: c for c in service.get_doc(new.id).package.candidates}
+    for keep in (manual.id, chosen.id):
+        assert cands[keep].layers.background.ref == "praia" and cands[keep].layers.presenter.pose == "surpreso"
+        assert any("parecida demais com uma thumb recente" in w for w in cands[keep].score["warnings"])
+        assert not any(w.startswith("CORRIGIDO:") and "recente" in w for w in cands[keep].score["warnings"])
+    fixed = cands[auto.id].layers
+    assert (fixed.background.ref, fixed.presenter.pose) != ("praia", "surpreso")  # o automático troca
+
+
+def test_historico_soma_so_a_mesma_orientacao():
+    cid = _channel()
+    livre = ThumbLayers.model_validate({"template": "livre", "logo": "none",
+                                        "background": {"kind": "frame", "ref": "ceu"},
+                                        "text": {"words": "SAIU", "fill": "yellow", "pos": "center"}})
+    _with_package(cid, "Short antigo", livre, chosen=True)
+    _with_package(cid, "Longo antigo", _old(bg="neon"), chosen=True)
+    long_hist = thumb_history.channel_history(cid, landscape=True)
+    short_hist = thumb_history.channel_history(cid, landscape=False)
+    assert long_hist.usage.n("background", "ceu") == 0 and long_hist.usage.n("background", "neon") == 1
+    assert short_hist.usage.n("background", "ceu") == 1 and short_hist.usage.n("background", "neon") == 0
+
+
+def test_pacote_sem_canal_sai_com_historico_vazio():
+    doc = service.create_project(title="Sem canal", topic="sem canal", style_id=LONG)
+    assert thumb_history.channel_history(None).thumbs == []
+    out = tasks.generate_package(doc.id, {"n_titles": 2, "n_thumbs": 2})
+    assert out["candidates"] >= 1
+    assert all(c.image for c in service.get_doc(doc.id).package.candidates)
+
+
+def test_aviso_de_repeticao_cita_fundo_e_nao_template():
+    recent = _history(*[_old() for _ in range(3)])
+    rep = V.repeated(_old(bg="neon"), recent)
+    assert any(r.startswith("fundo neon") for r in rep)
+    assert not any(r.startswith(("template", "cor do texto")) for r in rep)  # 3 usos: ainda é o estilo do canal
+
+
+# --- revisão: troca de figura, capa, pose e cor -------------------------------------------------------------------------
+CUTS = [
+    {"id": "jason-capa", "tags": ["personagem", "jason", "keyart", "rosto"]},
+    {"id": "jason-carro", "tags": ["personagem", "jason", "rosto"]},
+    {"id": "jason-rua", "tags": ["personagem", "jason", "corpo"]},
+    {"id": "casal-carro", "tags": ["personagem", "jason", "lucia", "casal"]},
+]
+
+
+def test_troca_de_figura_respeita_personagem_quantidade_e_enquadramento():
+    recent = V.Usage()
+    recent.add({"character": ["jason-capa"]}, 0.8)  # só vista, sem ser escolhida: já conta
+    notes: list[str] = []
+    assert authoring._pick_characters(["jason-capa"], CUTS, recent, V.Usage(), notes) == ["jason-carro"]
+    assert notes and "jason-carro" in notes[0]
+    # o close solo usado mais vezes também: nada do mesmo tipo é menos usado, fica (nunca vira casal nem corpo)
+    recent.add({"character": ["jason-carro"]}, 2.0)
+    assert authoring._pick_characters(["jason-capa"], CUTS, recent, V.Usage(), []) == ["jason-capa"]
+    # corpo inteiro no heroi-palavra vira um close do mesmo personagem
+    assert authoring._pick_characters(["jason-rua"], CUTS, None, V.Usage(), []) in (["jason-capa"], ["jason-carro"])
+    # a capa já está no pacote: o recorte da mesma arte dá lugar a outro
+    assert authoring._pick_characters(["jason-capa"], CUTS, None, V.Usage(), [], avoid_keyart=True) == ["jason-carro"]
+
+
+def test_capa_nao_entra_com_recorte_da_mesma_arte():
+    frames = [{"id": "capa-oficial", "tags": ["keyart", "capa", "claro"]},
+              {"id": "capa-video", "tags": ["keyart", "capa", "claro"]},
+              {"id": "rua", "tags": ["lugar", "rua", "claro"]}, {"id": "neon", "tags": ["lugar", "neon"]}]
+    pick, note = authoring._pick_frame(frames[0], frames, "avatar-reage", 0, None, V.Usage(), False,
+                                       avoid_keyart=True)
+    assert pick["id"] == "rua" and "mesma arte" in note
+    # capa repetida nas recentes: não troca por outra capa (a arte é a mesma), e sim por um quadro claro
+    recent = V.Usage()
+    recent.add({"background": ["capa-oficial"]}, 0.8)
+    pick, _ = authoring._pick_frame(frames[0], frames, "avatar-reage", 0, recent, V.Usage(), False)
+    assert pick["id"] == "rua"
+    usage = V.Usage()
+    usage.add({"background": ["capa-oficial"]})
+    assert authoring._uses_keyart(usage, {f["id"]: f for f in frames}, "background")
+
+
+def test_pose_vista_troca_e_sem_outra_da_mesma_emocao_troca_a_emocao():
+    poses = [{"id": "surpreso", "emotions": ["choque"]}, {"id": "chocado", "emotions": ["choque"]},
+             {"id": "lupa", "emotions": ["detalhe"]}]
+    recent = V.Usage()
+    recent.add({"pose": ["surpreso"]}, 0.8)
+    assert authoring._pick_pose("choque", poses, set(), recent) == "chocado"
+    recent.add({"pose": ["chocado"]}, 0.8)
+    assert authoring._pick_pose("choque", poses, set(), recent) == "lupa"
+
+
+def test_cor_do_mesmo_matiz_do_fundo_perde():
+    sky = (70, 150, 235)
+    assert V.same_hue(V.color_rgb("cyan"), sky)
+    assert V.pick_fill(sky, None, None) != "cyan"
+    fixed = tasks._better_fill(_old(fill="cyan"), sky, None, None)
+    assert fixed is not None and fixed != "cyan"
+    # a paleta do estilo vale: o "amarelo" escuro do estilo é medido com a cor que o compositor desenha
+    dark = {"yellow": "#403000"}
+    assert tasks._better_fill(_old(fill="yellow"), (30, 25, 20), None, None, dark) is not None
+    assert tasks._better_fill(_old(fill="yellow"), (30, 25, 20), None, None) is None
+
+
+def test_um_cartao_de_captura_por_pacote_e_objeto_so_com_objeto():
+    proofs = [{"id": "p1", "file": "uploads/x/a.jpg", "kind": "captura", "desc": "a", "relevance": 2},
+              {"id": "p2", "file": "uploads/x/b.jpg", "kind": "captura", "desc": "b", "relevance": 1}]
+    assets = authoring.PackageAssets(frames=FRAMES, proofs=proofs, allow_editorial=True)
+    raw = _raw(3, template="prova", pose=None)
+    raw["candidates"][1]["background_hint"] = "p2"
+    raw["candidates"][2]["template"] = "objeto"
+    cands = authoring._normalize_candidates(raw["candidates"], assets=assets,
+                                            templates=["heroi-palavra", "prova", "objeto"],
+                                            is_long=True)
+    templates = [c.layers.template for c in cands]
+    assert templates.count("prova") == 1 and "objeto" not in templates
+    prova = next(c for c in cands if c.layers.template == "prova")
+    assert prova.layers.backdrop in {f["id"] for f in FRAMES}  # um quadro do jogo atrás do print
+    assert any("já há uma prova" in n for c in cands for n in c.score.get("notes", []))
+    assert "objeto" not in authoring.thumb_templates_for(get_style(LONG), assets)
+
+
+def test_direita_fora_dos_templates_que_espelham_nao_espelha(tmp_path):
+    from studio.media.thumb_assets import AssetResolver
+
+    Image.new("RGB", (1200, 700), (40, 160, 90)).save(tmp_path / "cap.jpg")
+    r = AssetResolver(None, media=lambda ref: tmp_path / "cap.jpg")
+    prova = ThumbLayers.model_validate({"template": "prova", "logo": "none",
+                                        "background": {"kind": "media", "ref": "media:cap"},
+                                        "text": {"words": "FALSO", "fill": "red", "pos": "right"}})
+    assert not C._mirrored(prova)
+    card = next(f for f in C.render(prova, T.CANVAS, r).info["layout"]["figures"] if f["kind"] == "card")
+    assert card["bbox"][0] > T.CANVAS[0] * 0.35  # o cartão continua à direita
+
+
+def test_prova_ja_gerada_some_quando_o_canal_deixa_de_liberar():
+    from studio.workers.visual import thumbs as visual_thumbs
+
+    doc = service.create_project(title="Prova", style_id=LONG)
+    media = get_settings().uploads_dir / doc.id / "media"
+    media.mkdir(parents=True)
+    Image.new("RGB", (800, 450), (250, 250, 250)).save(media / "cap.jpg")
+    rel = f"uploads/{doc.id}/media/cap.jpg"
+    save_pool(doc.id, Pool(items=[PoolItem(id="p1", tier="capture", media="capture", path=rel, desc="golpe",
+                                           editorial=True)]))
+    assert visual_thumbs._media_finder(doc, None, allow=True)(rel) is not None
+    assert visual_thumbs._media_finder(doc, None, allow=False)(rel) is None

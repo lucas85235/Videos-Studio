@@ -30,6 +30,7 @@ from studio.media.thumb_assets import (
     anchorable,
     cut_edges_of,
     open_rgba,
+    prepared_cutout,
     straight_cuts_of,
 )
 from studio.media.thumbnail import load_font
@@ -338,8 +339,9 @@ def _background(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
 
 
 def _mirrored(layers: ThumbLayers) -> bool:
-    """O molde está espelhado: texto à direita, figura e avatar à esquerda."""
-    return bool(layers.text and layers.text.pos == "right")
+    """O molde está espelhado: texto à direita, figura e avatar à esquerda. Só nos templates que espelham
+    (`T.MIRRORABLE`): na prova, no versus e no livre o "Direita" não mexe no resto do molde."""
+    return bool(layers.text and layers.text.pos == "right" and layers.template in T.MIRRORABLE)
 
 
 def _shade(canvas: Image.Image, tpl: dict[str, Any], pal: dict[str, tuple[int, int, int]], has_text: bool,
@@ -400,9 +402,13 @@ def _extend_cut(base: Image.Image, pad: int, w: int, h: int, cut: Sequence[str])
 
 
 def _sticker(fig: Image.Image, H: int, *, outline: int, rim: tuple[int, int, int] | None, ink: tuple[int, int, int],
-             shadow: bool = True, cut: Sequence[str] = ()) -> tuple[Image.Image, int]:
+             shadow: bool = True, cut: Sequence[str] = (),
+             fade: Any = None) -> tuple[Image.Image, int]:
     """Figura com contorno branco por dilatação do alfa, rim light na borda de dentro e sombra. Nos lados cortados
-    (`cut`) a figura continua pela margem e nada disso aparece. Devolve a imagem com margem e o tamanho da margem."""
+    (`cut`) a figura continua pela margem e nada disso aparece. `fade(size, pad)` devolve as máscaras (corpo,
+    contorno) do degradê dos lados/trechos retos que somem (`_fade_mask`), ou None: o corpo some suave e o contorno
+    branco some antes e sem borrão (senão o branco de baixo aparece pelo corpo semitransparente). Devolve a imagem
+    com margem e o tamanho da margem."""
     o = _px(outline, H) if outline else 0
     pad = o + _px(26, H)
     w, h = fig.size
@@ -410,10 +416,17 @@ def _sticker(fig: Image.Image, H: int, *, outline: int, rim: tuple[int, int, int
     base.paste(fig, (pad, pad))
     _extend_cut(base, pad, w, h, cut)
     alpha = base.getchannel("A")
+    masks = fade(base.size, pad) if fade is not None else None
     out = Image.new("RGBA", base.size, (0, 0, 0, 0))
     grown = _grow_aa(alpha, o) if o else alpha
+    shadow_src = grown
+    if masks is not None:
+        body_mask, line_mask = masks
+        shadow_src = ImageChops.multiply(grown, body_mask)
+        grown = ImageChops.multiply(grown, line_mask)
+        base.putalpha(ImageChops.multiply(alpha, body_mask))
     if shadow:
-        sh = grown.filter(ImageFilter.GaussianBlur(_px(12, H))).point(lambda v: v * 6 // 10)
+        sh = shadow_src.filter(ImageFilter.GaussianBlur(_px(12, H))).point(lambda v: v * 6 // 10)
         dy = _px(10, H)
         sh_layer = Image.new("RGBA", base.size, (*ink, 255))
         sh_layer.putalpha(_shift(sh, 0, dy))
@@ -431,7 +444,7 @@ def _sticker(fig: Image.Image, H: int, *, outline: int, rim: tuple[int, int, int
         lit = ImageChops.screen(base.convert("RGB"), Image.new("RGB", base.size, rim))
         rgb = Image.composite(lit, base.convert("RGB"), band)
         body = rgb.convert("RGBA")
-        body.putalpha(alpha)
+        body.putalpha(base.getchannel("A"))
     out.alpha_composite(body)
     return out, pad
 
@@ -559,11 +572,21 @@ def _cutouts(size: tuple[int, int], layers: ThumbLayers, resolver: AssetResolver
             asset, im = cut, open_rgba(cut.path)
         is_logo = asset.kind in ("logo", "object")
         meta = asset.meta if asset.kind == "cutout" else None
-        edges = [] if is_logo else cut_edges_of(asset.path, meta)
-        straight = [] if is_logo else straight_cuts_of(asset.path, meta)
+        edges: list[str] = []
+        straight: list[dict[str, Any]] = []
+        fig = None
+        if not is_logo:
+            try:
+                fig, edges, straight, meta_fixed = prepared_cutout(asset.path, meta)
+                meta = meta_fixed if meta is not None else ({"face_box": meta_fixed["face_box"]}
+                                                            if meta_fixed.get("face_box") else None)
+            except (OSError, ValueError) as exc:  # arquivo sumiu no meio: mede como antes
+                log.warning("recorte %s: preparo falhou (%s)", asset.ref, exc)
+                edges, straight = cut_edges_of(asset.path, meta), straight_cuts_of(asset.path, meta)
         layer = Image.new("RGBA", size, (0, 0, 0, 0))
         before = len(layout.figures)
-        if _place_cutout(layer, _trim(im), c, asset.kind, pal, layout, asset.meta, edges, straight):
+        if _place_cutout(layer, fig if fig is not None else _trim(im), c, asset.kind, pal, layout,
+                         meta if meta is not None else asset.meta, edges, straight):
             out.append((layer, layout.figures[-1] if len(layout.figures) > before else None))
     return out
 
@@ -644,9 +667,10 @@ FADE_STRAIGHT = 0.06
 
 
 def _refine(fig: Image.Image, H: int, keep: Sequence[str] = ()) -> Image.Image:
-    """Acabamento do recorte no tamanho final: erosão leve do alfa (~1 px a 720p, tira a franja do fundo antigo),
-    feather e a cor da borda puxada do interior (sem halo claro). Os lados em `keep` (cortados e encostados na borda
-    da thumb) não perdem nada: a borda da imagem é replicada antes da erosão e a última faixa fica como estava."""
+    """Acabamento do recorte no tamanho final: erosão leve do alfa (~1 px a 720p, tira a franja do fundo antigo) e
+    feather. A cor da borda não é refeita aqui: o PNG já sai descontaminado do recorte (`thumb_assets.cutout`), e
+    refazer a cada render custava ~1 s por figura. Os lados em `keep` (cortados e encostados na borda da thumb) não
+    perdem nada: a borda da imagem é replicada antes da erosão e a última faixa fica como estava."""
     import numpy as np
 
     r = max(1, round(H / BASE_H))
@@ -666,15 +690,8 @@ def _refine(fig: Image.Image, H: int, keep: Sequence[str] = ()) -> Image.Image:
         soft[:band, :] = a[:band, :]
     if "bottom" in keep:
         soft[-band:, :] = a[-band:, :]
-    alpha = Image.fromarray(np.ascontiguousarray(soft), "L")
-    try:
-        from studio.media.thumb_assets import _decontaminate
-
-        rgb = _decontaminate(fig.convert("RGB"), alpha)
-    except Exception:  # noqa: BLE001 - sem scipy a cor fica como veio
-        rgb = fig.convert("RGB")
-    out = rgb.convert("RGBA")
-    out.putalpha(alpha)
+    out = fig.copy()
+    out.putalpha(Image.fromarray(np.ascontiguousarray(soft), "L"))
     return out
 
 
@@ -683,46 +700,60 @@ def _smooth(t: Any) -> Any:
 
 
 def _fade_mask(size: tuple[int, int], pad: int, fw: int, fh: int, sides: Sequence[str],
-               segments: Sequence[dict[str, Any]], H: int) -> Image.Image | None:
-    """Máscara (L, do tamanho do adesivo com margem) que some com a figura nos lados cortados que ficaram dentro do
-    quadro (`sides`: degradê no lado inteiro) e nos trechos retos de dentro (`segments`: degradê só no trecho, com
-    as pontas suavizadas). O contorno branco e a sombra daquele lado somem junto. None quando não há o que sumir."""
+               segments: Sequence[dict[str, Any]], H: int) -> tuple[Image.Image, Image.Image] | None:
+    """Máscaras (L, do tamanho do adesivo com margem) que somem com a figura nos lados cortados que ficaram dentro
+    do quadro (`sides`: degradê no lado inteiro) e nos trechos retos de dentro (`segments`: degradê só no trecho,
+    com as pontas suavizadas; a linha pode ser inclinada, de `pos_a` a `pos_b`). Devolve (corpo, contorno): o corpo
+    some em degradê; o contorno branco (e o branco por baixo do corpo) sai inteiro até o fim do degradê, sem rampa,
+    e um pouco além das pontas do trecho: o corpo semitransparente não deixa vazar um borrão branco. None quando não
+    há o que sumir."""
     import numpy as np
 
     if not sides and not segments:
         return None
     bw, bh = size
     m = np.ones((bh, bw), dtype=np.float32)
+    o = np.ones((bh, bw), dtype=np.float32)
     xs = np.arange(bw, dtype=np.float32)
     ys = np.arange(bh, dtype=np.float32)
     for side in sides:
         horizontal = side in ("left", "right")
         width = min(max(_px(24, H), (fw if horizontal else fh) * FADE_SIDE), _px(110, H))
-        # 0 na margem (contorno e sombra) e na borda da figura, 1 a `width` px para dentro
-        if side == "left":
-            m = np.minimum(m, _smooth(np.clip((xs - pad) / width, 0, 1))[None, :])
-        elif side == "right":
-            m = np.minimum(m, _smooth(np.clip((pad + fw - xs) / width, 0, 1))[None, :])
-        elif side == "top":
-            m = np.minimum(m, _smooth(np.clip((ys - pad) / width, 0, 1))[:, None])
+        # distância para dentro da figura a partir da borda daquele lado (< 0 na margem: contorno e sombra)
+        dist = {"left": xs - pad, "right": pad + fw - xs, "top": ys - pad, "bottom": pad + fh - ys}[side]
+        body = _smooth(np.clip(dist / width, 0, 1))
+        line = np.clip((dist - width) / 2 + 1, 0, 1)  # 0 até o fim do degradê
+        if horizontal:
+            m, o = np.minimum(m, body[None, :]), np.minimum(o, line[None, :])
         else:
-            m = np.minimum(m, _smooth(np.clip((pad + fh - ys) / width, 0, 1))[:, None])
+            m, o = np.minimum(m, body[:, None]), np.minimum(o, line[:, None])
     for seg in segments:
         side = seg["side"]
         horizontal = side in ("left", "right")
         length, depth = (fh, fw) if horizontal else (fw, fh)
         width = min(max(_px(10, H), min(fw, fh) * FADE_STRAIGHT), _px(44, H))
-        line = pad + seg["pos"] * (depth - 1)
         a0, a1 = pad + seg["start"] * length, pad + seg["end"] * length
         along = ys if horizontal else xs
         across = xs if horizontal else ys
+        pa, pb = float(seg.get("pos_a", seg["pos"])), float(seg.get("pos_b", seg["pos"]))
+        t = np.clip((along - a0) / max(1.0, a1 - a0), 0, 1)
+        line_at = pad + (pa + (pb - pa) * t) * (depth - 1)  # onde a linha está, ao longo do trecho
         # ao longo do trecho: peso 1 dentro, cai a 0 em `width` px depois das pontas
         w_along = _smooth(np.clip(1 - np.maximum(a0 - along, along - a1) / width, 0, 1))
-        d = (across - line) if side in ("left", "top") else (line - across)  # > 0: para dentro da figura
-        r_across = _smooth(np.clip(d / width, 0, 1))
-        fade = 1 - w_along[:, None] * (1 - r_across[None, :])  # (ao longo, através)
+        sign = 1.0 if side in ("left", "top") else -1.0
+        d = sign * (across[None, :] - line_at[:, None])  # > 0: para dentro da figura
+        fade = 1 - w_along[:, None] * (1 - _smooth(np.clip(d / width, 0, 1)))  # (ao longo, através)
+        # contorno: some inteiro até o fim do degradê, e um pouco além das pontas (rampa curta, sem borrão)
+        reach = np.clip((np.maximum(a0 - along, along - a1) - width) / _px(6, H), 0, 1)
+        o_fade = np.maximum(reach[:, None], np.clip((d - width) / 2 + 1, 0, 1))
         m = np.minimum(m, fade if horizontal else fade.T)
-    return Image.fromarray(np.clip(m * 255 + 0.5, 0, 255).astype(np.uint8), "L")
+        o = np.minimum(o, o_fade if horizontal else o_fade.T)
+    o = np.minimum(o, m)
+
+    def img(v: Any) -> Image.Image:
+        return Image.fromarray(np.clip(v * 255 + 0.5, 0, 255).astype(np.uint8), "L")
+
+    return img(m), img(o)
 
 
 def _place_cutout(canvas: Image.Image, fig: Image.Image, c: CutoutLayer, kind: str,
@@ -773,9 +804,11 @@ def _place_cutout(canvas: Image.Image, fig: Image.Image, c: CutoutLayer, kind: s
     fig = fig.resize((fw, fh), Image.Resampling.LANCZOS)
     x = round(c.x * W - fw / 2)
     y = top
-    if "right" in edges and x + fw < W:
+    # o lado cortado encosta na borda; passando muito dela (figura larga, como o casal no carro), volta até encostar
+    # (senão quem está daquele lado sai com meia cabeça para fora do quadro)
+    if "right" in edges and (x + fw < W or x + fw - W > fw * 0.05):
         x = W - fw
-    if "left" in edges and x > 0:
+    if "left" in edges and (x > 0 or -x > fw * 0.05):
         x = 0
     fb = (meta or {}).get("face_box")
     if not is_logo and fb and len(fb) == 4 and not edges & {"left", "right"}:
@@ -804,11 +837,13 @@ def _place_cutout(canvas: Image.Image, fig: Image.Image, c: CutoutLayer, kind: s
     anchored = sorted(e for e in edges if reach[e])
     if not is_logo:
         fig = _refine(fig, H, anchored)
+    fading = [*faded, *loose]
+
+    def fade(size: tuple[int, int], pad: int) -> tuple[Image.Image, Image.Image] | None:
+        return _fade_mask(size, pad, fw, fh, fading, straight, H)
+
     sticker, pad = _sticker(fig, H, outline=0 if is_logo else c.outline_px, rim=None if is_logo else pal.get("pink"),
-                            ink=pal["ink"], cut=anchored)
-    fade = _fade_mask(sticker.size, pad, fw, fh, [*faded, *loose], straight, H)
-    if fade is not None:
-        sticker.putalpha(ImageChops.multiply(sticker.getchannel("A"), fade))
+                            ink=pal["ink"], cut=anchored, fade=None if is_logo else fade)
     canvas.alpha_composite(_clip_paste(sticker, canvas.size, x - pad, y - pad), (0, 0))
     box = [max(0, x), max(0, y), min(W, x + fw), min(H, y + fh)]
     if is_logo:
@@ -852,9 +887,12 @@ def _big_vi(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver | 
         # posição é a da figura desenhada (já ancorada na borda), não a pedida
         fx = (figure["bbox"][0] + figure["bbox"][2]) / 2 / W
         cx = (fx - conf.get("behind_offset", 0.07)) * W
+    # atrás da figura o VI sangra pelo topo (e pela direita, quando chega perto dela): com a borda de cima à mostra
+    # ele parecia um painel colado no quadro
+    bleed = figure is not None
     if asset is not None:
         vi = _trim(open_rgba(asset.path))
-        vh = round(H * conf["h"])
+        vh = round(H * (max(conf["h"], 1.0) if bleed else conf["h"]))
         vw = round(vi.width * vh / vi.height)
         vi = vi.resize((vw, vh), Image.Resampling.LANCZOS)
     else:
@@ -868,6 +906,10 @@ def _big_vi(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver | 
         vw, vh = vi.size
     x = round(min(max(cx - vw / 2, -vw * 0.1), W - vw * 0.9))
     y = round((H - vh) / 2)
+    if bleed:
+        y = -round(H * 0.07)
+        if x + vw > W - vw * 0.12:
+            x = W - vw + round(vw * 0.1)
     glow = vi.getchannel("A").filter(ImageFilter.GaussianBlur(_px(18, H))).point(lambda v: v * 7 // 10)
     glow_layer = Image.new("RGBA", vi.size, (*pal["ink"], 255))
     glow_layer.putalpha(glow)
@@ -1035,7 +1077,10 @@ def _text(canvas: Image.Image, layers: ThumbLayers, pal: dict[str, tuple[int, in
                                                                           ink[3] + sw], "emph": i == emph})
     big = max(r[5] for r in rows)
     ink = pal["ink"]
-    behind = stroke_mask.point(lambda v: 255 if v > 128 else 0)
+    # o fundo atrás do miolo das letras (sem o traço): é contra ele que a cor do texto precisa de contraste
+    behind = fill_mask_all.point(lambda v: 255 if v > 128 else 0)
+    if not behind.getbbox():
+        behind = stroke_mask.point(lambda v: 255 if v > 128 else 0)
     if behind.getbbox():
         layout.text_bg = tuple(ImageStat.Stat(canvas.convert("RGB"), mask=behind).mean[:3])  # type: ignore[assignment]
     # halo escuro (legibilidade em qualquer fundo) + sombra dura para baixo + contorno + preenchimento
@@ -1439,24 +1484,172 @@ def _colorful(im: Image.Image) -> bool:
     return sat > 0.22 and _luma(small) < 0.85
 
 
+def _ink(im: Image.Image, width: int = 480, *, color: bool = True) -> Any:
+    """Máscara (numpy bool, numa cópia de `width` px) do que é "tinta" numa página: texto escuro (e cor forte, com
+    `color`)."""
+    import numpy as np
+
+    w, h = im.size
+    small = im.convert("RGB").resize((width, max(4, round(width * h / max(1, w)))), Image.Resampling.BOX)
+    luma = np.asarray(small.convert("L"), dtype=np.float32)
+    if not color:
+        return luma < 110
+    sat = np.asarray(small.convert("HSV").getchannel("S"), dtype=np.float32)
+    return (luma < 120) | (sat > 110)
+
+
+def page_window(im: Image.Image, aspect: float) -> tuple[int, int, int, int]:
+    """A janela (proporção `aspect`) de uma página capturada: com a manchete achada (`headline_band`), da largura
+    dela inteira (nunca cortada no meio da palavra), com a manchete no alto e o que vem embaixo (a foto da
+    matéria) no resto. Sem manchete: a largura da coluna de texto e, na vertical, onde há mais tinta."""
+    import numpy as np
+
+    w, h = im.size
+    band = headline_band(im)
+    if band is not None:
+        bx0, by0, bx1, by1 = band[0] * w, band[1] * h, band[2] * w, band[3] * h
+        ww = (bx1 - bx0) * 1.1
+        hh = ww / aspect
+        if hh <= h and ww <= w:
+            x0 = min(max(0.0, (bx0 + bx1) / 2 - ww / 2), w - ww)
+            y0 = min(max(0.0, by0 - (hh - (by1 - by0)) * 0.08), h - hh)
+            return round(x0), round(y0), round(x0 + ww), round(y0 + hh)
+    ink = _ink(im)
+    sh, sw = ink.shape
+    cols = np.where(ink.sum(axis=0) > max(1, sh * 0.004))[0]
+    if len(cols) < 4:
+        return content_window(im, aspect)
+    weights = ink.sum(axis=0)[cols].astype(np.float64)
+    cum = np.cumsum(weights) / weights.sum()
+    # 3% de cada lado fora: o selo/aba lateral do site ("Parceiro") não alarga a janela
+    x0, x1 = int(cols[np.searchsorted(cum, 0.03)]), int(cols[min(len(cols) - 1, np.searchsorted(cum, 0.97))])
+    pad = max(2, round((x1 - x0) * 0.04))
+    x0, x1 = max(0, x0 - pad), min(sw, x1 + pad + 1)
+    ww, hh = x1 - x0, (x1 - x0) / aspect
+    if hh > sh:  # coluna larga numa página baixa: a altura toda, largura pela proporção (centrada na coluna)
+        hh, ww = sh, sh * aspect
+        cx = (x0 + x1) / 2
+        x0 = int(min(max(0, cx - ww / 2), sw - ww))
+        x1 = int(x0 + ww)
+    rows = np.pad(np.cumsum(ink[:, x0:x1].sum(axis=1)), (1, 0))
+    hh_i = max(1, min(sh, round(hh)))
+    best = max(range(0, sh - hh_i + 1), key=lambda y: rows[y + hh_i] - rows[y]) if sh > hh_i else 0
+    fx, fy = w / sw, h / sh
+    return (round(x0 * fx), round(best * fy), round(x1 * fx), round(min(h, (best + hh_i) * fy)))
+
+
+def headline_band(photo: Image.Image, width: int = 480) -> tuple[float, float, float, float] | None:
+    """Onde está a manchete numa página (fração x0, y0, x1, y1): o bloco de linhas de texto escuro com a letra mais
+    alta (as linhas de uma manchete de 2 linhas juntas). Fotos e imagens da página (manchas cheias, sem o fundo claro
+    entre as letras) saem da conta antes: só sobra a tinta de texto. None quando não há texto que se destaque."""
+    import numpy as np
+
+    w, h = photo.size
+    small = photo.convert("RGB").resize((width, max(4, round(width * h / max(1, w)))), Image.Resampling.BOX)
+    gray = small.convert("L")
+    solid = np.asarray(gray, dtype=np.float32) < 225
+    # bloco de 8 px (a 480 de largura) quase todo sem fundo claro, em mancha grande, é foto; letra, mesmo grossa,
+    # deixa fundo claro em volta (e um bloco cheio solto no cruzamento de traços some na erosão). Os blocos vizinhos
+    # também saem (as letras brancas de um logo dentro da foto não viram "texto")
+    bs = 8
+    gh, gw = -(-solid.shape[0] // bs), -(-solid.shape[1] // bs)
+    padded = np.zeros((gh * bs, gw * bs), dtype=np.float32)
+    padded[:solid.shape[0], :solid.shape[1]] = solid
+    blocks = Image.fromarray(((padded.reshape(gh, bs, gw, bs).mean(axis=(1, 3)) > 0.9) * 255).astype(np.uint8))
+    blocks = np.asarray(blocks.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(7))) > 0
+    photo_mask = np.kron(blocks, np.ones((bs, bs), dtype=bool))[:solid.shape[0], :solid.shape[1]]
+    ink = (np.asarray(gray, dtype=np.float32) < 110) & ~photo_mask
+    sh, sw = ink.shape
+    density = ink.mean(axis=1)
+    rows = density > 0.01
+    # cada linha de texto é um trecho de linhas com tinta (sem pular vão: parágrafos não viram um bloco só)
+    runs: list[list[int]] = []
+    y = 0
+    while y < sh:
+        if rows[y]:
+            y0 = y
+            while y < sh and rows[y]:
+                y += 1
+            runs.append([y0, y])
+        y += 1
+    # linha de texto tem altura de linha (até 22% da imagem: mais que isso é pedaço de foto) e fundo claro em volta
+    light = np.asarray(gray, dtype=np.float32) > 225
+
+    gap = max(2, round(sw * 0.04))
+
+    def main_block(y0: int, y1: int) -> tuple[int, int] | None:
+        """As colunas do bloco de palavras com mais tinta nas linhas y0..y1 (vão maior que 4% da largura separa
+        outra coisa: o selo lateral do site, os botões do cabeçalho)."""
+        counts = ink[y0:y1].sum(axis=0).astype(np.float64)
+        cols = np.where(counts > 0)[0]
+        if not len(cols):
+            return None
+        blocks: list[list[int]] = [[int(cols[0]), int(cols[0])]]
+        for c in cols[1:]:
+            if c - blocks[-1][1] > gap:
+                blocks.append([int(c), int(c)])
+            else:
+                blocks[-1][1] = int(c)
+        c0, c1 = max(blocks, key=lambda bl: counts[bl[0]:bl[1] + 1].sum())
+        return c0, c1 + 1
+
+    def texty(r: list[int]) -> bool:
+        """Linha de manchete: larga (um quarto da página ou mais: o logo do site no cabeçalho não conta) e com
+        fundo claro em volta das letras (texto de dentro de uma foto não conta)."""
+        blk = main_block(r[0], r[1])
+        if blk is None or blk[1] - blk[0] < sw * 0.25:
+            return False
+        return float(light[r[0]:r[1], blk[0]:blk[1]].mean()) > 0.45
+
+    runs = [r for r in runs if max(3, sh * 0.015) <= r[1] - r[0] <= sh * 0.22 and texty(r)]
+    if not runs:
+        return None
+    # a manchete é a 1ª linha (de cima para baixo) com letra quase do tamanho da maior: texto grande mais embaixo
+    # costuma ser de dentro da foto (o logo do jogo) ou de outra matéria
+    tall = max(r[1] - r[0] for r in runs)
+    first = next(r for r in runs if r[1] - r[0] >= tall * 0.7)
+    group = [first]
+    for r in runs[runs.index(first) + 1:]:  # as outras linhas da manchete (quase a mesma altura, logo embaixo)
+        if r[1] - r[0] >= tall * 0.5 and r[0] - group[-1][1] <= tall:
+            group.append(r)
+        else:
+            break
+    y0, y1 = group[0][0], group[-1][1]
+    blk = main_block(y0, y1)
+    if blk is None:
+        return None
+    return blk[0] / sw, y0 / sh, blk[1] / sw, y1 / sh
+
+
 def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResolver | None,
                 pal: dict[str, tuple[int, int, int]], layout: Layout, tpl: dict[str, Any],
                 ) -> tuple[Image.Image, tuple[int, int, int, int] | None]:
-    """Fundo e cartão da prova/objeto: o fundo é a própria imagem desfocada (quando colorida) ou o degradê do
-    template; o cartão mostra a janela com mais conteúdo da imagem (`content_window`), com borda branca, sombra e
-    a inclinação do template. Devolve o canvas e a caixa do cartão (None quando a imagem não abriu)."""
+    """Fundo e cartão da prova/objeto. Fundo: o quadro do jogo de `layers.backdrop` escurecido; senão a própria
+    imagem desfocada (quando colorida); senão o degradê do template. O cartão mostra a janela da imagem: numa
+    página capturada, a coluna de texto inteira (`page_window`: a manchete não sai cortada); numa foto, a janela
+    com mais conteúdo (`content_window`). Borda branca, sombra e a inclinação do template. A manchete achada
+    (`headline_band`) vai para o item do cartão em `layout.figures` (a marcação fica fora dela). Devolve o canvas e
+    a caixa do cartão (None quando a imagem não abriu)."""
     W, H = size
     conf = tpl["card"]
     bg = layers.background
+    canvas = None
+    if layers.backdrop:
+        back = _resolve(resolver, layers.backdrop, layout, "fundo da prova")
+        if back is not None:
+            src_b, _ = _strip_letterbox(open_rgba(back.path).convert("RGB"))
+            canvas, _ = _cover(src_b, size, 1.0, (0.5, 0.45), (0.5, 0.45))
+            canvas = _grade(canvas, 3, 0.42, H)
     asset = _resolve(resolver, bg.ref, layout, "prova")
     if asset is None:
-        return _gradient_bg(tpl.get("backdrop", "vice"), size, pal), None
+        return (canvas if canvas is not None else _gradient_bg(tpl.get("backdrop", "vice"), size, pal)), None
     raw = open_rgba(asset.path).convert("RGB")
     src, _ = _strip_letterbox(raw)
-    if _colorful(src):
+    colorful = _colorful(src)
+    if canvas is None and colorful:
         canvas, _ = _cover(src, size, 1.0, (0.5, 0.5), (0.5, 0.5))
         canvas = _grade(canvas, 22, 0.38, H)
-    else:
+    if canvas is None:
         canvas = _gradient_bg(tpl.get("backdrop", "vice"), size, pal)
     bx, by, bw, bh = conf["box"]
     if _mirrored(layers):
@@ -1465,10 +1658,10 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     border = _px(conf.get("border", 7), H)
     inner = (max(8, cw - 2 * border), max(8, ch - 2 * border))
     zoom = max(float(conf.get("zoom", 1.0)), bg.zoom)
-    if not _colorful(src):
-        zoom = min(zoom, 1.25)  # página/print: close demais corta as palavras no meio
-    win = content_window(src, inner[0] / inner[1], zoom)
+    page = not colorful
+    win = page_window(src, inner[0] / inner[1]) if page else content_window(src, inner[0] / inner[1], zoom)
     photo = src.resize(inner, Image.Resampling.LANCZOS, box=win)
+    band = headline_band(photo) if page else None
     photo = ImageEnhance.Contrast(ImageEnhance.Color(photo).enhance(1.1)).enhance(1.05)
     card = Image.new("RGBA", (cw, ch), (*WHITE, 255))
     card.paste(photo, (border, border))
@@ -1483,29 +1676,58 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     canvas.alpha_composite(_clip_paste(shl, size, x + _px(6, H), y + _px(12, H)), (0, 0))
     canvas.alpha_composite(_clip_paste(card, size, x, y), (0, 0))
     box = (max(0, x), max(0, y), min(W, x + card.width), min(H, y + card.height))
-    layout.figures.append({"kind": "card", "asset": bg.ref, "bbox": list(box)})
+    item: dict[str, Any] = {"kind": "card", "asset": bg.ref, "bbox": list(box)}
+    if band is not None:
+        # a manchete no canvas (sem a inclinação: ±2,5° mexe poucos px)
+        ox, oy = bx * W + border, by * H + border
+        item["headline"] = [round(ox + band[0] * inner[0]), round(oy + band[1] * inner[1]),
+                            round(ox + band[2] * inner[0]), round(oy + band[3] * inner[1])]
+    layout.figures.append(item)
     layout.objects += 1
     return canvas, box
 
 
 def _mark(canvas: Image.Image, kind: str | None, box: tuple[int, int, int, int] | Sequence[int],
-          pal: dict[str, tuple[int, int, int]]) -> None:
-    """Marcação vermelha (com contorno escuro) sobre a prova: X de ponta a ponta ou círculo em volta do miolo."""
+          pal: dict[str, tuple[int, int, int]], headline: Sequence[int] | None = None) -> None:
+    """Marcação vermelha (com contorno escuro) sobre a prova. Com a manchete conhecida (`headline`), nunca em cima
+    dela: o X vai no pedaço do cartão embaixo da manchete (a foto da matéria; sem espaço ali, no de cima), o círculo vira um
+    retângulo arredondado em volta da manchete (sem cortar palavras). Sem manchete: X de ponta a ponta ou círculo
+    em volta do miolo."""
     if kind not in ("x", "circle"):
         return
     W, H = canvas.size
     x0, y0, x1, y1 = box
-    bw, bh = x1 - x0, y1 - y0
-    if bw < 8 or bh < 8:
+    if x1 - x0 < 8 or y1 - y0 < 8:
         return
     ss = 2
     layer = Image.new("RGBA", (W * ss, H * ss), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     ink = (*pal["ink"], 255)
     red = (*RED, 255)
+    if headline is not None and kind == "circle":
+        hx0, hy0, hx1, hy1 = headline
+        m = _px(14, H)
+        rect = (max(x0 - m, hx0 - m), hy0 - m, min(x1 + m, hx1 + m), hy1 + m)
+        th = _px(11, H)
+        r = round((rect[3] - rect[1]) * 0.35)
+        for width, color in ((th + _px(8, H), ink), (th, red)):
+            d.rounded_rectangle(tuple(v * ss for v in rect), radius=r * ss, outline=color, width=width * ss)
+        canvas.alpha_composite(layer.resize((W, H), Image.Resampling.LANCZOS))
+        return
+    if headline is not None:
+        hy0, hy1 = headline[1], headline[3]
+        above, below = hy0 - y0, y1 - hy1
+        m = _px(10, H)
+        if max(above, below) >= (y1 - y0) * 0.25:
+            # embaixo da manchete costuma estar a foto da matéria: o X vai nela quando cabe
+            y0, y1 = (hy1 + m, y1) if below >= (y1 - y0) * 0.25 else (y0, hy0 - m)
+            side = min(x1 - x0, y1 - y0)  # um X quadrado no meio do pedaço livre
+            cx = (x0 + x1) / 2
+            x0, x1 = round(cx - side * 0.7), round(cx + side * 0.7)
+    bw, bh = x1 - x0, y1 - y0
     if kind == "x":
-        th = _px(26, H)
-        mx, my = bw * 0.14, bh * 0.14
+        th = _px(22 if headline is not None else 26, H)
+        mx, my = bw * 0.1, bh * 0.1
         lines = [((x0 + mx, y0 + my), (x1 - mx, y1 - my)), ((x1 - mx, y0 + my), (x0 + mx, y1 - my))]
         for width, color in ((th + _px(10, H), ink), (th, red)):
             for a, b in lines:
@@ -1543,7 +1765,8 @@ def render(layers: ThumbLayers, size: tuple[int, int] = T.CANVAS, assets: AssetR
     has_text = bool(layers.text and layers.text.words.strip())
     _shade(canvas, tpl, pal, has_text, _mirrored(layers))
     if card is not None:
-        _mark(canvas, layers.mark, card, pal)
+        item = next((f for f in layout.figures if f.get("kind") == "card"), {})
+        _mark(canvas, layers.mark, card, pal, item.get("headline"))
     tconf = tpl["text"]
     text_box = tconf.get(layers.text.pos if layers.text else "left") or tconf["left"]
     # as figuras vão para uma camada própria antes do VI gigante: ele fica por baixo delas, mas a posição dele

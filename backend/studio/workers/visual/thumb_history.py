@@ -1,64 +1,127 @@
 """As thumbs recentes do canal: o que elas usaram (para o pacote novo não repetir) e o hash de cada imagem (para
 avisar quando uma candidata sai parecida demais com uma delas).
 
-Vale o que o dono escolheu: dos últimos `RECENT_PROJECTS` projetos do mesmo canal, o candidato escolhido e os
-aprovados do pacote (peso 1). Os outros candidatos com prévia também apareceram na tela: contam pouco no uso (peso
-0,3; 0,5 quando o projeto ainda não escolheu) e entram inteiros na comparação das imagens (a thumb nova não pode
-sair igual a nenhuma que o dono já viu). Projeto sem pacote conta com a miniatura escolhida do envio (só a imagem).
+Vale o que o dono viu: dos últimos `RECENT_PROJECTS` projetos do mesmo canal, o candidato escolhido e os aprovados
+do pacote (peso 1) e os outros candidatos com prévia (peso `SHOWN_WEIGHT`: o dono reclamou de tudo o que viu, não
+só da escolhida). Todos entram inteiros na comparação das imagens (a thumb nova não pode sair igual a nenhuma que o
+dono já viu). Projeto sem pacote conta com a miniatura escolhida do envio (só a imagem). O uso conta só as thumbs da
+mesma orientação do pacote (os Shorts não mexem nas escolhas do vídeo longo, e vice-versa).
+
+A comparação não se engana com espelho: a distância é a menor entre a imagem e o espelho dela (`image_hashes`), e
+mesmo fundo com a mesma pose (ou a mesma palavra) de uma recente conta como repetição (`ChannelThumbs.like`), em
+qualquer lado.
 """
 
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from studio.config import get_settings
-from studio.media.thumb_variety import Usage
+from studio.media.thumb_variety import Usage, bg_key
 
 log = logging.getLogger(__name__)
 
 RECENT_PROJECTS = 8
 RECENT_MIN_DISTANCE = 17
 """dHash (64 bits, na cópia de 320 px) abaixo disso contra uma thumb recente do canal: "parecida demais" (o pacote
-troca o fundo e, se não adiantar, avisa e manda a candidata para o fim). Medido nas 19 thumbs dos 2 últimos longos
-(18/11): mesma figura no mesmo fundo dá 8; mesmo fundo e template com outra pose, 12 a 16; thumbs diferentes, 19+."""
-PENDING_WEIGHT = 0.5
-SHOWN_WEIGHT = 0.3
+troca o fundo, depois a figura ou a pose e, se não adiantar, avisa e manda a candidata para o fim). Medido nas 19
+thumbs dos 2 últimos longos (18/11): mesma figura no mesmo fundo dá 8; mesmo fundo e template com outra pose, 12 a
+16; thumbs diferentes, 19+. Vale a menor distância entre a imagem e o espelho dela."""
+PENDING_WEIGHT = 0.8
+SHOWN_WEIGHT = 0.8
+
+
+def fold_words(text: str | None) -> str:
+    """O texto da thumb comparável ("NÃO!" e "nao" são a mesma palavra)."""
+    raw = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(w.strip("?!.,:;\"'") for w in raw.split() if w.strip("?!.,:;\"'"))
+
+
+def recent_features(layers: Any, words: str | None) -> dict[str, Any]:
+    """O que identifica uma thumb para o olho: fundo, pose do avatar, figuras e a palavra."""
+    return {"background": bg_key(layers), "pose": layers.presenter.pose if layers.presenter is not None else None,
+            "characters": sorted(c.asset for c in layers.characters
+                                 if not c.asset.startswith(("logo:", "object:"))),
+            "words": fold_words(words if words is not None else (layers.text.words if layers.text else ""))}
+
+
+def same_look(a: dict[str, Any], b: dict[str, Any]) -> str | None:
+    """Por que duas thumbs são "a mesma" para quem vê, ou None: o mesmo fundo com a mesma pose, o mesmo fundo com a
+    mesma palavra, ou a mesma figura com a mesma palavra (o lado do texto não importa: espelhar não muda a thumb)."""
+    bg = a.get("background")
+    if bg and bg == b.get("background"):
+        if a.get("pose") and a.get("pose") == b.get("pose"):
+            return f"mesmo fundo ({bg}) e mesma pose ({a['pose']})"
+        if a.get("words") and a.get("words") == b.get("words"):
+            return f"mesmo fundo ({bg}) e mesmo texto"
+    chars = set(a.get("characters") or []) & set(b.get("characters") or [])
+    if chars and a.get("words") and a.get("words") == b.get("words"):
+        return f"mesma figura ({', '.join(sorted(chars))}) e mesmo texto"
+    return None
 
 
 @dataclass
 class ChannelThumbs:
     usage: Usage = field(default_factory=Usage)
     thumbs: list[dict[str, Any]] = field(default_factory=list)
-    """[{project_id, title, candidate_id, image, dhash, landscape}] das thumbs recentes com imagem."""
+    """[{project_id, title, candidate_id, image, dhash, landscape, weight, feats}] das thumbs recentes com imagem."""
 
-    def nearest(self, digest: int, *, landscape: bool = True) -> tuple[int, dict[str, Any] | None]:
-        """(distância, thumb) da recente mais parecida (mesma orientação); (64, None) sem nenhuma."""
+    def nearest(self, digest: int | tuple[int, ...] | list[int], *,
+                landscape: bool = True) -> tuple[int, dict[str, Any] | None]:
+        """(distância, thumb) da recente mais parecida (mesma orientação); (64, None) sem nenhuma. Com mais de um
+        hash (a imagem e o espelho dela, `image_hashes`), vale o menor: espelhar não "resolve" a semelhança."""
         from studio.media.thumb_check import hamming
 
+        digests = [digest] if isinstance(digest, int) else list(digest)
         best: tuple[int, dict[str, Any] | None] = (64, None)
         for t in self.thumbs:
             if t.get("dhash") is None or bool(t.get("landscape", True)) != landscape:
                 continue
-            d = hamming(digest, int(t["dhash"]))
+            d = min(hamming(h, int(t["dhash"])) for h in digests)
             if d < best[0]:
                 best = (d, t)
         return best
 
+    def like(self, layers: Any, words: str | None = None, *,
+             landscape: bool = True) -> tuple[dict[str, Any], str] | None:
+        """(thumb, motivo) da recente que esta repete pelos atributos (`same_look`), ou None."""
+        mine = recent_features(layers, words)
+        for t in self.thumbs:
+            feats = t.get("feats")
+            if not feats or bool(t.get("landscape", True)) != landscape:
+                continue
+            why = same_look(mine, feats)
+            if why:
+                return t, why
+        return None
+
+
+def _hash(im: Image.Image) -> tuple[int, int, bool]:
+    from studio.media.thumb_check import dhash
+
+    small = im.convert("RGB")
+    small.thumbnail((320, 320))
+    return dhash(small), dhash(ImageOps.mirror(small)), small.width >= small.height
+
+
+def image_hashes(img: Image.Image) -> tuple[int, int]:
+    """(dHash, dHash do espelho) de uma prévia, na cópia de 320 px (a mesma medida das recentes)."""
+    h, m, _ = _hash(img.copy())
+    return h, m
+
 
 @lru_cache(maxsize=256)
 def _hash_cached(path: str, mtime: float) -> tuple[int, bool]:
-    from studio.media.thumb_check import dhash
-
     with Image.open(path) as im:
         im.draft("RGB", (320, 180))
-        small = im.convert("RGB")
-        small.thumbnail((320, 320))  # o mesmo tamanho do `tasks._recent_hash`
-        return dhash(small), small.width >= small.height
+        h, _, landscape = _hash(im)
+        return h, landscape
 
 
 def image_hash(rel: str | None) -> tuple[int, bool] | None:
@@ -84,10 +147,12 @@ def _chosen_miniature(settings: dict[str, Any]) -> str | None:
     return None
 
 
-def channel_history(channel_id: str | None, exclude: str | None = None,
-                    limit: int = RECENT_PROJECTS) -> ChannelThumbs:
-    """As thumbs dos últimos `limit` projetos do canal (fora `exclude`, o projeto atual). Nunca derruba quem chama:
-    banco ou documento ilegível vira histórico vazio (o pacote sai como antes)."""
+def channel_history(channel_id: str | None, exclude: str | None = None, limit: int = RECENT_PROJECTS, *,
+                    landscape: bool | None = None) -> ChannelThumbs:
+    """As thumbs dos últimos `limit` projetos do canal (fora `exclude`, o projeto atual). Com `landscape`, o uso só
+    soma os candidatos daquela orientação (longo: tudo menos o template `livre`; Short: só o `livre`); as imagens
+    já são comparadas só com as da mesma orientação. Nunca derruba quem chama: banco ou documento ilegível vira
+    histórico vazio (o pacote sai como antes)."""
     out = ChannelThumbs()
     if not channel_id:
         return out
@@ -116,11 +181,13 @@ def channel_history(channel_id: str | None, exclude: str | None = None,
             picked = [(c, 1.0 if c.id in ids else rest) for c in doc.package.candidates
                       if c.id in ids or c.image]
         for cand, weight in picked:
-            out.usage.add_layers(cand.layers, weight)
+            if landscape is None or (cand.layers.template == "livre") != landscape:
+                out.usage.add_layers(cand.layers, weight)
             h = image_hash(cand.image)
             if h is not None:
                 out.thumbs.append({"project_id": pid, "title": cand.title or title, "candidate_id": cand.id,
-                                   "image": cand.image, "dhash": h[0], "landscape": h[1], "weight": weight})
+                                   "image": cand.image, "dhash": h[0], "landscape": h[1], "weight": weight,
+                                   "feats": recent_features(cand.layers, cand.thumb_text or None)})
         if not picked:
             rel = _chosen_miniature(settings)
             h = image_hash(rel)

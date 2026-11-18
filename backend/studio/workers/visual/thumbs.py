@@ -284,8 +284,26 @@ def _media_finder(doc: ProjectDoc, images: dict[str, str] | None, allow: bool) -
             if m is not None and m.asset and ref in (m.asset, Path(m.asset).name, Path(m.asset).stem):
                 return usable(m.asset, m.editorial)
         if "/" in ref and ".." not in ref:
-            return usable(ref)
+            # caminho cru (a prova do pacote grava `media:uploads/<projeto>/...`): o item do acervo diz se é
+            # material de terceiros; o canal que deixou de liberar não mostra mais a captura já escolhida
+            return usable(ref, pool_editorial(ref))
         return None
+
+    pool_flags: dict[str, bool] | None = None
+
+    def pool_editorial(rel: str) -> bool:
+        nonlocal pool_flags
+        if pool_flags is None:
+            pool_flags = {}
+            try:
+                from studio.core.project.pool import load_pool
+
+                for it in load_pool(doc.id).items if doc.id else []:
+                    if it.path:
+                        pool_flags[it.path] = pool_flags.get(it.path, False) or bool(it.editorial)
+            except Exception as exc:  # noqa: BLE001 - acervo ilegível: o caminho vale como mídia própria
+                log.warning("acervo do projeto ilegível para a thumb: %s", exc)
+        return pool_flags.get(rel, False)
 
     return find
 
