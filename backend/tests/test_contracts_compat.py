@@ -343,7 +343,10 @@ def test_empty_hooks_change_nothing(isolated_settings):
     pool = media_pool.gather(doc, style)
     assert pool == pool_mod.Pool() and media_pool.prompt_block(pool) == ""
     assert media_pool.attach_chosen(doc, pool) == []
-    assert edit_plan.plan(doc, style, pool) is None
+    # o planejador já não é encaixe vazio (editor-planejador): com o editor desligado, nada muda
+    off = style.model_copy(update={"edit": style.edit.model_copy(
+        update={"grammar": style.edit.grammar.model_copy(update={"editor": "off"})})})
+    assert edit_plan.plan(doc, off, pool) is None
     assert doc.model_dump(mode="json") == before
     fp = metrics.fingerprint_from_timeline({"scenes": []}, doc)
     assert fp == profile.EditFingerprint(source="timeline")

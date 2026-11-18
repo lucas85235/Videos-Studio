@@ -20,6 +20,7 @@ from studio.api import (
     routes_characters,
     routes_checks,
     routes_comments,
+    routes_edit,
     routes_factcheck,
     routes_import,
     routes_instagram,
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_import.router)
     app.include_router(routes_video.router)
     app.include_router(routes_characters.router)
+    app.include_router(routes_edit.router)  # editor automático: reeditar (ADR 0004)
     # Caixa de comentários do YouTube
     app.include_router(routes_comments.router)
 

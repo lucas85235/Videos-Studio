@@ -394,6 +394,7 @@ FX_TYPES: tuple[str, ...] = FxType.__args__  # type: ignore[attr-defined]
 FxParam = str | float | bool | list[float]
 ShotSource = Literal["self", "pool", "media", "reuse", "ai"]
 ShotMotion = Literal["static", "push", "drift", "pan_left", "pan_right", "ken_burns_in", "ken_burns_out", "none"]
+ShotEasing = Literal["linear", "outCubic", "inOutQuad", "snap"]
 BeatRole = Literal["hook", "reveal", "joke", "aside", "list", "number", "tension", "breath", "cta"]
 BEAT_ROLES: tuple[str, ...] = BeatRole.__args__  # type: ignore[attr-defined]
 GagPayoff = Literal["meme", "freeze", "zoom", "sfx", "text"]
@@ -460,6 +461,10 @@ class SubShot(BaseModel):
     framing: ShotFraming | None = None
     motion: ShotMotion | None = None
     """None: o planejador/a timeline escolhe."""
+    easing: ShotEasing | None = None
+    """Curva do movimento do plano (espelho de `ShotEasing` em `types.ts`). None: a da timeline."""
+    strength: float | None = Field(default=None, ge=0.2, le=2.0)
+    """Força relativa do movimento (1 = a do estilo; o planejador sorteia ±40%). None: a do estilo."""
     clip_in: float | None = Field(default=None, ge=0)
     """Entrada no vídeo do plano (s), vale mais que `MediaRef.start_s`."""
     speed: float = Field(default=1.0, ge=0.25, le=2.0)
