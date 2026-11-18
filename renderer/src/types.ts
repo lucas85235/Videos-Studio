@@ -60,9 +60,15 @@ export type TimelineShot = {
   hold?: boolean;
   /**
    * Segundos úteis do clipe a partir de `clipIn` (`MediaRef.dur_s`/`PoolItem.dur_s`). Com `hold`, o plano congela quando
-   * eles acabam; sem `hold`, o clipe curto desacelera para cobrir. Ausente: toca até o fim do plano.
+   * eles acabam; sem `hold`, o clipe curto desacelera para cobrir. O backend emite `min(dur_s, official_max_clip_s)`
+   * no oficial. Ausente: toca até o fim do plano, salvo `prov: 'official'`, que para em 4 s (rede de segurança).
    */
   seconds?: number;
+  /**
+   * Proporção (largura ÷ altura) do arquivo do plano (`PoolItem.w/h`, ou do pôster do `MediaRef`): o renderer converte
+   * os `rect` dos eventos (espaço do arquivo) para o recorte do plano. Ausente: o retângulo vale como está.
+   */
+  aspect?: number;
   framing: ShotFraming;
   motion: string;
   easing?: ShotEasing;

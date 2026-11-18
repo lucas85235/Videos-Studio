@@ -251,7 +251,16 @@ export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) =
             const text = clean(w.text, style.uppercase, style.style === 'karaoke' && i === last);
             const emoji = emojiOf(w);
             const word = w.emph ? (
-              <EmphWord key={i} word={w} text={text} base={baseText} style={style} fontSize={fontSize} extra={extra?.[i] ?? 0} em={em} />
+              <EmphWord
+                key={i}
+                word={w}
+                text={text}
+                base={baseText}
+                fontSize={fontSize}
+                extra={extra?.[i] ?? 0}
+                em={em}
+                color={style.style !== 'karaoke' || spoken ? style.highlight : dimmed ? dimColor : style.color}
+              />
             ) : (
               <span
                 key={i}
@@ -297,19 +306,21 @@ const Emoji: React.FC<{ emoji: string; from: number; size: number }> = ({ emoji,
 };
 
 /**
- * Palavra de ênfase (`emph`) nos modos karaokê e linha: cor de destaque desde que a linha entra; `pop` e `emoji`
- * crescem até 1,3 quando ela é dita (com sobra de mola) e ficam assim até a linha sair, no espaço que a fileira já
- * guardou (sem empurrar as vizinhas). Substitui o realce de +6% só nessas palavras.
+ * Palavra de ênfase (`emph`) nos modos karaokê e linha. No modo linha, cor de destaque desde que a linha entra; no
+ * karaokê, apagada como as outras palavras ainda não ditas e acesa (com o pop) só quando é dita, para não entregar a
+ * punchline antes da hora. `pop` e `emoji` crescem até 1,3 quando ela é dita (com sobra de mola) e ficam assim até a
+ * linha sair, no espaço que a fileira já guardou (sem empurrar as vizinhas). Substitui o realce de +6% só nelas.
  */
 const EmphWord: React.FC<{
   word: CaptionWord;
   text: string;
   base: React.CSSProperties;
-  style: CaptionStyle;
   fontSize: number;
   extra: number;
   em: number;
-}> = ({ word, text, base, style, fontSize, extra, em }) => {
+  /** Cor agora: a de destaque (linha, ou karaokê depois de dita) ou a das palavras ainda não ditas. */
+  color: string;
+}> = ({ word, text, base, fontSize, extra, em, color }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const pop = frame < word.from ? 0 : spring({ frame: frame - word.from, fps, config: { damping: 9, stiffness: 260, mass: 0.45 } });
@@ -322,7 +333,7 @@ const EmphWord: React.FC<{
       <span
         style={{
           ...base,
-          color: style.highlight,
+          color,
           display: 'inline-block',
           // A sobra fica em volta do próprio texto: ao crescer ele ocupa a sobra e não cobre o emoji nem a vizinha.
           margin: room ? `0 ${room / 2}px` : undefined,

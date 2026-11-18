@@ -7,25 +7,32 @@ import { EMOJI_STACK } from '../Captions';
 import { charEm, fitSize, withAlpha } from '../DataCards';
 import { assetUrl } from '../RealMedia';
 import {
-  ANCHORED_FX,
+  anchoredAt,
+  type Band,
+  cornerStickerBox,
   EASE,
   type FxContext,
   type FxParams,
+  fxRects,
   fxSpan,
   hash01,
+  type ImageBox,
   pBool,
   pNum,
-  pRects,
   pStr,
   type Rect,
   SCREEN_FX,
 } from './math';
 
 // Eventos dentro da cena (ADR 0004, `scene.fx`), já em quadros relativos à cena. Parâmetros lidos de `params` (as
-// chaves do `FxEvent.params` do backend; ausente vale o padrão):
+// chaves do `FxEvent.params` do backend; ausente vale o padrão). Este bloco é o contrato de chaves com o planejador
+// (`edit_plan.py`) e com o `timeline-fx` (`edit_resolve.resolve_fx`):
 //
 //   text_pop   text (1 a 3 palavras; vazio: a palavra dita no gatilho), color, emoji, y (0..1), scale, font
-//   meme       src (png com alfa) | video (webm com alfa) | emoji, variant full|corner|freeze_zoom, side, outline
+//   meme       src (png com alfa) | video (webm com alfa) | emoji, variant full|corner|freeze_zoom, side, outline.
+//              O planejador grava `lib_id` (id da `meme_library`) e `tag`: quem traduz `lib_id` em `src`/`video`
+//              (caminho relativo ao assetBaseUrl, `library/memes/<arquivo>`) é o timeline-fx. Meme sem mídia
+//              desenhável não some calado: avisa no console (a conferência lê o log do render).
 //   flash      color, amount (opacidade inicial, 0..1)
 //   freeze     flash (bool: clarão de 3 quadros na entrada). O congelamento em si é o TimeWarp do fundo.
 //   counter    text ("3/10") | n e total, side left|right
@@ -33,10 +40,15 @@ import {
 //   highlight  rect [x,y,w,h] | rects (4·n números), color, dark (bool)      (presos à imagem: FxAnchored)
 //   arrow      rect | x e y (alvo), side left|right|top|bottom, color
 //   circle     rect | x, y e r (fração do menor lado), color
+//   punch      scale, x e y (ponto fixo na tela)                              (câmera: CameraRig)
+//   shake      strength (do planejador, 0,6 a 1,2; `amount` é o nome antigo)
+//   zoom_rect  rect, fill, max
+//   speed      rate
 //
-// `rect` e `x`/`y` estão em fração do quadro do fundo como enquadrado para o vídeo (o backend converte do original).
-// punch, shake, zoom_rect e whip ficam no CameraRig; freeze e speed também mexem no tempo do fundo (TimeWarp);
-// sfx e music_drop são só áudio (mixados no FFmpeg).
+// `rect` vem no espaço do ARQUIVO (0 a 1 da imagem inteira, como `MediaRef.rects`); o renderer converte para o
+// recorte (`fxRects`/`cameraFx` em math.ts). `params.space = 'frame'` diz que ele já está no quadro do fundo. `x`/`y`
+// já estão no quadro. punch, shake, zoom_rect e whip ficam no CameraRig; freeze e speed também mexem no tempo do
+// fundo (TimeWarp); sfx e music_drop são só áudio (mixados no FFmpeg).
 
 const clampOpts = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
 /** Quadros da saída dos elementos que somem antes do fim da cena. */
@@ -57,8 +69,9 @@ type ScreenProps = {
   style: RenderStyle;
   assetBaseUrl: string | null | undefined;
   cuts: number[];
-  /** Centro da legenda (fração da altura) e se ela aparece: o texto que pula desvia dela. */
+  /** Centro e meia altura da legenda (fração da altura) e se ela aparece: o texto que pula e o meme desviam dela. */
   captionMid: number;
+  captionHalf: number;
   captionsShown: boolean;
   /** Topo livre (abaixo da faixa do topo), para o contador. */
   minTop: number;
@@ -66,11 +79,13 @@ type ScreenProps = {
 };
 
 /** Eventos de tela por cima do fundo e das texturas, abaixo do cartão e das legendas. Sem evento de tela: nada. */
-export const FxLayer: React.FC<ScreenProps> = ({ scene, fx, style, assetBaseUrl, cuts, captionMid, captionsShown, minTop, lang }) => {
+export const FxLayer: React.FC<ScreenProps> = ({ scene, fx, style, assetBaseUrl, cuts, captionMid, captionHalf, captionsShown, minTop, lang }) => {
   const { fps } = useVideoConfig();
   const ctx: FxContext = { fps, frames: scene.durationInFrames, cuts };
   const items = (fx ?? []).filter((e) => SCREEN_FX.has(e.type));
   if (!items.length) return null;
+  // Faixa da legenda com uma margem (o meme de canto sobe para fora dela).
+  const captionBand: Band | null = captionsShown ? [captionMid - captionHalf - 0.02, captionMid + captionHalf + 0.02] : null;
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
       {items.map((e, i) => {
@@ -93,7 +108,16 @@ export const FxLayer: React.FC<ScreenProps> = ({ scene, fx, style, assetBaseUrl,
             );
             break;
           case 'meme':
-            node = <Meme params={params} len={len} assetBaseUrl={assetBaseUrl} seed={`${scene.seed}-${span.from}`} />;
+            node = (
+              <Meme
+                params={params}
+                len={len}
+                assetBaseUrl={assetBaseUrl}
+                seed={`${scene.seed}-${span.from}`}
+                caption={captionBand}
+                where={`${scene.id}@${span.from}`}
+              />
+            );
             break;
           case 'flash':
             node = <Flash color={pStr(params, 'color', '#FFFFFF')} amount={pNum(params, 'amount', 0.85)} len={len} />;
@@ -190,18 +214,43 @@ const TextPop: React.FC<{
 
 // --- meme ----------------------------------------------------------------------------------------------------------
 
-const Meme: React.FC<{ params: FxParams; len: number; assetBaseUrl: string | null | undefined; seed: string }> = ({
-  params,
-  len,
-  assetBaseUrl,
-  seed,
-}) => {
+/** Avisos de meme sem mídia já dados (um por meme e cena, não um por quadro). */
+const warnedMemes = new Set<string>();
+
+/** Meme que chegou sem nada para desenhar: avisa uma vez no console (o log do render vai para a conferência). */
+export const warnMemeWithoutMedia = (params: FxParams, where: string) => {
+  const libId = pStr(params, 'lib_id');
+  const key = `${where}:${libId}`;
+  if (warnedMemes.has(key)) return;
+  warnedMemes.add(key);
+  console.warn(
+    libId
+      ? `[fx] meme "${libId}" (${where}) sem src/video: o lib_id da meme_library não foi resolvido em arquivo; o meme não aparece`
+      : `[fx] meme (${where}) sem src, video nem emoji: nada para desenhar`,
+  );
+};
+
+const Meme: React.FC<{
+  params: FxParams;
+  len: number;
+  assetBaseUrl: string | null | undefined;
+  seed: string;
+  /** Faixa da legenda visível (fração da altura), ou null: o adesivo de canto não a cobre. */
+  caption: Band | null;
+  /** Cena e quadro do evento, para o aviso de meme sem mídia. */
+  where: string;
+}> = ({ params, len, assetBaseUrl, seed, caption, where }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const src = assetUrl(pStr(params, 'src') || null, assetBaseUrl);
   const video = assetUrl(pStr(params, 'video') || null, assetBaseUrl);
   const emoji = pStr(params, 'emoji').trim();
-  if (!src && !video && !emoji) return null; // "meme sem meme" vem como freeze + punch + text_pop, não aqui
+  if (!src && !video && !emoji) {
+    // "Meme sem meme" vem como freeze + punch + text_pop, não aqui. O congelamento e o punch do `freeze_zoom` (TimeWarp
+    // e CameraRig) acontecem mesmo assim; só o adesivo falta.
+    warnMemeWithoutMedia(params, where);
+    return null;
+  }
   const variant = pStr(params, 'variant', 'corner');
   const scale = height / 1080;
   const out = exitK(f, len);
@@ -237,16 +286,17 @@ const Meme: React.FC<{ params: FxParams; len: number; assetBaseUrl: string | nul
       </AbsoluteFill>
     );
   }
-  // Canto: adesivo embaixo, do lado pedido, inclinado para o centro.
+  // Canto: adesivo embaixo, do lado pedido, inclinado para o centro; acima (ou abaixo) da legenda, nunca em cima dela.
   const left = pStr(params, 'side', 'right') === 'left';
-  const h = height * (height > width ? 0.28 : 0.42);
+  const place = cornerStickerBox(height > width, caption);
+  const h = height * place.height;
   const tilt = (left ? 1 : -1) * (4 + 4 * hash01(seed));
   return (
     <div
       style={{
         position: 'absolute',
         [left ? 'left' : 'right']: width * 0.04,
-        bottom: height * (height > width ? 0.24 : 0.06),
+        bottom: height * place.bottom,
         transform: `scale(${s}) rotate(${tilt * (2 - Math.min(1, pop))}deg)`,
         transformOrigin: left ? '0% 100%' : '100% 100%',
         opacity: 1 - out,
@@ -368,41 +418,46 @@ const Pip: React.FC<{ params: FxParams; len: number; assetBaseUrl: string | null
 
 type AnchoredProps = {
   fx: TimelineFx[] | undefined;
-  /** Quadro da cena em que o contêiner começa (início do plano): o tempo de dentro é relativo a ele. */
-  offset: number;
+  /**
+   * Quadro REAL da cena, vindo de fora do TimeWarp: dentro dele o relógio é o do fundo (parado no `freeze`, lento no
+   * `speed`) e a anotação entraria atrasada pelo trecho congelado, fora da palavra-gatilho.
+   */
+  frame: number;
   frames: number;
   cuts: number[];
   seed: number;
+  /** Caixa da imagem neste contêiner (converte o `rect` do arquivo para o recorte); null: o retângulo vale como está. */
+  box: ImageBox | null;
 };
 
 /**
  * Marca-texto, seta e círculo, desenhados DENTRO do fundo (no mesmo transform da imagem): andam com o Ken Burns, o
- * enquadramento do plano e a câmera de eventos, e ficam embaixo das texturas. Coordenadas em fração do quadro do fundo.
+ * enquadramento do plano e a câmera de eventos, e ficam embaixo das texturas. O tempo deles é o da cena (`frame`),
+ * não o do fundo: o desenho entra no gatilho mesmo depois de um congelamento.
  */
-export const FxAnchored: React.FC<AnchoredProps> = ({ fx, offset, frames, cuts, seed }) => {
-  const { fps } = useVideoConfig();
+export const FxAnchored: React.FC<AnchoredProps> = ({ fx, frame, frames, cuts, seed, box }) => {
+  const { fps, width, height } = useVideoConfig();
   const ctx: FxContext = { fps, frames, cuts };
-  const items = (fx ?? []).filter((e) => ANCHORED_FX.has(e.type));
+  const items = anchoredAt(fx, frame, ctx);
   if (!items.length) return null;
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
-      {items.map((e, i) => {
-        const span = fxSpan(e, ctx);
-        const len = span.to - span.from;
-        // Só no plano que mostra a imagem marcada: o evento começa e acaba dentro dele (termina no corte).
-        if (span.to <= offset) return null;
+      {items.map(({ fx: e, index, span, f, len, last }) => {
         const params = (e.params ?? {}) as FxParams;
-        const last = span.to >= frames || cuts.includes(span.to);
-        const node =
-          e.type === 'highlight' ? (
-            <Highlight params={params} len={len} last={last} />
-          ) : (
-            <Annot kind={e.type === 'arrow' ? 'arrow' : 'circle'} params={params} len={len} last={last} seed={`${seed}-${span.from}`} />
-          );
-        return (
-          <Sequence key={`${e.type}-${i}`} from={span.from - offset} durationInFrames={len} layout="none" name={`fx ${e.type}`}>
-            {node}
-          </Sequence>
+        const rects = fxRects(params, box, width / height);
+        return e.type === 'highlight' ? (
+          <Highlight key={`${e.type}-${index}`} params={params} rects={rects} f={f} len={len} last={last} />
+        ) : (
+          <Annot
+            key={`${e.type}-${index}`}
+            kind={e.type === 'arrow' ? 'arrow' : 'circle'}
+            params={params}
+            rect={rects[0]}
+            f={f}
+            len={len}
+            last={last}
+            seed={`${seed}-${span.from}`}
+          />
         );
       })}
     </AbsoluteFill>
@@ -410,9 +465,7 @@ export const FxAnchored: React.FC<AnchoredProps> = ({ fx, offset, frames, cuts, 
 };
 
 /** Marca-texto varrendo os retângulos um depois do outro (porte do `WebShot` do canais, com câmera e cor do evento). */
-const Highlight: React.FC<{ params: FxParams; len: number; last: boolean }> = ({ params, len, last }) => {
-  const f = useCurrentFrame();
-  const rects = pRects(params);
+const Highlight: React.FC<{ params: FxParams; rects: Rect[]; f: number; len: number; last: boolean }> = ({ params, rects, f, len, last }) => {
   if (!rects.length) return null;
   const dark = pBool(params, 'dark', false);
   const color = pStr(params, 'color', dark ? 'rgba(255,214,60,0.42)' : 'rgba(255,226,70,0.62)');
@@ -448,17 +501,18 @@ const Highlight: React.FC<{ params: FxParams; len: number; last: boolean }> = ({
 const center = (r: Rect) => [r[0] + r[2] / 2, r[1] + r[3] / 2] as const;
 
 /** Seta e círculo de destaque em SVG, desenhados pelo traço (`stroke-dashoffset`), com a ponta da seta entrando depois. */
-const Annot: React.FC<{ kind: 'arrow' | 'circle'; params: FxParams; len: number; last: boolean; seed: string }> = ({
-  kind,
-  params,
-  len,
-  last,
-  seed,
-}) => {
-  const f = useCurrentFrame();
+/** `rect`: o alvo já no contêiner (`fxRects`); sem ele, `x`/`y` do evento. `f`: quadro desde o gatilho. */
+const Annot: React.FC<{
+  kind: 'arrow' | 'circle';
+  params: FxParams;
+  rect: Rect | undefined;
+  f: number;
+  len: number;
+  last: boolean;
+  seed: string;
+}> = ({ kind, params, rect, f, len, last, seed }) => {
   const { width, height } = useVideoConfig();
   const minSide = Math.min(width, height);
-  const rect = pRects(params)[0];
   const [cxF, cyF] = rect ? center(rect) : [pNum(params, 'x', 0.5), pNum(params, 'y', 0.5)];
   const cx = cxF * width;
   const cy = cyF * height;

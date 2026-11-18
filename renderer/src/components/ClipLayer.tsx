@@ -2,6 +2,7 @@ import React from 'react';
 import { AbsoluteFill, Freeze, OffthreadVideo, useVideoConfig } from 'remotion';
 import { imageFilter } from '../look';
 import type { EffectSpec, TimelineScene } from '../types';
+import { shotClipTiming } from './fx/math';
 
 type Props = {
   scene: TimelineScene;
@@ -24,37 +25,8 @@ type Props = {
   overlay?: React.ReactNode;
 };
 
-/** O clipe nunca fica mais lento que isto para cobrir a cena; o que faltar, o último quadro segura. */
-export const MIN_CLIP_RATE = 0.5;
-
-/**
- * Velocidade e quantos quadros da cena o clipe toca. Clipe mais longo que a cena: velocidade normal, corta no fim.
- * Mais curto: fica mais lento (até MIN_CLIP_RATE) e, se ainda faltar, congela no último quadro.
- */
-export const clipTiming = (clipSeconds: number | undefined, sceneFrames: number, fps: number) => {
-  if (!clipSeconds || clipSeconds <= 0) return { rate: 1, playFrames: sceneFrames };
-  const clipFrames = Math.max(1, Math.floor(clipSeconds * fps));
-  if (clipFrames >= sceneFrames) return { rate: 1, playFrames: sceneFrames };
-  const rate = Math.max(MIN_CLIP_RATE, clipFrames / sceneFrames);
-  // Um quadro de folga: o último quadro do arquivo às vezes não decodifica.
-  const playFrames = Math.min(sceneFrames, Math.max(1, Math.floor(clipFrames / rate) - 1));
-  return { rate, playFrames };
-};
-
-/**
- * Velocidade e quadros tocados de um clipe com velocidade pedida. `hold`: na velocidade pedida e congela no fim do
- * trecho; sem `hold`: a conta do `clipTiming` no tempo do clipe já acelerado (só desacelera para cobrir).
- */
-export const shotClipTiming = (clipSeconds: number | undefined, frames: number, fps: number, speed = 1, hold = false) => {
-  const base = speed > 0 ? speed : 1;
-  if (hold) {
-    if (!clipSeconds || clipSeconds <= 0) return { rate: base, playFrames: frames };
-    const clipFrames = Math.max(1, Math.floor((clipSeconds * fps) / base));
-    return { rate: base, playFrames: Math.min(frames, Math.max(1, clipFrames - 1)) };
-  }
-  const { rate, playFrames } = clipTiming(clipSeconds ? clipSeconds / base : clipSeconds, frames, fps);
-  return { rate: rate * base, playFrames };
-};
+// Contas do tempo do clipe moram em fx/math.ts (rodam no teste do Node); reexportadas daqui.
+export { clipTiming, MIN_CLIP_RATE, shotClipTiming } from './fx/math';
 
 /**
  * Vídeo no lugar da imagem: o vídeo IA da cena-chave ou o clipe real do plano (qualquer tipo de cena), sempre mudo (a

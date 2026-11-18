@@ -3,7 +3,7 @@ import { AbsoluteFill, Sequence, useCurrentFrame } from 'remotion';
 import type { EffectSpec, ShotEasing, TimelineFx, TimelineScene } from '../types';
 import { TimeWarp } from './CameraRig';
 import { ClipLayer } from './ClipLayer';
-import { framingTransform, isEasing, type ShotSlot } from './fx/math';
+import { framingTransform, type ImageBox, isEasing, shotSeconds, type ShotSlot, slotBox } from './fx/math';
 import { assetUrl } from './RealMedia';
 
 type Props = {
@@ -21,8 +21,13 @@ type Props = {
    * planos `self` mostram esse fundo no tempo da cena (o desenho não recomeça a cada corte). Null: a cena é imagem.
    */
   selfBackground: React.ReactNode | null;
-  /** Camada presa à imagem (marca-texto, seta, círculo) para um contêiner que começa no quadro `offset` da cena. */
-  overlayAt?: (offset: number) => React.ReactNode;
+  /** Caixa da imagem da própria cena (planos `self`); null quando desconhecida ou quando o fundo não é a imagem. */
+  sceneBox: ImageBox | null;
+  /**
+   * Camada presa à imagem (marca-texto, seta, círculo) para um contêiner com a imagem de caixa `box`. O relógio dela é
+   * o quadro real da cena (vem de fora): o TimeWarp do plano não a atrasa.
+   */
+  overlayAt?: (box: ImageBox | null) => React.ReactNode;
 };
 
 /** Enquadramento do plano (escala e centro): um invólucro só quando não é o quadro inteiro. */
@@ -35,7 +40,7 @@ const Framed: React.FC<{ transform: string | null; children: React.ReactNode }> 
  * (`VisualLayer`, com o `motion`, o `easing` e o `framing` dele) ou o `ClipLayer` (vídeo do plano, mudo, com entrada,
  * velocidade e segurar no fim). Sem planos, a cena não passa por aqui (o caminho de sempre).
  */
-export const ShotStack: React.FC<Props> = ({ scene, slots, fx, cuts, effects, assetBaseUrl, renderImage, selfBackground, overlayAt }) => {
+export const ShotStack: React.FC<Props> = ({ scene, slots, fx, cuts, effects, assetBaseUrl, renderImage, selfBackground, sceneBox, overlayAt }) => {
   const frame = useCurrentFrame();
   const frames = scene.durationInFrames;
   const sceneUrl = assetUrl(scene.src, assetBaseUrl);
@@ -49,17 +54,21 @@ export const ShotStack: React.FC<Props> = ({ scene, slots, fx, cuts, effects, as
         const framing = framingTransform(shot?.framing);
         if (!video && !image && selfBackground) {
           // Plano da própria cena que não é imagem com câmera: o fundo dela no tempo da cena, só enquanto o plano vale.
+          // Passa pelo TimeWarp (base 0, o tempo da cena) como no caminho sem planos: o congelamento, a rampa e o meme
+          // "congela + zoom" param a lousa e o clipe da cena aqui também.
           if (frame < slot.from || frame >= slot.to) return null;
           return (
             <AbsoluteFill key={`self-${i}`}>
-              <Framed transform={framing}>
-                {selfBackground}
-                {overlayAt?.(0)}
-              </Framed>
+              <TimeWarp fx={fx} frames={frames} cuts={cuts}>
+                <Framed transform={framing}>
+                  {selfBackground}
+                  {overlayAt?.(sceneBox)}
+                </Framed>
+              </TimeWarp>
             </AbsoluteFill>
           );
         }
-        const overlay = overlayAt?.(slot.from);
+        const overlay = overlayAt?.(slotBox(slot, sceneBox));
         const sub: TimelineScene = {
           ...scene,
           durationInFrames: len,
@@ -80,7 +89,7 @@ export const ShotStack: React.FC<Props> = ({ scene, slots, fx, cuts, effects, as
               clipIn={shot?.clipIn}
               speed={shot?.speed}
               hold={shot?.hold}
-              seconds={shot?.seconds}
+              seconds={shotSeconds(shot)}
               overlay={overlay}
             />
           );

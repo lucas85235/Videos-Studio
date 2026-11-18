@@ -30,6 +30,32 @@ const args = Object.fromEntries(
 const outDir = path.resolve(args.out ?? path.join(os.tmpdir(), 'vulto-fx-stills'));
 const log = (...items) => process.stderr.write(`[fx-stills] ${items.join(' ')}\n`);
 
+/**
+ * O chrome-headless-shell que o Remotion já baixou (`node_modules/.remotion`, do renderer ou da raiz do workspace).
+ * Null quando não há: nesse caso o script não deixa o Remotion baixar.
+ */
+function findCachedBrowser() {
+  const exe = process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell';
+  for (const base of [path.join(rendererRoot, 'node_modules', '.remotion'), path.join(repoRoot, 'node_modules', '.remotion')]) {
+    const stack = [base];
+    while (stack.length) {
+      const dir = stack.pop();
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) stack.push(full);
+        else if (entry.name === exe) return full;
+      }
+    }
+  }
+  return null;
+}
+
 const { sampleFxProps, SAMPLE_CLIP, SAMPLE_PUNCH } = await import(pathToFileURL(path.join(rendererRoot, 'src', 'sample.ts')).href);
 
 const target = sampleFxProps.scenes.find((s) => s.id === SAMPLE_PUNCH.scene);
@@ -84,7 +110,15 @@ const server = await new Promise((resolve) => {
 });
 const assetBaseUrl = `http://127.0.0.1:${server.address().port}/files/`;
 
-const browserExecutable = args.browser ?? process.env.VS_BROWSER ?? null;
+const browserExecutable = args.browser ?? process.env.VS_BROWSER ?? findCachedBrowser();
+if (!browserExecutable) {
+  // Sem navegador local, o Remotion baixaria o chrome-headless-shell: o teste nunca acessa a rede. Sai com "pulado".
+  log('chrome-headless-shell não encontrado (passe --browser ou VS_BROWSER); pulando sem baixar nada');
+  server.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  process.stdout.write(`${JSON.stringify({ skipped: 'sem navegador local' })}\n`);
+  process.exit(0);
+}
 let browser;
 try {
   log('gerando bundle');

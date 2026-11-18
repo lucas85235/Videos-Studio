@@ -343,8 +343,11 @@ export const SAMPLE_TARGET = svg(1920, 1080, '<rect width="1920" height="1080" f
  */
 export const SAMPLE_CLIP = 'samples/fx-clip.mp4';
 
-/** Cena de medida (`fx_target`): punch no quadro 20 (relativo à cena), com escala 1,2. */
-export const SAMPLE_PUNCH = { scene: 'fx_target', at: 20, scale: 1.2 };
+/**
+ * Cena de medida (`fx_target`): punch no quadro 20 (relativo à cena), com escala 1,2 e o `dur` como o backend manda
+ * (600 ms a 30 fps = 18 quadros); o fim da cena cai logo depois, então ele segura até lá.
+ */
+export const SAMPLE_PUNCH = { scene: 'fx_target', at: 20, dur: 18, scale: 1.2 };
 
 const fxBlank = { brightness: 0, contrast: 0, saturation: 0, warmth: 0, blur: 0, grade: null };
 
@@ -410,18 +413,19 @@ const fxShowcase: TimelineScene = {
     { from: 120, dur: 60, prov: 'capture', framing: { scale: 1.25, x: 0.35, y: 0.45 }, motion: 'drift', easing: 'snap' },
   ],
   fx: [
-    // Captura: marca-texto na 3ª linha, círculo e seta; depois a câmera vai até o trecho (tudo solta no corte do 50).
-    { type: 'highlight', from: 8, dur: 0, params: { rect: [160 / 1920, 400 / 1080, 1300 / 1920, 34 / 1080] } },
-    { type: 'circle', from: 14, dur: 0, params: { rect: [1500 / 1920, 160 / 1080, 300 / 1920, 420 / 1080] } },
-    { type: 'arrow', from: 18, dur: 0, params: { x: 0.8, y: 0.35, side: 'left' } },
-    { type: 'zoom_rect', from: 32, dur: 0, params: { rect: [150 / 1920, 380 / 1080, 700 / 1920, 80 / 1080] } },
-    { type: 'counter', from: 4, dur: 0, params: { n: 1, total: 3 } },
-    { type: 'sfx', from: 8, dur: 0, params: { lib_id: 'shutter' } },
+    // Durações como o backend manda (`FX_DEFAULT_MS` a 30 fps). Captura: marca-texto na 3ª linha, círculo e seta;
+    // depois a câmera vai até o trecho (tudo segura e solta no corte do 50).
+    { type: 'highlight', from: 8, dur: 42, params: { rect: [160 / 1920, 400 / 1080, 1300 / 1920, 34 / 1080] } },
+    { type: 'circle', from: 14, dur: 42, params: { rect: [1500 / 1920, 160 / 1080, 300 / 1920, 420 / 1080] } },
+    { type: 'arrow', from: 18, dur: 42, params: { x: 0.8, y: 0.35, side: 'left' } },
+    { type: 'zoom_rect', from: 32, dur: 45, params: { rect: [150 / 1920, 380 / 1080, 700 / 1920, 80 / 1080] } },
+    { type: 'counter', from: 4, dur: 45, params: { n: 1, total: 3 } },
+    { type: 'sfx', from: 8, dur: 15, params: { lib_id: 'shutter' } },
     // B-roll: punch na palavra, tremor, PiP e queda da trilha antes do whip.
-    { type: 'punch', from: 60, dur: 0, params: { scale: 1.25 } },
+    { type: 'punch', from: 60, dur: 18, params: { scale: 1.25 } },
     { type: 'shake', from: 70, dur: 12, params: { amount: 1 } },
     { type: 'pip', from: 54, dur: 30, params: { src: SAMPLE_PAGE, side: 'left' } },
-    { type: 'music_drop', from: 84, dur: 12, params: {} },
+    { type: 'music_drop', from: 84, dur: 14, params: {} },
     // Clipe: whip no corte, câmera lenta e meme de canto (emoji, sem arquivo de terceiros).
     { type: 'whip', from: 90, dur: 8, params: { side: 'right' } },
     { type: 'speed', from: 96, dur: 15, params: { rate: 0.5 } },
@@ -479,7 +483,7 @@ const fxTarget: TimelineScene = {
   clean: true,
   captions: [],
   words: [],
-  fx: [{ type: 'punch', from: SAMPLE_PUNCH.at, dur: 0, params: { scale: SAMPLE_PUNCH.scale } }],
+  fx: [{ type: 'punch', from: SAMPLE_PUNCH.at, dur: SAMPLE_PUNCH.dur, params: { scale: SAMPLE_PUNCH.scale } }],
 };
 
 /** Edição (16:9): subplanos, câmera por eventos, eventos de tela, legenda com ênfase e um clipe. */

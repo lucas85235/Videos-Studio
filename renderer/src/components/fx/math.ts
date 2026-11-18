@@ -137,30 +137,192 @@ export const framingTransform = (framing: ShotFraming | null | undefined) => {
   return `translate(${-left * scale * 100}%, ${-top * scale * 100}%) scale(${scale})`;
 };
 
+// --- espaço dos retângulos ----------------------------------------------------------------------------------------
+//
+// O backend manda `rect` (`MediaRef.rects`/`PoolItem.rects`) no espaço do ARQUIVO original (0 a 1 da imagem inteira).
+// Só o renderer sabe o recorte final: o `cover` na proporção do vídeo (com o `objectPosition` do foco), a caixa da
+// imagem inteira no modo desfocado e o enquadramento do plano. `params.space = 'frame'` diz que o retângulo já está
+// no quadro do fundo (timeline escrita à mão) e pula a conversão.
+
+/**
+ * Como o arquivo aparece no contêiner do fundo: proporção (largura ÷ altura), posição do recorte do `cover` (0 a 1,
+ * o `objectPosition`) e, no modo desfocado, a caixa (0 a 1 do contêiner) da imagem inteira. Null: desconhecido
+ * (o retângulo vale como está, como se o arquivo tivesse a proporção do vídeo).
+ */
+export type ImageBox = {
+  aspect: number;
+  pos: [number, number];
+  front?: { left: number; top: number; width: number; height: number } | null;
+};
+
+/** Caixa de um plano com imagem ou clipe próprio (`cover` centrado, sem foco): precisa do `aspect` do plano. */
+export const shotBox = (shot: TimelineShot | null | undefined): ImageBox | null => {
+  const aspect = num(shot?.aspect, 0);
+  return aspect > 0 ? { aspect, pos: [0.5, 0.5] } : null;
+};
+
+const clipRect = (x: number, y: number, w: number, h: number): Rect | null => {
+  const x0 = Math.max(0, x);
+  const y0 = Math.max(0, y);
+  const x1 = Math.min(1, x + w);
+  const y1 = Math.min(1, y + h);
+  return x1 - x0 > 1e-4 && y1 - y0 > 1e-4 ? [x0, y0, x1 - x0, y1 - y0] : null;
+};
+
+/** Retângulo do arquivo no contêiner do fundo (antes do enquadramento do plano); null quando cai fora do recorte. */
+export const rectToContainer = (r: Rect, box: ImageBox | null | undefined, videoAspect: number): Rect | null => {
+  const [x, y, w, h] = r;
+  if (!box || !(box.aspect > 0) || !(videoAspect > 0)) return clipRect(x, y, w, h);
+  const f = box.front;
+  if (f) return clipRect(f.left + x * f.width, f.top + y * f.height, w * f.width, h * f.height);
+  if (box.aspect > videoAspect) {
+    // Mais larga que o vídeo: aparece uma faixa vertical (fração `v` da largura).
+    const v = videoAspect / box.aspect;
+    const left = (1 - v) * clamp01(box.pos[0]);
+    return clipRect((x - left) / v, y, w / v, h);
+  }
+  if (box.aspect < videoAspect) {
+    // Mais alta (captura de página): aparece uma faixa horizontal.
+    const v = box.aspect / videoAspect;
+    const top = (1 - v) * clamp01(box.pos[1]);
+    return clipRect(x, (y - top) / v, w, h / v);
+  }
+  return clipRect(x, y, w, h);
+};
+
+/** Retângulo do contêiner na tela depois do enquadramento do plano (escala e janela de `framingBox`). */
+export const rectThroughFraming = (r: Rect, framing: ShotFraming | null | undefined): Rect | null => {
+  const { scale, left, top } = framingBox(framing);
+  return clipRect((r[0] - left) * scale, (r[1] - top) * scale, r[2] * scale, r[3] * scale);
+};
+
+/** Retângulos do evento no contêiner do fundo (anotações presas à imagem). */
+export const fxRects = (params: FxParams | undefined, box: ImageBox | null | undefined, videoAspect: number): Rect[] => {
+  const rects = pRects(params);
+  if (pStr(params, 'space') === 'frame') return rects;
+  return rects.map((r) => rectToContainer(r, box, videoAspect)).filter((r): r is Rect => r !== null);
+};
+
+/** O que está no fundo num quadro da cena: a caixa da imagem e o enquadramento do plano. */
+export type FxSpace = { box: ImageBox | null; framing: ShotFraming | null };
+
+/** Caixa da imagem de um plano: a do arquivo dele (imagem ou clipe próprio) ou, no plano `self`, a da cena. */
+export const slotBox = (slot: ShotSlot, sceneBox: ImageBox | null): ImageBox | null =>
+  slot.shot?.video || slot.shot?.src ? shotBox(slot.shot) : sceneBox;
+
+/** Caixa e enquadramento do fundo no quadro `frame` da cena (sem planos: a imagem da cena, quadro inteiro). */
+export const spaceAt = (slots: ShotSlot[], frame: number, sceneBox: ImageBox | null): FxSpace => {
+  const slot = slots.find((s) => frame >= s.from && frame < s.to) ?? slots[slots.length - 1];
+  if (!slot) return { box: sceneBox, framing: null };
+  return { box: slotBox(slot, sceneBox), framing: slot.shot?.framing ?? null };
+};
+
+/**
+ * Eventos com o retângulo do `zoom_rect` já na TELA (o CameraRig trabalha na tela): arquivo → contêiner do plano em
+ * que o evento começa → enquadramento desse plano. Zoom cujo retângulo cai fora do recorte fica sem retângulo (não
+ * mexe na câmera). Sem `zoom_rect`, devolve a mesma lista.
+ */
+export const cameraFx = (
+  fxs: TimelineFx[] | undefined,
+  spaceAt: (frame: number) => FxSpace,
+  videoAspect: number,
+): TimelineFx[] | undefined => {
+  if (!fxs?.some((fx) => fx.type === 'zoom_rect')) return fxs;
+  return fxs.map((fx) => {
+    if (fx.type !== 'zoom_rect') return fx;
+    const rect = pRects(fx.params)[0];
+    if (!rect) return fx;
+    const space = spaceAt(Math.round(num(fx.from, 0)));
+    const inContainer = pStr(fx.params, 'space') === 'frame' ? rect : rectToContainer(rect, space.box, videoAspect);
+    const onScreen = inContainer ? rectThroughFraming(inContainer, space.framing) : null;
+    const { rect: _r, rects: _rs, ...rest } = fx.params ?? {};
+    return { ...fx, params: onScreen ? { ...rest, rect: onScreen, space: 'frame' } : { ...rest, space: 'frame' } };
+  });
+};
+
+// --- clipe do plano -------------------------------------------------------------------------------------------------
+
+/** O clipe nunca fica mais lento que isto para cobrir a cena; o que faltar, o último quadro segura. */
+export const MIN_CLIP_RATE = 0.5;
+
+/**
+ * Teto do trecho de material oficial (espelho de `SourcePolicy.official_max_clip_s`, ADR 0004 §4): plano `official`
+ * com `video` e sem `seconds` nunca toca mais que isto (rede de segurança; quem manda é o `seconds` do backend).
+ */
+export const OFFICIAL_MAX_CLIP_S = 4.0;
+
+/**
+ * Segundos úteis do clipe do plano a partir de `clipIn`: o `seconds` do backend; sem ele, o teto do oficial; sem os
+ * dois, desconhecido (o clipe toca até o fim do plano).
+ */
+export const shotSeconds = (shot: TimelineShot | null | undefined): number | undefined => {
+  const given = num(shot?.seconds, 0);
+  if (given > 0) return given;
+  return shot?.prov === 'official' ? OFFICIAL_MAX_CLIP_S : undefined;
+};
+
+/**
+ * Velocidade e quantos quadros da cena o clipe toca. Clipe mais longo que a cena: velocidade normal, corta no fim.
+ * Mais curto: fica mais lento (até MIN_CLIP_RATE) e, se ainda faltar, congela no último quadro.
+ */
+export const clipTiming = (clipSeconds: number | undefined, sceneFrames: number, fps: number) => {
+  if (!clipSeconds || clipSeconds <= 0) return { rate: 1, playFrames: sceneFrames };
+  const clipFrames = Math.max(1, Math.floor(clipSeconds * fps));
+  if (clipFrames >= sceneFrames) return { rate: 1, playFrames: sceneFrames };
+  const rate = Math.max(MIN_CLIP_RATE, clipFrames / sceneFrames);
+  // Um quadro de folga: o último quadro do arquivo às vezes não decodifica.
+  const playFrames = Math.min(sceneFrames, Math.max(1, Math.floor(clipFrames / rate) - 1));
+  return { rate, playFrames };
+};
+
+/**
+ * Velocidade e quadros tocados de um clipe com velocidade pedida. `hold`: na velocidade pedida e congela no fim do
+ * trecho; sem `hold`: a conta do `clipTiming` no tempo do clipe já acelerado (só desacelera para cobrir).
+ */
+export const shotClipTiming = (clipSeconds: number | undefined, frames: number, fps: number, speed = 1, hold = false) => {
+  const base = speed > 0 ? speed : 1;
+  if (hold) {
+    if (!clipSeconds || clipSeconds <= 0) return { rate: base, playFrames: frames };
+    const clipFrames = Math.max(1, Math.floor((clipSeconds * fps) / base));
+    return { rate: base, playFrames: Math.min(frames, Math.max(1, clipFrames - 1)) };
+  }
+  const { rate, playFrames } = clipTiming(clipSeconds ? clipSeconds / base : clipSeconds, frames, fps);
+  return { rate: rate * base, playFrames };
+};
+
 // --- eventos ---------------------------------------------------------------------------------------------------------
 
 /**
- * Duração padrão (s) do evento que vem sem `dur` (o backend manda `dur_ms` None como 0). 0 = até o próximo corte
- * (câmera e anotações presas à imagem) ou até o fim da cena (contador).
+ * Duração padrão (s) do evento que chega sem `dur` (ou com 0). Espelha o `FX_DEFAULT_MS` do backend
+ * (`core/edit_resolve.py`), que sempre preenche `dur` quando `dur_ms` é None: a tabela daqui só vale para timeline
+ * escrita à mão. O teste `test_fx_defaults_match_backend` confere as duas.
  */
 export const FX_DEFAULT_SECONDS: Record<FxType, number> = {
-  punch: 0,
+  punch: 0.6,
   shake: 0.4,
-  zoom_rect: 0,
-  freeze: 0.8,
-  flash: 0.2,
-  text_pop: 0.9,
+  zoom_rect: 1.5,
+  freeze: 0.7,
+  flash: 0.15,
+  text_pop: 1.1,
   meme: 1.0,
-  sfx: 0.3,
-  highlight: 0,
-  arrow: 1.5,
-  circle: 1.5,
-  counter: 0,
-  music_drop: 0.4,
+  sfx: 0.5,
+  highlight: 1.4,
+  arrow: 1.4,
+  circle: 1.4,
+  counter: 1.5,
+  music_drop: 0.45,
   speed: 1.0,
-  whip: 0.27,
-  pip: 2.5,
+  whip: 0.25,
+  pip: 2.0,
 };
+
+/**
+ * Seguram até o próximo corte (ADR 0004, 3.9: o punch "sobe, segura e solta no próximo corte"). O `dur` que vem do
+ * backend vale como mínimo: quando o corte cai até HOLD_TO_CUT_S depois do fim dele, o efeito segura até o corte e
+ * solta seco; com o corte mais longe (ou cena sem planos e longa), solta no fim do `dur` com rampa curta.
+ */
+const HOLDS_TO_CUT = new Set<FxType>(['punch', 'zoom_rect', 'highlight', 'arrow', 'circle']);
+export const HOLD_TO_CUT_S = 1.5;
 
 /** Só áudio (mixado no FFmpeg a partir de `timeline.sfx` e `timeline.music_drops`): o renderer não desenha. */
 export const AUDIO_FX = new Set<FxType>(['sfx', 'music_drop']);
@@ -179,19 +341,64 @@ export const isFreezeZoomMeme = (fx: TimelineFx) => fx.type === 'meme' && pStr(f
 export type FxContext = { fps: number; frames: number; cuts: number[] };
 export type Span = { from: number; to: number };
 
-/** Janela `[from, to)` do evento na cena, com a duração padrão do tipo quando vem sem `dur`. */
+/**
+ * Janela `[from, to)` do evento na cena. `dur` como o backend manda (sempre preenchido); ausente ou 0, a duração
+ * padrão do tipo. Câmera e anotações presas à imagem nunca passam do próximo corte; as de HOLDS_TO_CUT seguram até
+ * ele quando ele cai logo depois (ver HOLD_TO_CUT_S).
+ */
 export const fxSpan = (fx: TimelineFx, ctx: FxContext): Span => {
   const last = Math.max(0, ctx.frames - 1);
   const from = clamp(Math.round(num(fx.from, 0)), 0, last);
   const given = num(fx.dur, 0);
-  const seconds = FX_DEFAULT_SECONDS[fx.type] ?? 1;
-  let dur: number;
-  if (given > 0) dur = given;
-  else if (seconds > 0) dur = seconds * ctx.fps;
-  else dur = (ENDS_AT_CUT.has(fx.type) ? nextCut(from, ctx.cuts, ctx.frames) : ctx.frames) - from;
+  const dur = given > 0 ? given : (FX_DEFAULT_SECONDS[fx.type] ?? 1) * ctx.fps;
   let to = Math.min(ctx.frames, from + Math.max(1, Math.round(dur)));
-  if (ENDS_AT_CUT.has(fx.type) && fx.type !== 'whip') to = Math.min(to, nextCut(from, ctx.cuts, ctx.frames));
+  if (ENDS_AT_CUT.has(fx.type) && fx.type !== 'whip') {
+    const cut = nextCut(from, ctx.cuts, ctx.frames);
+    if (HOLDS_TO_CUT.has(fx.type) && cut - to <= Math.round(HOLD_TO_CUT_S * ctx.fps)) to = cut;
+    to = Math.min(to, cut);
+  }
   return { from, to: Math.max(from + 1, to) };
+};
+
+/** Evento preso à imagem visível num quadro da cena: o quadro local (`f`, 0 no gatilho) e se ele termina num corte. */
+export type AnchoredItem = { fx: TimelineFx; index: number; span: Span; f: number; len: number; last: boolean };
+
+/**
+ * Marca-texto, seta e círculo visíveis no quadro REAL da cena (não o tempo do fundo depois de um congelamento ou de
+ * uma rampa): a anotação entra na palavra-gatilho mesmo depois de um `freeze`.
+ */
+export const anchoredAt = (fxs: TimelineFx[] | undefined, frame: number, ctx: FxContext): AnchoredItem[] => {
+  const out: AnchoredItem[] = [];
+  (fxs ?? []).forEach((fx, index) => {
+    if (!ANCHORED_FX.has(fx.type)) return;
+    const span = fxSpan(fx, ctx);
+    if (frame < span.from || frame >= span.to) return;
+    const last = span.to >= ctx.frames || ctx.cuts.includes(span.to);
+    out.push({ fx, index, span, f: frame - span.from, len: span.to - span.from, last });
+  });
+  return out;
+};
+
+// --- tela ------------------------------------------------------------------------------------------------------------
+
+/** Faixa da legenda na tela (fração da altura, de cima para baixo), com uma margem; null quando não há legenda. */
+export type Band = [number, number];
+
+/**
+ * Onde fica o meme de canto (fração da altura): `bottom` é a distância da borda de baixo e `height` a altura do
+ * adesivo. Embaixo, do lado pedido; com legenda visível em cima dessa faixa, ele sobe para acima da legenda (ou desce
+ * para baixo dela, o que couber maior) e encolhe se precisar: o adesivo nunca cobre a fala.
+ */
+export const cornerStickerBox = (portrait: boolean, caption: Band | null) => {
+  const height = portrait ? 0.28 : 0.42;
+  const bottom = portrait ? 0.24 : 0.06;
+  const top = 1 - bottom - height;
+  if (!caption || caption[1] <= top || caption[0] >= 1 - bottom) return { bottom, height };
+  const ceiling = 0.06;
+  const above = Math.max(0, caption[0] - ceiling);
+  const below = Math.max(0, 1 - bottom - caption[1]);
+  if (above >= below) return { bottom: 1 - caption[0], height: Math.min(height, above) };
+  return { bottom, height: Math.min(height, below) };
 };
 
 // --- câmera ----------------------------------------------------------------------------------------------------------
@@ -291,7 +498,8 @@ export const cameraAt = (frame: number, fxs: TimelineFx[] | undefined, ctx: Came
       const t = frame - span.from;
       const u = t / Math.max(1, span.to - span.from);
       const decay = Math.exp(-3 * u) * (1 - u);
-      const amount = clamp(pNum(fx.params, 'amount', 1), 0, 3);
+      // `strength` é a chave do planejador (0,6 a 1,2); `amount` fica como nome antigo.
+      const amount = clamp(pNum(fx.params, 'strength', pNum(fx.params, 'amount', 1)), 0, 3);
       const amp = amount * 0.02 * minSide * decay;
       const phase = hash01(`${ctx.seed}-shake-${span.from}`) * Math.PI * 2;
       const sec = t / ctx.fps;

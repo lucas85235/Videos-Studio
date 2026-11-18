@@ -2,10 +2,13 @@
 
 Três camadas de conferência:
 - contrato estático entre o `types.ts` resolvido e os componentes (quem lê o quê e em que ordem a cena empilha);
-- as contas puras de `components/fx/math.ts` rodando no Node (punch, zoom no retângulo, tremor, whip, tempo,
-  planos), sem navegador; pula quando não há Node com remoção de tipos (22.6+);
-- quadros renderizados de verdade (`renderer/scripts/fx-stills.mjs`), só com VS_RENDER_STILLS=1: precisa do navegador
-  do Remotion e leva ~1 min. O punch no quadro N tem que sair com escala maior que 1,1.
+- as contas puras de `components/fx/math.ts` (e `frame.ts`) rodando no Node com entradas no formato do backend
+  (`dur` sempre preenchido, `rect` no espaço do arquivo): punch que segura até o corte, zoom no retângulo, tremor,
+  whip, tempo, anotação no relógio real depois de um congelamento, recorte de captura alta, teto do clipe oficial e
+  meme fora da legenda. Sem navegador; pula quando não há Node com remoção de tipos (22.6+);
+- quadros renderizados de verdade (`renderer/scripts/fx-stills.mjs`), só com VS_RENDER_STILLS=1: usa o
+  chrome-headless-shell já baixado (`node_modules/.remotion`, ou VS_BROWSER) e pula sem ele, nunca baixa nada. O punch
+  no quadro N tem que sair com escala maior que 1,1.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from studio.core.project.document import FX_TYPES
 RD = REPO_ROOT / "renderer" / "src"
 COMP = RD / "components"
 MATH = COMP / "fx" / "math.ts"
+FRAME = RD / "frame.ts"
 
 
 def _read(path: Path) -> str:
@@ -89,8 +93,47 @@ def test_cliplayer_plays_any_video_with_trim_rate_hold_muted() -> None:
     for token in ("OffthreadVideo", "muted", "trimBefore={trim}", "playbackRate={rate}", "hold", "<Freeze"):
         assert token in src, token
     shots = _read(COMP / "ShotStack.tsx")
-    for field in ("clipIn", "speed", "hold", "seconds", "framing", "easing", "motion"):
+    for field in ("clipIn", "speed", "hold", "framing", "easing", "motion"):
         assert re.search(rf"shot\?\.{field}\b", shots), field
+    assert "seconds={shotSeconds(shot)}" in shots  # `seconds` do backend, ou o teto do oficial
+
+
+def test_scene_clip_is_only_the_ai_video() -> None:
+    """O clipe real da cena vem como plano em `shots` (com entrada e teto); `scene.video` fica só para o vídeo IA."""
+    src = _read(COMP / "SceneView.tsx")
+    assert "const clipUrl = scene.kind === 'video' ? assetUrl(scene.video, assetBaseUrl) : null;" in src
+    assert "realClip" not in src
+
+
+def test_self_shots_and_anchored_overlay_use_the_right_clock() -> None:
+    """Plano `self` passa pelo TimeWarp; a anotação presa à imagem usa o quadro real da cena, não o do fundo."""
+    shots = _read(COMP / "ShotStack.tsx")
+    assert shots.count("<TimeWarp fx={fx} frames={frames} cuts={cuts}") == 2  # plano self e planos com material
+    fx = _read(COMP / "fx" / "FxLayer.tsx")
+    anchored = fx[fx.index("export const FxAnchored"):fx.index("/** Marca-texto varrendo")]
+    assert "useCurrentFrame" not in anchored and "<Sequence" not in anchored
+    assert "anchoredAt(fx, frame, ctx)" in anchored
+    for name in ("const Highlight", "const Annot"):
+        body = fx[fx.index(name):]
+        body = body[:body.index("\n};\n")]
+        assert "useCurrentFrame" not in body, name
+    scene = _read(COMP / "SceneView.tsx")
+    assert "const frame = useCurrentFrame();" in scene
+    assert "<FxAnchored fx={fx} frame={frame}" in scene
+    assert "<CameraRig fx={camFx}" in scene  # zoom_rect convertido para a tela
+
+
+def test_meme_without_media_warns_and_corner_avoids_captions() -> None:
+    fx = _read(COMP / "fx" / "FxLayer.tsx")
+    assert "warnMemeWithoutMedia(params, where);" in fx
+    assert "lib_id" in fx[:fx.index("const clampOpts")]  # contrato de chaves registrado no topo
+    assert "cornerStickerBox(height > width, caption)" in fx
+    assert "captionHalf={captionHalf}" in _read(COMP / "SceneView.tsx")
+
+
+def test_karaoke_emphasis_waits_for_the_word() -> None:
+    src = _read(COMP / "Captions.tsx")
+    assert "color={style.style !== 'karaoke' || spoken ? style.highlight : dimmed ? dimColor : style.color}" in src
 
 
 def test_captions_emphasis() -> None:
@@ -108,9 +151,10 @@ def test_sticker_filter_is_shared() -> None:
 
 
 def test_math_module_has_only_type_imports() -> None:
-    """`fx/math.ts` roda no Node (teste abaixo): nada de import em tempo de execução."""
-    imports = [line for line in _read(MATH).splitlines() if line.startswith("import ")]
-    assert imports and all(line.startswith("import type ") for line in imports)
+    """`fx/math.ts` e `frame.ts` rodam no Node (teste abaixo): nada de import em tempo de execução."""
+    for path in (MATH, FRAME):
+        imports = [line for line in _read(path).splitlines() if line.startswith("import ")]
+        assert imports and all(line.startswith("import type ") for line in imports), path.name
 
 
 def test_sample_covers_every_event_shot_kind_and_a_clip() -> None:
@@ -144,39 +188,96 @@ def test_renderer_hash_changes_with_fx_components(tmp_path: Path) -> None:
 HARNESS = r"""
 import { pathToFileURL } from 'node:url';
 const m = await import(pathToFileURL(process.argv[2]).href);
+const fr = await import(pathToFileURL(process.argv[3]).href);
 const fps = 30;
 const ctx = { fps, frames: 120, cuts: [60], width: 1920, height: 1080, seed: 7 };
-const punch = { type: 'punch', from: 20, dur: 0, params: { scale: 1.2 } };
+// Entradas como o backend manda: `dur` sempre preenchido (FX_DEFAULT_MS a 30 fps), nunca 0.
+const punch = { type: 'punch', from: 20, dur: 18, params: { scale: 1.2 } };
 const out = {};
-out.punch = [19, 20, 21, 22, 23, 59, 60].map((f) => m.punchScale(punch, f, ctx));
-out.punchFree = [40, 41, 42, 43, 44].map((f) => m.punchScale({ ...punch, from: 30, dur: 10 }, f, ctx));
+out.defaults = m.FX_DEFAULT_SECONDS;
+out.punch = [19, 20, 21, 22, 23, 40, 59, 60].map((f) => m.punchScale(punch, f, ctx));
+const far = { fps, frames: 200, cuts: [150], width: 1920, height: 1080, seed: 7 };
+out.punchFar = [37, 38, 39, 41, 42].map((f) => m.punchScale(punch, f, far));
+out.spanPunchZero = m.fxSpan({ ...punch, dur: 0 }, far);
+out.spanPunchFar = m.fxSpan(punch, far);
 out.camPunch = m.cameraAt(23, [punch], ctx);
 out.camNone = m.cameraAt(23, [], ctx);
-out.camAudio = m.cameraAt(23, [{ type: 'sfx', from: 20, dur: 0, params: {} }], ctx);
-const zr = (rect, f) => m.cameraAt(f, [{ type: 'zoom_rect', from: 10, dur: 0, params: { rect } }], ctx);
+out.camAudio = m.cameraAt(23, [{ type: 'sfx', from: 20, dur: 15, params: {} }], ctx);
+const zr = (rect, f) => m.cameraAt(f, [{ type: 'zoom_rect', from: 10, dur: 45, params: { rect } }], ctx);
 out.zoomCenter = zr([0.4, 0.4, 0.2, 0.2], 40);
 out.zoomCorner = zr([0.85, 0.85, 0.1, 0.1], 40);
+out.zoomHeld = zr([0.4, 0.4, 0.2, 0.2], 58);
 out.zoomAfterCut = zr([0.4, 0.4, 0.2, 0.2], 60);
-const shake = { type: 'shake', from: 0, dur: 30, params: { amount: 1 } };
-out.shake = Array.from({ length: 30 }, (_, f) => m.cameraAt(f, [shake], ctx));
+const shake = (params) => ({ type: 'shake', from: 0, dur: 30, params });
+out.shake = Array.from({ length: 30 }, (_, f) => m.cameraAt(f, [shake({ strength: 1 })], ctx));
+const peak = (params) => Math.max(...Array.from({ length: 30 }, (_, f) => {
+  const c = m.cameraAt(f, [shake(params)], ctx);
+  return Math.abs(c.rot);
+}));
+out.shakeWeak = peak({ strength: 0.6 });
+out.shakeStrong = peak({ strength: 1.2 });
+out.shakeLegacy = peak({ amount: 1.2 });
 const whip = { type: 'whip', from: 60, dur: 8, params: {} };
 out.whip = [50, 57, 59, 60, 62, 70].map((f) => m.cameraAt(f, [whip], ctx));
 const segs = m.timeSegments([{ type: 'freeze', from: 10, dur: 10, params: {} }, { type: 'speed', from: 40, dur: 20, params: { rate: 0.5 } }], ctx);
 out.remap = [5, 10, 15, 19, 20, 25, 40, 50, 60, 70].map((f) => m.remapFrame(f, segs));
 out.memeSegs = m.timeSegments([{ type: 'meme', from: 5, dur: 10, params: { variant: 'freeze_zoom' } }, { type: 'meme', from: 30, dur: 10, params: {} }], ctx);
+// Anotação depois de um congelamento: entra no quadro do gatilho (relógio real), não 24 quadros depois.
+const noCut = { fps, frames: 120, cuts: [] };
+const frozen = [{ type: 'freeze', from: 30, dur: 24, params: {} }, { type: 'highlight', from: 60, dur: 42, params: { rect: [0.1, 0.1, 0.5, 0.1] } }];
+out.anchored59 = m.anchoredAt(frozen, 59, noCut).length;
+out.anchored60 = m.anchoredAt(frozen, 60, noCut).map((a) => ({ type: a.fx.type, f: a.f, len: a.len, last: a.last }));
+out.remapped60 = m.remapFrame(60, m.timeSegments(frozen, noCut));
 out.slots = m.shotSlots([{ from: 30, dur: 20 }, { from: 10, dur: 5 }, { from: 30, dur: 9, tag: 'last' }], 120);
 out.slotsEmpty = m.shotSlots(undefined, 120);
 out.cuts = m.cutsOf(out.slots);
-out.spanTextPop = m.fxSpan({ type: 'text_pop', from: 10, dur: 0, params: {} }, ctx);
-out.spanHighlight = m.fxSpan({ type: 'highlight', from: 10, dur: 0, params: {} }, ctx);
+out.spanTextPop = m.fxSpan({ type: 'text_pop', from: 10, dur: 33, params: {} }, ctx);
+out.spanTextPopZero = m.fxSpan({ type: 'text_pop', from: 10, dur: 0, params: {} }, ctx);
+out.spanHighlight = m.fxSpan({ type: 'highlight', from: 10, dur: 42, params: {} }, ctx);
 out.spanHighlightLong = m.fxSpan({ type: 'highlight', from: 10, dur: 90, params: {} }, ctx);
-out.spanCounter = m.fxSpan({ type: 'counter', from: 10, dur: 0, params: {} }, ctx);
+out.spanHighlightFar = m.fxSpan({ type: 'highlight', from: 10, dur: 42, params: {} }, { fps, frames: 300, cuts: [] });
+out.spanShake = m.fxSpan({ type: 'shake', from: 30, dur: 12, params: {} }, ctx);
+out.spanCounter = m.fxSpan({ type: 'counter', from: 10, dur: 45, params: {} }, ctx);
 out.spanLate = m.fxSpan({ type: 'flash', from: 500, dur: 6, params: {} }, ctx);
 out.framingFull = m.framingTransform({ scale: 1, x: 0.5, y: 0.5 });
 out.framingBox = m.framingBox({ scale: 2, x: 1, y: 0 });
 out.rects = m.pRects({ rects: [0.1, 0.1, 0.2, 0.2, 0.5, 0.5, 0.9, 0.9] });
 out.rectsNested = m.pRects({ rect: [[0.1, 0.2, 0.3, 0.4]] });
 out.snap = [0, 0.11, 0.22, 0.5, 1].map((t) => m.EASE.snap(t));
+// Captura de página alta (1:2) num vídeo 16:9: o `rect` vem no espaço do arquivo.
+const video = 1920 / 1080;
+const tallTop = { aspect: 0.5, pos: [0.5, 0] };
+const tallMid = { aspect: 0.5, pos: [0.5, 0.5] };
+out.rectTop = m.fxRects({ rect: [0.1, 0.05, 0.6, 0.02] }, tallTop, video);
+out.rectMidOut = m.fxRects({ rect: [0.1, 0.05, 0.6, 0.02] }, tallMid, video);
+out.rectFrame = m.fxRects({ rect: [0.1, 0.05, 0.6, 0.02], space: 'frame' }, tallMid, video);
+out.rectUnknown = m.fxRects({ rect: [0.1, 0.05, 0.6, 0.02] }, null, video);
+out.boxCrop = fr.sceneImageBox({ mode: 'crop', x: 0.5, y: 0.1, aspect: 0.5 }, 1920, 1080);
+out.boxBlur = fr.sceneImageBox({ mode: 'blur', x: 0.5, y: 0.5, aspect: 0.5, anchor: 0.5 }, 1920, 1080);
+out.boxNone = fr.sceneImageBox(undefined, 1920, 1080);
+out.rectBlur = m.fxRects({ rect: [0, 0, 1, 1] }, out.boxBlur, video);
+const tallShots = m.shotSlots([
+  { from: 0, dur: 60, prov: 'capture', src: 'cap.png', aspect: 0.5, framing: { scale: 1, x: 0.5, y: 0.5 }, motion: 'static' },
+  { from: 60, dur: 60, prov: 'capture', src: 'cap.png', aspect: 0.5, framing: { scale: 2, x: 0.5, y: 0.5 }, motion: 'static' },
+], 120);
+const camFx = (from) => m.cameraFx([{ type: 'zoom_rect', from, dur: 45, params: { rect: [0.1, 0.4, 0.8, 0.1] } }], (at) => m.spaceAt(tallShots, at, null), video)[0];
+out.camFxPlain = camFx(10).params;
+out.camFxFramed = camFx(70).params;
+out.camFxSame = m.cameraFx([punch], () => ({ box: null, framing: null }), video)[0] === punch;
+// Clipe do plano: `seconds` do backend; sem ele, o oficial para em 4 s.
+out.secOfficial = m.shotSeconds({ prov: 'official', video: 'a.mp4' });
+out.secOfficialGiven = m.shotSeconds({ prov: 'official', video: 'a.mp4', seconds: 2.5 });
+out.secFree = m.shotSeconds({ prov: 'free', video: 'a.mp4' }) ?? null;
+out.timingHold = m.shotClipTiming(4, 210, fps, 1, true);
+out.timingHoldNone = m.shotClipTiming(undefined, 210, fps, 1, true);
+out.timingCover = m.shotClipTiming(4, 210, fps, 1, false);
+out.timingFast = m.shotClipTiming(4, 210, fps, 1.5, true);
+// Meme de canto e a faixa da legenda (fração da altura).
+out.cornerFree = m.cornerStickerBox(false, null);
+out.cornerBottomCaption = m.cornerStickerBox(false, [0.78, 0.94]);
+out.cornerMidCaption = m.cornerStickerBox(false, [0.42, 0.58]);
+out.cornerTopCaption = m.cornerStickerBox(false, [0.06, 0.2]);
+out.cornerPortrait = m.cornerStickerBox(true, [0.62, 0.78]);
 console.log(JSON.stringify(out));
 """
 
@@ -207,21 +308,38 @@ def fx_math(tmp_path_factory: pytest.TempPathFactory) -> dict:
         pytest.skip("Node 22.6+ (remoção de tipos) indisponível")
     script = tmp_path_factory.mktemp("fxmath") / "harness.mjs"
     script.write_text(HARNESS, encoding="utf-8")
-    proc = subprocess.run([*node, "--no-warnings", str(script), str(MATH)], capture_output=True, text=True, timeout=60)
+    proc = subprocess.run([*node, "--no-warnings", str(script), str(MATH), str(FRAME)], capture_output=True, text=True,
+                          timeout=60)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 def test_punch_rises_in_three_frames_holds_and_releases_at_cut(fx_math: dict) -> None:
-    before, f0, f1, f2, f3, held, at_cut = fx_math["punch"]
+    """`dur` de 18 quadros (os 600 ms do backend) com o corte 22 quadros depois: segura até o corte e solta seco."""
+    before, f0, f1, f2, f3, mid, held, at_cut = fx_math["punch"]
     assert before == 1
     assert 1.1 < f0 < 1.2 and f0 < f1 < f2  # sobe em 2 a 3 quadros
-    assert f2 == pytest.approx(1.2) and f3 == pytest.approx(1.2) and held == pytest.approx(1.2)
+    assert f2 == pytest.approx(1.2) and f3 == pytest.approx(1.2)
+    assert mid == pytest.approx(1.2) and held == pytest.approx(1.2)  # passou do `dur` e continua segurando
     assert at_cut == 1  # solta seco no corte
-    # Sem corte no fim: solta em ~4 quadros.
-    end, *release = fx_math["punchFree"]
-    assert end == 1 or end < 1.2
-    assert release[0] < 1.2 and release[-1] == 1
+
+
+def test_punch_releases_after_dur_when_the_cut_is_far(fx_math: dict) -> None:
+    """Corte longe (mais de HOLD_TO_CUT_S depois): solta no fim do `dur`, numa rampa de 4 quadros."""
+    assert fx_math["spanPunchFar"] == {"from": 20, "to": 38}
+    assert fx_math["spanPunchZero"] == fx_math["spanPunchFar"]  # sem `dur`: o padrão do tipo (600 ms)
+    last, *release = fx_math["punchFar"]
+    assert last == pytest.approx(1.2)
+    assert release[0] < 1.2 and release[1] < release[0] and release[-1] == 1
+
+
+def test_fx_defaults_match_backend(fx_math: dict) -> None:
+    """A tabela do renderer espelha o `FX_DEFAULT_MS` do timeline-fx (fonte de verdade: o backend sempre preenche)."""
+    defaults = fx_math["defaults"]
+    assert set(defaults) == set(FX_TYPES)
+    edit_resolve = pytest.importorskip("studio.core.edit_resolve")
+    for fx_type, ms in edit_resolve.FX_DEFAULT_MS.items():
+        assert defaults[fx_type] == pytest.approx(ms / 1000), fx_type
 
 
 def test_camera_punch_scale_and_identity(fx_math: dict) -> None:
@@ -241,6 +359,7 @@ def test_zoom_rect_reaches_target_without_showing_border(fx_math: dict) -> None:
     corner = fx_math["zoomCorner"]
     assert corner["scale"] > 2
     assert corner["x"] == pytest.approx(1 - corner["scale"], abs=1e-6)  # encosta na borda, não passa
+    assert fx_math["zoomHeld"]["scale"] == pytest.approx(center["scale"], rel=1e-3)  # segura até o corte
     assert fx_math["zoomAfterCut"]["scale"] == 1  # o zoom solta no corte
 
 
@@ -249,6 +368,9 @@ def test_shake_decays_and_covers_the_frame(fx_math: dict) -> None:
     offset = [abs(c["x"] - 0.5 * (1 - c["scale"])) for c in shakes]
     assert max(offset[:8]) > max(offset[-8:]) * 3
     assert max(offset) > 0.002
+    # A intensidade do planejador (`strength`) vale; `amount` continua como nome antigo.
+    assert fx_math["shakeStrong"] > fx_math["shakeWeak"] * 1.8
+    assert fx_math["shakeLegacy"] == pytest.approx(fx_math["shakeStrong"])
     for cam in shakes:
         # A sobra de escala cobre o deslocamento: a borda nunca entra no quadro.
         assert cam["scale"] >= 1
@@ -270,6 +392,13 @@ def test_freeze_and_speed_remap_time(fx_math: dict) -> None:
     assert [(s["from"], s["to"], s["rate"]) for s in segs] == [(5, 15, 0)]  # só o meme "congela + zoom"
 
 
+def test_anchored_annotation_after_freeze_enters_on_its_trigger(fx_math: dict) -> None:
+    """Freeze de 24 quadros no 30 e marca-texto no 60: aparece no quadro real 60 (o fundo está no 36)."""
+    assert fx_math["anchored59"] == 0
+    assert fx_math["anchored60"] == [{"type": "highlight", "f": 0, "len": 60, "last": True}]
+    assert fx_math["remapped60"] == 36  # o relógio do fundo, que atrasaria a anotação
+
+
 def test_shot_slots_are_contiguous(fx_math: dict) -> None:
     slots = fx_math["slots"]
     assert [(s["from"], s["to"]) for s in slots] == [(0, 10), (10, 30), (30, 120)]
@@ -279,11 +408,14 @@ def test_shot_slots_are_contiguous(fx_math: dict) -> None:
     assert fx_math["cuts"] == [10, 30]
 
 
-def test_fx_spans_use_type_defaults(fx_math: dict) -> None:
-    assert fx_math["spanTextPop"] == {"from": 10, "to": 37}  # 0,9 s a 30 fps
-    assert fx_math["spanHighlight"] == {"from": 10, "to": 60}  # até o corte
+def test_fx_spans_with_backend_durations(fx_math: dict) -> None:
+    assert fx_math["spanTextPop"] == {"from": 10, "to": 43}  # 1,1 s a 30 fps
+    assert fx_math["spanTextPopZero"] == fx_math["spanTextPop"]  # sem `dur`: o padrão do tipo
+    assert fx_math["spanHighlight"] == {"from": 10, "to": 60}  # corte logo depois: segura até ele
     assert fx_math["spanHighlightLong"] == {"from": 10, "to": 60}  # preso à imagem: nunca passa do corte
-    assert fx_math["spanCounter"] == {"from": 10, "to": 120}  # até o fim da cena
+    assert fx_math["spanHighlightFar"] == {"from": 10, "to": 52}  # sem corte por perto: o `dur`
+    assert fx_math["spanShake"] == {"from": 30, "to": 42}  # o tremor não estica até o corte
+    assert fx_math["spanCounter"] == {"from": 10, "to": 55}  # o `dur` do planejador (1,5 s)
     assert fx_math["spanLate"] == {"from": 119, "to": 120}  # gatilho além da cena cai no último quadro
 
 
@@ -294,6 +426,64 @@ def test_framing_and_rect_params(fx_math: dict) -> None:
     assert fx_math["rectsNested"] == [[0.1, 0.2, 0.3, 0.4]]
     snap = fx_math["snap"]
     assert snap[0] == 0 and snap[2] == pytest.approx(1) and snap[3] == 1 and snap[1] > 0.8
+
+
+def test_rect_from_tall_capture_lands_on_the_crop(fx_math: dict) -> None:
+    """Captura 1:2 num vídeo 16:9: o `rect` do arquivo vira o recorte visível (faixa de 28% da altura da página)."""
+    v = 0.5 / (1920 / 1080)
+    (x, y, w, h), = fx_math["rectTop"]
+    assert (x, w) == pytest.approx((0.1, 0.6))
+    assert y == pytest.approx(0.05 / v) and h == pytest.approx(0.02 / v)
+    assert fx_math["rectMidOut"] == []  # recorte no meio da página: o trecho marcado está fora da tela
+    assert fx_math["rectFrame"] == [pytest.approx([0.1, 0.05, 0.6, 0.02])]  # `space: 'frame'`: como está
+    assert fx_math["rectUnknown"] == [pytest.approx([0.1, 0.05, 0.6, 0.02])]  # proporção desconhecida
+    assert fx_math["boxCrop"]["pos"] == pytest.approx([0.5, 0]) and fx_math["boxCrop"]["front"] is None
+    assert fx_math["boxNone"] is None
+    # Modo desfocado: a imagem inteira numa caixa no meio; o retângulo cai na caixa, não no contêiner todo.
+    assert fx_math["rectBlur"] == [pytest.approx([(1 - v) / 2, 0, v, 1])]
+
+
+def test_zoom_rect_goes_to_screen_through_crop_and_framing(fx_math: dict) -> None:
+    v = 0.5 / (1920 / 1080)
+    top = (1 - v) * 0.5
+    plain = fx_math["camFxPlain"]
+    assert plain["space"] == "frame"
+    assert plain["rect"] == pytest.approx([0.1, (0.4 - top) / v, 0.8, 0.1 / v])
+    # Plano com enquadramento 2x no centro: janela de 0,25 a 0,75.
+    y0, y1 = (0.4 - top) / v, (0.5 - top) / v
+    expected = [max(0.0, (0.1 - 0.25) * 2), max(0.0, (y0 - 0.25) * 2)]
+    expected += [min(1.0, (0.9 - 0.25) * 2) - expected[0], min(1.0, (y1 - 0.25) * 2) - expected[1]]
+    assert fx_math["camFxFramed"]["rect"] == pytest.approx(expected)  # cortado na borda da janela
+    assert expected == pytest.approx([0, 0, 1, 0.5])
+    assert fx_math["camFxSame"] is True  # sem zoom_rect: a mesma lista
+
+
+def test_shot_clip_respects_seconds_and_official_cap(fx_math: dict) -> None:
+    assert fx_math["secOfficial"] == 4.0  # sem `seconds`: o teto do oficial
+    assert fx_math["secOfficialGiven"] == 2.5
+    assert fx_math["secFree"] is None  # desconhecido: toca até o fim do plano
+    hold = fx_math["timingHold"]
+    assert hold["rate"] == 1 and hold["playFrames"] < 120  # congela antes dos 4 s
+    assert fx_math["timingHoldNone"]["playFrames"] == 210
+    cover = fx_math["timingCover"]
+    assert cover["playFrames"] * cover["rate"] <= 4 * 30  # desacelera, mas não passa do trecho
+    fast = fx_math["timingFast"]
+    assert fast["rate"] == 1.5 and fast["playFrames"] * fast["rate"] <= 4 * 30
+
+
+def test_corner_meme_stays_off_the_caption(fx_math: dict) -> None:
+    assert fx_math["cornerFree"] == {"bottom": 0.06, "height": 0.42}
+
+    def span(box: dict) -> tuple[float, float]:
+        return 1 - box["bottom"] - box["height"], 1 - box["bottom"]
+
+    for key, band in (("cornerBottomCaption", (0.78, 0.94)), ("cornerMidCaption", (0.42, 0.58))):
+        top, bottom = span(fx_math[key])
+        assert bottom <= band[0] + 1e-9 or top >= band[1] - 1e-9, key
+        assert fx_math[key]["height"] > 0.2, key
+    assert fx_math["cornerTopCaption"] == {"bottom": 0.06, "height": 0.42}  # legenda em cima: canto de sempre
+    top, bottom = span(fx_math["cornerPortrait"])
+    assert bottom <= 0.62 + 1e-9
 
 
 # --- quadros renderizados (opt-in) -------------------------------------------------------------------------------------
@@ -312,6 +502,8 @@ def test_rendered_stills_show_punch(tmp_path: Path) -> None:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=REPO_ROOT / "renderer")
     assert proc.returncode == 0, proc.stderr[-4000:]
     result = json.loads(proc.stdout.strip().splitlines()[-1])
+    if result.get("skipped"):
+        pytest.skip(f"fx-stills: {result['skipped']}")
     stills = {int(k): Path(v) for k, v in result["stills"].items()}
     assert all(p.is_file() for p in stills.values())
 

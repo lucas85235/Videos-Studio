@@ -1,5 +1,6 @@
 import React from 'react';
-import { AbsoluteFill, Sequence, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from 'remotion';
+import { sceneImageBox } from '../frame';
 import { imageFilter } from '../look';
 import type { RenderStyle, SceneKind, ShotEasing, TimelineScene } from '../types';
 import { CameraRig, TimeWarp } from './CameraRig';
@@ -8,7 +9,7 @@ import { ChartCard, chartRows } from './ChartCard';
 import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
 import { FxAnchored, FxLayer } from './fx/FxLayer';
-import { ANCHORED_FX, cutsOf, shotSlots } from './fx/math';
+import { ANCHORED_FX, cameraFx, cutsOf, type ImageBox, shotSlots, spaceAt } from './fx/math';
 import { MapCard, mapItems } from './MapCard';
 import { PresenterLayer } from './PresenterLayer';
 import { assetUrl, NewsCard } from './RealMedia';
@@ -130,12 +131,14 @@ const titleEchoesSpeech = (scene: TimelineScene) => {
 /** Uma cena: fundo com câmera + texturas + cartão + sobreposições + legendas + transição de entrada. */
 export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticBase, lang = 'pt-BR' }) => {
   const { fps, width, height } = useVideoConfig();
+  // Quadro real da cena (fora do TimeWarp): o relógio das anotações presas à imagem.
+  const frame = useCurrentFrame();
   const url = assetUrl(scene.src, assetBaseUrl);
   const layers = (scene.parallax?.layers ?? []).map((rel) => assetUrl(rel, assetBaseUrl)).filter((u): u is string => Boolean(u));
-  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras. Timeline
-  // nova (com `prov`) com clipe real da cena: toca em qualquer tipo.
-  const realClip = scene.prov !== undefined && scene.prov !== 'ai';
-  const clipUrl = scene.kind === 'video' || realClip ? assetUrl(scene.video, assetBaseUrl) : null;
+  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras. O clipe
+  // REAL da cena (trailer, gameplay) chega como um plano em `shots` ({from: 0, video, clipIn, seconds, hold}), que o
+  // ShotStack toca com entrada e teto; `scene.video` não tem entrada nem duração e fica só para o vídeo IA.
+  const clipUrl = scene.kind === 'video' ? assetUrl(scene.video, assetBaseUrl) : null;
   const cards = style.textCards;
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
@@ -191,8 +194,10 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const fx = scene.fx;
   const slots = shotSlots(scene.shots, scene.durationInFrames);
   const cuts = cutsOf(slots);
+  // A camada presa à imagem recebe o quadro REAL da cena (o `frame` daqui, de fora do TimeWarp) e a caixa da imagem
+  // do contêiner dela (converte o `rect` do arquivo para o recorte).
   const overlayAt = (fx ?? []).some((e) => ANCHORED_FX.has(e.type))
-    ? (offset: number) => <FxAnchored fx={fx} offset={offset} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} />
+    ? (box: ImageBox | null) => <FxAnchored fx={fx} frame={frame} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} box={box} />
     : undefined;
   const dim = news ? NEWS_DIM : (DIM[kind] ?? 0);
   const blur = news ? NEWS_BLUR : (BLUR[kind] ?? 0);
@@ -242,6 +247,11 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       )
     ) : null;
   const sceneBackground = (overlay?: React.ReactNode) => otherBackground(overlay) ?? image(scene, url, overlay);
+  // Caixa da imagem da própria cena (só a imagem com câmera usa o `frame`; documento, clipe e tratamentos: null).
+  const ownImage = kind !== 'document' && !clipUrl && !(treatment && url) && Boolean(url);
+  const sceneBox = ownImage ? sceneImageBox(scene.frame, width, height) : null;
+  // O `zoom_rect` vai para a câmera já na tela (arquivo → recorte → enquadramento do plano em que ele começa).
+  const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
   const background = slots.length ? (
     <ShotStack
       scene={scene}
@@ -252,17 +262,18 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       assetBaseUrl={assetBaseUrl}
       renderImage={image}
       selfBackground={otherBackground()}
+      sceneBox={sceneBox}
       overlayAt={overlayAt}
     />
   ) : (
     <TimeWarp fx={fx} frames={scene.durationInFrames} cuts={cuts}>
-      {sceneBackground(overlayAt?.(0))}
+      {sceneBackground(overlayAt?.(sceneBox))}
     </TimeWarp>
   );
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
-      <CameraRig fx={fx} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} id={`${scene.id}-${scene.seed}`}>
+      <CameraRig fx={camFx} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} id={`${scene.id}-${scene.seed}`}>
         {background}
       </CameraRig>
       <EffectsLayer effects={style.effects} look={scene.look} seed={scene.seed} staticBase={staticBase} clean={scene.clean === true} />
@@ -273,6 +284,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         assetBaseUrl={assetBaseUrl}
         cuts={cuts}
         captionMid={captionMid}
+        captionHalf={captionHalf}
         captionsShown={!hideCaptions && style.captions.style !== 'none'}
         minTop={band.top}
         lang={lang}
