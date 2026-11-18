@@ -72,9 +72,12 @@ class FieldMeta(BaseModel):
 
 
 class PaceBlock(BaseModel):
-    """Ritmo de cortes (planos medidos, incluindo os micro-planos < 0,4 s)."""
+    """Ritmo de cortes. Mediana, quartis, CV e cortes por minuto são dos planos regulares (≥ 0,4 s), como as medidas
+    antigas da referência; os micro-planos (< 0,4 s: stinger, flash, corte de meme) contam à parte (`micro_*`) e como
+    evento visual (`events_per_min`, `max_still_s`). Ver `media/refprofile/cuts.pace`."""
 
     shots: int = Field(default=0, ge=0)
+    """Planos regulares (sem os micro)."""
     median_s: float = Field(default=0.0, ge=0)
     mean_s: float = Field(default=0.0, ge=0)
     p10_s: float = Field(default=0.0, ge=0)

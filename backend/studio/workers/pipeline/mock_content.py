@@ -394,3 +394,20 @@ def mock_video_ideas(ctx: dict[str, Any]) -> dict[str, Any]:
 def mock_idea_dupes(ctx: dict[str, Any]) -> dict[str, Any]:
     """Juízo de tema offline: sem modelo não dá para julgar tema; fica só a semelhança de títulos da checagem."""
     return {"matches": []}
+
+
+def mock_reference_humor(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Estrutura, tom e humor da referência offline (ADR 0004 §3.2): blocos proporcionais à duração e padrões
+    abstratos fixos. Nunca repete frase da transcrição (a regra da tarefa real)."""
+    dur = max(1.0, float(ctx.get("duration_s") or 60.0))
+    text = str(ctx.get("transcript") or "")
+    roles = [("gancho", 0.0, 0.08), ("contexto", 0.08, 0.3), ("desenvolvimento", 0.3, 0.75),
+             ("revelação", 0.75, 0.9), ("conclusão", 0.9, 1.0)]
+    fast = len(text.split()) / dur > 2.5
+    tags = ["conversado", "irônico" if "?" in text else "didático", "rápido" if fast else "calmo"]
+    return {
+        "structure": [{"role": r, "start_s": round(a * dur, 1), "end_s": round(b * dur, 1)} for r, a, b in roles],
+        "tone_tags": tags,
+        "patterns": ["exagero logo depois de um dado sério", "pergunta retórica respondida com reação"],
+        "gag_count": max(1, int(dur // 40)),
+    }
