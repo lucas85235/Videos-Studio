@@ -2561,18 +2561,18 @@ class PackageAssets:
     _crowd: dict[str, bool] = field(default_factory=dict, repr=False)
 
     def crowded(self, frame: dict[str, Any] | None) -> bool:
-        """O quadro de lugar tem figurante em close que nem o re-enquadramento do compositor tira da área livre
-        (`thumb_compose.scenery_people` acima de `PEOPLE_FREE_MAX`). Medido só quando perguntado (rembg, com cache
-        em disco no kit); quadro de personagem, sem arquivo ou sem a medida: False."""
-        if not frame or self.kit_dir is None or not frame.get("file") or frame.get("face_box"):
-            return False
-        if {"personagem", "keyart", "rosto", "corpo"} & {str(t) for t in frame.get("tags") or []}:
+        """O quadro de lugar (`thumb_compose.scenery_frame`, a mesma regra do compositor) tem figurante em close que
+        nem o re-enquadramento tira da área livre (`thumb_compose.scenery_people` acima de `PEOPLE_FREE_MAX`). Medido
+        só quando perguntado (rembg, com cache em disco no kit); quadro que não é de lugar (personagem, capa, sem a
+        tag `lugar`), sem arquivo ou sem a medida: False."""
+        from studio.media import thumb_compose
+
+        if not frame or self.kit_dir is None or not frame.get("file") or not thumb_compose.scenery_frame(frame):
             return False
         fid = str(frame.get("id"))
         if fid not in self._crowd:
             from PIL import Image
 
-            from studio.media import thumb_compose
             from studio.media.thumb_assets import people_mask
 
             path = Path(self.kit_dir) / str(frame["file"])

@@ -40,13 +40,13 @@ def _people(size: tuple[int, int]) -> Image.Image:
     return m.resize(size)
 
 
-def _kit(tmp_path: Path, *, face: bool = False) -> A.AssetResolver:
+def _kit(tmp_path: Path, *, face: bool = False, tags: tuple[str, ...] = ("lugar", "praia")) -> A.AssetResolver:
     kit_dir = tmp_path / "kit"
     (kit_dir / "frames").mkdir(parents=True)
     (kit_dir / "cutouts").mkdir()
     _beach(kit_dir / "frames" / "praia.png")
     manifest = A.empty_manifest("chn_r4")
-    A.upsert_item(manifest, {"id": "praia", "kind": "frame", "file": "frames/praia.png", "tags": ["lugar", "praia"],
+    A.upsert_item(manifest, {"id": "praia", "kind": "frame", "file": "frames/praia.png", "tags": list(tags),
                              "editorial": False, "focus_x": 0.5, "focus_y": 0.5,
                              "face_box": [0.05, 0.5, 0.3, 0.9] if face else None, "size": [1600, 900]})
     fig = Image.new("RGBA", (500, 800), (0, 0, 0, 0))
@@ -107,6 +107,20 @@ def test_uma_pessoa_so_e_o_assunto_e_nao_e_reenquadrada(tmp_path):
     assert C.people_count(one) == 1 and C.people_count(_people((640, 360))) == 3
     lay = C.render(_hero(), T.CANVAS, r).info["layout"]
     assert lay["bg_people"] is None and not lay["notes"]
+
+
+def test_so_quadro_marcado_como_lugar_e_reenquadrado(tmp_path):
+    """Capa/keyart (o elenco e o logo são o assunto) e quadro sem a tag `lugar` (a dupla, a banda, os apresentadores
+    de outro canal, sem rosto marcado) ficam no enquadramento pedido e sem aviso de figurante, mesmo com duas ou mais
+    pessoas na medida; o gerador do pacote segue a mesma regra (`crowded`)."""
+    for k, tags in enumerate((("keyart", "capa", "claro"), ("lugar", "capa"), ("dupla", "dia"), ())):
+        r = _kit(tmp_path / str(k), tags=tags)
+        lay = C.render(_hero(), T.CANVAS, r).info["layout"]
+        assert lay["bg_people"] is None and not lay["notes"], tags
+        assert not any("figurante" in w for w in lay["warnings"]), tags
+        assert not C.scenery_frame({"id": "x", "tags": list(tags)})
+    assert C.scenery_frame({"id": "x", "tags": ["lugar", "praia"]})
+    assert not C.scenery_frame({"id": "x", "tags": ["lugar"], "face_box": [0.1, 0.1, 0.3, 0.5]})
 
 
 def test_people_window_mantem_a_janela_pedida_quando_ja_serve():
@@ -175,6 +189,8 @@ def test_package_assets_crowded_mede_so_quadro_de_lugar(tmp_path, monkeypatch):
     assert assets.crowded(lugar) is True and assets.crowded(lugar) is True
     assert calls == ["frames.png"]  # medido uma vez
     assert assets.crowded({**lugar, "id": "p2", "tags": ["personagem"]}) is False
+    assert assets.crowded({**lugar, "id": "p3", "tags": ["keyart", "capa"]}) is False
+    assert assets.crowded({**lugar, "id": "p4", "tags": ["dupla"]}) is False  # sem a tag lugar
     assert authoring.PackageAssets().crowded(lugar) is False  # sem kit
 
 

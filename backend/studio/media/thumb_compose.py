@@ -290,15 +290,23 @@ PEOPLE_ZOOMS = (1.0, 1.2, 1.4, 1.6)
 PEOPLE_GRID = (32, 18)
 PEOPLE_COVERED_WEIGHT = 0.15
 """Peso da gente atrás de uma figura/cartão (quase não aparece, mas a borda dela ainda escapa)."""
-_PEOPLE_TAGS = {"personagem", "rosto", "corpo"}
+_NOT_SCENERY_TAGS = {"personagem", "rosto", "corpo", "keyart", "capa", "logo"}
+
+
+def scenery_frame(meta: dict[str, Any] | None) -> bool:
+    """Item da biblioteca que é quadro de lugar, onde a gente é figurante: marcado com a tag `lugar`, sem rosto
+    marcado e sem tag de personagem, capa ou logo. Precisa da marca positiva: um quadro sem tag pode ser de gente que
+    é o assunto (dupla, banda, apresentadores de outro canal) e a capa/keyart tem o elenco e o logo como assunto;
+    nesses o fundo fica no enquadramento pedido."""
+    meta = meta or {}
+    tags = {str(t) for t in meta.get("tags") or []}
+    return bool(meta.get("id")) and not meta.get("face_box") and "lugar" in tags and not _NOT_SCENERY_TAGS & tags
 
 
 def _scenery(asset: Asset) -> bool:
-    """Quadro de lugar da biblioteca (sem rosto marcado nem tag de personagem): a gente nele é figurante. Fora da
-    biblioteca (upload, mídia, quadro sem item) não dá para saber se a pessoa é o assunto: fica como está."""
-    meta = asset.meta or {}
-    return (asset.kind == "frame" and bool(meta.get("id")) and not meta.get("face_box")
-            and not _PEOPLE_TAGS & {str(t) for t in meta.get("tags") or []})
+    """`scenery_frame` para o recurso resolvido. Fora da biblioteca (upload, mídia, quadro sem item) não dá para
+    saber se a pessoa é o assunto: fica como está."""
+    return asset.kind == "frame" and scenery_frame(asset.meta)
 
 
 def _open_weights(size: tuple[int, int], occluder: Image.Image | None) -> Any:
