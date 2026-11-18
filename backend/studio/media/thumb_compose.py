@@ -1511,29 +1511,48 @@ def _ink(im: Image.Image, width: int = 480, *, color: bool = True) -> Any:
 
 # Menor altura (fração da pedida) da janela da página quando ela começa na manchete e a captura acaba antes.
 PAGE_WINDOW_MIN_HEIGHT = 0.5
+# Linha de texto numa página: de 1,5% a 22% da altura da imagem (mais baixo é ruído; mais alto, pedaço de foto).
+LINE_MIN, LINE_MAX = 0.015, 0.22
 
 
 def page_window(im: Image.Image, aspect: float) -> tuple[int, int, int, int]:
     """A janela (proporção `aspect`) de uma página capturada: com a manchete achada (`headline_band`), da largura
-    dela inteira (nunca cortada no meio da palavra), com a manchete no alto e o que vem embaixo (a foto da
-    matéria) no resto. Sem manchete: a largura da coluna de texto e, na vertical, onde há mais tinta."""
+    dela inteira (todas as linhas, nunca cortada no meio da palavra), com a manchete no alto e o que vem embaixo (a
+    foto da matéria) no resto. Sem manchete: a largura da coluna de texto e, na vertical, onde há mais tinta."""
+    return _page_window(im, aspect, headline_band(im))
+
+
+# Manchete ocupa no máximo isso da altura da janela quando dá para alargar: sobra lugar para o X fora das letras.
+HEADLINE_MAX_SHARE = 0.62
+
+
+def _page_window(im: Image.Image, aspect: float,
+                 band: tuple[float, float, float, float] | None) -> tuple[int, int, int, int]:
+    """`page_window` com a manchete já achada (`band`, fração da imagem; None: sem manchete)."""
     import numpy as np
 
     w, h = im.size
-    band = headline_band(im)
     if band is not None:
         bx0, by0, bx1, by1 = band[0] * w, band[1] * h, band[2] * w, band[3] * h
-        ww = (bx1 - bx0) * 1.1
+        ww = min(float(w), (bx1 - bx0) * 1.1)
         hh = ww / aspect
-        if hh <= h and ww <= w:
-            x0 = min(max(0.0, (bx0 + bx1) / 2 - ww / 2), w - ww)
-            top = max(0.0, by0 - (hh - (by1 - by0)) * 0.08)
-            if top + hh > h and h - top >= hh * PAGE_WINDOW_MIN_HEIGHT:
-                # manchete perto do fim da captura: a janela começa nela e sai mais baixa (o cartão encolhe na
-                # altura) em vez de subir e mostrar o que vem antes (anúncio, menu, faixa vazia)
-                return round(x0), round(top), round(x0 + ww), h
-            y0 = min(top, h - hh)
-            return round(x0), round(y0), round(x0 + ww), round(y0 + hh)
+        bh = by1 - by0
+        if bh > hh * HEADLINE_MAX_SHARE:
+            # manchete alta (muitas linhas) enchendo a janela: alarga (mais largura e altura, mesma proporção) até
+            # ela ocupar ~62% da altura, sem passar da captura nem subir acima da manchete; o X vai no que sobra
+            room = h - max(0.0, by0 - bh * 0.05)
+            g = min(bh / (hh * HEADLINE_MAX_SHARE), w / ww, room / hh)
+            if g > 1:
+                ww, hh = ww * g, hh * g
+        x0 = min(max(0.0, (bx0 + bx1) / 2 - ww / 2), w - ww)
+        top = max(0.0, by0 - max(0.0, hh - bh) * 0.08)
+        if top + hh > h and (h - top >= hh * PAGE_WINDOW_MIN_HEIGHT or hh > h):
+            # manchete perto do fim da captura (ou larga demais para a proporção): a janela começa nela e sai mais
+            # baixa (o cartão encolhe na altura) em vez de subir e mostrar o que vem antes (anúncio, menu, faixa
+            # vazia) ou de cortar a manchete dos lados
+            return round(x0), round(top), round(x0 + ww), h
+        y0 = max(0.0, min(top, h - hh))
+        return round(x0), round(y0), round(x0 + ww), round(y0 + hh)
     ink = _ink(im)
     sh, sw = ink.shape
     cols = np.where(ink.sum(axis=0) > max(1, sh * 0.004))[0]
@@ -1558,16 +1577,15 @@ def page_window(im: Image.Image, aspect: float) -> tuple[int, int, int, int]:
     return (round(x0 * fx), round(best * fy), round(x1 * fx), round(min(h, (best + hh_i) * fy)))
 
 
-def headline_band(photo: Image.Image, width: int = 480) -> tuple[float, float, float, float] | None:
-    """Onde está a manchete numa página (fração x0, y0, x1, y1): o bloco de linhas de texto escuro com a letra mais
-    alta (as linhas de uma manchete de 2 linhas juntas). Fotos e imagens da página (manchas cheias, sem o fundo claro
-    entre as letras) saem da conta antes: só sobra a tinta de texto. None quando não há texto que se destaque."""
+def _text_mask(photo: Image.Image, width: int) -> tuple[Any, Any]:
+    """(tinta de texto, fundo claro) numa cópia de `width` px, como máscaras numpy bool. Fotos e imagens da página
+    (manchas cheias, sem o fundo claro entre as letras) saem da tinta antes: só sobra a tinta de texto."""
     import numpy as np
 
     w, h = photo.size
     small = photo.convert("RGB").resize((width, max(4, round(width * h / max(1, w)))), Image.Resampling.BOX)
-    gray = small.convert("L")
-    solid = np.asarray(gray, dtype=np.float32) < 225
+    luma = np.asarray(small.convert("L"), dtype=np.float32)
+    solid = luma < 225
     # bloco de 8 px (a 480 de largura) quase todo sem fundo claro, em mancha grande, é foto; letra, mesmo grossa,
     # deixa fundo claro em volta (e um bloco cheio solto no cruzamento de traços some na erosão). Os blocos vizinhos
     # também saem (as letras brancas de um logo dentro da foto não viram "texto")
@@ -1578,24 +1596,63 @@ def headline_band(photo: Image.Image, width: int = 480) -> tuple[float, float, f
     blocks = Image.fromarray(((padded.reshape(gh, bs, gw, bs).mean(axis=(1, 3)) > 0.9) * 255).astype(np.uint8))
     blocks = np.asarray(blocks.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(7))) > 0
     photo_mask = np.kron(blocks, np.ones((bs, bs), dtype=bool))[:solid.shape[0], :solid.shape[1]]
-    ink = (np.asarray(gray, dtype=np.float32) < 110) & ~photo_mask
-    sh, sw = ink.shape
-    density = ink.mean(axis=1)
-    rows = density > 0.01
-    # cada linha de texto é um trecho de linhas com tinta (sem pular vão: parágrafos não viram um bloco só)
-    runs: list[list[int]] = []
-    y = 0
-    while y < sh:
-        if rows[y]:
-            y0 = y
-            while y < sh and rows[y]:
-                y += 1
-            runs.append([y0, y])
-        y += 1
-    # linha de texto tem altura de linha (até 22% da imagem: mais que isso é pedaço de foto) e fundo claro em volta
-    light = np.asarray(gray, dtype=np.float32) > 225
+    return (luma < 110) & ~photo_mask, luma > 225
 
+
+def _runs(on: Any, start: int = 0) -> list[tuple[int, int]]:
+    """Os trechos seguidos de True de um vetor, como (início, fim) deslocados por `start`."""
+    out: list[tuple[int, int]] = []
+    y, n = 0, len(on)
+    while y < n:
+        if on[y]:
+            y0 = y
+            while y < n and on[y]:
+                y += 1
+            out.append((start + y0, start + y))
+        y += 1
+    return out
+
+
+def _split_valleys(dens: Any, y0: int, y1: int, min_h: int) -> list[tuple[int, int]]:
+    """Separa linhas de texto coladas (entrelinha apertada: o pé de uma encosta na cabeça da de baixo) no vale de
+    tinta entre elas: a linha de pixels mais fraca em relação ao miolo das letras dos dois lados (o mais fraco dos
+    dois picos), quando fica abaixo de 30% dele. Cada pedaço tem pelo menos `min_h` linhas (o topo das maiúsculas
+    não vira uma linha de texto à parte)."""
+    import numpy as np
+
+    if y1 - y0 < 2 * min_h + 1:
+        return [(y0, y1)]
+    seg = np.asarray(dens[y0:y1], dtype=np.float64)
+    above = np.maximum.accumulate(seg)  # pico de tinta até a linha (inclusive)
+    below = np.maximum.accumulate(seg[::-1])[::-1]  # pico de tinta da linha até o fim
+    idx = np.arange(min_h, len(seg) - min_h)
+    ratio = seg[idx] / np.maximum(1e-6, np.minimum(above[idx - 1], below[idx + 1]))
+    k = int(ratio.argmin())
+    if ratio[k] >= 0.3:
+        return [(y0, y1)]
+    # o vale costuma ser uma faixa (o pé de uma linha e a cabeça da outra): corta no meio dela, não na 1ª linha
+    lo, hi = k, k
+    while lo > 0 and ratio[lo - 1] <= ratio[k] * 1.5 + 0.02:
+        lo -= 1
+    while hi < len(ratio) - 1 and ratio[hi + 1] <= ratio[k] * 1.5 + 0.02:
+        hi += 1
+    m = int(idx[(lo + hi) // 2])
+    return _split_valleys(dens, y0, y0 + m, min_h) + _split_valleys(dens, y0 + m + 1, y1, min_h)
+
+
+def text_lines(photo: Image.Image, width: int = 480) -> tuple[list[dict[str, Any]], tuple[int, int]]:
+    """As linhas de texto de uma página, de cima para baixo, na cópia de `width` px (devolvida junto, (w, h)). Cada
+    linha: `y0`/`y1`, as colunas `c0`/`c1` do bloco de palavras principal dela, `light` (fração de fundo claro no
+    bloco) e `clear` (fundo claro sobre o que não é tinta: perto de 1 em letra sobre a página, mesmo grossa; baixo
+    em letra dentro de foto). A faixa de linhas com tinta é recortada primeiro nas colunas do bloco principal (o
+    selo/coluna lateral do site não gruda nas linhas da manchete) e depois nos vales de tinta (a manchete de
+    entrelinha apertada vira as linhas dela, e não um bloco alto demais que sairia da conta)."""
+    import numpy as np
+
+    ink, light = _text_mask(photo, width)
+    sh, sw = ink.shape
     gap = max(2, round(sw * 0.04))
+    min_h = max(3, round(sh * LINE_MIN))
 
     def main_block(y0: int, y1: int) -> tuple[int, int] | None:
         """As colunas do bloco de palavras com mais tinta nas linhas y0..y1 (vão maior que 4% da largura separa
@@ -1613,32 +1670,79 @@ def headline_band(photo: Image.Image, width: int = 480) -> tuple[float, float, f
         c0, c1 = max(blocks, key=lambda bl: counts[bl[0]:bl[1] + 1].sum())
         return c0, c1 + 1
 
-    def texty(r: list[int]) -> bool:
-        """Linha de manchete: larga (um quarto da página ou mais: o logo do site no cabeçalho não conta) e com
-        fundo claro em volta das letras (texto de dentro de uma foto não conta)."""
-        blk = main_block(r[0], r[1])
-        if blk is None or blk[1] - blk[0] < sw * 0.25:
-            return False
-        return float(light[r[0]:r[1], blk[0]:blk[1]].mean()) > 0.45
+    lines: list[dict[str, Any]] = []
+    for y0, y1 in _runs(ink.mean(axis=1) > 0.01):
+        blk = main_block(y0, y1)
+        if blk is None:
+            continue
+        dens = ink[:, blk[0]:blk[1]].mean(axis=1)
+        for r0, r1 in _runs(dens[y0:y1] > 0.01, y0):
+            for p0, p1 in _split_valleys(dens, r0, r1, min_h):
+                b = main_block(p0, p1)
+                if b is None:
+                    continue
+                lt = float(light[p0:p1, b[0]:b[1]].mean())
+                ik = float(ink[p0:p1, b[0]:b[1]].mean())
+                lines.append({"y0": p0, "y1": p1, "c0": b[0], "c1": b[1], "light": lt,
+                              "clear": lt / max(1e-6, 1 - ik)})
+    return lines, (sw, sh)
 
-    runs = [r for r in runs if max(3, sh * 0.015) <= r[1] - r[0] <= sh * 0.22 and texty(r)]
-    if not runs:
+
+def headline_band(photo: Image.Image, width: int = 480) -> tuple[float, float, float, float] | None:
+    """Onde está a manchete numa página (fração x0, y0, x1, y1): o bloco de linhas de texto com a letra mais alta,
+    todas as linhas dele (a caixa vai da linha mais larga à mais estreita: nenhuma palavra fica de fora). O
+    sobretítulo/categoria pequeno de cima não entra. Fotos e imagens da página saem da conta antes (`text_lines`).
+    None quando não há texto que se destaque."""
+    lines, (sw, sh) = text_lines(photo, width)
+    lo, hi = max(3, sh * LINE_MIN), sh * LINE_MAX
+
+    def size_ok(ln: dict[str, Any]) -> bool:
+        """Altura de linha de texto (até 22% da imagem: mais que isso é pedaço de foto)."""
+        return lo <= ln["y1"] - ln["y0"] <= hi
+
+    def texty(ln: dict[str, Any], strict: bool = True) -> bool:
+        """Fundo claro em volta das letras (texto de dentro de uma foto não conta): a fração de fundo claro no bloco
+        (letra fina) ou o fundo claro sobre o que não é tinta (letra grossa, que cobre metade do bloco)."""
+        return ln["light"] > 0.45 or ln["clear"] >= (0.55 if strict else 0.45)
+
+    # a 1ª linha da manchete é larga (um quarto da página ou mais: o logo do site no cabeçalho não conta)
+    heads = [ln for ln in lines if size_ok(ln) and ln["c1"] - ln["c0"] >= sw * 0.25 and texty(ln)]
+    if not heads:
         return None
     # a manchete é a 1ª linha (de cima para baixo) com letra quase do tamanho da maior: texto grande mais embaixo
     # costuma ser de dentro da foto (o logo do jogo) ou de outra matéria
-    tall = max(r[1] - r[0] for r in runs)
-    first = next(r for r in runs if r[1] - r[0] >= tall * 0.7)
+    tall = max(ln["y1"] - ln["y0"] for ln in heads)
+    first = next(ln for ln in heads if ln["y1"] - ln["y0"] >= tall * 0.7)
     group = [first]
-    for r in runs[runs.index(first) + 1:]:  # as outras linhas da manchete (quase a mesma altura, logo embaixo)
-        if r[1] - r[0] >= tall * 0.5 and r[0] - group[-1][1] <= tall:
-            group.append(r)
-        else:
+    bottom = first["y1"]
+    for ln in lines[lines.index(first) + 1:]:
+        # as outras linhas da manchete: logo embaixo, quase a mesma altura, na mesma coluna (a última pode ser curta)
+        if ln["y0"] - group[-1]["y1"] > tall:
             break
-    y0, y1 = group[0][0], group[-1][1]
-    blk = main_block(y0, y1)
-    if blk is None:
+        same = ln["c0"] < first["c1"] and ln["c1"] > first["c0"]
+        if same and ln["y1"] - ln["y0"] >= tall * 0.5 and size_ok(ln) and texty(ln, strict=False):
+            group.append(ln)
+            bottom = ln["y1"]
+        elif ln["y1"] - ln["y0"] >= tall * 0.5:
+            break  # linha grande que não é da manchete (outra coluna, dentro de foto): a manchete acabou
+        elif same and ln["y0"] - bottom <= tall * 0.3:
+            bottom = ln["y1"]  # pedaço baixo colado (cedilha, pé do "g" solto da linha): fica dentro da caixa
+    x0, x1 = min(ln["c0"] for ln in group), max(ln["c1"] for ln in group)
+    return x0 / sw, group[0]["y0"] / sh, x1 / sw, bottom / sh
+
+
+def _band_in_window(band: Sequence[float], size: tuple[int, int],
+                    win: Sequence[int]) -> tuple[float, float, float, float] | None:
+    """A manchete achada na captura inteira (`band`, fração dela) em fração da janela `win` (px da captura). None
+    quando a janela não tem a manchete inteira (sem a manchete, ela é procurada de novo no pedaço do cartão)."""
+    w, h = size
+    wx0, wy0, wx1, wy1 = win
+    ww, wh = max(1, wx1 - wx0), max(1, wy1 - wy0)
+    fx0, fy0 = (band[0] * w - wx0) / ww, (band[1] * h - wy0) / wh
+    fx1, fy1 = (band[2] * w - wx0) / ww, (band[3] * h - wy0) / wh
+    if fx0 < -0.01 or fy0 < -0.01 or fx1 > 1.01 or fy1 > 1.01:
         return None
-    return blk[0] / sw, y0 / sh, blk[1] / sw, y1 / sh
+    return max(0.0, fx0), max(0.0, fy0), min(1.0, fx1), min(1.0, fy1)
 
 
 def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResolver | None,
@@ -1679,7 +1783,9 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     inner = (max(8, cw - 2 * border), max(8, ch - 2 * border))
     zoom = max(float(conf.get("zoom", 1.0)), bg.zoom)
     page = not colorful
-    win = page_window(src, inner[0] / inner[1]) if page else content_window(src, inner[0] / inner[1], zoom)
+    src_band = headline_band(src) if page else None
+    win = (_page_window(src, inner[0] / inner[1], src_band) if page
+           else content_window(src, inner[0] / inner[1], zoom))
     win_h = (win[3] - win[1]) * inner[0] / max(1, win[2] - win[0])
     if page and win_h < inner[1] * 0.97:  # janela mais baixa (a página acabou): o cartão encolhe, centrado na caixa
         new_inner_h = max(8, round(win_h))
@@ -1687,7 +1793,9 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
         inner = (inner[0], new_inner_h)
         ch = new_inner_h + 2 * border
     photo = src.resize(inner, Image.Resampling.LANCZOS, box=win)
-    band = headline_band(photo) if page else None
+    band = _band_in_window(src_band, src.size, win) if src_band is not None else None
+    if page and band is None:
+        band = headline_band(photo)
     photo = ImageEnhance.Contrast(ImageEnhance.Color(photo).enhance(1.1)).enhance(1.05)
     card = Image.new("RGBA", (cw, ch), (*WHITE, 255))
     card.paste(photo, (border, border))
@@ -1704,21 +1812,51 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     box = (max(0, x), max(0, y), min(W, x + card.width), min(H, y + card.height))
     item: dict[str, Any] = {"kind": "card", "asset": bg.ref, "bbox": list(box)}
     if band is not None:
-        # a manchete no canvas (sem a inclinação: ±2,5° mexe poucos px)
+        # a manchete no canvas: os 4 cantos girados com o cartão (em volta do centro dele) e a caixa deles
         ox, oy = bx * W + border, by * H + border
-        item["headline"] = [round(ox + band[0] * inner[0]), round(oy + band[1] * inner[1]),
-                            round(ox + band[2] * inner[0]), round(oy + band[3] * inner[1])]
+        cx, cy = bx * W + cw / 2, by * H + ch / 2
+        a = math.radians(tilt)
+        pts = [(ox + fx * inner[0], oy + fy * inner[1]) for fx in (band[0], band[2]) for fy in (band[1], band[3])]
+        rot = [(cx + (px - cx) * math.cos(a) + (py - cy) * math.sin(a),
+                cy - (px - cx) * math.sin(a) + (py - cy) * math.cos(a)) for px, py in pts]
+        item["headline"] = [math.floor(min(p[0] for p in rot)), math.floor(min(p[1] for p in rot)),
+                            math.ceil(max(p[0] for p in rot)), math.ceil(max(p[1] for p in rot))]
     layout.figures.append(item)
     layout.objects += 1
     return canvas, box
 
 
+def _mark_spot(box: Sequence[int], headline: Sequence[int], H: int) -> tuple[int, int, int, int]:
+    """Onde vai o X de uma prova com manchete (`box`: o cartão; `headline`: a caixa da manchete, os dois em px do
+    canvas): o maior pedaço livre do cartão fora da manchete, nesta ordem de preferência: embaixo (a foto da
+    matéria), em cima, à direita, à esquerda. Um pedaço serve quando cabe um X de ~1/4 da altura do cartão. Sem
+    nenhum (a manchete enche o cartão), o X fica logo embaixo da manchete, saindo pela borda de baixo do cartão
+    (por cima do fundo, nunca das letras). A caixa devolvida é a do X (larga até 1,4× a altura)."""
+    hx0, hy0, hx1, hy1 = headline
+    m = _px(10, H)
+    # a caixa do cartão girado sobra nos cantos: o X fica um pouco para dentro da borda
+    x0, y0, x1, y1 = box[0] + m, box[1] + m, box[2] - m, box[3] - m
+    need = (y1 - y0) * 0.25
+    spots = [(x0, hy1 + m, x1, y1), (x0, y0, x1, hy0 - m), (hx1 + m, y0, x1, y1), (x0, y0, hx0 - m, y1)]
+    spot = next((s for s in spots if min(s[2] - s[0], s[3] - s[1]) >= need), None)
+    if spot is None:
+        side = round(need)
+        spot = (x0, hy1 + m, x1, min(H - m, hy1 + m + side))
+        if spot[3] - spot[1] < side * 0.6:  # manchete no pé do canvas: o X sobe para o lado dela que for mais largo
+            spot = max(spots[2:], key=lambda s: s[2] - s[0])
+    sx0, sy0, sx1, sy1 = spot
+    hgt = min(sy1 - sy0, sx1 - sx0)
+    wid = min(sx1 - sx0, hgt * 1.4)
+    cx, cy = (sx0 + sx1) / 2, (sy0 + sy1) / 2
+    return round(cx - wid / 2), round(cy - hgt / 2), round(cx + wid / 2), round(cy + hgt / 2)
+
+
 def _mark(canvas: Image.Image, kind: str | None, box: tuple[int, int, int, int] | Sequence[int],
           pal: dict[str, tuple[int, int, int]], headline: Sequence[int] | None = None) -> None:
     """Marcação vermelha (com contorno escuro) sobre a prova. Com a manchete conhecida (`headline`), nunca em cima
-    dela: o X vai no pedaço do cartão embaixo da manchete (a foto da matéria; sem espaço ali, no de cima), o círculo vira um
-    retângulo arredondado em volta da manchete (sem cortar palavras). Sem manchete: X de ponta a ponta ou círculo
-    em volta do miolo."""
+    dela: o X vai no pedaço livre do cartão (`_mark_spot`: embaixo da manchete, na foto da matéria; senão em cima
+    ou ao lado dela; sem nenhum, logo embaixo dela saindo do cartão), o círculo vira um retângulo arredondado em
+    volta da manchete (sem cortar palavras). Sem manchete: X de ponta a ponta ou círculo em volta do miolo."""
     if kind not in ("x", "circle"):
         return
     W, H = canvas.size
@@ -1741,15 +1879,7 @@ def _mark(canvas: Image.Image, kind: str | None, box: tuple[int, int, int, int] 
         canvas.alpha_composite(layer.resize((W, H), Image.Resampling.LANCZOS))
         return
     if headline is not None:
-        hy0, hy1 = headline[1], headline[3]
-        above, below = hy0 - y0, y1 - hy1
-        m = _px(10, H)
-        if max(above, below) >= (y1 - y0) * 0.25:
-            # embaixo da manchete costuma estar a foto da matéria: o X vai nela quando cabe
-            y0, y1 = (hy1 + m, y1) if below >= (y1 - y0) * 0.25 else (y0, hy0 - m)
-            side = min(x1 - x0, y1 - y0)  # um X quadrado no meio do pedaço livre
-            cx = (x0 + x1) / 2
-            x0, x1 = round(cx - side * 0.7), round(cx + side * 0.7)
+        x0, y0, x1, y1 = _mark_spot(box, headline, H)
     bw, bh = x1 - x0, y1 - y0
     if kind == "x":
         th = _px(22 if headline is not None else 26, H)

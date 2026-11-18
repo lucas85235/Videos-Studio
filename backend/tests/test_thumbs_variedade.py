@@ -242,6 +242,68 @@ def test_janela_da_pagina_comeca_na_manchete_perto_do_fim_da_captura():
     assert (x1 - x0) / (y1 - y0) > 16 / 10  # mais baixa que a pedida
 
 
+def _manchete_colada() -> Image.Image:
+    """Página com sobretítulo pequeno, manchete de 4 linhas de entrelinha apertada (as hastes de uma linha encostam
+    nas da outra: nenhuma linha de pixels vazia entre elas) e a foto da matéria ao lado."""
+    img = Image.new("RGB", (1400, 800), (250, 250, 250))
+    draw = ImageDraw.Draw(img)
+    for x in range(100, 560, 14):  # o sobretítulo (categoria): letra pequena, mais estreito que a manchete
+        draw.rectangle((x, 120, x + 7, 135), fill=(20, 60, 230))
+    for i, (top, right) in enumerate(((170, 900), (240, 850), (310, 620), (380, 450))):
+        for k, x in enumerate(range(100, right, 22)):
+            draw.rectangle((x, top + 18, x + 12, top + 58), fill=(10, 80, 250))  # o corpo da letra (grossa)
+            if k % 4 == 0:
+                draw.rectangle((x, top, x + 5, top + 18), fill=(10, 80, 250))  # haste de cima
+            if k % 5 == 2 and i < 3:
+                draw.rectangle((x + 6, top + 58, x + 11, top + 72), fill=(10, 80, 250))  # perna que encosta embaixo
+    for y in range(100, 700, 4):  # a foto ao lado: mancha cheia de cor (não é texto)
+        draw.rectangle((1000, y, 1380, y + 3), fill=(60 + (y % 40), 40, 90 + (y % 60)))
+    return img
+
+
+def test_manchete_de_varias_linhas_coladas_inteira_no_cartao(tmp_path):
+    """Manchete de 4 linhas sem vão entre elas (um trecho de tinta alto demais para ser "uma linha") e sobretítulo
+    pequeno em cima: a manchete achada é o bloco das 4 linhas (não a categoria), a janela tem a largura dela inteira
+    e o X da prova fica fora das letras."""
+    from studio.media.thumb_assets import AssetResolver
+
+    img = _manchete_colada()
+    w, h = img.size
+    band = C.headline_band(img)
+    assert band is not None
+    assert band[0] * w <= 105 and band[2] * w >= 890  # da 1ª à linha mais larga (todas as linhas)
+    assert 160 <= band[1] * h <= 175 and band[3] * h >= 435  # do topo da 1ª linha ao pé da 4ª; categoria fora
+    x0, y0, x1, y1 = C.page_window(img, 16 / 10)
+    assert x0 <= 100 and x1 >= 900 and y0 <= 170
+    img.save(tmp_path / "cap.jpg")
+    r = AssetResolver(None, media=lambda ref: tmp_path / "cap.jpg")
+    prova = ThumbLayers.model_validate({"template": "prova", "logo": "none", "mark": "x",
+                                        "background": {"kind": "media", "ref": "media:cap"},
+                                        "text": {"words": "GOLPE", "fill": "white", "pos": "left"}})
+    out = C.render(prova, T.CANVAS, r)
+    card = next(f for f in out.info["layout"]["figures"] if f["kind"] == "card")
+    hx0, hy0, hx1, hy1 = card["headline"]
+    assert hy1 - hy0 > (card["bbox"][3] - card["bbox"][1]) * 0.3  # as 4 linhas, não uma faixa fina
+
+    def red(p: tuple[int, ...]) -> bool:
+        return p[0] > 180 and p[1] < 90 and p[2] < 120
+
+    assert not any(red(out.getpixel((x, y))) for x in range(hx0, hx1, 2) for y in range(hy0, hy1, 2))
+    assert any(red(out.getpixel((x, y))) for x in range(card["bbox"][0], card["bbox"][2], 3)
+               for y in range(hy1, card["bbox"][3], 3))  # o X está no cartão, embaixo da manchete
+
+
+def test_x_da_prova_vai_ao_lado_quando_a_manchete_enche_o_cartao():
+    """Manchete ocupando o cartão quase todo na altura: o X vai no pedaço livre do lado dela; sem nenhum pedaço
+    livre, logo embaixo dela (saindo pela borda do cartão), nunca em cima das letras."""
+    H = T.CANVAS[1]
+    box = (500, 40, 1260, 620)
+    x0, y0, x1, y1 = C._mark_spot(box, (520, 60, 900, 600), H)
+    assert x0 > 900 and x1 <= 1260  # à direita da manchete
+    x0, y0, x1, y1 = C._mark_spot(box, (510, 50, 1250, 560), H)
+    assert y0 > 560 and x1 > x0  # sem lado livre: embaixo da manchete, saindo do cartão
+
+
 # --- histórico do canal e semelhança -----------------------------------------------------------------------------------
 def _with_package(cid: str, title: str, layers: ThumbLayers, *, chosen: bool) -> str:
     doc = service.create_project(title=title, style_id=LONG, channel_id=cid)
