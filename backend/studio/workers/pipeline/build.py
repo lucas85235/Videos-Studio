@@ -40,7 +40,7 @@ from studio.core.speech import (
     speech_plan,
 )
 from studio.core.styles.library import get_style
-from studio.core.styles.schema import StyleSpec
+from studio.core.styles.schema import StyleSpec, grammar_for
 from studio.core.styles.visual import composition_text, language_prefix, rotate_variant, shot_text
 from studio.core.timeline import (
     PARALLAX,
@@ -52,7 +52,7 @@ from studio.core.timeline import (
 )
 from studio.db import session_scope
 from studio.media import audio as audio_mod
-from studio.media import audio_check, music_library
+from studio.media import audio_check, music_library, sfx_library
 from studio.media import depth as depth_mod
 from studio.media import lut as lut_mod
 from studio.media.ffmpeg import read_wav
@@ -1189,13 +1189,60 @@ class Builder:
         return self.store.abs(found[1]["path"]), found[1]
 
     def sfx_file(self, kind: str) -> Path:
-        h = hash_obj({"sfx": kind, "v": audio_mod.SFX_VERSION})  # ver SFX_VERSION
-        cached = self.store.lookup("sfx", h)
-        if cached:
-            return self.store.abs(cached["path"])
-        path = audio_mod.generate_sfx(kind, self.store.dir_for("sfx", h) / f"{kind}.wav")
-        self.store.save("sfx", h, {"path": self.store.rel(path), "files": [self.store.rel(path)]}, "procedural")
-        return path
+        """Efeito procedural do tipo, no cache (chave com a `SFX_VERSION`)."""
+        return sfx_library.procedural_path(kind, self.store)
+
+    @cached_property
+    def sfx_tonal_ok(self) -> bool:
+        return bool(grammar_for(self.style).sfx_tonal_ok)
+
+    def sfx_source(self, ref: str, explicit: bool = False) -> Path:
+        """Arquivo pronto para o mix (`lib_id` ou tipo; ver `sfx_library.resolve`)."""
+        return sfx_library.resolve(ref, store=self.store, tonal_ok=self.sfx_tonal_ok, explicit=explicit)
+
+    def sfx_plan(self, timeline: dict[str, Any]) -> list[dict[str, Any]]:
+        """Os efeitos da timeline como entram no mix (`type, start, ref, explicit, gain_db, lib_id, extra`), sem os
+        bloqueados pela guarda de apito (regra 13 do padrão do estúdio), com aviso.
+
+        - Evento de antes (`start`, sem `lib_id`): igual ao que era (o procedural do tipo).
+        - Evento do ADR 0004 (`at`, `lib_id?`, `gain_db?`): o `lib_id` da biblioteca (ou o tipo, se o id sumiu), posto
+          em `at - hit_s` para o ponto forte cair na palavra (`sfx_library.event_start`).
+        - Efeito da biblioteca com licença desconhecida toca se foi pedido pelo `lib_id` (alguém o escolheu), com aviso.
+        """
+        tonal_ok = self.sfx_tonal_ok
+        planned: list[dict[str, Any]] = []
+        for e in timeline.get("sfx", []):
+            ref, explicit = sfx_library.event_ref(e)
+            lib_id = e.get("lib_id")
+            if lib_id and not explicit:
+                self.warnings.append(f"efeito '{lib_id}' não está na biblioteca: tocou o '{e['type']}' no lugar")
+            planned.append({"type": e["type"], "start": sfx_library.event_start(e, tonal_ok=tonal_ok), "ref": ref,
+                            "explicit": explicit, "gain_db": float(e.get("gain_db") or 0.0), "lib_id": lib_id,
+                            "extra": "lib_id" in e or "gain_db" in e})
+        blocked: set[tuple[str, bool]] = set()
+        for ref, explicit in sorted({(p["ref"], p["explicit"]) for p in planned}):
+            item = sfx_library.lookup(ref, tonal_ok=tonal_ok, explicit=explicit)
+            if item is None or item.procedural:
+                kind = item.kind if item is not None else ref
+                gh = hash_obj({"sfx_guard": kind, "sfx_v": audio_mod.SFX_VERSION, "v": 1})
+                banned = kind in audio_check.SFX_BANNED
+            else:
+                gh = hash_obj({"sfx_guard": item.id, "content": sfx_library.content_key(item), "v": 1})
+                banned = item.banned
+                if item.license == sfx_library.UNKNOWN_LICENSE:
+                    self.warnings.append(f"efeito '{item.id}' com licença desconhecida no vídeo: declare a licença na "
+                                         "biblioteca de efeitos")
+            guard = self.store.lookup("sfx_guard", gh)
+            if guard:
+                report = guard["report"]
+            else:
+                sound, _rate = read_wav(self.sfx_source(ref, explicit))
+                report = audio_check.tone_report(sound)
+                self.store.save("sfx_guard", gh, {"report": report, "files": []}, "numpy")
+            if banned or report.get("apito"):
+                blocked.add((ref, explicit))
+                self.warnings.append(f"efeito sonoro '{ref}' tem apito: ficou fora do mix (padrão do estúdio: sem apito)")
+        return [p for p in planned if (p["ref"], p["explicit"]) not in blocked]
 
     def mix(self, lang: str, timeline: dict[str, Any], tts_hashes: dict[str, str], *, wav: bool = False) -> str:
         total = timeline["duration"]
@@ -1210,21 +1257,7 @@ class Builder:
         else:
             self.music_used = None
         # Guarda de apito (regra 13 do padrão do estúdio): efeito com apito ou banido sai do mix, com aviso.
-        sfx_events = timeline.get("sfx", [])
-        blocked: set[str] = set()
-        for kind in sorted({e["type"] for e in sfx_events}):
-            gh = hash_obj({"sfx_guard": kind, "sfx_v": audio_mod.SFX_VERSION, "v": 1})
-            guard = self.store.lookup("sfx_guard", gh)
-            if guard:
-                report = guard["report"]
-            else:
-                sound, _rate = read_wav(self.sfx_file(kind))
-                report = audio_check.tone_report(sound)
-                self.store.save("sfx_guard", gh, {"report": report, "files": []}, "numpy")
-            if kind in audio_check.SFX_BANNED or report.get("apito"):
-                blocked.add(kind)
-                self.warnings.append(f"efeito sonoro '{kind}' tem apito: ficou fora do mix (padrão do estúdio: sem apito)")
-        sfx_events = [e for e in sfx_events if e["type"] not in blocked]
+        sfx_events = self.sfx_plan(timeline)
         short = self.style.format.type == "short"
         music_hp = audio_mod.music_highpass(music[1].get("mood")) if music else None
         music_ref = music_ref_s(music[1]) if music else None
@@ -1234,17 +1267,32 @@ class Builder:
         inputs = {
             "voice": [(tts_hashes[n["segment_id"]], n["start"]) for n in timeline["narration"]],
             "music": (music[0], music[1]["volume_db"], self.style.audio.music.ducking, music_hp) if music else None,
-            "sfx": [(e["type"], e["start"]) for e in sfx_events],
+            # evento de antes: (tipo, início), a chave de sempre; o do ADR 0004 leva também o lib_id e o ganho
+            "sfx": [(e["type"], e["start"], e["lib_id"], e["gain_db"]) if e["extra"] else (e["type"], e["start"])
+                    for e in sfx_events],
             "sfx_db": self.style.audio.sfx.volume_db,
             "loudness": self.style.audio.loudness_lufs,
             "total": total,
             "short": short,
             "v": 5 if beds else 3,
         }
-        # Efeito que mudou de som na última SFX_VERSION (glitch e riser perderam o apito): a versão entra na chave e o
-        # mix guardado com o som antigo é refeito. Sem esses tipos, a chave fica a de antes (nada é refeito à toa).
-        if any(e["type"] in audio_mod.SFX_RETUNED for e in sfx_events):
+        # Efeito que mudou de som em SFX_RETUNED_VERSION (glitch e riser perderam o apito): essa versão entra na chave
+        # e o mix guardado com o som antigo é refeito. Efeito de evento (tipo novo da v4): a versão atual entra (um
+        # tipo novo pedido antes da v4 saía como whoosh). Sem esses tipos, a chave fica a de antes (nada é refeito).
+        refs = {e["ref"] for e in sfx_events}
+        if refs & set(audio_mod.EVENT_SFX_KINDS):
             inputs["sfx_v"] = audio_mod.SFX_VERSION
+        elif any(e["type"] in audio_mod.SFX_RETUNED for e in sfx_events):
+            inputs["sfx_v"] = audio_mod.SFX_RETUNED_VERSION
+        # Efeito da biblioteca: o conteúdo do arquivo entra na chave (trocar o arquivo refaz o mix).
+        lib_keys = [(ref, explicit, key) for ref, explicit in sorted({(e["ref"], e["explicit"]) for e in sfx_events})
+                    if (key := sfx_library.mix_key(ref, tonal_ok=self.sfx_tonal_ok, explicit=explicit)) is not None]
+        if lib_keys:
+            inputs["sfx_lib"] = lib_keys
+        # Queda da trilha antes do reveal (`timeline.music_drops`, só quando houver).
+        drops = audio_mod.clamp_drops(timeline.get("music_drops"), total) if music else []
+        if drops:
+            inputs["music_drops"] = drops
         if wav:
             inputs["fmt"] = "wav"  # faixa do Modo B para o YouTube Studio (sem perda)
         h = hash_obj(inputs)
@@ -1258,9 +1306,11 @@ class Builder:
         )
         sfx_track = None
         if sfx_events:
-            gain = 10 ** (self.style.audio.sfx.volume_db / 20)
-            sfx_track = audio_mod.place_clips([(self.sfx_file(e["type"]), e["start"], gain) for e in sfx_events], total,
-                                              out_dir / "sfx.wav")
+            volume_db = self.style.audio.sfx.volume_db
+            sfx_track = audio_mod.place_clips(
+                [(self.sfx_source(e["ref"], e["explicit"]), e["start"], 10 ** ((volume_db + e["gain_db"]) / 20))
+                 for e in sfx_events],
+                total, out_dir / "sfx.wav")
         mixed = audio_mod.mix_tracks(
             voice,
             out_dir / ("mix.wav" if wav else "mix.m4a"),
@@ -1273,6 +1323,7 @@ class Builder:
             short=short,
             music_highpass=music_hp or audio_mod.MUSIC_HIGHPASS_HZ,
             music_ref_s=music_ref,
+            music_drops=[{"at": a, "dur": b - a} for a, b in drops] or None,
         )
         for tmp in (voice, sfx_track):
             if tmp is not None:

@@ -23,6 +23,7 @@ from studio.api import (
     routes_factcheck,
     routes_import,
     routes_instagram,
+    routes_library,
     routes_media,
     routes_misc,
     routes_ops,
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_research.router)  # pesquisa de vídeos do canal
     app.include_router(routes_factcheck.router)
     app.include_router(routes_audio.router)
+    app.include_router(routes_library.router)  # SFX e memes com licença (ADR 0004)
     app.include_router(routes_checks.router)
     app.include_router(routes_visual.router)
     app.include_router(routes_import.router)
