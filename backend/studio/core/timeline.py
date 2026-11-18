@@ -35,6 +35,7 @@ from studio.core.sources import (
     prov_of_media,
     prov_of_scene,
     scene_claims_source,
+    shows_search_page,
     title_keeps_source,
     visual_prov,
 )
@@ -961,6 +962,26 @@ def drop_false_verdict(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
         resolved.pop("card")
 
 
+def _own_material(scene: Scene, prov: str, material: MediaRef | PoolItem | None, source: str,
+                  pool: Pool | None) -> bool:
+    """O material é da própria fonte, e o "Fonte: X" é o crédito dele mesmo sem a cena dizer nada da fonte: a captura
+    da página dela, ou a figura oficial publicada no site dela (o print do site falso que a Malwarebytes pôs na
+    matéria, em malwarebytes.com) mostrada como imagem. A figura que só reproduz uma página de busca
+    ("gta-6-leak-google-results.png") não conta: o que está na tela é a busca. Nem a figura de fundo do cartão
+    (tipográfico, título, citação): lá ela vai desfocada e o "Fonte:" fica sob o texto, que é a fala do apresentador."""
+    if material is None or prov not in ("capture", "official"):
+        return False
+    if prov == "capture":
+        return _names_source(source, _owner_names(material))
+    if scene.kind in CARD_BACKDROP_KINDS:
+        return False
+    sites = [site_label(url) for url in (material.page_url, material.url) if url]
+    if not sites or not _names_source(source, sites):
+        return False
+    file_name = (material.url or "").split("?", 1)[0].rsplit("/", 1)[-1]
+    return not shows_search_page(file_name, _pool_desc(material, pool), getattr(material, "desc", "") or "")
+
+
 def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:
     """Tira da cena resolvida a fonte do cartão que ficaria solta sobre material que não é dela (camada de edição).
 
@@ -972,8 +993,9 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
 
     A captura de página leva o crédito de quem assina a página, pelo site dela (`outlet_for_url`): a captura da
     WeLiveSecurity com "Fonte: Malwarebytes" passa a "Fonte: WeLiveSecurity (ESET)", e a página de busca não credita
-    ninguém. Fora a captura da própria fonte, a fonte só fica quando a cena diz algo dela (`scene_claims_source`): o
-    cartão tipográfico com o conselho do apresentador, a busca e o b-roll sem dado da fonte ficam sem crédito."""
+    ninguém. Fora o material da própria fonte (`_own_material`: a captura da página dela, a figura do site dela), a
+    fonte só fica quando a cena diz algo dela (`scene_claims_source`): o cartão tipográfico com o conselho do
+    apresentador, a busca e o b-roll sem dado da fonte ficam sem crédito."""
     card = resolved.get("card")
     source = str((card or {}).get("source") or "").strip()
     if not source or scene.kind in DATA_KINDS or "news" in resolved:
@@ -988,8 +1010,7 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
         elif page and not all(_names_source(source, _owner_names(material)) for _p, material in owners if material):
             source = card["source"] = page
     captured = bool(source) and bool(owners) and all(
-        prov == "capture" and material is not None and _names_source(source, _owner_names(material))
-        for prov, material in owners)
+        _own_material(scene, prov, material, source, pool) for prov, material in owners)
     # Título que só tem a fonte para apoiar (sem faixa nem carimbo) e não diz nada dela ("2. TAMANHO QUE NÃO BATE"):
     # a fonte sai também sobre fundo do app, senão credita a uma fonte só a conclusão que junta fatos de várias. A
     # conta usa o título no idioma principal (o das fontes): a dublagem mantém o mesmo crédito.

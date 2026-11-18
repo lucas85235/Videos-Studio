@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import pytest
 
-from studio.core import timeline
+from studio.core import timeline, verdict
 from studio.core.project.document import MediaRef, ProjectDoc, Scene, SceneCard, Segment, Source, Visual
-from studio.core.sources import names_source, outlet_for_url, scene_claims_source, scene_sentence
+from studio.core.sources import (
+    names_source,
+    outlet_for_url,
+    scene_claims_source,
+    scene_sentence,
+    shows_search_page,
+)
 from studio.workers.pipeline import storyboard_check
 
 SOURCES = [
@@ -257,3 +263,95 @@ def test_storyboard_drops_the_credit_of_a_typographic_card_without_a_claim():
     issues = storyboard_check.fix_lone_sources(doc, beats)
     assert [(i.code, i.scene_id) for i in issues] == [("fonte_solta", "scn_pix")]
     assert doc.scene("scn_pix").card is None
+
+
+# --- revisão: carimbo de aviso, número pequeno e figura da própria matéria ---------------------------------------
+
+
+@pytest.mark.parametrize("stamp", ["ATENÇÃO", "ALERTA", "CUIDADO", "DICA", "BOATO", "MITO", "NÃO CONFIRMADO"])
+def test_warning_or_label_stamp_does_not_keep_the_credit(stamp):
+    """Só veredito positivo explícito é afirmação da fonte: "ATENÇÃO" no conselho sobre Pix não faz dele dado da
+    Malwarebytes, e "BOATO" não credita a Canaltech numa frase que não fala dela."""
+    pix = "E se pagou alguma coisa, com cartão ou Pix, fala com o seu banco o quanto antes."
+    doc = _doc({"s": pix}, [_scene("scn_pix", "s", stamp={"pt-BR": stamp}, source="Malwarebytes")])
+    assert _shown(doc, "scn_pix", {"stamp": stamp, "source": "Malwarebytes"}) == {"stamp": stamp}
+    doc = _doc({"s": "Isso é boato, mas a GamesBeat diz que sai em 2027."},
+               [_scene("scn_b", "s", stamp={"pt-BR": stamp}, source="Canaltech")])
+    assert _shown(doc, "scn_b", {"stamp": stamp, "source": "Canaltech"}) == {"stamp": stamp}
+
+
+@pytest.mark.parametrize(("stamp", "positive"), [
+    ("CONFIRMADO", True), ("É OFICIAL", True), ("VERIFICADO", True), ("NÃO CONFIRMADO", False), ("ATENÇÃO", False),
+    ("BOATO", False), ("GOLPE", False), ("", False),
+])
+def test_is_positive_verdict(stamp, positive):
+    assert verdict.is_positive(stamp) is positive
+
+
+VERGE = Source(title="The Verge – Apple event", url="https://www.theverge.com/apple-event",
+               note="Apple lança 3 modelos em setembro, preço 5% maior.")
+
+
+def _with_verge(text: str) -> ProjectDoc:
+    doc = _doc({"s": text}, [_scene("scn_t", "s", source="The Verge")])
+    return doc.model_copy(update={"sources": [*doc.sources, VERGE]})
+
+
+@pytest.mark.parametrize("text", [
+    "A Apple vai lançar três modelos em setembro.",
+    "O preço sobe cinco por cento.",
+    "O preço sobe 5%.",
+])
+def test_small_number_counting_the_same_thing_or_a_percent_is_a_claim(text):
+    """Número pequeno conta quando conta a mesma coisa que a nota ("três modelos" ~ "3 modelos") e a porcentagem casa
+    com porcentagem: o dado da fonte parafraseado sem o nome dela mantém o crédito."""
+    doc = _with_verge(text)
+    assert scene_claims_source(doc, doc.scene("scn_t"), "The Verge")
+    assert _shown(doc, "scn_t", {"source": "The Verge"}) == {"source": "The Verge"}
+
+
+@pytest.mark.parametrize("text", ["São três passos para se proteger.", "Leva cinco minutos.", "Tem 3 jeitos."])
+def test_small_number_counting_something_else_is_not_a_claim(text):
+    doc = _with_verge(text)
+    assert not scene_claims_source(doc, doc.scene("scn_t"), "The Verge")
+
+
+def test_figure_from_the_sources_own_article_keeps_its_credit():
+    """3:01: o print do site falso que a Malwarebytes publicou na matéria (malwarebytes.com) é material dela: o
+    "Fonte: Malwarebytes" é o crédito da imagem, como em 2:51 e 3:07, mesmo com a fala ("um programinha de um
+    megabyte") sem o nome nem o número da nota."""
+    figure = _figure("https://www.malwarebytes.com/wp-content/uploads/sites/2/2026/08/fake-gta-6-demo2.png?w=1024",
+                     MALWAREBYTES_PAGE)
+    doc = _doc({"s": "O nome do arquivo muda, mas o que denuncia é isso: um programinha de um megabyte prometendo um "
+                     "jogo inteiro."},
+               [_scene("scn_demo", "s", "image", media=figure, stamp={"pt-BR": "GOLPE"}, source="Malwarebytes")])
+    assert _shown(doc, "scn_demo", {"stamp": "GOLPE", "source": "Malwarebytes"}) == {
+        "stamp": "GOLPE", "source": "Malwarebytes"}
+
+
+def test_figure_from_another_site_or_as_card_backdrop_needs_a_claim():
+    """A figura da matéria só credita a si mesma mostrada como imagem: de fundo do cartão tipográfico (4:16, a figura
+    da ESET atrás de "Cripto enviada praticamente não volta") o crédito ficaria sob a fala do apresentador; e a figura
+    de outro site não é material da fonte citada."""
+    text = "Por que quase sempre cripto? Porque cripto enviada praticamente não volta."
+    eset = MediaRef(kind="official", source="link", asset="uploads/prj_x/media/e.jpg",
+                    url="https://web-assets.esetstatic.com/wls/2026/11-26/figure-4.png", page_url=WLS_PAGE,
+                    credit="WeLiveSecurity", editorial=True, tier="official")
+    doc = _doc({"s": text}, [_scene("scn_c", "s", "text", media=eset, overlay="Cripto enviada praticamente não volta",
+                                    source="WeLiveSecurity (ESET)")])
+    assert _shown(doc, "scn_c", {"source": "WeLiveSecurity (ESET)"}) is None
+    other = _figure("https://cdn.exemplo.net/fake-gta-6-demo2.png", "https://exemplo.net/post")
+    doc = _doc({"s": "Nada de link de anúncio, de vídeo curto ou de grupo."},
+               [_scene("scn_o", "s", "image", media=other, source="Malwarebytes")])
+    assert _shown(doc, "scn_o", {"source": "Malwarebytes"}) is None
+
+
+@pytest.mark.parametrize(("texts", "search"), [
+    (("gta-6-leak-google-results.png",), True),
+    (("figure.png", "Site falso de GTA 6 nos resultados do Google"), True),
+    (("bing_search_page.jpg",), True),
+    (("fake-gta-6-demo2.png", "Site falso com botão 'Play Now'"), False),
+    (("google-play-fake-app.png",), False),
+])
+def test_shows_search_page(texts, search):
+    assert shows_search_page(*texts) is search

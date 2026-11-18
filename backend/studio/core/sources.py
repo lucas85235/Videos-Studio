@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from studio.core import verdict
-from studio.core.numbers import text_numbers
+from studio.core.numbers import number_runs, text_numbers
 from studio.core.project.document import CARD_KINDS, DATA_KINDS, PROVS, MediaRef, Prov, Visual
 from studio.core.text import normalize_token, span_ranges, split_word_indices, words
 
@@ -443,6 +443,20 @@ def title_keeps_source(doc: ProjectDoc, scene: Scene, cited: str) -> bool:
 SEARCH_SITES = frozenset({"google", "bing", "duckduckgo", "yahoo", "yandex", "baidu", "ecosia", "startpage"})
 """Busca não é veículo: a captura da página de resultados não credita ninguém."""
 
+_RESULTS = r"(results?|resultados?|busca|buscas|search|searches|pesquisa|pesquisas|serp)"
+_SEARCH_FIGURE_RE = re.compile(
+    rf"\b({'|'.join(sorted(SEARCH_SITES))})\b[^.;|]{{0,40}}\b{_RESULTS}\b|\b{_RESULTS}\b[^.;|]{{0,40}}\b"
+    rf"({'|'.join(sorted(SEARCH_SITES))})\b"
+)
+
+
+def shows_search_page(*texts: str) -> bool:
+    """A imagem reproduz uma página de busca ("gta-6-leak-google-results.png", "Site falso nos resultados do
+    Google"): mesmo vindo da matéria da fonte, o que está na tela é a busca, não dado da fonte. Olha o nome do
+    arquivo e a descrição (hífen e sublinhado viram espaço)."""
+    text = " ".join(re.sub(r"[-_+]", " ", t or "") for t in texts).lower()
+    return bool(_SEARCH_FIGURE_RE.search(text))
+
 KNOWN_OUTLETS: dict[str, str] = {
     "welivesecurity": "WeLiveSecurity (ESET)",
     "malwarebytes": "Malwarebytes",
@@ -452,8 +466,9 @@ KNOWN_OUTLETS: dict[str, str] = {
 WeLiveSecurity: o domínio sozinho não diz "ESET")."""
 
 _SENTENCE_END = (".", "!", "?", "…", ";")
-# Número falado até este valor, sem casa decimal, não liga a cena à fonte: "duas etapas", "cinco sinais" e o "6" de
-# "GTA 6" aparecem em qualquer nota ("PS5", "1º trimestre").
+# Número falado até este valor, sem casa decimal, só liga a cena à fonte quando conta a mesma coisa que a nota ("três
+# modelos" ~ "3 modelos") ou é porcentagem: "duas etapas", "cinco sinais" e o "6" de "GTA 6" aparecem em qualquer nota
+# ("PS5", "1º trimestre").
 _BARE_NUMBER_MAX = 12
 
 
@@ -532,18 +547,48 @@ def names_source(text: str, cited: str, own: list[Source] | None = None) -> bool
     return bool(keys & grams)
 
 
-def _claim_numbers(text: str, lang: str, topic: set[float]) -> set[float]:
+def _claim_numbers(text: str, lang: str, topic: set[float]) -> list[tuple[float, str]]:
+    """Os números do texto que podem ser dado de uma fonte, com o que vem junto: "%" na porcentagem ("5%", "cinco por
+    cento"), a palavra seguinte no número pequeno inteiro ("três modelos" → (3, "modelos")) e "" no resto (número
+    grande ou com casa decimal vale sozinho). Fora os números do assunto do vídeo (o "6" de "GTA 6")."""
     # "~1,1 MB", "≈19": o sinal de aproximação grudado no número esconde o número do leitor.
-    values = {abs(float(v)) for v in text_numbers(re.sub(r"[~≈±]", " ", text or ""), lang, names=True)}
-    return {v for v in values if v not in topic and (v > _BARE_NUMBER_MAX or v != int(v))}
+    tokens = words(re.sub(r"[~≈±]", " ", text or ""))
+    out: list[tuple[float, str]] = []
+    for start, end, raw in number_runs(tokens, lang, names=True):
+        value = abs(float(raw))
+        if value in topic:
+            continue
+        run = " ".join(tokens[start:end]).lower()
+        if "%" in run or run.rstrip(".,;:!?").endswith("cento") or "percent" in run:
+            out.append((value, "%"))
+        elif value > _BARE_NUMBER_MAX or value != int(value):
+            out.append((value, ""))
+        elif end < len(tokens) and not tokens[end - 1].endswith((".", ",", ";", ":", "!", "?")):
+            noun = normalize_token(tokens[end])
+            if len(noun) >= 3 and not noun.isdigit():
+                out.append((value, noun))
+    return out
+
+
+def _same_claim(said: tuple[float, str], held: tuple[float, str]) -> bool:
+    """O mesmo dado: mesmo valor e, no número pequeno, a mesma coisa contada ("três modelos" ~ "3 modelos"); a
+    porcentagem casa com porcentagem. "duas etapas" não casa com "2 milhões" nem com "PS5"."""
+    (value, unit), (other, other_unit) = said, held
+    if abs(value - other) > 1e-6 * max(1.0, other):
+        return False
+    if unit == "%" or other_unit == "%":
+        return unit == other_unit
+    if unit == "" or other_unit == "":
+        return value > _BARE_NUMBER_MAX or value != int(value)
+    return _same_word(unit, other_unit)
 
 
 def scene_claims_source(doc: ProjectDoc, scene: Scene, cited: str) -> bool:
     """A cena diz algo da fonte que o "Fonte: X" cita? Diz quando a frase da narração (inteira, `scene_sentence`) ou o
     texto na tela nomeia a fonte ("a ESET descreve"), traz um número dela (título e nota; fora número pequeno sem casa
-    decimal e os do assunto do vídeo, como o "6" de "GTA 6"), quando o carimbo é veredito positivo ("CONFIRMADO" com
-    "Fonte: Rockstar Games": quem confirma é ela) ou, fora o cartão tipográfico, quando o título ou a faixa dizem algo
-    dela (`title_backs_source`; o título sozinho segue `title_keeps_source`).
+    decimal que não conta a mesma coisa que a nota, e os do assunto do vídeo, como o "6" de "GTA 6"), quando o carimbo
+    é veredito positivo explícito ("CONFIRMADO" com "Fonte: Rockstar Games": quem confirma é ela; `verdict.is_positive`,
+    "ATENÇÃO" e "BOATO" não contam) ou, fora o cartão tipográfico, quando o título ou a faixa dizem algo dela (`title_backs_source`; o título sozinho segue `title_keeps_source`).
 
     Sem nada disso, o "Fonte: X" vira crédito de quem não disse aquilo: o conselho "cartão ou Pix, fala com o seu
     banco" creditado à Malwarebytes, "ou de horas de nuvem" à Windows Central, a busca do Google à matéria que a
@@ -558,15 +603,15 @@ def scene_claims_source(doc: ProjectDoc, scene: Scene, cited: str) -> bool:
     lang = doc.primary_language
     card = scene.card
     stamp = (card.stamp.get(lang) or "") if card is not None else ""
-    if stamp.strip() and not verdict.is_negative(stamp):
+    if verdict.is_positive(stamp):
         return True
     shown = [scene.overlay_text.get(lang) or "", (card.headline.get(lang) or "") if card is not None else ""]
     said = " ".join([scene_sentence(doc, scene), *shown])
     if names_source(said, cited, own):
         return True
     topic = {abs(float(v)) for v in text_numbers(f"{doc.title}. {doc.topic}", lang, names=True)}
-    held = _claim_numbers(" ".join(f"{s.title}. {s.note}" for s in own), lang, set())
-    if any(abs(v - h) <= 1e-6 * max(1.0, h) for v in _claim_numbers(said, lang, topic) for h in held):
+    held = [n for s in own for part in (s.title, s.note) for n in _claim_numbers(part or "", lang, set())]
+    if any(_same_claim(v, h) for v in _claim_numbers(said, lang, topic) for h in held):
         return True
     if scene.kind == "text":
         return False

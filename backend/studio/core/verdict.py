@@ -68,10 +68,30 @@ def _plain(text: str) -> str:
     return "".join(ch for ch in text if not unicodedata.combining(ch))
 
 
+# Veredito positivo explícito: quem confirma é a fonte do cartão ("CONFIRMADO" com "Fonte: Rockstar Games"). Aviso
+# ("ATENÇÃO", "ALERTA", "CUIDADO", "DICA") e rótulo do vídeo ("BOATO", "MITO") não são afirmação de fonte nenhuma.
+POSITIVE_VERDICTS = frozenset({
+    "confirmado", "confirmada", "confirmados", "confirmadas", "confirmed", "confirmo", "verificado", "verificada",
+    "verified", "oficial", "official", "verdade", "verdadeiro", "verdadeira", "true", "fato", "fact", "real",
+    "anunciado", "anunciada", "announced", "comprovado", "comprovada", "proven",
+})  # fmt: skip
+
+
+def _stamp_words(stamp: str | None) -> list[str]:
+    return [normalize_token(w) for w in re.split(r"[\s·•|/—–:,.!?()-]+", stamp or "") if w]
+
+
+def is_positive(stamp: str | None) -> bool:
+    """O carimbo afirma que o que a cena diz é verdade ("CONFIRMADO", "OFICIAL", "É REAL"), sem negação antes
+    ("NÃO CONFIRMADO" não afirma). Aviso ("ATENÇÃO", "CUIDADO") e rótulo ("BOATO") não são positivos."""
+    words = _stamp_words(stamp)
+    return any(word in POSITIVE_VERDICTS and not any(w in _NEGATORS for w in words[:i]) for i, word in enumerate(words))
+
+
 def is_negative(stamp: str | None) -> bool:
     """O carimbo acusa o que está na tela de ser falso ou golpe ("FALSO", "É GOLPE", "FAKE"). Com negação antes do
     veredito ("NÃO É GOLPE", "NOT FAKE"), não acusa: é o veredito positivo."""
-    words = [normalize_token(w) for w in re.split(r"[\s·•|/—–:,.!?()-]+", stamp or "") if w]
+    words = _stamp_words(stamp)
     for i, word in enumerate(words):
         if word in NEGATIVE_VERDICTS and not any(w in _NEGATORS for w in words[:i]):
             return True
