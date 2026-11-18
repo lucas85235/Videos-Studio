@@ -23,7 +23,7 @@ from typing import Any
 
 from studio.core import sources as tiers
 from studio.core.hashing import seed_from
-from studio.core.numbers import card_number, is_number_token, notable_number_runs, text_numbers
+from studio.core.numbers import card_number, is_number_token, notable_number_runs, number_runs, text_numbers
 from studio.core.project.document import (
     CARD_KINDS,
     ArtDirection,
@@ -702,12 +702,13 @@ def fix_repeated_headlines(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 _TEXT_KINDS = ("title", "count", "quote", "text", "document")
 
 
-def _backs_scene_text(scene: Scene, lang: str, source: str = "", sources: list[Source] | None = None) -> bool:
+def _backs_scene_text(doc: ProjectDoc, scene: Scene, lang: str, source: str = "") -> bool:
     """A fonte apoia algo da própria cena fora do cartão (a mesma conta do renderer): o texto em destaque (título,
-    citação, contador, a fala em tipografia) ou o cartão de notícia da mídia real. No título, só quando ele diz algo
-    da fonte citada (`title_backs_source`): "2. TAMANHO QUE NÃO BATE" não é dado de ninguém."""
+    citação, contador, a fala em tipografia) ou o cartão de notícia da mídia real. No título sem faixa nem carimbo, só
+    quando ele diz algo da fonte ou o mesmo trecho já a credita (`title_keeps_source`): "2. TAMANHO QUE NÃO BATE" não
+    é dado de ninguém."""
     title = (scene.overlay_text.get(lang) or "").strip()
-    if scene.kind == "title" and title and source and not tiers.title_backs_source(title, source, sources or [], lang):
+    if scene.kind == "title" and title and source and not tiers.title_keeps_source(doc, scene, source):
         return False
     if scene.kind in _TEXT_KINDS and (title or scene.kind == "text"
                                       or (scene.kind == "count" and scene.number is not None)):
@@ -729,12 +730,129 @@ def fix_lone_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
             continue
         shown = scene.card.resolved(lang)
         source = shown.pop("source", "")
-        if shown or (source and _backs_scene_text(scene, lang, source, doc.sources)):
+        if shown or (source and _backs_scene_text(doc, scene, lang, source)):
             continue
         scene.card = None
         if source:
             issues.append(Issue("fonte_solta", CORRIGIDO, f'A fonte "{source}" ficava sozinha na cena, sem número, faixa '
                                                           "nem texto que ela apoiasse: saiu.", beat.key, scene.id))
+    return issues
+
+
+# Algarismos de um texto de cartão ("87 GB+", "R$ 1,5 BI", "1.000"): o grupo que `fix_card_speech` reescreve.
+_CARD_DIGITS_RE = re.compile(r"\d+(?:[.,]\d+)*")
+# Índice de lista no começo do título ("2. TAMANHO..."): numera o vídeo, não é dado de fonte.
+_LIST_INDEX_RE = re.compile(r"^\s*#?\d{1,2}\s*[.)ºª°:\-–—]\s*")
+
+
+def _card_digits(value: float, lang: str) -> str:
+    """O número no formato do cartão: "100", "1,1" e "1.000" em português; "1.1" e "1,000" em inglês."""
+    en = lang.lower().startswith("en")
+    if abs(value - round(value)) < 1e-9:
+        text = f"{round(value):,}"
+        return text if en else text.replace(",", ".")
+    text = f"{value:.2f}".rstrip("0").rstrip(".")
+    return text if en else text.replace(".", ",")
+
+
+def _run_of(beat: Beat, value: float, lang: str) -> tuple[int, int]:
+    for a, b, v in notable_number_runs(beat.words, lang):
+        if float(v) == value:
+            return a, b
+    return 0, 0
+
+
+def fix_card_speech(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """O número do cartão de dado é o que a batida fala: o cartão entra quando o número é dito e não pode mostrar
+    outro no mesmo quadro ("87 GB+" de uma fonte enquanto a fala e a legenda dizem "cem gigabytes").
+
+    Com um só número que vale cartão na fala, perto do valor do cartão (metade ao dobro: o mesmo dado contado de outro
+    jeito) e um só número no cartão, o cartão segue a fala, com a escala e a unidade dele ("87 GB+" → "100 GB+").
+    Fora isso (vários números falados, ordem de grandeza diferente, cena travada), a cena é sinalizada para o ajuste
+    à mão. Sem número dito, o cartão fica como está (é o dado que a fala não lê). Ordinal ("1º TRI 2027", "o primeiro
+    trimestre") não entra: o leitor de números não lê ordinal falado."""
+    lang = doc.primary_language
+    allowed = allowed_numbers(doc)
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.kind != "stat" or scene.card is None:
+            continue
+        text = (scene.card.value.get(lang) or "").strip()
+        value = card_number(text, lang) if text else None
+        if not value or "º" in text or "ª" in text:
+            continue
+        spoken = [float(v) for _a, _b, v in number_runs(beat.words, lang)]
+        if lang.lower().startswith("pt"):
+            spoken += _half_scales(" ".join(beat.words))
+        notable = sorted({float(v) for _a, _b, v in notable_number_runs(beat.words, lang)})
+        if not notable:
+            continue
+        # O 1 vale sempre ("#1", "1 DIA" para "em um dia"), menos quando a fala tem o mesmo dado mais preciso
+        # ("1 MB" com "um vírgula um megabyte").
+        if not any(0.5 <= v <= 2 for v in notable):
+            spoken.append(1.0)
+        shown = [value, *(float(v) for v in text_numbers(text, lang, names=True))]
+        if any(_known_number(v, spoken) for v in shown) or not _known_number(value, allowed):
+            continue  # bate com a fala, ou é número inventado (`numero_inventado` troca o cartão)
+        said = notable[0]
+        digits = _CARD_DIGITS_RE.findall(text)
+        base = card_number(digits[0], lang) if len(digits) == 1 else None
+        new_base = said * base / abs(value) if base else 0.0
+        if len(notable) == 1 and not scene.locked and 0.5 <= said / abs(value) <= 2 and new_base >= 0.01:
+            for code, card_text in list(scene.card.value.items()):
+                other = card_number(card_text, code)
+                found = _CARD_DIGITS_RE.findall(card_text or "")
+                if other is not None and len(found) == 1 and _known_number(other, [value]):
+                    scene.card.value[code] = card_text.replace(found[0], _card_digits(new_base, code), 1)
+            after = scene.card.value.get(lang, "")
+            issues.append(Issue("cartao_segue_fala", CORRIGIDO,
+                                f'O cartão mostrava "{text}" enquanto a fala diz {_spoken(beat, *_run_of(beat, said, lang))}'
+                                f': agora mostra "{after}".', beat.key, scene.id, {"before": text, "after": after}))
+            continue
+        said_text = ", ".join(_spoken(beat, *_run_of(beat, v, lang)) for v in notable[:3])
+        issues.append(Issue("cartao_contradiz_fala", GRAVE,
+                            f'O cartão mostra "{text}" e a fala diz {said_text}: o cartão entra quando o número é dito, '
+                            "então os dois têm de ser o mesmo número (ajuste o cartão ou a fala).",
+                            beat.key, scene.id, {"text": text}))
+    return issues
+
+
+def fix_fact_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
+    """O mesmo fato tem a mesma fonte no vídeo inteiro: o número que a cena mostra (valor, itens, faixa, carimbo, o
+    texto em destaque) e que só uma fonte do roteiro traz fica creditado a ela. "Fonte: Malwarebytes" num cartão da ISO
+    de 100 GB (que está na nota da ESET, não na da Malwarebytes) vira "Fonte: WeLiveSecurity (ESET)", como nas outras
+    cenas do mesmo dado. Número que a fonte citada também traz, ou que várias fontes trazem, fica como está."""
+    lang = doc.primary_language
+    held = [(s, _numbers_in(f"{s.title}. {s.note}", lang)) for s in doc.sources]
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None or not scene.card.source:
+            continue
+        cited = scene.card.source
+        mine = [nums for s, nums in held if tiers.cites_source(s, cited)]
+        if not mine:
+            continue  # fonte fora do roteiro: não dá para conferir
+        card = scene.card
+        texts = [card.value.get(lang), card.headline.get(lang), card.stamp.get(lang),
+                 *(item.value.get(lang) for item in card.items)]
+        if scene.kind in _TEXT_KINDS:
+            texts.append(_LIST_INDEX_RE.sub("", scene.overlay_text.get(lang) or ""))
+        values = {abs(float(v)) for t in texts if t for v in text_numbers(t, lang, names=True)}
+        values -= {0.0, 1.0}
+        if not values or any(_known_number(v, nums) for v in values for nums in mine):
+            continue
+        holders = {source_label(s) for s, nums in held
+                   if not tiers.cites_source(s, cited) and any(_known_number(v, nums) for v in values)}
+        holders.discard("")
+        if len(holders) != 1:
+            continue
+        new = holders.pop()
+        card.source = new
+        issues.append(Issue("fonte_do_dado", CORRIGIDO, f'O dado da cena vem de "{new}", não de "{cited}": o crédito '
+                                                       "agora é o mesmo das outras cenas com esse dado.",
+                            beat.key, scene.id, {"before": cited, "after": new}))
     return issues
 
 
@@ -1574,7 +1692,9 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     issues += fix_label_stamps(doc, beats)
     issues += fix_repeated_headlines(doc, beats)
     issues += _check_sources(doc, beats)
+    issues += fix_fact_sources(doc, beats)
     issues += fix_lone_sources(doc, beats)
+    issues += fix_card_speech(doc, beats)
     issues += _check_numbers(doc, beats)
     issues += _check_prompts(doc, beats)
     issues += _check_lighting(doc, beats)

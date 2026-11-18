@@ -328,23 +328,84 @@ def _content_words(text: str) -> set[str]:
     return out
 
 
+def _same_word(a: str, b: str) -> bool:
+    """A mesma palavra com outra flexão ("golpe"/"golpes", "falso"/"falsos", "roubadas"/"roubando"): radical comum
+    de 4+ letras (a palavra menor inteira, ou 5+ letras faltando no máximo 3 da menor)."""
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    common = 0
+    for x, y in zip(short, long_, strict=False):
+        if x != y:
+            break
+        common += 1
+    if common == len(short):
+        return len(long_) - len(short) <= 3
+    return common >= 5 and len(short) - common <= 3
+
+
+def _domain_name(url: str) -> str:
+    host = re.sub(r"^[a-z]+://", "", (url or "").strip().lower()).split("/", 1)[0].split(":", 1)[0]
+    parts = [p for p in host.split(".") if p and p != "www"]
+    return parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+
+
+def cites_source(source: Source, cited: str) -> bool:
+    """A fonte do roteiro é a que o "Fonte: X" cita: pelo nome no título ou pelo domínio do endereço."""
+    key = _compact_name(cited)
+    if not key:
+        return False
+    domain = _compact_name(_domain_name(source.url or ""))
+    return key in _compact_name(source.title or "") or (len(domain) >= 3 and (domain in key or key in domain))
+
+
+def _source_text(source: Source) -> str:
+    slug = re.sub(r"^[a-z]+://[^/]+", "", (source.url or "").lower())
+    return f"{source.title}. {source.note}. {re.sub(r'[^a-z0-9]+', ' ', slug)}"
+
+
 def title_backs_source(title: str, cited: str, sources: Iterable[Source], lang: str) -> bool:
     """O título da cena diz algo da fonte que o "Fonte: X" cita? Diz quando traz um número dela (fora o índice de
-    lista: "2." numera o vídeo) ou uma palavra do título ou da nota dela ("VIDAR: LADRÃO DE DADOS" com a fonte que
-    fala do Vidar). Sem isso ("2. TAMANHO QUE NÃO BATE" com "Fonte: Malwarebytes", numa conclusão que junta o 1,1 MB
-    da Malwarebytes e a ISO da ESET), a fonte vira crédito de uma ideia que não é dela e contradiz o crédito que o
-    mesmo fato tem no resto do vídeo. Fonte fora do roteiro (não dá para conferir) passa."""
+    lista: "2." numera o vídeo) ou uma palavra do título, da nota ou do endereço dela, com qualquer flexão ("GOLPE DO
+    DOWNLOAD FALSO" com "golpes com downloads falsos"). Sem isso ("2. TAMANHO QUE NÃO BATE" com "Fonte: Malwarebytes",
+    numa conclusão que junta o 1,1 MB da Malwarebytes e a ISO da ESET), a fonte vira crédito de uma ideia que não é
+    dela. `title` e `lang` são do idioma principal (o das fontes). Fonte fora do roteiro (não dá para conferir) passa."""
     key = _compact_name(cited)
     if not key:
         return True
-    own = [s for s in sources if key in _compact_name(s.title or "")]
+    own = [s for s in sources if cites_source(s, cited)]
     if not own:
         return True
     body = _LIST_INDEX_RE.sub("", title or "")
     if not body.strip():
         return False
-    refs = " ".join(f"{s.title}. {s.note}" for s in own)
+    refs = " ".join(_source_text(s) for s in own)
     numbers = text_numbers(body, lang, names=True)
     if numbers and {float(v) for v in numbers} & {float(v) for v in text_numbers(refs, lang, names=True)}:
         return True
-    return bool(_content_words(body) & _content_words(refs))
+    ref_words = _content_words(refs)
+    return any(_same_word(w, r) for w in _content_words(body) for r in ref_words)
+
+
+def _is_lone_title(scene: Scene) -> bool:
+    card = scene.card
+    return scene.kind == "title" and not (card and (any(card.headline.values()) or any(card.stamp.values())))
+
+
+def title_keeps_source(doc: ProjectDoc, scene: Scene, cited: str) -> bool:
+    """O título sem faixa nem carimbo mantém o "Fonte: X"? Mantém quando diz algo da fonte (`title_backs_source`) ou
+    quando o mesmo trecho da narração já credita X em outra cena ("ATIVE A VERIFICAÇÃO EM 2 ETAPAS" no meio das
+    orientações da Malwarebytes): o mesmo assunto fica com o mesmo crédito. Sai quando nada liga o título à fonte
+    ("2. TAMANHO QUE NÃO BATE", que junta o arquivo da Malwarebytes e a ISO da ESET, num trecho que só cita outra)."""
+    if not _is_lone_title(scene):
+        return True
+    lang = doc.primary_language
+    title = scene.overlay_text.get(lang) or next((t for t in scene.overlay_text.values() if t), "")
+    if title_backs_source(title, cited, doc.sources, lang):
+        return True
+    key = _compact_name(cited)
+    return any(
+        other.id != scene.id and other.card is not None and _compact_name(other.card.source or "") == key
+        and not _is_lone_title(other)
+        for other in doc.scenes_of(scene.segment_id)
+    )

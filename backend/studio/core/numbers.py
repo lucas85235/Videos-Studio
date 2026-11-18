@@ -319,13 +319,18 @@ def _match_words_pt(tokens: list[str], i: int) -> _Run | None:
     if j == i:
         return None
     value = total + current
-    # Decimal falado ("um vírgula um megabyte", "dois vírgula cinco milhões"): só depois de um inteiro simples.
-    tail = _decimal_tail_pt(tokens, j) if last_kind == "unit" and not total and not _ends_clause(tokens[j - 1]) else None
+    # Decimal falado ("um vírgula um megabyte", "dois vírgula cinco milhões", "mil duzentos e cinquenta vírgula
+    # cinco"): a escala depois do decimal só multiplica um inteiro simples ("dois vírgula cinco milhões").
+    tail = (_decimal_tail_pt(tokens, j)
+            if last_kind in ("unit", "mil", "scale") and not joined and not _ends_clause(tokens[j - 1]) else None)
     if tail is not None:
-        frac, j, scale, at = tail
-        value = (current + frac) * scale
-        if scale > 1:
+        frac, end, scale, at = tail
+        if scale > 1 and not total:
+            j, value = end, (current + frac) * scale
             big_scale, scale_at = scale, at
+        else:
+            j = at if at is not None else end  # "mil vírgula cinco milhões" não existe: a escala fica de fora
+            value = total + current + frac
     elif j - i == 1 and normalize_token(tokens[i]) in _ARTICLES:
         return None  # "um dia", "uma vez": artigo
     run = _Run(i, j, value, scale_at=scale_at, scale=big_scale)
@@ -447,6 +452,9 @@ def _display(run: _Run, tokens: list[str]) -> str:
             return text + ("%" if run.percent else "")
     if not float(value).is_integer():
         text = _decimal(value)
+        head, _, tail = text.partition(",")
+        if value >= 1000:
+            text = _group(int(head)) + ("," + tail if tail else "")  # "mil duzentos e cinquenta vírgula cinco"
     elif 1000 <= value <= 2999:
         text = str(int(value))  # anos ("2013") sem separador
     elif value >= 1000:

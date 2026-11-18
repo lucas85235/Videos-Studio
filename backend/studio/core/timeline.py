@@ -32,7 +32,7 @@ from studio.core.sources import (
     prov_of_item,
     prov_of_media,
     prov_of_scene,
-    title_backs_source,
+    title_keeps_source,
     visual_prov,
 )
 from studio.core.styles.library import pick_weighted
@@ -906,10 +906,9 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
     own = (prov_of_scene(scene, doc), doc.shown_media(scene))
     owners = [own, *(_shot_owner(doc, scene, shot, pool, own) for shot in scene.shots)]
     # Título que só tem a fonte para apoiar (sem faixa nem carimbo) e não diz nada dela ("2. TAMANHO QUE NÃO BATE"):
-    # a fonte sai também sobre fundo do app, senão credita a uma fonte só a conclusão que junta fatos de várias.
-    lone_title = scene.kind == "title" and not (card.get("headline") or card.get("stamp"))
-    backed = not lone_title or title_backs_source(str(resolved.get("text") or ""), source, doc.sources,
-                                                  doc.primary_language)
+    # a fonte sai também sobre fundo do app, senão credita a uma fonte só a conclusão que junta fatos de várias. A
+    # conta usa o título no idioma principal (o das fontes): a dublagem mantém o mesmo crédito.
+    backed = title_keeps_source(doc, scene, source)
     if backed and all(_credits_source(prov, material, source) for prov, material in owners):
         return
     card.pop("source", None)
