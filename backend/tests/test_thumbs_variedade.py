@@ -228,6 +228,20 @@ def test_molde_espelhado_e_cartao_da_prova(tmp_path):
     assert lay["text_fill"] == list(C.fill_rgb("red", C._palette(None)))
 
 
+def test_janela_da_pagina_comeca_na_manchete_perto_do_fim_da_captura():
+    """Manchete no fim da captura (anúncio e menu em cima): a janela começa nela e sai mais baixa, em vez de subir
+    e mostrar o espaço vazio de cima."""
+    img = Image.new("RGB", (1200, 700), (250, 250, 250))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((300, 60, 900, 300), fill=(225, 225, 225))  # o bloco cinza do anúncio
+    for top in (430, 520):
+        for x in range(100, 1000, 22):
+            draw.rectangle((x, top, x + 9, top + 70), fill=(20, 20, 20))
+    x0, y0, x1, y1 = C.page_window(img, 16 / 10)
+    assert 380 <= y0 <= 430 and y1 == 700  # do topo da manchete até o fim da página
+    assert (x1 - x0) / (y1 - y0) > 16 / 10  # mais baixa que a pedida
+
+
 # --- histórico do canal e semelhança -----------------------------------------------------------------------------------
 def _with_package(cid: str, title: str, layers: ThumbLayers, *, chosen: bool) -> str:
     doc = service.create_project(title=title, style_id=LONG, channel_id=cid)

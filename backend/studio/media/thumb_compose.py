@@ -1498,6 +1498,10 @@ def _ink(im: Image.Image, width: int = 480, *, color: bool = True) -> Any:
     return (luma < 120) | (sat > 110)
 
 
+# Menor altura (fração da pedida) da janela da página quando ela começa na manchete e a captura acaba antes.
+PAGE_WINDOW_MIN_HEIGHT = 0.5
+
+
 def page_window(im: Image.Image, aspect: float) -> tuple[int, int, int, int]:
     """A janela (proporção `aspect`) de uma página capturada: com a manchete achada (`headline_band`), da largura
     dela inteira (nunca cortada no meio da palavra), com a manchete no alto e o que vem embaixo (a foto da
@@ -1512,7 +1516,12 @@ def page_window(im: Image.Image, aspect: float) -> tuple[int, int, int, int]:
         hh = ww / aspect
         if hh <= h and ww <= w:
             x0 = min(max(0.0, (bx0 + bx1) / 2 - ww / 2), w - ww)
-            y0 = min(max(0.0, by0 - (hh - (by1 - by0)) * 0.08), h - hh)
+            top = max(0.0, by0 - (hh - (by1 - by0)) * 0.08)
+            if top + hh > h and h - top >= hh * PAGE_WINDOW_MIN_HEIGHT:
+                # manchete perto do fim da captura: a janela começa nela e sai mais baixa (o cartão encolhe na
+                # altura) em vez de subir e mostrar o que vem antes (anúncio, menu, faixa vazia)
+                return round(x0), round(top), round(x0 + ww), h
+            y0 = min(top, h - hh)
             return round(x0), round(y0), round(x0 + ww), round(y0 + hh)
     ink = _ink(im)
     sh, sw = ink.shape
@@ -1660,6 +1669,12 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     zoom = max(float(conf.get("zoom", 1.0)), bg.zoom)
     page = not colorful
     win = page_window(src, inner[0] / inner[1]) if page else content_window(src, inner[0] / inner[1], zoom)
+    win_h = (win[3] - win[1]) * inner[0] / max(1, win[2] - win[0])
+    if page and win_h < inner[1] * 0.97:  # janela mais baixa (a página acabou): o cartão encolhe, centrado na caixa
+        new_inner_h = max(8, round(win_h))
+        by += (inner[1] - new_inner_h) / 2 / H
+        inner = (inner[0], new_inner_h)
+        ch = new_inner_h + 2 * border
     photo = src.resize(inner, Image.Resampling.LANCZOS, box=win)
     band = headline_band(photo) if page else None
     photo = ImageEnhance.Contrast(ImageEnhance.Color(photo).enhance(1.1)).enhance(1.05)
