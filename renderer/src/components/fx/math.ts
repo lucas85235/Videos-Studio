@@ -2,7 +2,7 @@
 // Ficam fora dos componentes para o teste rodar no Node (`backend/tests/test_renderer_fx.py`): só `import type` aqui.
 //
 // Quadros relativos ao início da cena, como no contrato resolvido de `types.ts` (ADR 0004, fundação).
-import type { CaptionWord, FxType, ShotEasing, ShotFraming, TimelineFx, TimelineScene, TimelineShot } from '../../types';
+import type { CaptionWord, FxType, Prov, ShotEasing, ShotFraming, TimelineFx, TimelineScene, TimelineShot } from '../../types';
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const clamp01 = (v: number) => clamp(v, 0, 1);
@@ -128,6 +128,32 @@ export const framingBox = (framing: ShotFraming | null | undefined) => {
   const y = clamp01(num(framing?.y, 0.5));
   const win = 1 / scale;
   return { scale, left: clamp(x - win / 2, 0, 1 - win), top: clamp(y - win / 2, 0, 1 - win) };
+};
+
+/**
+ * Enquadramento do plano que mantém a manchete guardada (`keep`, fração do contêiner: a da captura ou o maior bloco de
+ * letras da imagem) inteira dentro da janela, com margem: a janela anda até contê-la e, quando ela não cabe, a escala
+ * desce até caber (nunca abaixo de 1). QA: o plano 1,25x da página de pré-venda cortava "PRE-ORDER" na borda direita
+ * ("PRE-ORDEI"). Sem manchete ou no quadro inteiro, o mesmo enquadramento.
+ */
+export const keptFraming = (framing: ShotFraming | null | undefined, keep: Rect | null, margin = 0.03): ShotFraming | null | undefined => {
+  if (!framing || !keep) return framing;
+  const { scale } = framingBox(framing);
+  if (scale <= 1.0001) return framing;
+  const s = Math.max(1, Math.min(scale, 1 / (Math.max(keep[2], keep[3]) + 2 * margin)));
+  const win = 1 / s;
+  const axis = (want: number, a: number, len: number) => {
+    const lo = a + len + margin - win;
+    const hi = a - margin;
+    const start = lo <= hi ? clamp(want - win / 2, lo, hi) : a + len / 2 - win / 2;
+    return clamp(start, 0, 1 - win) + win / 2;
+  };
+  const x = axis(num(framing.x, 0.5), keep[0], keep[2]);
+  const y = axis(num(framing.y, 0.5), keep[1], keep[3]);
+  if (Math.abs(s - scale) < 1e-6 && Math.abs(x - framingBox(framing).left - win / 2) < 1e-6 && Math.abs(y - framingBox(framing).top - win / 2) < 1e-6) {
+    return framing;
+  }
+  return { ...framing, scale: Math.round(s * 1e4) / 1e4, x: Math.round(x * 1e4) / 1e4, y: Math.round(y * 1e4) / 1e4 };
 };
 
 /** `transform` CSS (origem 0 0) do enquadramento; null no quadro inteiro. */
@@ -428,13 +454,23 @@ export const STAMP_SAFE = 0.05;
 export const STAMP_GAP = 0.015;
 
 export type StampSide = 'left' | 'right';
-/** Lugar do carimbo: o lado (a borda dele fica a 7% da borda da tela, como sempre) e a altura do centro. */
-export type StampSpot = { side: StampSide; y: number };
+/**
+ * Lugar do carimbo: o lado (a borda dele fica a 7% da borda da tela, como sempre) e a altura do centro. Quando nenhum
+ * dos dois cantos tem lugar livre, `x` é o centro (fração da largura) num ponto livre de qualquer lugar da tela e
+ * `scale` (< 1) o tamanho menor que coube.
+ */
+export type StampSpot = { side: StampSide; y: number; x?: number; scale?: number };
 /** Medidas do carimbo na tela (fração): centro horizontal de cada lado e meia caixa já com a rotação. */
 export type StampGeom = { cx: Record<StampSide, number>; halfW: number; halfH: number };
 
+/** Centro horizontal (fração) e escala do carimbo no lugar `spot`. */
+const stampCenter = (spot: StampSpot, g: StampGeom) => ({ cx: spot.x ?? g.cx[spot.side], s: spot.scale ?? 1 });
+
 /** Caixa [x, y, w, h] (fração da tela) do carimbo girado no lugar `spot`. */
-export const stampRect = (spot: StampSpot, g: StampGeom): Rect => [g.cx[spot.side] - g.halfW, spot.y - g.halfH, g.halfW * 2, g.halfH * 2];
+export const stampRect = (spot: StampSpot, g: StampGeom): Rect => {
+  const { cx, s } = stampCenter(spot, g);
+  return [cx - g.halfW * s, spot.y - g.halfH * s, g.halfW * 2 * s, g.halfH * 2 * s];
+};
 
 const overlapArea = (a: Rect, b: Rect) => {
   const w = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]);
@@ -446,21 +482,92 @@ const overlapArea = (a: Rect, b: Rect) => {
  * da IMAGEM (manchete da captura, logo: evita quando dá; a detecção pode errar e a tela pode não ter lugar livre). */
 export const HARD_WEIGHT = 1000;
 
+/**
+ * Peso de tempo de uma caixa de letras da imagem: a fração da cena em que ela está na tela (o plano dela). O plano
+ * reenquadrado de 0,9 s numa cena de 5 s pesa menos que o quadro inteiro que fica o resto do tempo. Sem peso: 1.
+ */
+const RECT_TIME = new WeakMap<Rect, number>();
+export const timeWeighted = (rects: Rect[], share: number): Rect[] => {
+  const w = clamp(share, 0, 1);
+  if (w < 1) for (const r of rects) RECT_TIME.set(r, w);
+  return rects;
+};
+const timeOf = (o: Rect) => RECT_TIME.get(o) ?? 1;
+
 /** Peso da letra da imagem pela altura do bloco: cobrir a manchete ou o logo (bloco alto, letra grande) é pior que
  * cobrir uma linha do corpo da matéria. */
-const softWeight = (o: Rect) => 1 + Math.min(3, o[3] * 10);
+const softWeight = (o: Rect) => (1 + Math.min(3, o[3] * 10)) * timeOf(o);
 
-const boxCost = (box: Rect, hard: Rect[], soft: Rect[]) =>
-  hard.reduce((sum, o) => sum + overlapArea(box, o), 0) * HARD_WEIGHT +
+export const boxCost = (box: Rect, hard: Rect[], soft: Rect[]) =>
+  hard.reduce((sum, o) => sum + overlapArea(box, o) * timeOf(o), 0) * HARD_WEIGHT +
   soft.reduce((sum, o) => sum + overlapArea(box, o) * softWeight(o), 0);
+
+/** Sobreposição (área, fração da tela) com texto duro abaixo da qual a caixa só encosta nele. */
+const TOUCH = 2e-4;
+
+/** Fração da área de `box` coberta pelas caixas `rects` (somadas; pode passar de 1 com caixas sobrepostas). */
+export const coveredShare = (box: Rect, rects: Rect[]) =>
+  box[2] * box[3] > 0 ? rects.reduce((sum, o) => sum + overlapArea(box, o), 0) / (box[2] * box[3]) : 0;
+
+const uniqSorted = (vals: number[]) => [...new Set(vals.map((v) => Math.round(v * 1e4) / 1e4))];
+
+/** Um lugar na tela (centro, fração) e o custo dele (`boxCost`; 0 = livre). */
+export type FreeSpot = { x: number; y: number; cost: number };
+
+/**
+ * Lugar em 2D (centro, fração) de uma caixa de meia largura `hw` e meia altura `hh`: o preferido quando livre; senão o
+ * ponto livre mais perto dele, encostado (com respiro) na borda de algum texto, em qualquer x de `xr` e y de `yr`
+ * (limites do CENTRO); sem ponto livre, o de menor custo (e, empatado, o mais perto do preferido). `hard`: texto da
+ * tela e a manchete da imagem (nunca coberto quando há saída); `soft`: as outras letras da imagem.
+ */
+export const placeFree = (
+  pref: [number, number],
+  hw: number,
+  hh: number,
+  hard: Rect[],
+  soft: Rect[],
+  xr: [number, number],
+  yr: [number, number],
+  gap = STAMP_GAP,
+): FreeSpot => {
+  const fx = (v: number) => clamp(v, xr[0], Math.max(xr[0], xr[1]));
+  const fy = (v: number) => clamp(v, yr[0], Math.max(yr[0], yr[1]));
+  const px = fx(pref[0]);
+  const py = fy(pref[1]);
+  const xs = [px, xr[0], xr[1]];
+  const ys = [py, yr[0], yr[1]];
+  for (const o of [...hard, ...soft]) {
+    xs.push(o[0] - hw - gap, o[0] + o[2] + hw + gap);
+    ys.push(o[1] - hh - gap, o[1] + o[3] + hh + gap);
+  }
+  const box = (x: number, y: number): Rect => [x - hw, y - hh, hw * 2, hh * 2];
+  let best: FreeSpot & { d: number } = { x: px, y: py, cost: boxCost(box(px, py), hard, soft), d: 0 };
+  if (best.cost === 0) return { x: px, y: py, cost: 0 };
+  for (const x of uniqSorted(xs.map(fx))) {
+    for (const y of uniqSorted(ys.map(fy))) {
+      const cost = boxCost(box(x, y), hard, soft);
+      const d = Math.hypot(x - px, y - py);
+      if (cost < best.cost - 1e-9 || (Math.abs(cost - best.cost) <= 1e-9 && d < best.d)) best = { x, y, cost, d };
+    }
+  }
+  return { x: best.x, y: best.y, cost: best.cost };
+};
+
+/** Margem lateral mínima (fração da largura) do carimbo fora dos dois cantos de sempre. */
+const STAMP_SIDE_MIN = 0.03;
+/** Tamanhos que o carimbo tenta, nesta ordem, quando os cantos de sempre não têm lugar livre. */
+export const STAMP_SCALES = [1, 0.82, 0.66] as const;
 
 /**
  * Onde o carimbo solto fica: o primeiro lugar de `preferred` (o da composição da imagem, como antes) que não toca
  * nenhum texto conhecido e cabe na área segura; senão, o lugar livre mais perto da altura preferida, logo acima ou
- * abaixo de algum texto, de qualquer lado (o lado preferido primeiro). Sem lugar livre, o de menor sobreposição.
- * `obstacles`: texto desenhado pela tela (título, legenda, faixa, avatar, contador, fonte), nunca coberto quando há
- * outra saída; `soft`: letras da própria imagem (manchete da captura, logo, letreiro: `text_rects` da timeline), que o
- * carimbo evita sempre que há lugar. Sem texto no caminho, o lugar de sempre (o quadro não muda).
+ * abaixo de algum texto, de qualquer lado (o lado preferido primeiro). Sem lugar livre nos dois cantos, um ponto livre
+ * em qualquer lugar da tela (`x`), em tamanho cheio ou menor (`scale`, até 2/3): a captura cheia de texto deixava o
+ * carimbo só com os dois cantos, ambos sobre letras, e ele pousava sobre a manchete ("CONFIRMADO" sobre "downloads").
+ * Sem lugar livre nem assim, o de menor sobreposição.
+ * `obstacles`: texto desenhado pela tela (título, legenda, faixa, avatar, contador, fonte) e a manchete da imagem,
+ * nunca cobertos quando há outra saída; `soft`: letras da própria imagem (logo, letreiro, corpo: `text_rects` da
+ * timeline), que o carimbo evita sempre que há lugar. Sem texto no caminho, o lugar de sempre (o quadro não muda).
  */
 export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect[], soft: Rect[] = []): StampSpot => {
   const lo = STAMP_SAFE + g.halfH;
@@ -488,15 +595,41 @@ export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect
       bestCost = c;
     }
   }
-  return best;
+  // Nenhum canto livre: qualquer ponto da tela, do tamanho cheio ao menor. Sem ponto livre em nenhum tamanho, o que
+  // cobre a menor PARTE do carimbo (custo pela área dele): o menor cobre menos letra quando a tela é toda texto.
+  let fallback: StampSpot | null = null;
+  let fallbackScore = bestCost;
+  for (const s of STAMP_SCALES) {
+    const hw = g.halfW * s;
+    const hh = g.halfH * s;
+    const spot = placeFree(
+      [g.cx[first.side], fit(first.y)],
+      hw,
+      hh,
+      obstacles,
+      soft,
+      [STAMP_SIDE_MIN + hw, 1 - STAMP_SIDE_MIN - hw],
+      [STAMP_SAFE + hh, 1 - STAMP_SAFE - hh],
+    );
+    const found: StampSpot = { side: spot.x < 0.5 ? 'left' : 'right', y: spot.y, x: spot.x, ...(s < 1 ? { scale: s } : {}) };
+    if (spot.cost === 0) return found;
+    const score = spot.cost / (s * s);
+    if (score < fallbackScore - 1e-9) {
+      fallback = found;
+      fallbackScore = score;
+    }
+  }
+  return fallback ?? best;
 };
 
 /** Escala de entrada do carimbo (ele entra grande, 2,2 → 1). No lugar perto da borda, só o que cabe na tela: o
  * carimbo nunca sai cortado na borda enquanto encolhe. */
 export const STAMP_ENTRY_SCALE = 2.2;
 export const stampEntryScale = (spot: StampSpot, g: StampGeom) => {
-  const cx = g.cx[spot.side];
-  const room = Math.min(cx / g.halfW, (1 - cx) / g.halfW, spot.y / g.halfH, (1 - spot.y) / g.halfH);
+  const { cx, s } = stampCenter(spot, g);
+  const hw = g.halfW * s;
+  const hh = g.halfH * s;
+  const room = Math.min(cx / hw, (1 - cx) / hw, spot.y / hh, (1 - spot.y) / hh);
   return clamp(room, 1, STAMP_ENTRY_SCALE);
 };
 
@@ -529,8 +662,63 @@ export const placeBand = (preferred: number, w: number, half: number, hard: Rect
   return best;
 };
 
+/** Margem lateral (fração da largura) dos selos da tela (faixa do topo fora do centro, contador). */
+export const CHIP_SIDE = 0.04;
+
+/**
+ * Lugar (centro, fração) da faixa do topo ("GAMESBEAT · 13/10/2026", "GOLPE 1 · AGO 2026"): centrada, na altura de
+ * sempre ou na livre mais perto (`placeBand`); quando nenhuma altura centrada é livre (a coluna de texto da captura
+ * ocupa o meio de cima a baixo), o ponto livre mais perto fora da coluna, de lado. Sem ponto livre, o de menor
+ * sobreposição, com a manchete da imagem como obstáculo duro: a faixa nunca desce para cima da byline e do corpo só
+ * porque cobre um pouco menos.
+ */
+export const placeChip = (preferred: number, w: number, half: number, hard: Rect[], soft: Rect[], lo: number, hi: number) => {
+  const y = placeBand(preferred, w, half, hard, soft, lo, hi);
+  const centered: Rect = [0.5 - w / 2, y - half, w, half * 2];
+  const cost = boxCost(centered, hard, soft);
+  if (cost === 0 || hi <= lo) return { x: 0.5, y };
+  const hw = w / 2;
+  const first = clamp(preferred, lo, hi);
+  const spot = placeFree([0.5, first], hw, half, hard, soft, [CHIP_SIDE + hw, 1 - CHIP_SIDE - hw], [lo, hi]);
+  if (spot.cost === 0) return { x: spot.x, y: spot.y };
+  // Sem lugar livre: o topo de sempre quando ali ela só cobre letra da imagem e sair dele não ganha muito (o menor
+  // custo, sozinho, levava a faixa para o buraco da detecção, no meio do corpo da matéria).
+  const home: Rect = [0.5 - hw, first - half, w, half * 2];
+  const homeCost = boxCost(home, hard, soft);
+  if (boxCost(home, hard, []) < TOUCH * HARD_WEIGHT && Math.min(spot.cost, cost) > homeCost * CHIP_MOVE_GAIN) return { x: 0.5, y: first };
+  return spot.cost < cost - 1e-9 ? { x: spot.x, y: spot.y } : { x: 0.5, y };
+};
+
+/** Sem lugar livre, a faixa só sai do topo de sempre quando cobre menos que esta fração do que cobria lá. */
+const CHIP_MOVE_GAIN = 0.5;
+
+/**
+ * Caixa (fração da tela) do selo do canto (contador "3/5"): o canto pedido (`rect`, no topo) quando livre; senão o
+ * ponto livre mais perto dele entre o topo seguro e a legenda (`yr`, limites do centro); sem ponto livre, o de menor
+ * sobreposição. QA: o "3/5" encostava em "PRE-ORDER" no topo da página.
+ */
+export const placeCorner = (rect: Rect, hard: Rect[], soft: Rect[], yr: [number, number]): Rect => {
+  if (boxCost(rect, hard, soft) === 0) return rect;
+  const hw = rect[2] / 2;
+  const hh = rect[3] / 2;
+  const spot = placeFree([rect[0] + hw, rect[1] + hh], hw, hh, hard, soft, [CHIP_SIDE * 0.5 + hw, 1 - CHIP_SIDE * 0.5 - hw], yr);
+  return spot.cost < boxCost(rect, hard, soft) - 1e-9 ? [spot.x - hw, spot.y - hh, rect[2], rect[3]] : rect;
+};
+
+/** Fração máxima do texto que pula que pode ficar sobre letras da imagem; acima disso ele não entra (a legenda já diz
+ * a palavra): "VERSÃO" gigante cobria os resultados da busca que eram a prova. */
+export const POP_MAX_ON_TEXT = 0.12;
+
+/** Caixa do texto que pula (fração) com centro na altura `y`: largura `textW` e corpo `size` em px. */
+export const textPopRect = (y: number, textW: number, size: number, width: number, height: number): Rect => {
+  const w = Math.min(0.96, (textW * 1.08) / width);
+  const half = (size * 0.62) / height;
+  return [0.5 - w / 2, y - half, w, half * 2];
+};
+
 /** Altura (centro, fração) do texto que pula desviando das letras da imagem (`placeBand`): largura `textW` e corpo
- * `size` em px; a legenda (centro `avoid`, meia altura `captionHalf`) é obstáculo duro. */
+ * `size` em px; a legenda (centro `avoid`, meia altura `captionHalf`) e o texto da tela (`screen`: faixa do topo,
+ * carimbo, contador, a manchete da imagem) são obstáculos duros. */
 export const textPopY = (
   y: number,
   textW: number,
@@ -540,14 +728,22 @@ export const textPopY = (
   imageText: Rect[],
   avoid: number | null,
   captionHalf: number,
+  screen: Rect[] = [],
 ) => {
   const w = Math.min(0.96, (textW * 1.08) / width);
   const half = (size * 0.62) / height;
-  const hard: Rect[] = avoid !== null ? [[0, avoid - captionHalf, 1, captionHalf * 2]] : [];
+  const hard: Rect[] = avoid !== null ? [[0, avoid - captionHalf, 1, captionHalf * 2], ...screen] : [...screen];
   const lo = Math.max(0.15, STAMP_SAFE + half);
   const hi = Math.min(0.85, (avoid !== null && avoid > 0.5 ? avoid - captionHalf - 0.02 : 1 - STAMP_SAFE) - half);
   return hi > lo ? placeBand(y, w, half, hard, imageText, lo, hi) : y;
 };
+
+/**
+ * O texto que pula entra no lugar `rect`? Não quando cobre texto da tela ou a manchete da imagem (`hard`) ou mais que
+ * `POP_MAX_ON_TEXT` de letras da imagem (`soft`): sobre a captura cheia de texto não há lugar para palavra gigante.
+ */
+export const textPopFits = (rect: Rect, hard: Rect[], soft: Rect[]) =>
+  coveredShare(rect, hard) === 0 && coveredShare(rect, soft) <= POP_MAX_ON_TEXT;
 
 /** Área (fração da tela) das caixas `rects` coberta pela faixa horizontal [top, bottom]. */
 export const bandOverlap = (top: number, bottom: number, rects: Rect[]) =>
@@ -667,6 +863,28 @@ export const screenFrame = (variant: ScreenVariantId, width: number, height: num
     media = { x: content.x, y: content.y + header + content.h * 0.035, w: content.w, h: mediaH };
   }
   return { device, content, media };
+};
+
+/**
+ * Material real: a captura, o oficial e as fotos (do canal, livres, de banco) mostram o que é, e a tela que os emoldura
+ * é a PROVA. Cursor de mouse por cima entregava gravação de tela crua (QA: cursor sobre o logo da key art, sobre
+ * "THEFT" e sobre a manchete da matéria).
+ */
+const PROOF_PROVS: ReadonlySet<Prov> = new Set<Prov>(['own', 'official', 'capture', 'free', 'stock']);
+/** Respiro (fração do arquivo) em volta das letras que o alvo do cursor não pode tocar. */
+const CURSOR_TEXT_GAP = 0.03;
+
+/**
+ * O cursor do tratamento "tela" aparece? Nunca sobre material real (`prov`); na janela e no celular, só quando o
+ * alvo (o foco, `target`, fração do arquivo) não cai sobre letras da imagem (`textRects`, fração do arquivo): o
+ * cursor nunca pousa sobre manchete ou logo. No post de feed o alvo é o coração (fora da imagem).
+ */
+export const screenCursorShown = (prov: Prov | undefined, variant: ScreenVariantId, target: [number, number], textRects: Rect[]) => {
+  if (prov !== undefined && PROOF_PROVS.has(prov)) return false;
+  if (variant === 'feed') return true;
+  const [x, y] = target;
+  const g = CURSOR_TEXT_GAP;
+  return !textRects.some((r) => x >= r[0] - g && x <= r[0] + r[2] + g && y >= r[1] - g && y <= r[1] + r[3] + g);
 };
 
 /** Escala máxima da imagem dentro da tela: o movimento lento (`innerScale` do `Screen`) e o zoom depois do clique. */
@@ -951,6 +1169,10 @@ export const cameraAt = (frame: number, fxs: TimelineFx[] | undefined, ctx: Came
   }
   return { scale, x: x + sx / ctx.width + whip, y: y + sy / ctx.height, rot, blur };
 };
+
+/** Caixa `r` (fração da tela) pela câmera por eventos `cam` (origem 0 0: p' = x + s·p), cortada na tela. */
+export const rectThroughCamera = (r: Rect, cam: Camera): Rect | null =>
+  clipRect(cam.x + r[0] * cam.scale, cam.y + r[1] * cam.scale, r[2] * cam.scale, r[3] * cam.scale);
 
 export const isIdentity = (cam: Camera) =>
   Math.abs(cam.scale - 1) < 1e-6 && Math.abs(cam.x) < 1e-6 && Math.abs(cam.y) < 1e-6 && Math.abs(cam.rot) < 1e-6 && cam.blur < 0.05;

@@ -94,7 +94,8 @@ def test_source_capture_stays_readable() -> None:
     mostrava uma faixa do meio da página, com a manchete cortada dos dois lados)."""
     scene = _read(COMP / "SceneView.tsx")
     assert "const backdrop = cardFrom > 0 ? interpolate(frame, [cardFrom," in scene
-    assert "cardDim(DIM[kind] ?? 0, scene.bg_luma) * backdrop" in scene and "(BLUR[kind] ?? 0) * backdrop" in scene
+    assert "cardDim(DIM[kind] ?? 0, scene.bg_luma) * backdrop" in scene
+    assert "Math.max(BLUR[kind] ?? 0, textBehind ? CARD_TEXT_BLUR : 0) * backdrop" in scene
     treatments = _read(COMP / "Treatments.tsx")
     assert "if (page) return 'window';" in treatments
     assert "screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture')" in treatments
@@ -349,6 +350,55 @@ out.screenMedia = win.media;
 out.textScreen = m.textInScreen(head, 16 / 9, win.media, [0.5, 0.5], 1, 1920, 1080);
 out.textScreenZoom = m.textInScreen(head, 16 / 9, win.media, [0.5, 0.5], m.screenInnerMax('ken_burns_in', 0.14, false), 1920, 1080);
 out.bandOverlap = [m.bandOverlap(0.7, 0.9, [[0, 0.8, 1, 0.05]]), m.bandOverlap(0.7, 0.9, [[0, 0.2, 1, 0.1]])];
+// r4 (QA do prj_gq4krrs11w): captura na janela com faixa do topo, legenda e a página toda em letras.
+// "CONFIRMADO" sobre "downloads": os dois cantos cobrem a manchete; o carimbo vai para o ponto livre (aqui, entre a
+// faixa e a manchete, à direita, menor) e nunca fica sobre a manchete guardada.
+const chipTop = [0.3, 0.05, 0.4, 0.09];
+const pageHead = [0.13, 0.26, 0.68, 0.3];
+const pageBody = [[0.13, 0.6, 0.72, 0.06], [0.13, 0.66, 0.72, 0.06], [0.14, 0.18, 0.18, 0.09]];
+const stampEset = m.placeStamp(right, geom, [chipTop, caption, pageHead], pageBody);
+out.stampEset = stampEset;
+out.rectEset = m.stampRect(stampEset, geom);
+out.stampEsetHard = [chipTop, caption, pageHead];
+out.stampEsetSoft = pageBody;
+out.entryEset = m.stampEntryScale(stampEset, geom);
+// Sem ponto livre nem menor: o que cobre menos, nunca a legenda nem a manchete.
+const stampFull = m.placeStamp(right, geom, [caption, [0.1, 0.25, 0.8, 0.2]], [[0, 0, 1, 0.25], [0, 0.45, 1, 0.25]]);
+out.rectFull = m.stampRect(stampFull, geom);
+// Faixa do topo com a coluna de texto no meio de cima a baixo: vai de lado; sem lugar livre e só letra da imagem no
+// topo, fica no topo; com a manchete no topo (dura), sai dele.
+out.chipSide = m.placeChip(0.1, 0.3, 0.04, [caption], [[0.36, 0.0, 0.28, 0.7]], 0.09, 0.65);
+out.chipHome = m.placeChip(0.1, 0.3, 0.04, [caption], [[0, 0, 1, 0.7]], 0.09, 0.65);
+out.chipHard = m.placeChip(0.1, 0.3, 0.04, [caption, [0.2, 0.02, 0.6, 0.15]], [[0, 0, 1, 0.7]], 0.09, 0.65);
+// Contador "3/5" sobre "PRE-ORDER": sai do canto para o ponto livre mais perto.
+const counter = [0.87, 0.16, 0.09, 0.08];
+out.counterFree = m.placeCorner(counter, [caption], [[0.1, 0.4, 0.5, 0.1]], [0.2, 0.62]);
+out.counterMoved = m.placeCorner(counter, [caption], [[0.15, 0.14, 0.85, 0.36]], [0.2, 0.62]);
+// Texto que pula: sobre a página de resultados (letras na maior parte) não entra; sobre foto com letreiro pequeno, entra.
+const popRect = m.textPopRect(0.42, 600, 200, 1920, 1080);
+out.popOnPage = m.textPopFits(popRect, [], [[0.25, 0.1, 0.5, 0.7]]);
+out.popOnPhoto = m.textPopFits(popRect, [], [[0.3, 0.4, 0.05, 0.03]]);
+out.popOnChip = m.textPopFits(popRect, [[0.3, 0.38, 0.4, 0.08]], []);
+out.popYScreen = m.textPopY(0.42, 600, 200, 1920, 1080, [], 0.8, 0.06, [[0, 0.3, 1, 0.25]]);
+// Enquadramento 1,25x que cortava "PRE-ORDER" na direita: a janela anda para conter a manchete; a manchete larga
+// demais faz a escala descer; sem manchete, igual.
+out.framedShift = m.keptFraming({ scale: 1.25, x: 0.411, y: 0.396 }, [0.16, 0.14, 0.68, 0.36]);
+out.framedShrink = m.keptFraming({ scale: 1.5, x: 0.5, y: 0.5 }, [0.05, 0.3, 0.9, 0.1]);
+out.framedNone = m.keptFraming({ scale: 1.25, x: 0.3, y: 0.3 }, null);
+out.framedFree = m.keptFraming({ scale: 1.25, x: 0.5, y: 0.5 }, [0.4, 0.4, 0.2, 0.1]);
+// Cursor do tratamento "tela": nunca sobre material real; nas outras, nunca sobre letras.
+out.cursor = {
+  capture: m.screenCursorShown('capture', 'window', [0.5, 0.5], []),
+  official: m.screenCursorShown('official', 'phone', [0.5, 0.5], []),
+  graphic: m.screenCursorShown('graphic', 'window', [0.5, 0.5], []),
+  graphicOnText: m.screenCursorShown('graphic', 'window', [0.5, 0.5], [[0.3, 0.45, 0.4, 0.1]]),
+  feed: m.screenCursorShown(undefined, 'feed', [0.5, 0.5], [[0.3, 0.45, 0.4, 0.1]]),
+  old: m.screenCursorShown(undefined, 'window', [0.5, 0.5], []),
+};
+// Letras pela câmera por eventos (punch no centro) e o peso do tempo do plano.
+out.camRect = m.rectThroughCamera([0.4, 0.4, 0.2, 0.2], { scale: 2, x: -0.5, y: -0.5, rot: 0, blur: 0 });
+const brief = m.timeWeighted([[0, 0, 1, 0.5]], 0.2);
+out.costWeighted = [m.boxCost([0, 0, 0.5, 0.5], [], [[0, 0, 1, 0.5]]), m.boxCost([0, 0, 0.5, 0.5], [], brief)];
 out.flow = m.flowRows([300, 200, 900, 100, 100], 40, 1000);
 out.entry = [9, 12, 30, 60, 0].map((f) => m.entryFrames(f, 30));
 out.entryMax = m.ENTRY_MAX_S;
@@ -651,19 +701,123 @@ def test_image_letters_follow_camera_framing_and_screen_window(fx_math: dict) ->
     assert hit == pytest.approx(0.05) and miss == 0
 
 
+def test_stamp_leaves_both_corners_for_a_free_spot_and_never_covers_the_headline(fx_math: dict) -> None:
+    """QA r2/r3 do prj_gq4krrs11w: "CONFIRMADO" sobre "downloads" na manchete da ESET. A causa: o carimbo só tinha os dois
+    cantos (7% da borda) e as letras da imagem eram obstáculo "macio"; com a captura cheia de texto na janela, os dois
+    cantos cobriam letras e o de menor custo caía na ponta da manchete. Agora ele procura um ponto livre em qualquer
+    lugar da tela, também menor, e a manchete guardada é obstáculo duro."""
+    rect = fx_math["rectEset"]
+    assert all(_overlap(rect, o) == 0 for o in fx_math["stampEsetHard"])
+    assert all(_overlap(rect, o) == 0 for o in fx_math["stampEsetSoft"])
+    spot = fx_math["stampEset"]
+    assert "x" in spot  # fora dos dois cantos de sempre
+    safe = fx_math["stampSafe"]
+    assert rect[1] >= safe - 1e-9 and rect[1] + rect[3] <= 1 - safe + 1e-9
+    assert rect[0] >= 0 and rect[0] + rect[2] <= 1
+    # A entrada (escala 2,2 → 1) não passa da tela no lugar novo.
+    assert rect[0] + rect[2] / 2 + rect[2] / 2 * fx_math["entryEset"] <= 1 + 1e-9
+    # Sem ponto livre: nunca sobre a legenda nem sobre a manchete (só sobre as outras letras).
+    full = fx_math["rectFull"]
+    assert _overlap(full, [0, 0.7, 1, 0.2]) == 0 and _overlap(full, [0.1, 0.25, 0.8, 0.2]) == 0
+
+
+def test_chip_goes_sideways_stays_home_or_leaves_the_headline(fx_math: dict) -> None:
+    """QA: "ANÚNCIO DE 10/11 · NUVEM" desceu para cima da byline e do corpo da Windows Central (o menor custo levava a
+    faixa para o buraco da detecção); "GOLPE 1"/"JÁ BAIXEI" sobre a linha de categoria. Com a coluna de texto no meio,
+    a faixa vai de lado; sem lugar livre e só letra da imagem no topo, fica no topo; sobre a manchete, sai."""
+    side = fx_math["chipSide"]
+    assert side["x"] + 0.15 <= 0.36 + 1e-9 or side["x"] - 0.15 >= 0.64 - 1e-9
+    assert side["y"] == pytest.approx(0.1)  # na mesma altura, de lado
+    assert fx_math["chipHome"] == pytest.approx({"x": 0.5, "y": 0.1})
+    hard = fx_math["chipHard"]
+    box = [hard["x"] - 0.15, hard["y"] - 0.04, 0.3, 0.08]
+    assert _overlap(box, [0.2, 0.02, 0.6, 0.15]) == 0 and _overlap(box, [0, 0.7, 1, 0.2]) == 0
+
+
+def test_counter_leaves_image_letters(fx_math: dict) -> None:
+    """QA: o contador "3/5" encostava em "PRE-ORDER". Livre, no canto de sempre; sobre letras, o ponto livre mais
+    perto, acima da legenda."""
+    assert fx_math["counterFree"] == pytest.approx([0.87, 0.16, 0.09, 0.08])
+    moved = fx_math["counterMoved"]
+    assert _overlap(moved, [0.15, 0.14, 0.85, 0.36]) == 0 and _overlap(moved, [0, 0.7, 1, 0.2]) == 0
+    assert moved[0] >= 0 and moved[0] + moved[2] <= 1
+
+
+def test_text_pop_skips_capture_text_and_screen_text(fx_math: dict) -> None:
+    """QA: "VERSÃO" gigante cobria os resultados da busca (a prova); "19" atrás da faixa "SAIU 19/11". Sobre a página
+    de letras ou sobre texto da tela, o texto que pula não entra; sobre foto com um letreiro pequeno, entra. O texto da
+    tela também empurra a altura dele."""
+    assert fx_math["popOnPage"] is False
+    assert fx_math["popOnPhoto"] is True
+    assert fx_math["popOnChip"] is False
+    half = fx_math["popPop"]["half"]
+    y = fx_math["popYScreen"]
+    assert y + half <= 0.3 + 1e-9 or y - half >= 0.55 - 1e-9
+
+
+def test_framing_keeps_the_headline_inside_the_window(fx_math: dict) -> None:
+    """QA: o plano 1,25x da página de pré-venda saía "PRE-ORDEI" (cortado na direita). A janela do enquadramento anda
+    até conter a manchete guardada, com margem; larga demais, a escala desce; sem manchete ou já dentro, igual."""
+    shift = fx_math["framedShift"]
+    win = 1 / shift["scale"]
+    left = shift["x"] - win / 2
+    assert left <= 0.16 - 0.03 + 1e-6 and left + win >= 0.84 + 0.03 - 1e-6
+    shrink = fx_math["framedShrink"]
+    assert shrink["scale"] == pytest.approx(1 / (0.9 + 0.06), rel=1e-3) and shrink["scale"] < 1.5
+    assert fx_math["framedNone"] == {"scale": 1.25, "x": 0.3, "y": 0.3}
+    assert fx_math["framedFree"] == {"scale": 1.25, "x": 0.5, "y": 0.5}
+
+
+def test_screen_cursor_never_on_proof_nor_on_letters(fx_math: dict) -> None:
+    """QA: cursor do mouse na key art (sobre o logo), sobre "THEFT" no pré-venda e na manchete da ESET. Ele vinha do
+    tratamento "tela" do renderer (a captura do Playwright não tem cursor): sai do material real e das letras."""
+    cur = fx_math["cursor"]
+    assert cur["capture"] is False and cur["official"] is False
+    assert cur["graphic"] is True and cur["graphicOnText"] is False
+    assert cur["feed"] is True and cur["old"] is True
+    screen = _read(COMP / "Treatments.tsx")
+    assert "screenCursorShown(scene.prov, variant, [fx, fy], pRects({ rects: scene.text_rects }))" in screen
+    assert "visible: path.visible && cursorOn" in screen
+
+
+def test_letters_follow_event_camera_and_short_shots_weigh_less(fx_math: dict) -> None:
+    """A faixa e o carimbo ficam a cena inteira: as letras também contam onde a câmera por eventos (zoom no retângulo,
+    punch) as leva, e o plano curto pesa menos que o quadro que fica o resto do tempo."""
+    assert fx_math["camRect"] == pytest.approx([0.3, 0.3, 0.4, 0.4])
+    full, brief = fx_math["costWeighted"]
+    assert brief == pytest.approx(full * 0.2)
+    src = _read(COMP / "SceneView.tsx")
+    assert "const imageText = [...plainText, ...throughCamera(plainText)];" in src
+    assert "timeWeighted(selfRects(shot?.framing ?? null, shot?.motion || scene.motion), share)" in src
+    assert "keptFraming(shot.framing, shot.src ? (pRects({ rect: shot.keep })[0] ?? null) : sceneKeep)" in src
+
+
+def test_caption_band_blurs_letters_and_cards_blur_text_behind() -> None:
+    """QA: a legenda sobre o logo GTA VI (Dexerto, key art) e "Arquivo pesado"/"njRAT + DCRat" sobre letras legíveis.
+    A tarja da legenda sobre letras da imagem também desfoca o que está atrás; o cartão sobre imagem com letras desfoca
+    forte."""
+    captions = _read(COMP / "Captions.tsx")
+    assert "export const SCRIM_BLUR_TEXT = 30;" in captions
+    assert "backdropFilter: `blur(${blurPx}px)`" in captions
+    scene = _read(COMP / "SceneView.tsx")
+    assert "soften={scrimAlpha !== undefined}" in scene
+    assert "const CARD_TEXT_BLUR = 22;" in scene and "const CARD_TEXT_DIM = 0.7;" in scene
+
+
 def test_sceneview_feeds_image_letters_to_stamp_band_and_scrim() -> None:
     """A cena leva as letras da imagem (`text_rects`) para o carimbo, a faixa do topo e a tarja; a fonte solta e o
     avatar entram como texto da tela; a legenda deixa a faixa do avatar livre."""
     src = _read(COMP / "SceneView.tsx")
-    assert "const imageText = imageTextOnScreen(scene, {" in src
+    assert "const plainText = lettersVisible ? imageTextOnScreen(scene, textCtx) : [];" in src
+    assert "const plainKeep = lettersVisible ? imageTextOnScreen(scene, textCtx, 'keep') : [];" in src
     assert "placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), geom, obstacles, imageText)" in src
-    assert "placeBand(top[1] + half, top[2], half, hard, imageText, lo, hi)" in src
-    assert "<Headline text={headline} style={cards} lang={lang} y={headY} />" in src
+    assert "placeChip(top[1] + half, top[2], half, hard, imageText, lo, hi)" in src
+    assert "<Headline text={headline} style={cards} lang={lang} y={headY} x={headX} />" in src
     assert "entryScale={stampScale}" in src and "alpha={scrimAlpha}" in src
     assert "reserve={captionReserve}" in src
     assert "imageText={imageText}" in src  # o texto que pula também desvia
-    assert "textPopY(y, label.length" in _read(COMP / "fx" / "FxLayer.tsx")
-    assert "obstacles.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);" in src
+    assert "textPopY(y, textW, size, width, height, imageText, avoid, captionHalf, screenText)" in _read(COMP / "fx" / "FxLayer.tsx")
+    assert "screenText.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);" in src
     captions = _read(COMP / "Captions.tsx")
     assert "const side = captionSides(height > width ? SIDE : SIDE_WIDE, reserve, line.from, line.to);" in captions
     assert "export const SCRIM_ALPHA_TEXT = 0.85;" in captions

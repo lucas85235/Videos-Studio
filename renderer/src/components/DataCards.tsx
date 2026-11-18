@@ -816,12 +816,16 @@ export const Headline: React.FC<{
   /** Centro (fração da altura) fora do topo: a faixa desceu porque no topo ela cobriria a manchete ou o logo da
    * imagem (`placeBand`). Ausente: o topo de sempre. */
   y?: number;
-}> = ({ text, style, lang, y }) => {
+  /** Centro (fração da largura) fora do meio: a coluna de texto da captura ocupava o meio em toda altura livre e a
+   * faixa foi para o lado (`placeChip`). Ausente: centrada. */
+  x?: number;
+}> = ({ text, style, lang, y, x }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, u } = useLayout();
   const s = spring({ frame, fps, config: { damping: 16, stiffness: 170, mass: 0.6 } });
   const { label, maxW, padX, size, top } = headlineBox(text, style, lang, width, height, y);
+  const shift = x === undefined ? '' : `translateX(${(x - 0.5) * width}px) `;
   return (
     <div
       style={{
@@ -831,7 +835,7 @@ export const Headline: React.FC<{
         top,
         display: 'flex',
         justifyContent: 'center',
-        transform: `translateY(calc(-50% + ${interpolate(s, [0, 1], [-height * 0.08, 0])}px))`,
+        transform: `${shift}translateY(calc(-50% + ${interpolate(s, [0, 1], [-height * 0.08, 0])}px))`,
         opacity: Math.min(1, s * 1.5),
       }}
     >
@@ -891,11 +895,14 @@ export const stampGeom = (text: string, style: TextCardStyle, lang: string, widt
   return { cx: { left: cx, right: 1 - cx }, halfW: rw / 2 / width, halfH: rh / 2 / height };
 };
 
-/** Carimbo solto no lugar `spot`: a borda dele a STAMP_MARGIN do lado, o centro na altura `y`. */
+/** Carimbo solto no lugar `spot`: a borda dele a STAMP_MARGIN do lado, o centro na altura `y`; com `x` (lugar livre
+ * fora dos dois cantos), o centro em `x`. */
 const stampPlace = (spot: StampSpot, width: number, height: number): React.CSSProperties =>
-  spot.side === 'left'
-    ? { position: 'absolute', left: width * STAMP_MARGIN, top: height * spot.y }
-    : { position: 'absolute', right: width * STAMP_MARGIN, top: height * spot.y };
+  spot.x !== undefined
+    ? { position: 'absolute', left: width * spot.x, top: height * spot.y }
+    : spot.side === 'left'
+      ? { position: 'absolute', left: width * STAMP_MARGIN, top: height * spot.y }
+      : { position: 'absolute', right: width * STAMP_MARGIN, top: height * spot.y };
 
 /** Carimbo girado −10° com borda na cor de destaque; entra com mola de escala 2,2 → 1. */
 export const Stamp: React.FC<{
@@ -920,8 +927,17 @@ export const Stamp: React.FC<{
   const size = fitted.size;
   const border = Math.max(3, u * 0.007);
   const place: React.CSSProperties = anchor ?? stampPlace(spot, width, height);
+  // Lugar livre fora dos cantos: centrado no ponto e, quando só coube menor, no tamanho que coube.
+  const centered = !anchor && spot.x !== undefined;
+  const fit = anchor ? 1 : (spot.scale ?? 1);
   return (
-    <div style={{ ...place, transform: `${anchor ? '' : 'translateY(-50%) '}rotate(-${STAMP_ROT}deg) scale(${interpolate(s, [0, 1], [entryScale, 1])})`, opacity: Math.min(1, s * 2) }}>
+    <div
+      style={{
+        ...place,
+        transform: `${anchor ? '' : centered ? 'translate(-50%, -50%) ' : 'translateY(-50%) '}rotate(-${STAMP_ROT}deg) scale(${interpolate(s, [0, 1], [entryScale, 1]) * fit})`,
+        opacity: Math.min(1, s * 2),
+      }}
+    >
       <div
         style={{
           padding: `${size * 0.16}px ${size * 0.34}px ${size * 0.1}px`,

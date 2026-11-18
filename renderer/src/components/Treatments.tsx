@@ -7,14 +7,15 @@
 // - collage: a imagem vira um recorte de papel (borda branca rasgada, sombra, fita adesiva) sobre papel kraft,
 //   com o tremor de stop motion (8 poses por segundo).
 // - screen: a imagem aparece dentro de uma janela, de um celular ou de um post de feed, com cursor que aponta o
-//   foco da cena e clica. A interface não tem texto legível (só blocos).
+//   foco da cena e clica (só fora do material real e longe das letras da imagem: `screenCursorShown`). A interface
+//   não tem texto legível (só blocos).
 //
 // Tudo é CSS/SVG desenhado aqui (sem imagem extra): a <Img> do Remotion espera a imagem carregar antes do quadro.
 
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { hasEffect, imageFilter } from '../look';
-import { keepTransform, pRects, type PxRect, rectThrough, screenFrame } from './fx/math';
+import { keepTransform, pRects, type PxRect, rectThrough, screenCursorShown, screenFrame } from './fx/math';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type SceneTreatment, type TextCardStyle, type TimelineScene } from '../types';
 
 export type TreatmentProps = {
@@ -474,7 +475,9 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   // Na continuação o cursor já está na tela, perto do alvo, e só anda até ele.
   const start: [number, number] = cont ? [target[0] + unit * 0.12, target[1] + unit * 0.09] : [width * 1.04, height * (vertical ? 0.86 : 0.95)];
   const path = cursorPath(frame, dur, start, target);
-  const cur = cont ? { ...path, visible: true } : path;
+  // Captura, oficial e foto são a prova: sem cursor (nem o anel do clique) por cima; nas outras, nunca sobre letras.
+  const cursorOn = screenCursorShown(scene.prov, variant, [fx, fy], pRects({ rects: scene.text_rects }));
+  const cur = cont ? { ...path, visible: cursorOn } : { ...path, visible: path.visible && cursorOn };
   // Depois do clique na janela/celular, a imagem aproxima do ponto clicado.
   const clickZoom = variant === 'feed' ? 0 : interpolate(frame, [dur * 0.55, dur * 0.8], [0, 1], { ...clamp, easing: Easing.out(Easing.cubic) });
   const inner = keptZoom(scene, innerScale(scene.motion, zoomStrength * 0.6, p) * (1 + clickZoom * 0.12), [fx, fy]);
@@ -603,7 +606,7 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
                     alignItems: 'center',
                   }}
                 >
-                  <Heart size={icon} filled={cur.clicked ? interpolate(frame, [dur * 0.55, dur * 0.55 + 8], [0.6, 1], clamp) : 0} />
+                  <Heart size={icon} filled={cursorOn && cur.clicked ? interpolate(frame, [dur * 0.55, dur * 0.55 + 8], [0.6, 1], clamp) : 0} />
                   <IconCircle size={icon} />
                   <IconSend size={icon} />
                 </div>

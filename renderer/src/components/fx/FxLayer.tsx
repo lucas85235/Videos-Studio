@@ -22,6 +22,8 @@ import {
   pStr,
   type Rect,
   SCREEN_FX,
+  textPopFits,
+  textPopRect,
   textPopY,
 } from './math';
 
@@ -80,6 +82,11 @@ type ScreenProps = {
   /** Letras da própria imagem na tela (manchete da captura, logo: `text_rects`), fração da tela: o texto que pula
    * desvia delas quando há altura livre ("JANEIRO" sobre o "grand theft auto" do logo). */
   imageText?: Rect[];
+  /** Texto que a tela já desenha (faixa do topo, carimbo, contador, fonte, avatar) e a manchete da imagem: o texto
+   * que pula nunca o cobre ("19" atrás da faixa "SAIU 19/11"); sem lugar, ele não entra. */
+  screenText?: Rect[];
+  /** Caixa (fração) de cada contador já posto pela cena (`placeCorner`), pelo índice do evento em `fx`. */
+  counterAt?: Record<number, Rect>;
 };
 
 /** Eventos de tela por cima do fundo e das texturas, abaixo do cartão e das legendas. Sem evento de tela: nada. */
@@ -95,16 +102,18 @@ export const FxLayer: React.FC<ScreenProps> = ({
   minTop,
   lang,
   imageText = [],
+  screenText = [],
+  counterAt = {},
 }) => {
   const { fps } = useVideoConfig();
   const ctx: FxContext = { fps, frames: scene.durationInFrames, cuts };
-  const items = (fx ?? []).filter((e) => SCREEN_FX.has(e.type));
+  const items = (fx ?? []).map((e, index) => ({ e, index })).filter(({ e }) => SCREEN_FX.has(e.type));
   if (!items.length) return null;
   // Faixa da legenda com uma margem (o meme de canto sobe para fora dela).
   const captionBand: Band | null = captionsShown ? [captionMid - captionHalf - 0.02, captionMid + captionHalf + 0.02] : null;
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
-      {items.map((e, i) => {
+      {items.map(({ e, index }, i) => {
         const span = fxSpan(e, ctx);
         const len = span.to - span.from;
         const params = (e.params ?? {}) as FxParams;
@@ -120,6 +129,7 @@ export const FxLayer: React.FC<ScreenProps> = ({
                 avoid={captionsShown ? captionMid : null}
                 captionHalf={captionHalf}
                 imageText={imageText}
+                screenText={screenText}
                 seed={`${scene.seed}-${span.from}`}
                 lang={lang}
               />
@@ -144,7 +154,7 @@ export const FxLayer: React.FC<ScreenProps> = ({
             node = pBool(params, 'flash', true) ? <Flash color="#FFFFFF" amount={0.55} len={Math.min(len, 4)} /> : null;
             break;
           case 'counter':
-            node = <Counter params={params} len={len} style={style} minTop={minTop} last={span.to >= scene.durationInFrames} />;
+            node = <Counter params={params} len={len} style={style} minTop={minTop} last={span.to >= scene.durationInFrames} at={counterAt[index]} />;
             break;
           case 'pip':
             node = <Pip params={params} len={len} assetBaseUrl={assetBaseUrl} last={span.to >= scene.durationInFrames} />;
@@ -172,9 +182,10 @@ const TextPop: React.FC<{
   avoid: number | null;
   captionHalf?: number;
   imageText?: Rect[];
+  screenText?: Rect[];
   seed: string;
   lang: string;
-}> = ({ params, len, text, style, avoid, captionHalf = 0, imageText = [], seed, lang }) => {
+}> = ({ params, len, text, style, avoid, captionHalf = 0, imageText = [], screenText = [], seed, lang }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 3);
@@ -192,8 +203,13 @@ const TextPop: React.FC<{
   y = Math.min(0.85, Math.max(0.15, y));
   // Sobre letras da imagem (logo, manchete), a altura livre mais perto entre o topo seguro e a legenda; sem altura
   // livre, a de menor sobreposição. Sem letra na imagem, a altura de sempre.
-  if (imageText.length) {
-    y = textPopY(y, label.length * charEm(font) * size + (emoji ? size * 1.2 : 0), size, width, height, imageText, avoid, captionHalf);
+  const textW = label.length * charEm(font) * size + (emoji ? size * 1.2 : 0);
+  if (imageText.length || screenText.length) {
+    y = textPopY(y, textW, size, width, height, imageText, avoid, captionHalf, screenText);
+    // Sem lugar livre do texto da tela e da manchete, ou quase todo sobre letras da imagem: não entra (a legenda já
+    // diz a palavra). "VERSÃO" gigante cobria os resultados da busca que eram a prova.
+    const caption: Rect[] = avoid !== null ? [[0, avoid - captionHalf, 1, captionHalf * 2]] : [];
+    if (!textPopFits(textPopRect(y, textW, size, width, height), [...screenText, ...caption], imageText)) return null;
   }
   // Bounce: mola frouxa (passa de 1 e volta), rotação de ±4° pela semente, que assenta um pouco.
   const pop = spring({ frame: f, fps, config: { damping: 7, stiffness: 210, mass: 0.55 } });
@@ -369,28 +385,32 @@ export const counterRect = (params: FxParams, width: number, height: number, min
   return [x / width, Math.max(minTop, 0.05) + (size * 0.2) / height, w / width, (size * 1.34) / height];
 };
 
-const Counter: React.FC<{ params: FxParams; len: number; style: RenderStyle; minTop: number; last: boolean }> = ({
-  params,
-  len,
-  style,
-  minTop,
-  last,
-}) => {
+const Counter: React.FC<{
+  params: FxParams;
+  len: number;
+  style: RenderStyle;
+  minTop: number;
+  last: boolean;
+  /** Caixa (fração) posta pela cena fora das letras da imagem (`placeCorner`); ausente: o canto de cima. */
+  at?: Rect;
+}> = ({ params, len, style, minTop, last, at }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const text = counterText(params);
   if (!text) return null;
   const cards = style.textCards;
-  const left = pStr(params, 'side', 'right') === 'left';
   const size = Math.min(width, height) * 0.06;
+  const left = at ? at[0] + at[2] / 2 < 0.5 : pStr(params, 'side', 'right') === 'left';
+  const side = width * (height > width ? 0.06 : 0.04);
+  const edge = at ? (left ? at[0] * width : (1 - at[0] - at[2]) * width) : side;
   const pop = spring({ frame: f, fps, config: { damping: 10, stiffness: 220, mass: 0.5 } });
   const out = last ? 0 : exitK(f, len);
   return (
     <div
       style={{
         position: 'absolute',
-        top: Math.max(minTop, 0.05) * height + size * 0.2,
-        [left ? 'left' : 'right']: width * (height > width ? 0.06 : 0.04),
+        top: at ? at[1] * height : Math.max(minTop, 0.05) * height + size * 0.2,
+        [left ? 'left' : 'right']: edge,
         transform: `scale(${interpolate(pop, [0, 1], [0.3, 1]) * (1 - 0.3 * out)})`,
         transformOrigin: left ? '0% 0%' : '100% 0%',
         opacity: 1 - out,

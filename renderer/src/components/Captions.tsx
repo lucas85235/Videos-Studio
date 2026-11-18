@@ -189,22 +189,29 @@ const SCRIM_ALPHA = 0.6;
 /** Escuro da tarja quando a legenda passa sobre letras da imagem (logo, corpo de matéria): 60% ainda deixava as
  * letras de trás se misturarem com as da legenda. */
 export const SCRIM_ALPHA_TEXT = 0.85;
+/** Desfoque (px a 1080) do que fica atrás da tarja quando a legenda passa sobre letras da imagem: só escurecer ainda
+ * deixava o "auto" do logo e o corpo da matéria legíveis entre as palavras da legenda. */
+export const SCRIM_BLUR_TEXT = 30;
 
 /**
  * Tarja escura atrás da legenda (degradê que some nas pontas), sobre fundo de imagem em brilho cheio: com logo, texto
  * de matéria ou foto carregada atrás, as letras da legenda deixam de se misturar com as da imagem. `center` e `half`
  * em fração da altura (os da legenda); `opacity` some com a tarja quando o fundo escurece (cartão de dado entrando).
  */
-export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: number; alpha?: number }> = ({
+export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: number; alpha?: number; soften?: boolean }> = ({
   center,
   half,
   opacity = 1,
   alpha = SCRIM_ALPHA,
+  soften = false,
 }) => {
-  const { height } = useVideoConfig();
+  const { width, height } = useVideoConfig();
   const top = Math.max(0, center - half * SCRIM_REACH);
   const bottom = Math.min(1, center + half * SCRIM_REACH);
   const shade = `rgba(0,0,0,${alpha})`;
+  // Sobre letras da imagem, a faixa também desfoca o que está atrás (some nas pontas, como o degradê).
+  const blurPx = soften ? (SCRIM_BLUR_TEXT * Math.min(width, height)) / 1080 : 0;
+  const fade = 'linear-gradient(to bottom, transparent 0%, #000 30%, #000 70%, transparent 100%)';
   return (
     <div
       style={{
@@ -214,6 +221,9 @@ export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: nu
         top: top * height,
         height: (bottom - top) * height,
         background: `linear-gradient(to bottom, rgba(0,0,0,0) 0%, ${shade} 32%, ${shade} 68%, rgba(0,0,0,0) 100%)`,
+        ...(blurPx
+          ? { backdropFilter: `blur(${blurPx}px)`, WebkitBackdropFilter: `blur(${blurPx}px)`, WebkitMaskImage: fade, maskImage: fade }
+          : {}),
         opacity,
         pointerEvents: 'none',
       }}

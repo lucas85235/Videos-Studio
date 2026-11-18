@@ -24,18 +24,23 @@ import { counterRect, FxAnchored, FxLayer } from './fx/FxLayer';
 import {
   ANCHORED_FX,
   bandOverlap,
+  cameraAt,
   cameraFx,
   cardBackdropOff,
   cardDim,
   cutsOf,
   entryFrames,
   fxRects,
+  fxSpan,
   type ImageBox,
   isEasing,
-  placeBand,
+  keptFraming,
+  placeChip,
+  placeCorner,
   placeStamp,
   pRects,
   type Rect,
+  rectThroughCamera,
   rectThroughFraming,
   screenFrame,
   screenInnerMax,
@@ -45,10 +50,12 @@ import {
   STAMP_GAP,
   STAMP_SAFE,
   stampEntryScale,
+  stampRect,
   type StampSpot,
   textInScreen,
   type TextLayer,
   textOnScreen,
+  timeWeighted,
 } from './fx/math';
 import { MapCard, mapItems } from './MapCard';
 import { PresenterLayer, presenterRect } from './PresenterLayer';
@@ -59,7 +66,7 @@ import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './Te
 import { TransitionIn } from './TransitionIn';
 import { ShotStack, shotScene } from './ShotStack';
 import { focusXY, isTreatment, sceneScreenVariant, TreatmentLayer, treatmentKeep } from './Treatments';
-import { keepOnScreen, VisualLayer } from './VisualLayer';
+import { keepOnScreen, keepRect, VisualLayer } from './VisualLayer';
 
 type Props = {
   scene: TimelineScene;
@@ -88,6 +95,16 @@ const CARD_VIEWS: Partial<Record<SceneKind, React.FC<CardViewProps>>> = {
 const DIM: Partial<Record<SceneKind, number>> = { title: 0.55, count: 0.55, quote: 0.55, text: 0.62, stat: 0.6, compare: 0.6, chart: 0.62 };
 /** Desfoque do fundo (px a 1080): os cartões ficam sobre a imagem (em geral reaproveitada) desfocada. */
 const BLUR: Partial<Record<SceneKind, number>> = { stat: 8, compare: 8, chart: 8, text: 6, title: 4 };
+/** Desfoque (px a 1080) e escurecimento mínimo do fundo do cartão quando a imagem de trás tem letras: com 4-8 px a
+ * manchete da captura e o texto do slate continuavam legíveis atrás do título ("njRAT + DCRat" sobre a manchete da
+ * ESET, "Arquivo pesado" sobre o texto da ESRB). */
+const CARD_TEXT_BLUR = 22;
+const CARD_TEXT_DIM = 0.7;
+
+/** A imagem da cena (ou a de algum plano dela) tem letras conhecidas (`text_rects`). */
+const imageHasText = (scene: TimelineScene, slots: ShotSlot[]) =>
+  Boolean(scene.text_rects?.length) || slots.some((s) => !s.shot?.video && Boolean(s.shot?.text_rects?.length));
+
 /** Sem imagem, o cartão tipográfico fica sobre o fundo com textura do estilo, clareado (`VisualLayer` com `solid`; com
  * imagem, ela só escurecida e desfocada). */
 const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text']);
@@ -118,6 +135,9 @@ const sourceChipFont = (width: number, height: number) => Math.max(14, Math.min(
 const sourceChipHalf = (width: number, height: number) => (sourceChipFont(width, height) * 0.9) / height;
 
 const filled = (t: string | undefined) => Boolean(t?.trim());
+
+/** A caixa `r` com o centro horizontal em `x` (sem `x`, como está). */
+const shiftRect = (r: Rect, x?: number): Rect => (x === undefined ? r : [x - r[2] / 2, r[1], r[2], r[3]]);
 
 /**
  * Tipo que a cena desenha de fato: número sem valor nem rótulo, comparação com menos de 2 itens, gráfico sem números e
@@ -186,16 +206,27 @@ type ImageTextContext = {
   height: number;
 };
 
+/** Caixas de uma cena ou plano levadas para a tela: as letras (`text_rects`) ou só a manchete guardada (`keep`). */
+type ImageRects = 'text' | 'keep';
+const rectsOf = (item: { text_rects?: number[][]; keep?: number[] } | null | undefined, which: ImageRects): Rect[] =>
+  which === 'keep' ? pRects({ rect: item?.keep }) : pRects({ rects: item?.text_rects });
+
 /**
  * Letras da imagem da cena na tela (fração), na cena inteira: `text_rects` da cena e dos planos com imagem própria,
  * pelo recorte, pelo movimento de câmera e pelo enquadramento de cada plano; no tratamento "tela", pela área da
  * imagem dentro da janela/celular. Documento, cartão de notícia (fundo escuro atrás do cartão) e clipe: nada.
+ * `which = 'keep'`: só a manchete guardada (`keep`, a da captura ou o maior bloco de letras da imagem), parada (sem o
+ * movimento lento): ela é obstáculo DURO para carimbo, faixa, contador e texto que pula (nunca coberta quando há
+ * saída).
  */
-const imageTextOnScreen = (scene: TimelineScene, ctx: ImageTextContext): Rect[] => {
+const imageTextOnScreen = (scene: TimelineScene, ctx: ImageTextContext, which: ImageRects = 'text'): Rect[] => {
   const { kind, slots, sceneBox, zoom, width, height } = ctx;
   if (kind === 'document' || ctx.news || ctx.clip) return [];
-  const own = pRects({ rects: scene.text_rects });
-  const hasShotText = slots.some((s) => s.shot?.src && !s.shot.video && s.shot.text_rects?.length);
+  const own = rectsOf(scene, which);
+  // A manchete vai sem o envelope do movimento (a câmera já a mantém no quadro, `keepTransform`): o envelope a
+  // esticava até o topo e nenhuma faixa cabia mais acima dela. Só o enquadramento de cada plano vale.
+  const still = which === 'keep';
+  const hasShotText = slots.some((s) => s.shot?.src && !s.shot.video && rectsOf(s.shot, which).length);
   if (!own.length && !hasShotText) return [];
   const aspect = width / height;
   const focus = focusXY(scene.focus);
@@ -204,24 +235,26 @@ const imageTextOnScreen = (scene: TimelineScene, ctx: ImageTextContext): Rect[] 
     if (ctx.treatment === 'screen') {
       const variant = sceneScreenVariant(scene, width, height);
       const { media } = screenFrame(variant, width, height);
-      const smax = screenInnerMax(scene.motion, zoom, variant === 'feed');
+      const smax = still ? 1 : screenInnerMax(scene.motion, zoom, variant === 'feed');
       return textInScreen(own, sceneBox?.aspect ?? aspect, media, focus, smax, width, height)
         .map((r) => rectThroughFraming(r, framing))
         .filter((r): r is Rect => r !== null);
     }
-    return textOnScreen([{ rects: own, box: sceneBox, framing, motion }], zoom, focus, aspect);
+    return textOnScreen([{ rects: own, box: sceneBox, framing, motion: still ? 'none' : motion }], zoom, focus, aspect);
   };
   if (!slots.length) return selfRects(null, scene.motion);
   const out: Rect[] = [];
+  const frames = Math.max(1, scene.durationInFrames);
   for (const slot of slots) {
     const shot = slot.shot;
     if (shot?.video) continue;
+    const share = (slot.to - slot.from) / frames;
     if (shot?.src) {
       // Imagem de outra origem: já vem no tamanho do vídeo, com o foco no centro.
-      const layer: TextLayer = { rects: pRects({ rects: shot.text_rects }), box: null, framing: shot.framing ?? null, motion: shot.motion || scene.motion };
-      out.push(...textOnScreen([layer], zoom, [0.5, 0.5], aspect));
+      const layer: TextLayer = { rects: rectsOf(shot, which), box: null, framing: shot.framing ?? null, motion: still ? 'none' : shot.motion || scene.motion };
+      out.push(...timeWeighted(textOnScreen([layer], zoom, [0.5, 0.5], aspect), share));
     } else {
-      out.push(...selfRects(shot?.framing ?? null, shot?.motion || scene.motion));
+      out.push(...timeWeighted(selfRects(shot?.framing ?? null, shot?.motion || scene.motion), share));
     }
   }
   return out;
@@ -307,8 +340,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // Edição (ADR 0004): planos, câmera por eventos, tempo do fundo e eventos de tela. Cena sem `shots` nem `fx`
   // desenha a mesma árvore de antes (cada peça devolve o fundo como está).
   const fx = scene.fx;
-  const slots = shotSlots(scene.shots, scene.durationInFrames);
-  const cuts = cutsOf(slots);
+  const rawSlots = shotSlots(scene.shots, scene.durationInFrames);
+  const cuts = cutsOf(rawSlots);
   // A camada presa à imagem recebe o quadro REAL da cena (o `frame` daqui, de fora do TimeWarp) e a caixa da imagem
   // do contêiner dela (converte o `rect` do arquivo para o recorte).
   const overlayAt = (fx ?? []).some((e) => ANCHORED_FX.has(e.type))
@@ -319,7 +352,11 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const backdrop = cardFrom > 0 ? interpolate(frame, [cardFrom, cardFrom + Math.max(1, Math.round(fps * BACKDROP_RAMP_S))], [0, 1], CLAMP) : 1;
   // O fundo do cartão escurece só até o brilho mínimo (`cardDim`): nunca vira preto liso atrás do texto.
   const dim = news ? NEWS_DIM : cardDim(DIM[kind] ?? 0, scene.bg_luma) * backdrop;
-  const blur = news ? NEWS_BLUR : (BLUR[kind] ?? 0) * backdrop;
+  // Cartão sobre imagem com letras (manchete da captura, slate, logo): desfoque forte e escurecimento mínimo, para as
+  // letras de trás não se lerem junto com as do cartão ("Arquivo pesado" sobre o texto do slate da ESRB).
+  const textBehind = (DIM[kind] ?? 0) > 0 && imageHasText(scene, rawSlots);
+  const blur = news ? NEWS_BLUR : Math.max(BLUR[kind] ?? 0, textBehind ? CARD_TEXT_BLUR : 0) * backdrop;
+  const cardDimmed = textBehind && !news ? Math.max(dim, cardDim(CARD_TEXT_DIM, scene.bg_luma) * backdrop) : dim;
   const image = (sub: TimelineScene, imageUrl: string | null, overlay?: React.ReactNode, easing?: ShotEasing) => (
     <VisualLayer
       scene={sub}
@@ -329,7 +366,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       url={imageUrl}
       layers={sub === scene ? layers : []}
       cards={cards}
-      dim={dim}
+      dim={cardDimmed}
       blur={blur}
       solid={SOLID_WITHOUT_IMAGE.has(kind)}
       easing={easing}
@@ -369,11 +406,20 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // Caixa da imagem da própria cena (só a imagem com câmera usa o `frame`; documento, clipe e tratamentos: null).
   const ownImage = kind !== 'document' && !clipUrl && !(treatment && url) && Boolean(url);
   const sceneBox = ownImage ? sceneImageBox(scene.frame, width, height) : null;
+  // Cada plano enquadra sem cortar a manchete guardada (a da captura ou o maior bloco de letras da imagem): a janela
+  // anda até contê-la e, se ela não cabe, aproxima menos ("PRE-ORDEI" na borda direita da página de pré-venda).
+  const sceneKeep = ownImage ? keepRect(scene, width, height) : null;
+  const slots = rawSlots.map((sl) => {
+    const shot = sl.shot;
+    if (!shot || shot.video || (!shot.src && !ownImage)) return sl;
+    const framing = keptFraming(shot.framing, shot.src ? (pRects({ rect: shot.keep })[0] ?? null) : sceneKeep);
+    return framing && framing !== shot.framing ? { ...sl, shot: { ...shot, framing } } : sl;
+  });
   // O `zoom_rect` vai para a câmera já na tela (arquivo → recorte → enquadramento do plano em que ele começa).
   const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
   // A manchete da captura na tela neste quadro (já com o movimento da imagem, o zoom de dentro da moldura e o
   // enquadramento do plano): a câmera por eventos também não a corta.
-  const camKeep = (): Rect | null => {
+  const camKeepAt = (frame: number): Rect | null => {
     if (!(fx ?? []).length) return null;
     const motion = { fps, width, height, zoomStrength: style.zoomStrength, transitionFrames: entry, blur, hasImage: true };
     if (!slots.length) {
@@ -386,72 +432,129 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     const onScreen = keepOnScreen(shotScene(scene, slot, i), frame - slot.from, { ...motion, easing: isEasing(slot.shot?.easing) ? slot.shot?.easing : undefined });
     return onScreen ? rectThroughFraming(onScreen, slot.shot?.framing) : null;
   };
+  const camKeep = () => camKeepAt(frame);
+  // As letras da imagem também onde a câmera por eventos as leva (zoom no retângulo, punch), no auge de cada evento e
+  // com o peso do tempo dele: a faixa parada no topo não pode cair sobre a manchete ampliada no meio do plano.
+  const throughCamera = (rects: Rect[]): Rect[] => {
+    const camCtx = { fps, frames: scene.durationInFrames, cuts, width, height, seed: scene.seed };
+    const out: Rect[] = [];
+    for (const e of camFx ?? []) {
+      if (e.type !== 'punch' && e.type !== 'zoom_rect') continue;
+      const span = fxSpan(e, camCtx);
+      const peak = Math.min(span.to - 1, span.from + Math.round(fps * 0.5));
+      const cam = cameraAt(peak, camFx, { ...camCtx, keep: camKeepAt(peak) });
+      if (cam.scale <= 1.001) continue;
+      const moved = rects.map((r) => rectThroughCamera(r, cam)).filter((r): r is Rect => r !== null);
+      out.push(...timeWeighted(moved, (span.to - span.from) / Math.max(1, scene.durationInFrames)));
+    }
+    return out;
+  };
   const captionsShown = !hideCaptions && style.captions.style !== 'none';
 
   // Letras da própria imagem na tela (manchete da captura, logo, letreiro: `text_rects` do build), pelo mesmo caminho
-  // da imagem (recorte, câmera, enquadramento do plano, janela do tratamento "tela"). O carimbo e a faixa do topo
-  // desviam delas e a tarja da legenda escurece mais sobre elas.
-  const imageText = imageTextOnScreen(scene, {
-    kind,
-    news: Boolean(news),
-    clip: Boolean(clipUrl),
-    treatment: treatment && url ? treatment : undefined,
-    slots,
-    sceneBox,
-    zoom: style.zoomStrength,
-    width,
-    height,
-  });
-  // Faixa do topo na cena de imagem: desce para a altura livre mais perto quando no topo ela cobriria a manchete ou o
-  // logo da imagem (nunca sobre a legenda nem o avatar). Cartões e notícia ficam como sempre (o painel mora embaixo).
-  let headY: number | undefined;
-  if (headline && kind === 'image' && !news && position !== 'top' && imageText.length) {
-    const top = headlineRect(headline, cards, lang, width, height);
-    const half = top[3] / 2;
-    const hard: Rect[] = captionsShown ? [[0, captionMid - captionHalf, 1, captionHalf * 2]] : [];
-    if (avatarRect) hard.push(avatarRect);
-    const lo = STAMP_SAFE + half;
-    const hi = (captionsShown ? captionMid - captionHalf - STAMP_GAP : 1 - STAMP_SAFE) - half;
-    const y = placeBand(top[1] + half, top[2], half, hard, imageText, lo, hi);
-    // O avatar (já posto abaixo da faixa) e o contador ficam onde estavam: `band.top` não muda, para o avatar
-    // desenhado ser o mesmo retângulo que a faixa e o carimbo evitam.
-    if (Math.abs(y - (top[1] + half)) > 1e-6) headY = y;
-  }
+  // da imagem (recorte, câmera, enquadramento do plano, janela do tratamento "tela"). Tudo o que a tela põe por cima
+  // (faixa do topo, contador, carimbo, texto que pula) desvia delas quando há lugar, e a tarja da legenda escurece e
+  // desfoca o que fica atrás dela. A manchete guardada (`keep`) é obstáculo duro: nunca coberta quando há saída.
+  // Tudo isto depende só da cena e do estilo (não do quadro): conta uma vez por cena, não a cada quadro.
+  const placed = React.useMemo(() => {
+    const textCtx: ImageTextContext = {
+      kind,
+      news: Boolean(news),
+      clip: Boolean(clipUrl),
+      treatment: treatment && url ? treatment : undefined,
+      slots,
+      sceneBox,
+      zoom: style.zoomStrength,
+      width,
+      height,
+    };
+    // Cartão com o fundo já desfocado desde o corte (`textBehind`): as letras de trás não se leem, não atrapalham.
+    const lettersVisible = !(textBehind && cardFrom === 0);
+    const plainText = lettersVisible ? imageTextOnScreen(scene, textCtx) : [];
+    const plainKeep = lettersVisible ? imageTextOnScreen(scene, textCtx, 'keep') : [];
+    const imageText = [...plainText, ...throughCamera(plainText)];
+    const imageKeep = [...plainKeep, ...throughCamera(plainKeep)];
+    const captionRect: Rect | null = captionsShown ? [0, captionMid - captionHalf, 1, captionHalf * 2] : null;
+    // Fundo da cena em letras sem lugar livre: fora da coluna de texto e, sem saída, cobrindo o mínimo.
+    const imageLetters = imageText.length > 0 || imageKeep.length > 0;
 
-  // Carimbo solto: no lugar da composição da imagem quando está livre; senão, desvia de todo texto conhecido na tela
-  // (o do cartão de texto, a faixa do topo, o cartão de notícia, a legenda, o avatar, o contador, a fonte e o trecho
-  // marcado da captura) e, quando há lugar, das letras da própria imagem.
-  let stampSpot: StampSpot | undefined;
-  let stampScale: number | undefined;
-  if (stamp && !inPanel) {
-    const obstacles: Rect[] = textCardRects(kind, scene, cards, style.captions.uppercase, width, height);
-    if (headline) obstacles.push(headlineRect(headline, cards, lang, width, height, headY));
+    // Faixa do topo na cena de imagem: no topo de sempre quando livre; senão, a altura livre mais perto e, quando a
+    // coluna de texto da captura ocupa o meio inteiro, de lado (nunca sobre a legenda, o avatar ou a manchete).
+    // Cartões e notícia ficam como sempre (o painel mora embaixo).
+    let headY: number | undefined;
+    let headX: number | undefined;
+    if (headline && kind === 'image' && !news && position !== 'top' && imageLetters) {
+      const top = headlineRect(headline, cards, lang, width, height);
+      const half = top[3] / 2;
+      const hard: Rect[] = captionRect ? [captionRect] : [];
+      if (avatarRect) hard.push(avatarRect);
+      hard.push(...imageKeep);
+      const lo = STAMP_SAFE + half;
+      const hi = (captionsShown ? captionMid - captionHalf - STAMP_GAP : 1 - STAMP_SAFE) - half;
+      const spot = placeChip(top[1] + half, top[2], half, hard, imageText, lo, hi);
+      // O avatar (já posto abaixo da faixa) e o contador ficam onde estavam: `band.top` não muda, para o avatar
+      // desenhado ser o mesmo retângulo que a faixa e o carimbo evitam.
+      if (Math.abs(spot.y - (top[1] + half)) > 1e-6) headY = spot.y;
+      if (Math.abs(spot.x - 0.5) > 1e-6) headX = spot.x;
+    }
+    const headRect: Rect | null = headline ? shiftRect(headlineRect(headline, cards, lang, width, height, headY), headX) : null;
+
+    // Texto que a própria tela desenha (faixa, legenda, avatar, fonte, painel da notícia, texto do cartão): os selos
+    // que entram depois (contador, carimbo, texto que pula) nunca o cobrem.
+    const screenText: Rect[] = textCardRects(kind, scene, cards, style.captions.uppercase, width, height);
+    if (headRect) screenText.push(headRect);
     if (sourceChip) {
       const chipFont = sourceChipFont(width, height);
       const chipW = Math.min(0.7, ((source ?? '').length + 8) * chipFont * 0.56 / width + (chipFont * 1.4) / width);
       const chipHalf = sourceChipHalf(width, height);
-      obstacles.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);
+      screenText.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);
     }
     if (news) {
       const newsW = width > height ? 0.52 : 0.86;
-      obstacles.push([(1 - newsW) / 2, band.top, newsW, Math.max(0, band.bottom - band.top)]);
+      screenText.push([(1 - newsW) / 2, band.top, newsW, Math.max(0, band.bottom - band.top)]);
     }
-    if (captionsShown) obstacles.push([0, captionMid - captionHalf, 1, captionHalf * 2]);
-    if (avatarRect) obstacles.push(avatarRect);
-    for (const e of fx ?? []) {
-      const counter = e.type === 'counter' ? counterRect(e.params ?? {}, width, height, band.top) : null;
-      if (counter) obstacles.push(counter);
-      if (!ANCHORED_FX.has(e.type)) continue;
-      const space = spaceAt(slots, Math.round(e.from), sceneBox);
-      for (const r of fxRects(e.params, space.box, width / height)) {
-        const onScreen = rectThroughFraming(r, space.framing);
-        if (onScreen) obstacles.push(onScreen);
+    if (captionRect) screenText.push(captionRect);
+    if (avatarRect) screenText.push(avatarRect);
+
+    // Contador ("3/5"): no canto de cima quando livre; sobre letras da imagem, o ponto livre mais perto (QA: o "3/5"
+    // encostava em "PRE-ORDER").
+    const counterAt: Record<number, Rect> = {};
+    (fx ?? []).forEach((e, i) => {
+      if (e.type !== 'counter') return;
+      const base = counterRect(e.params ?? {}, width, height, band.top);
+      if (!base) return;
+      const yLo = base[1] + base[3] / 2;
+      const yHi = (captionRect ? captionRect[1] - STAMP_GAP : 1 - STAMP_SAFE) - base[3] / 2;
+      counterAt[i] = imageLetters ? placeCorner(base, [...screenText, ...imageKeep], imageText, [yLo, Math.max(yLo, yHi)]) : base;
+    });
+
+    // Carimbo solto: no lugar da composição da imagem quando está livre; senão, desvia de todo texto conhecido na tela
+    // (o do cartão de texto, a faixa do topo, o cartão de notícia, a legenda, o avatar, o contador, a fonte, o trecho
+    // marcado da captura e a manchete da imagem) e, quando há lugar, das outras letras da própria imagem.
+    let stampSpot: StampSpot | undefined;
+    let stampScale: number | undefined;
+    let stampBox: Rect | null = null;
+    if (stamp && !inPanel) {
+      const obstacles: Rect[] = [...screenText, ...Object.values(counterAt), ...imageKeep];
+      for (const e of fx ?? []) {
+        if (!ANCHORED_FX.has(e.type)) continue;
+        const space = spaceAt(slots, Math.round(e.from), sceneBox);
+        for (const r of fxRects(e.params, space.box, width / height)) {
+          const onScreen = rectThroughFraming(r, space.framing);
+          if (onScreen) obstacles.push(onScreen);
+        }
       }
+      const geom = stampGeom(stamp, cards, lang, width, height);
+      stampSpot = placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), geom, obstacles, imageText);
+      stampScale = stampEntryScale(stampSpot, geom);
+      stampBox = stampRect(stampSpot, geom);
     }
-    const geom = stampGeom(stamp, cards, lang, width, height);
-    stampSpot = placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), geom, obstacles, imageText);
-    stampScale = stampEntryScale(stampSpot, geom);
-  }
+    // O texto que pula desvia de tudo isso (e da manchete da imagem); sem lugar, ele não entra.
+    const popAvoid: Rect[] = [...screenText.filter((r) => r !== captionRect), ...Object.values(counterAt), ...imageKeep];
+    if (stampBox) popAvoid.push(stampBox);
+    return { imageText, imageKeep, captionRect, headX, headY, counterAt, stampSpot, stampScale, popAvoid };
+  }, [scene, style, width, height, lang, fps]);
+  const { imageText, imageKeep, headX, headY, counterAt, stampSpot, stampScale, popAvoid } = placed;
   // A legenda deixa livre a faixa do avatar enquanto ele está na tela (a ponta dela encostava no recorte).
   const captionReserve: CaptionReserve | undefined =
     avatarRect && scene.presenter
@@ -469,7 +572,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const scrimOpacity = news ? 0 : (DIM[kind] ?? 0) === 0 ? 1 : 1 - backdrop;
   const scrim = captionsShown && !style.captions.background && scrimOpacity > 0 && Boolean(url || clipUrl);
   // Legenda sobre letras da imagem (logo, corpo de matéria): a tarja escurece mais, as letras de trás somem.
-  const scrimAlpha = bandOverlap(captionMid - captionHalf, captionMid + captionHalf, imageText) > 0.002 ? SCRIM_ALPHA_TEXT : undefined;
+  const scrimAlpha = bandOverlap(captionMid - captionHalf, captionMid + captionHalf, [...imageText, ...imageKeep]) > 0.002 ? SCRIM_ALPHA_TEXT : undefined;
 
   const background = slots.length ? (
     <ShotStack
@@ -508,6 +611,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         minTop={band.top}
         lang={lang}
         imageText={imageText}
+        screenText={popAvoid}
+        counterAt={counterAt}
       />
       {card && cardFrom > 0 ? (
         <Sequence from={cardFrom} layout="none" name="Cartão">
@@ -517,8 +622,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         card
       )}
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
-      {headline ? <Headline text={headline} style={cards} lang={lang} y={headY} /> : null}
-      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} opacity={scrimOpacity} alpha={scrimAlpha} /> : null}
+      {headline ? <Headline text={headline} style={cards} lang={lang} y={headY} x={headX} /> : null}
+      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} opacity={scrimOpacity} alpha={scrimAlpha} soften={scrimAlpha !== undefined} /> : null}
       {stamp && stampSpot ? <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} spot={stampSpot} entryScale={stampScale} /> : null}
       {sourceChip && sourceFrom > 0 ? (
         <Sequence from={sourceFrom} layout="none" name="Fonte">
