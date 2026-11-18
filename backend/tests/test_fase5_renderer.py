@@ -49,7 +49,8 @@ def test_layer_ports_reacao_motion() -> None:
 
 def test_sceneview_inserts_layer_between_source_and_captions() -> None:
     src = _read(SCENE)
-    assert "import { PresenterLayer } from './PresenterLayer';" in src
+    # o carimbo também importa o retângulo do avatar (`presenterRect`) para desviar dele
+    assert re.search(r"import \{ PresenterLayer\b[^}]*\} from './PresenterLayer';", src)
     i_source = src.index("sourceChip\n      )}")
     i_layer = src.index("<PresenterLayer")
     i_caps = src.index("<Captions lines=")
