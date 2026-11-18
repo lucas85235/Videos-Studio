@@ -27,6 +27,7 @@ from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
 from studio.core.sources import (
+    CARD_BACKDROP_KINDS,
     REAL_TIERS,
     ai_weight,
     prov_of_item,
@@ -691,6 +692,7 @@ def build_timeline(
                     # Clipe real do acervo (ADR 0004) na cena de imagem: o nível do material vai sempre, com ou sem a
                     # camada de edição, e o renderer toca o vídeo na cena de nível real (não só na cena-chave de IA).
                     resolved["prov"] = clip["prov"]
+            card_backdrop(resolved)
             _spoken_timing(resolved, scene, raw_words, lang, f0, frame, fps)
             layer = presenter_layer(presenter, scene, resolved, raw_words, f0, f1, frame, fps,
                                     vertical=style.format.height > style.format.width,
@@ -1060,6 +1062,54 @@ def _presenter_side(scene_side: str, facing: str, resolved: dict[str, Any]) -> s
     return "right"
 
 
+CARD_BG_MIN_LUMA = 0.18
+"""Brilho médio (0 a 1) mínimo da imagem de fundo de um cartão (`sources.CARD_BACKDROP_KINDS`). O cartão escurece o
+fundo (`DIM` no renderer, 55% a 62%): a página da Rockstar, quase toda preta (brilho 0,08), virava preto liso atrás do
+texto, e a palavra que entra em fade aparecia como um fantasma sobre o nada. Abaixo disto, o cartão fica com o fundo do
+estilo (cartão tipográfico); acima, o renderer só escurece até o brilho de `CARD_BG_FLOOR` (`fx/math.ts`), pelo
+`bg_luma` que vai na cena."""
+
+
+@functools.lru_cache(maxsize=512)
+def _luma_of(path: str, rev: str) -> float | None:
+    from PIL import Image, ImageStat
+
+    try:
+        with Image.open(path) as image:
+            small = image.convert("L").resize((64, 36))
+            return round(ImageStat.Stat(small).mean[0] / 255, 3)
+    except (OSError, ValueError):
+        return None
+
+
+def image_luma(rel: str | None) -> float | None:
+    """Brilho médio (0 a 1) da imagem (caminho relativo à pasta de dados); None quando o arquivo não abre. Em cache
+    pelo tamanho e pela data do arquivo."""
+    rev = _file_rev(rel)
+    if not rev or not rel:
+        return None
+    from studio.config import get_settings
+
+    return _luma_of(str(get_settings().data_dir / rel), rev)
+
+
+def card_backdrop(resolved: dict[str, Any]) -> None:
+    """O fundo do cartão nunca vira preto liso: imagem escura demais (`CARD_BG_MIN_LUMA`) sai e o cartão fica com o
+    fundo do estilo; as outras levam o brilho (`bg_luma`) para o renderer limitar o escurecimento. Fora dos cartões de
+    fundo (`CARD_BACKDROP_KINDS`), com clipe, ou sem arquivo que abra: nada muda (o mesmo dict de antes)."""
+    if resolved.get("kind") not in CARD_BACKDROP_KINDS or not resolved.get("src") or resolved.get("video"):
+        return
+    luma = image_luma(resolved["src"])
+    if luma is None:
+        return
+    if luma < CARD_BG_MIN_LUMA:
+        resolved["src"] = None
+        for key in ("keep", "frame", "parallax"):
+            resolved.pop(key, None)
+        return
+    resolved["bg_luma"] = round(luma, 2)
+
+
 def _file_rev(rel: str | None) -> str:
     """Tamanho e data do arquivo (relativo à pasta de dados), em base 36; vazio se não existir."""
     if not rel:
@@ -1184,6 +1234,10 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     frame = scene_frame(doc, style, scene)
     if frame:
         out["frame"] = frame
+    keep = edit_resolve.keep_rect(media.rects) if media is not None and not media.video else None
+    if keep:
+        # A manchete da captura: zoom, pan, punch e zoom no retângulo nunca cortam a primeira letra (renderer).
+        out["keep"] = keep
     _real_media_keys(doc, scene, lang, out)
     treatment = scene_treatment(doc, style, scene, has_news="news" in out, pool=pool)
     if treatment != "plain":

@@ -1,7 +1,7 @@
 import React from 'react';
 import { AbsoluteFill, Freeze, useCurrentFrame, useVideoConfig } from 'remotion';
 import type { TimelineFx } from '../types';
-import { CAMERA_FX, cameraAt, isFreezeZoomMeme, isIdentity, remapFrame, timeSegments } from './fx/math';
+import { CAMERA_FX, cameraAt, isFreezeZoomMeme, isIdentity, type Rect, remapFrame, timeSegments } from './fx/math';
 
 type RigProps = {
   /** Eventos da cena (só os de câmera contam: punch, shake, zoom_rect, whip e o meme "congela + zoom"). */
@@ -13,6 +13,8 @@ type RigProps = {
   seed: number;
   /** Id único do filtro do whip na página. */
   id: string;
+  /** A manchete da captura na tela neste quadro (fração): a câmera nunca a corta (`keepTransform`). */
+  keep?: Rect | null;
   children: React.ReactNode;
 };
 
@@ -25,11 +27,11 @@ const hasCamera = (fx: TimelineFx[] | undefined) => (fx ?? []).some((e) => CAMER
  *
  * Sem evento de câmera, devolve o fundo como está (mesma árvore de sempre).
  */
-export const CameraRig: React.FC<RigProps> = ({ fx, frames, cuts, seed, id, children }) => {
+export const CameraRig: React.FC<RigProps> = ({ fx, frames, cuts, seed, id, keep, children }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   if (!hasCamera(fx)) return <>{children}</>;
-  const cam = cameraAt(frame, fx, { fps, frames, cuts, width, height, seed });
+  const cam = cameraAt(frame, fx, { fps, frames, cuts, width, height, seed, keep });
   const still = isIdentity(cam);
   const filterId = `whip-${id.replace(/[^A-Za-z0-9_-]/g, '')}`;
   const blur = Math.round(cam.blur * 10) / 10;

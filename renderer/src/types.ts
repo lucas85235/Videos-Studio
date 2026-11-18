@@ -77,6 +77,11 @@ export type TimelineShot = {
    * (`media/text_regions.py`). O carimbo e a faixa do topo desviam delas. Ausente: sem letras conhecidas.
    */
   text_rects?: number[][];
+  /**
+   * Trecho do arquivo do plano (`[x, y, w, h]`, espaço do arquivo) que nunca sai do quadro: a manchete da captura
+   * (`MediaRef.rects`/`PoolItem.rects` unidos). Ausente: sem trecho guardado.
+   */
+  keep?: number[];
 };
 
 /** Evento dentro da cena já resolvido (quadros relativos ao início da cena); `params` depende do tipo. */
@@ -230,6 +235,16 @@ export type TimelineScene = {
    * Ausente: sem letras conhecidas (como antes).
    */
   text_rects?: number[][];
+  /**
+   * Trecho da imagem da cena (`[x, y, w, h]`, espaço do arquivo) que zoom, pan, punch e zoom no retângulo nunca cortam:
+   * a manchete da captura, com `KEEP_MARGIN` em volta (`fx/math.ts`). Ausente: sem trecho guardado.
+   */
+  keep?: number[];
+  /**
+   * Cartão sobre imagem: brilho médio (0 a 1) da imagem de fundo. O escurecimento do cartão para no brilho mínimo
+   * (`cardDim`), e o fundo nunca vira preto liso. Ausente: o escurecimento do tipo, como antes.
+   */
+  bg_luma?: number;
 };
 
 /**

@@ -30,6 +30,27 @@ type Props = {
   overlayAt?: (box: ImageBox | null) => React.ReactNode;
 };
 
+/**
+ * A cena como o plano `i` a desenha (o `VisualLayer` dele): duração, movimento e semente do plano; o plano com imagem
+ * de outra origem (acervo, reaproveitada) troca o arquivo e não usa o recorte, o foco nem a manchete guardada da cena
+ * (usa a dele, `shot.keep`).
+ */
+export const shotScene = (scene: TimelineScene, slot: ShotSlot, i: number): TimelineScene => {
+  const shot = slot.shot;
+  const sub: TimelineScene = {
+    ...scene,
+    durationInFrames: slot.to - slot.from,
+    motion: shot?.motion || scene.motion,
+    // A transição de entrada (zoom_blur, glitch) é da cena: só o primeiro plano a mostra.
+    transition: slot.from === 0 ? scene.transition : 'cut',
+    // Lado do Ken Burns e do drift variam de plano para plano.
+    seed: scene.seed + i * 7919,
+    parallax: undefined,
+  };
+  if (!shot?.video && shot?.src) return { ...sub, src: shot.src, frame: undefined, focus: undefined, keep: shot.keep };
+  return sub;
+};
+
 /** Enquadramento do plano (escala e centro): um invólucro só quando não é o quadro inteiro. */
 const Framed: React.FC<{ transform: string | null; children: React.ReactNode }> = ({ transform, children }) =>
   transform ? <AbsoluteFill style={{ transformOrigin: '0 0', transform }}>{children}</AbsoluteFill> : <>{children}</>;
@@ -69,16 +90,7 @@ export const ShotStack: React.FC<Props> = ({ scene, slots, fx, cuts, effects, as
           );
         }
         const overlay = overlayAt?.(slotBox(slot, sceneBox));
-        const sub: TimelineScene = {
-          ...scene,
-          durationInFrames: len,
-          motion: shot?.motion || scene.motion,
-          // A transição de entrada (zoom_blur, glitch) é da cena: só o primeiro plano a mostra.
-          transition: slot.from === 0 ? scene.transition : 'cut',
-          // Lado do Ken Burns e do drift variam de plano para plano.
-          seed: scene.seed + i * 7919,
-          parallax: undefined,
-        };
+        const sub = shotScene(scene, slot, i);
         let content: React.ReactNode;
         if (video) {
           content = (
@@ -95,7 +107,7 @@ export const ShotStack: React.FC<Props> = ({ scene, slots, fx, cuts, effects, as
           );
         } else if (image) {
           // Imagem de outra origem (acervo, reaproveitada): o recorte e o foco da cena não valem para ela.
-          content = renderImage({ ...sub, src: shot?.src ?? null, frame: undefined, focus: undefined }, image, overlay, easingOf(shot?.easing));
+          content = renderImage(sub, image, overlay, easingOf(shot?.easing));
         } else {
           content = renderImage(sub, sceneUrl, overlay, easingOf(shot?.easing));
         }

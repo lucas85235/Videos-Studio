@@ -1,10 +1,10 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
-import { frameLayout } from '../frame';
+import { frameLayout, sceneImageBox } from '../frame';
 import { hasEffect, imageFilter } from '../look';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type ShotEasing, type TextCardStyle, type TimelineScene } from '../types';
 import { MotionBackground, withAlpha } from './DataCards';
-import { EASE, isEasing } from './fx/math';
+import { EASE, isEasing, keepTransform, pRects, type Rect, rectThrough, rectToContainer } from './fx/math';
 
 type Props = {
   scene: TimelineScene;
@@ -68,23 +68,31 @@ export const parallaxLayerPath = (index: number, count: number, z: number, side:
   };
 };
 
-/** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco, parallax) e gradação de cor. */
-export const VisualLayer: React.FC<Props> = ({
-  scene,
-  effects,
-  zoomStrength,
-  transitionFrames,
-  url,
-  layers = [],
-  cards,
-  dim = 0,
-  blur = 0,
-  solid = false,
-  easing,
-  overlay,
-}) => {
-  const frame = useCurrentFrame();
-  const { fps, width, height } = useVideoConfig();
+/** O que a câmera própria da imagem precisa saber da cena (o `VisualLayer` e quem calcula onde a manchete cai). */
+export type MotionOptions = {
+  fps: number;
+  width: number;
+  height: number;
+  zoomStrength: number;
+  transitionFrames: number;
+  /** Desfoque em px (referência 1080 no menor lado). */
+  blur?: number;
+  easing?: ShotEasing;
+  /** Com imagem (sem ela, o fundo animado: o foco e o recorte não valem). */
+  hasImage: boolean;
+};
+
+/**
+ * Movimento da imagem num quadro (Ken Burns, pan, punch zoom, drift, zoom no foco, push): escala, deslocamento (% do
+ * quadro, depois da escala no CSS `scale() translate()`) e origem. Puro (só o quadro e a cena): o `SceneView` usa a
+ * mesma conta para saber onde a manchete (`scene.keep`) cai na tela antes da câmera por eventos.
+ *
+ * Com `scene.keep`, a manchete da captura nunca sai do quadro: o deslocamento anda o que precisar e a escala desce até
+ * ela caber com `KEEP_MARGIN` em volta (`keepTransform`).
+ */
+export const imageMotion = (scene: TimelineScene, frame: number, opts: MotionOptions) => {
+  const { fps, width, height, zoomStrength, transitionFrames, easing, hasImage } = opts;
+  const blur = opts.blur ?? 0;
   const dur = Math.max(1, scene.durationInFrames - 1);
   const p = isEasing(easing)
     ? EASE[easing](frame / dur)
@@ -93,7 +101,7 @@ export const VisualLayer: React.FC<Props> = ({
   const side = (r: number) => (random(`${scene.seed}-${r}`) > 0.5 ? 1 : -1);
   const t = frame / fps;
   // O foco é a origem da escala (centro quando não vem). Imagem reenquadrada (Short): o foco dela, onde cai na tela.
-  const layout = scene.frame && url ? frameLayout(scene.frame, width, height) : null;
+  const layout = scene.frame && hasImage ? frameLayout(scene.frame, width, height) : null;
   const origin = layout ? `${layout.origin[0] * 100}% ${layout.origin[1] * 100}%` : focusOrigin(scene.focus);
   const [ox, oy] = origin.split(' ').map((v) => parseFloat(v) / 100);
   const blurPx = blur > 0 ? (blur * Math.min(width, height)) / 1080 : 0;
@@ -175,6 +183,59 @@ export const VisualLayer: React.FC<Props> = ({
   if (scene.transition === 'glitch' && frame < tf) {
     jitter = (random(`${scene.seed}-g-${frame}`) - 0.5) * 60;
   }
+  // Rede de segurança: o deslocamento já cabe (fitAmplitude); a borda da imagem nunca aparece.
+  const room = roomOf(scale);
+  tx = Math.max(-(1 - ox) * room, Math.min(ox * room, tx));
+  ty = Math.max(-(1 - oy) * room, Math.min(oy * room, ty));
+  // A manchete da captura fica inteira (no contêiner: o recorte `cover` e o modo desfocado já contam).
+  const keep = keepRect(scene, width, height);
+  if (keep && hasImage) {
+    const kept = keepTransform(keep, scale, [ox, oy], [tx / 100, ty / 100]);
+    scale = kept.s;
+    tx = kept.t[0] * 100;
+    ty = kept.t[1] * 100;
+  }
+  return { p, z, side, origin, ox, oy, bump, blurPx, layout, scale, tx, ty, entryScale, extraFilter, jitter };
+};
+
+/** A manchete guardada da cena (`scene.keep`, espaço do arquivo) no contêiner da imagem; null sem ela. */
+export const keepRect = (scene: TimelineScene, width: number, height: number): Rect | null => {
+  const rect = pRects({ rect: scene.keep })[0];
+  if (!rect) return null;
+  return rectToContainer(rect, sceneImageBox(scene.frame, width, height), width / height);
+};
+
+/**
+ * Onde a manchete guardada cai na tela no quadro `frame` da imagem com câmera (antes da câmera por eventos); null sem
+ * manchete. A câmera por eventos (`cameraAt`) usa isto para também não cortá-la.
+ */
+export const keepOnScreen = (scene: TimelineScene, frame: number, opts: MotionOptions): Rect | null => {
+  const keep = keepRect(scene, opts.width, opts.height);
+  if (!keep || !opts.hasImage) return null;
+  const m = imageMotion(scene, frame, opts);
+  return rectThrough(keep, m.scale, [m.ox, m.oy], [m.tx / 100, m.ty / 100]);
+};
+
+/** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco, parallax) e gradação de cor. */
+export const VisualLayer: React.FC<Props> = ({
+  scene,
+  effects,
+  zoomStrength,
+  transitionFrames,
+  url,
+  layers = [],
+  cards,
+  dim = 0,
+  blur = 0,
+  solid = false,
+  easing,
+  overlay,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps, width, height } = useVideoConfig();
+  const m = imageMotion(scene, frame, { fps, width, height, zoomStrength, transitionFrames, blur, easing, hasImage: Boolean(url) });
+  const { p, z, side, origin, ox, oy, bump, entryScale, layout, blurPx, extraFilter, scale, tx, ty } = m;
+  let { jitter } = m;
   const vhs = hasEffect(effects, 'vhs');
   if (vhs) {
     jitter += (random(`${scene.seed}-v-${frame}`) - 0.5) * 6 * vhs.amount;
@@ -244,11 +305,6 @@ export const VisualLayer: React.FC<Props> = ({
       </AbsoluteFill>
     );
   }
-
-  // Rede de segurança: o deslocamento já cabe (fitAmplitude); a borda da imagem nunca aparece.
-  const room = roomOf(scale);
-  tx = Math.max(-(1 - ox) * room, Math.min(ox * room, tx));
-  ty = Math.max(-(1 - oy) * room, Math.min(oy * room, ty));
 
   const transform = `translateX(${jitter}px) scale(${scale}) translate(${tx}%, ${ty}%)`;
   const imgStyle: React.CSSProperties = {

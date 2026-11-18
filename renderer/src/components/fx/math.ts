@@ -714,6 +714,22 @@ export const textInScreen = (
   return out;
 };
 
+// --- fundo do cartão -------------------------------------------------------------------------------------------------
+
+/**
+ * Brilho médio mínimo do fundo do cartão depois do escurecimento: o cartão escurece a imagem para o texto aparecer,
+ * mas a imagem nunca vira preto liso (a escura demais o backend já tirou, `timeline.CARD_BG_MIN_LUMA`).
+ */
+export const CARD_BG_FLOOR = 0.18;
+/** O escurecimento do cartão nunca desce disto (o texto branco continua legível sobre fundo claro). */
+export const CARD_DIM_MIN = 0.3;
+
+/** Escurecimento do fundo do cartão (`dim` do tipo) limitado pelo brilho da imagem (`bg_luma`); sem ele, o do tipo. */
+export const cardDim = (dim: number, luma: number | undefined) => {
+  if (!(dim > 0) || typeof luma !== 'number' || !(luma > 0)) return dim;
+  return Math.min(dim, Math.max(CARD_DIM_MIN, 1 - CARD_BG_FLOOR / luma));
+};
+
 // --- transição de entrada --------------------------------------------------------------------------------------------
 
 /** Teto da transição de entrada (desfoque, flash, fade): mais longa, ela vira quadro morto sem nada nítido. */
@@ -733,7 +749,8 @@ export type Camera = { scale: number; x: number; y: number; rot: number; blur: n
 
 export const IDENTITY: Camera = { scale: 1, x: 0, y: 0, rot: 0, blur: 0 };
 
-export type CameraContext = FxContext & { width: number; height: number; seed: number };
+/** `keep`: o trecho (fração da tela, no quadro) que a câmera nunca corta, a manchete da captura (`keepTransform`). */
+export type CameraContext = FxContext & { width: number; height: number; seed: number; keep?: Rect | null };
 
 /** Quadros da subida do punch (2 a 3 quadros) e da soltura quando ela não cai num corte. */
 export const PUNCH_RISE = 3;
@@ -777,6 +794,62 @@ const zoomRectAt = (fx: TimelineFx, frame: number, ctx: FxContext) => {
 /** A borda da imagem nunca aparece: o deslocamento fica dentro do que a escala deixa. */
 const cover = (t: number, scale: number) => clamp(t, 1 - scale, 0);
 
+// --- trecho que nunca sai do quadro (manchete da captura) ------------------------------------------------------------
+//
+// Zoom, pan, punch e o zoom no retângulo, cada um na sua camada, cortavam a primeira letra da manchete da captura
+// ("rand Theft Auto VI's PC", "ites falsos"): a captura vem com a manchete encostada na borda esquerda (3% do arquivo) e
+// qualquer escala de 1,1 em volta do centro já tira 4,5% de cada lado. O `keep` (a manchete, `[x, y, w, h]`) fica
+// inteiro na tela com `KEEP_MARGIN` em volta: a camada desloca o que precisar e, se a escala não deixa a manchete
+// caber, a escala desce até ela caber (a coluna inteira).
+
+/** Margem mínima (fração do quadro) entre o trecho guardado e a borda da tela. */
+export const KEEP_MARGIN = 0.03;
+
+/**
+ * Um eixo de `p' = o + s·(p + t − o)` (a escala `s` em volta da origem `o`, depois do deslocamento `t`, tudo em
+ * fração do contêiner): a escala e o deslocamento mais perto dos pedidos em que o trecho `[a, b]` fica em
+ * `[m, 1 − m]` e a borda da imagem nunca aparece. A margem de cada lado não passa da distância do trecho à borda do
+ * próprio arquivo (a imagem não tem mais que isso). Escala ≤ 1 (fora do caso) volta como veio.
+ */
+export const keepAxis = (a: number, b: number, s: number, o: number, t: number, margin = KEEP_MARGIN) => {
+  if (!(s > 1) || !(b > a)) return { s, t };
+  const ml = clamp(margin, 0, Math.max(0, a));
+  const mr = clamp(margin, 0, Math.max(0, 1 - b));
+  const sc = Math.max(1, Math.min(s, (1 - ml - mr) / (b - a)));
+  const lo = Math.max((ml - o) / sc + o - a, -(1 - o) * (sc - 1) / sc);
+  const hi = Math.min((1 - mr - o) / sc + o - b, (o * (sc - 1)) / sc);
+  return { s: sc, t: lo <= hi ? clamp(t, lo, hi) : (lo + hi) / 2 };
+};
+
+/** Escala única dos dois eixos e deslocamento de cada um (o `keepAxis` em x e em y, com a menor escala). */
+export const keepTransform = (keep: Rect | null | undefined, s: number, origin: [number, number], t: [number, number], margin = KEEP_MARGIN) => {
+  if (!keep || !(s > 1)) return { s, t };
+  const sx = keepAxis(keep[0], keep[0] + keep[2], s, origin[0], t[0], margin).s;
+  const sy = keepAxis(keep[1], keep[1] + keep[3], s, origin[1], t[1], margin).s;
+  const sc = Math.min(sx, sy);
+  const x = keepAxis(keep[0], keep[0] + keep[2], sc, origin[0], t[0], margin);
+  const y = keepAxis(keep[1], keep[1] + keep[3], sc, origin[1], t[1], margin);
+  return { s: sc, t: [x.t, y.t] as [number, number] };
+};
+
+/** Onde o trecho `r` (fração do contêiner) cai depois de `p' = o + s·(p + t − o)`. */
+export const rectThrough = (r: Rect, s: number, origin: [number, number], t: [number, number]): Rect => [
+  origin[0] + s * (r[0] + t[0] - origin[0]),
+  origin[1] + s * (r[1] + t[1] - origin[1]),
+  r[2] * s,
+  r[3] * s,
+];
+
+/** União dos retângulos (a manchete de várias linhas); null sem nenhum. */
+export const unionRect = (rects: Rect[]): Rect | null => {
+  if (!rects.length) return null;
+  const x0 = Math.min(...rects.map((r) => r[0]));
+  const y0 = Math.min(...rects.map((r) => r[1]));
+  const x1 = Math.max(...rects.map((r) => r[0] + r[2]));
+  const y1 = Math.max(...rects.map((r) => r[1] + r[3]));
+  return [x0, y0, x1 - x0, y1 - y0];
+};
+
 export const cameraAt = (frame: number, fxs: TimelineFx[] | undefined, ctx: CameraContext): Camera => {
   const list = fxs ?? [];
   let scale = 1;
@@ -805,6 +878,14 @@ export const cameraAt = (frame: number, fxs: TimelineFx[] | undefined, ctx: Came
   scale = Math.min(scale, 4);
   x = cover(x, scale);
   y = cover(y, scale);
+  // A manchete da captura (onde ela está na tela neste quadro, já com o movimento da imagem) fica inteira: a câmera
+  // (origem 0 0) é `p' = 0 + s·(p + x/s)`.
+  if (ctx.keep && scale > 1) {
+    const kept = keepTransform(ctx.keep, scale, [0, 0], [x / scale, y / scale]);
+    scale = kept.s;
+    x = kept.t[0] * scale;
+    y = kept.t[1] * scale;
+  }
 
   // Tremor com decaimento e whip: deslocam o quadro; uma sobra de escala esconde a borda.
   const minSide = Math.min(ctx.width, ctx.height);

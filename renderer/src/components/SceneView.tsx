@@ -25,10 +25,12 @@ import {
   ANCHORED_FX,
   bandOverlap,
   cameraFx,
+  cardDim,
   cutsOf,
   entryFrames,
   fxRects,
   type ImageBox,
+  isEasing,
   placeBand,
   placeStamp,
   pRects,
@@ -54,9 +56,9 @@ import { ClipLayer } from './ClipLayer';
 import { textCardRects } from './TextBoxes';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
-import { ShotStack } from './ShotStack';
-import { focusXY, isTreatment, sceneScreenVariant, TreatmentLayer } from './Treatments';
-import { VisualLayer } from './VisualLayer';
+import { ShotStack, shotScene } from './ShotStack';
+import { focusXY, isTreatment, sceneScreenVariant, TreatmentLayer, treatmentKeep } from './Treatments';
+import { keepOnScreen, VisualLayer } from './VisualLayer';
 
 type Props = {
   scene: TimelineScene;
@@ -301,7 +303,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // Cartão que entra depois do corte: até ele entrar, o fundo fica nítido (a captura da fonte é lida antes de virar
   // fundo desfocado) e escurece/desfoca em `BACKDROP_RAMP_S` quando o cartão chega.
   const backdrop = cardFrom > 0 ? interpolate(frame, [cardFrom, cardFrom + Math.max(1, Math.round(fps * BACKDROP_RAMP_S))], [0, 1], CLAMP) : 1;
-  const dim = news ? NEWS_DIM : (DIM[kind] ?? 0) * backdrop;
+  // O fundo do cartão escurece só até o brilho mínimo (`cardDim`): nunca vira preto liso atrás do texto.
+  const dim = news ? NEWS_DIM : cardDim(DIM[kind] ?? 0, scene.bg_luma) * backdrop;
   const blur = news ? NEWS_BLUR : (BLUR[kind] ?? 0) * backdrop;
   const image = (sub: TimelineScene, imageUrl: string | null, overlay?: React.ReactNode, easing?: ShotEasing) => (
     <VisualLayer
@@ -354,6 +357,21 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const sceneBox = ownImage ? sceneImageBox(scene.frame, width, height) : null;
   // O `zoom_rect` vai para a câmera já na tela (arquivo → recorte → enquadramento do plano em que ele começa).
   const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
+  // A manchete da captura na tela neste quadro (já com o movimento da imagem, o zoom de dentro da moldura e o
+  // enquadramento do plano): a câmera por eventos também não a corta.
+  const camKeep = (): Rect | null => {
+    if (!(fx ?? []).length) return null;
+    const motion = { fps, width, height, zoomStrength: style.zoomStrength, transitionFrames: entry, blur, hasImage: true };
+    if (!slots.length) {
+      if (ownImage) return keepOnScreen(scene, frame, motion);
+      return treatment && url ? treatmentKeep(scene, treatment, width, height, style.zoomStrength, frame) : null;
+    }
+    const i = slots.findIndex((sl) => frame >= sl.from && frame < sl.to);
+    const slot = slots[i];
+    if (!slot || slot.shot?.video || (!slot.shot?.src && !ownImage)) return null;
+    const onScreen = keepOnScreen(shotScene(scene, slot, i), frame - slot.from, { ...motion, easing: isEasing(slot.shot?.easing) ? slot.shot?.easing : undefined });
+    return onScreen ? rectThroughFraming(onScreen, slot.shot?.framing) : null;
+  };
   const captionsShown = !hideCaptions && style.captions.style !== 'none';
 
   // Letras da própria imagem na tela (manchete da captura, logo, letreiro: `text_rects` do build), pelo mesmo caminho
@@ -462,7 +480,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
-      <CameraRig fx={camFx} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} id={`${scene.id}-${scene.seed}`}>
+      <CameraRig fx={camFx} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} id={`${scene.id}-${scene.seed}`} keep={camKeep()}>
         {background}
       </CameraRig>
       <EffectsLayer effects={style.effects} look={scene.look} seed={scene.seed} staticBase={staticBase} clean={scene.clean === true} />

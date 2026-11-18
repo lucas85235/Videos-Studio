@@ -242,6 +242,22 @@ class _Material:
     is_self: bool = False
 
 
+def keep_rect(rects: list[list[float]] | list[tuple[float, ...]] | None) -> list[float] | None:
+    """O trecho da imagem que zoom, pan, punch e zoom no retângulo nunca cortam no renderer (`keep`, ADR 0004): a
+    manchete da captura, que vem em linhas (`MediaRef.rects`/`PoolItem.rects`, espaço do arquivo), unida num
+    retângulo `[x, y, w, h]`. None sem retângulo válido."""
+    boxes = [r for r in (rects or []) if len(r) >= 4 and r[2] > 0 and r[3] > 0]
+    if not boxes:
+        return None
+    x0 = max(0.0, min(float(r[0]) for r in boxes))
+    y0 = max(0.0, min(float(r[1]) for r in boxes))
+    x1 = min(1.0, max(float(r[0]) + float(r[2]) for r in boxes))
+    y1 = min(1.0, max(float(r[1]) + float(r[3]) for r in boxes))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return [round(x0, 4), round(y0, 4), round(x1 - x0, 4), round(y1 - y0, 4)]
+
+
 def _useful(start_s: float, dur_s: float | None, clip_in: float) -> float | None:
     if dur_s is None:
         return None
@@ -524,6 +540,9 @@ def resolve_shots(
             entry["easing"] = easing
         if plan.shot is not None and plan.shot.speed != 1.0:
             entry["speed"] = round(float(plan.shot.speed), 3)
+        keep = keep_rect(plan.mat.rects) if entry.get("src") and not entry.get("video") else None
+        if keep:
+            entry["keep"] = keep  # a manchete da captura do plano: o renderer nunca a corta
         result.shots.append(entry)
         result.rects.append(plan.mat.rects)
         result.caps.append(plan.cap)

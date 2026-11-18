@@ -14,7 +14,7 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { hasEffect, imageFilter } from '../look';
-import { type PxRect, screenFrame } from './fx/math';
+import { keepTransform, pRects, type PxRect, rectThrough, screenFrame } from './fx/math';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type SceneTreatment, type TextCardStyle, type TimelineScene } from '../types';
 
 export type TreatmentProps = {
@@ -49,6 +49,20 @@ const innerScale = (motion: string, z: number, p: number) => {
   if (motion === 'static') return 1 + z * 0.1;
   if (motion === 'ken_burns_out') return interpolate(p, [0, 1], [1 + z, 1 + z * 0.15]);
   return interpolate(p, [0, 1], [1 + z * 0.15, 1 + z]);
+};
+
+/**
+ * Zoom lento da imagem dentro da moldura (lousa, recorte, tela) sem cortar a manchete da captura (`scene.keep`): o
+ * `transform` CSS (escala em volta da origem `origin`, em fração do contêiner, mais o deslocamento que a manchete
+ * pedir; a escala desce se ela não couber). A moldura tem a proporção do vídeo (ou perto dela): o retângulo do
+ * arquivo vale como está.
+ */
+export const keptZoom = (scene: TimelineScene, scale: number, origin: [number, number]) => {
+  const keep = pRects({ rect: scene.keep })[0];
+  const kept = keepTransform(keep, scale, origin, [0, 0]);
+  const [tx, ty] = kept.t;
+  const shift = Math.abs(tx) > 1e-6 || Math.abs(ty) > 1e-6 ? ` translate(${tx * 100}%, ${ty * 100}%)` : '';
+  return { scale: kept.s, t: kept.t, transform: `scale(${kept.s})${shift}` };
 };
 
 const useProgress = (scene: TimelineScene) => {
@@ -165,6 +179,7 @@ const Whiteboard: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, ur
   const pen = tip ?? last;
   const bob = Math.sin(frame * 1.7 + seed) * unit * 0.004;
   const origin = FOCUS_ORIGIN[(scene.focus ?? 'center') as FocusPoint] ?? '50% 50%';
+  const zoom = keptZoom(scene, scale, focusXY(scene.focus));
   return (
     <AbsoluteFill style={{ backgroundColor: '#FBFBF8', overflow: 'hidden' }}>
       <AbsoluteFill
@@ -172,7 +187,7 @@ const Whiteboard: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, ur
       />
       {/* multiply no grupo de fora: o branco da imagem vira o branco da lousa (o clip-path isola o que está dentro) */}
       <AbsoluteFill
-        style={{ transform: `scale(${scale})`, transformOrigin: origin, mixBlendMode: 'multiply' }}
+        style={{ transform: zoom.transform, transformOrigin: origin, mixBlendMode: 'multiply' }}
       >
         <AbsoluteFill style={{ clipPath: `path('${d}')` }}>
           <Img src={url} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: origin, filter }} />
@@ -270,9 +285,9 @@ const Collage: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, 
   const angle = baseAngle + ja + lift * 6;
   const scale = 1 + lift * 0.12;
   const border = Math.min(w, h) * 0.035;
-  const inner = innerScale(scene.motion, zoomStrength * 0.6, p);
   const filter = imageFilter(effects, scene.look);
   const [fx, fy] = focusXY(scene.focus);
+  const inner = keptZoom(scene, innerScale(scene.motion, zoomStrength * 0.6, p), [fx, fy]);
   // Papel colorido rasgado atrás do recorte, na cor de destaque do estilo.
   const backAngle = -baseAngle * 1.8;
   const unit = Math.min(width, height);
@@ -314,7 +329,7 @@ const Collage: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, 
               height: '100%',
               objectFit: 'cover',
               objectPosition: `${fx * 100}% ${fy * 100}%`,
-              transform: `scale(${inner})`,
+              transform: inner.transform,
               transformOrigin: `${fx * 100}% ${fy * 100}%`,
               filter: filter || undefined,
             }}
@@ -350,6 +365,29 @@ export const sceneScreenVariant = (scene: TimelineScene, width: number, height: 
   screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture');
 
 type Rect = PxRect;
+
+/**
+ * Onde a manchete guardada (`scene.keep`) cai na tela quando a cena é a captura dentro da janela (`screen`, sempre
+ * janela para captura): a área da imagem da janela, já com o zoom de dentro (`keptZoom`). Null fora disso. A câmera
+ * por eventos usa isto para também não cortá-la.
+ */
+export const treatmentKeep = (scene: TimelineScene, treatment: SceneTreatment, width: number, height: number, zoomStrength: number, frame: number) => {
+  const keep = pRects({ rect: scene.keep })[0];
+  if (!keep || treatment !== 'screen' || screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture') !== 'window') return null;
+  const { content } = screenFrame('window', width, height);
+  const dur = Math.max(1, scene.durationInFrames - 1);
+  const p = interpolate(frame, [0, dur], [0, 1], { ...clamp, easing: Easing.inOut(Easing.quad) });
+  const clickZoom = interpolate(frame, [dur * 0.55, dur * 0.8], [0, 1], { ...clamp, easing: Easing.out(Easing.cubic) });
+  const [fx, fy] = focusXY(scene.focus);
+  const zoom = keptZoom(scene, innerScale(scene.motion, zoomStrength * 0.6, p) * (1 + clickZoom * 0.12), [fx, fy]);
+  const r = rectThrough(keep, zoom.scale, [fx, fy], zoom.t);
+  return [
+    (content.x + r[0] * content.w) / width,
+    (content.y + r[1] * content.h) / height,
+    (r[2] * content.w) / width,
+    (r[3] * content.h) / height,
+  ] as [number, number, number, number];
+};
 
 /** Linha cinza no lugar de texto (a interface nunca tem texto legível). */
 const Bar: React.FC<{ w: number | string; h: number; color?: string; style?: React.CSSProperties }> = ({ w, h, color = 'rgba(255,255,255,0.22)', style }) => (
@@ -439,7 +477,7 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const cur = cont ? { ...path, visible: true } : path;
   // Depois do clique na janela/celular, a imagem aproxima do ponto clicado.
   const clickZoom = variant === 'feed' ? 0 : interpolate(frame, [dur * 0.55, dur * 0.8], [0, 1], { ...clamp, easing: Easing.out(Easing.cubic) });
-  const inner = innerScale(scene.motion, zoomStrength * 0.6, p) * (1 + clickZoom * 0.12);
+  const inner = keptZoom(scene, innerScale(scene.motion, zoomStrength * 0.6, p) * (1 + clickZoom * 0.12), [fx, fy]);
 
   const deviceStyle: React.CSSProperties = {
     position: 'absolute',
@@ -466,7 +504,7 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
         // O recorte (celular/feed num vídeo horizontal mostra uma faixa estreita da imagem) fica no foco da cena: com
         // `objectPosition` igual ao foco, o ponto do foco cai em `fx`/`fy` do conteúdo, onde o cursor aponta.
         objectPosition: `${fx * 100}% ${fy * 100}%`,
-        transform: `scale(${inner})`,
+        transform: inner.transform,
         transformOrigin: `${fx * 100}% ${fy * 100}%`,
         filter: filter || undefined,
       }}

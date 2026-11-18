@@ -1291,8 +1291,10 @@ def test_attach_reserve_skips_stock_that_does_not_match_the_scene(isolated_setti
 def test_stock_fits_only_the_scene_it_talks_about(desc, spoken, fits):
     item = PoolItem(id="p1", tier="stock", media="image", desc=desc)
     assert media_pool.fits_scene(item, spoken) is fits
-    # material que não vem de busca por palavra-chave (oficial, captura, próprio) não passa por esse filtro
-    assert media_pool.fits_scene(item.model_copy(update={"tier": "capture"}), spoken)
+    # material que não vem de busca por palavra-chave (oficial, próprio) não passa por esse filtro; a captura de
+    # página tem o dela (`capture_fits`: só no trecho daquele fato ou daquela fonte)
+    assert media_pool.fits_scene(item.model_copy(update={"tier": "official"}), spoken)
+    assert media_pool.fits_scene(item.model_copy(update={"tier": "own"}), spoken)
 
 
 # Os casos do vídeo real (prj_gq4krrs11w, "GTA 6 no PC"): descrição e tópico de busca do pool.json, e o que a cena

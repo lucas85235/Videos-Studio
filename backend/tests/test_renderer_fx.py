@@ -94,7 +94,7 @@ def test_source_capture_stays_readable() -> None:
     mostrava uma faixa do meio da página, com a manchete cortada dos dois lados)."""
     scene = _read(COMP / "SceneView.tsx")
     assert "const backdrop = cardFrom > 0 ? interpolate(frame, [cardFrom," in scene
-    assert "(DIM[kind] ?? 0) * backdrop" in scene and "(BLUR[kind] ?? 0) * backdrop" in scene
+    assert "cardDim(DIM[kind] ?? 0, scene.bg_luma) * backdrop" in scene and "(BLUR[kind] ?? 0) * backdrop" in scene
     treatments = _read(COMP / "Treatments.tsx")
     assert "if (page) return 'window';" in treatments
     assert "screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture')" in treatments

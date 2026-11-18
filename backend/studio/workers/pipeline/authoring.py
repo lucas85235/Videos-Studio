@@ -801,8 +801,10 @@ class _Pick:
     topic: set[str] = field(default_factory=set)
     """Palavras da batida (fala, prompt, busca) para achar o item do acervo do mesmo tópico."""
     texts: tuple[str, ...] = ()
-    """Os textos da batida (fala, faixa, prompt, busca) para conferir se a foto de banco tem a ver com ela
-    (`media_pool.fits_scene`)."""
+    """Os textos da batida (fala, faixa, prompt, busca, fonte do cartão) para conferir se a foto de banco e a captura
+    de página têm a ver com ela (`media_pool.fits_scene`)."""
+    common: frozenset[str] = frozenset()
+    """As palavras do assunto do vídeo inteiro (`media_pool.video_terms`): não dizem que a captura é desta batida."""
     plain: bool = False
     """Cartão com o fundo liso pedido pela resposta (com acervo, fica liso)."""
     mark: BeatMark | None = None
@@ -1158,10 +1160,12 @@ def _official_room(picks: list[_Pick], policy: SourcePolicy, seconds: float) -> 
 
 
 def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy,
-                   seconds: float = 0.0, *, official: bool = True, texts: tuple[str, ...] = ()) -> PoolItem | None:
+                   seconds: float = 0.0, *, official: bool = True, texts: tuple[str, ...] = (),
+                   common: frozenset[str] = frozenset()) -> PoolItem | None:
     """O item real do acervo que fala do mesmo assunto da batida (pelo menos uma palavra em comum), o menos usado e o
     mais parecido; oficial só enquanto cabe no teto de material oficial (e nunca com `official=False`); foto de banco
-    só quando tem a ver com a fala (`media_pool.fits_scene` com `texts`)."""
+    só quando tem a ver com a fala, e captura de página só no trecho daquele fato ou daquela fonte
+    (`media_pool.fits_scene` com `texts` e `common`)."""
     uses = _uses(picks)
     order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
     best: tuple[Any, ...] | None = None
@@ -1174,7 +1178,7 @@ def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: Sour
             continue
         if item.tier == "official" and not (official and _official_room(picks, policy, seconds)):
             continue
-        if not media_pool.fits_scene(item, *texts):
+        if not media_pool.fits_scene(item, *texts, common=common):
             continue
         key = (-overlap, uses.get(item.id, 0), order.get(item.tier, 99), -item.score, index)
         if best is None or key < best:
@@ -1183,11 +1187,12 @@ def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: Sour
 
 
 def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy,
-                   texts: tuple[str, ...] = ()) -> PoolItem | None:
+                   texts: tuple[str, ...] = (), common: frozenset[str] = frozenset()) -> PoolItem | None:
     """Reserva do `pool_id` inválido (ou de item que não serve de imagem): no mesmo tópico, o primeiro nível de
     `sources.FALLBACK` que o acervo tem; sem nada do tópico, o item real genérico menos usado, nunca foto de banco
-    (banco aleatório é pior que o cartão). None: nenhum item real (vira cartão). Oficial só enquanto cabe no teto de
-    material oficial; foto de banco só quando tem a ver com a fala (`media_pool.fits_scene` com `texts`)."""
+    (banco aleatório é pior que o cartão, e captura de página é a prova de um fato: fora do trecho dele, também). None:
+    nenhum item real (vira cartão). Oficial só enquanto cabe no teto de material oficial; foto de banco só quando tem a
+    ver com a fala (`media_pool.fits_scene` com `texts` e `common`)."""
     uses = _uses(picks)
     order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
     room = _official_room(picks, policy, 0.0)
@@ -1196,11 +1201,12 @@ def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: Sour
     if not candidates:
         return None
     same = [(index, item) for index, item in candidates
-            if topic & _item_tokens(item) and media_pool.fits_scene(item, *texts)]
+            if topic & _item_tokens(item) and media_pool.fits_scene(item, *texts, common=common)]
     if same:
         return min(same, key=lambda c: (order[c[1].tier], -len(topic & _item_tokens(c[1])), uses.get(c[1].id, 0),
                                         -c[1].score, c[0]))[1]
-    generic = [c for c in candidates if c[1].tier not in media_pool.KEYWORD_TIERS]
+    generic = [c for c in candidates if c[1].tier not in media_pool.KEYWORD_TIERS
+               and media_pool.fits_scene(c[1], *texts, common=common)]
     if not generic:
         return None
     return min(generic, key=lambda c: (uses.get(c[1].id, 0), order[c[1].tier], -c[1].score, c[0]))[1]
@@ -1246,8 +1252,8 @@ def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int |
     if p.source == "pool" and p.item is not None and p.item.tier in policy.hook:
         return []
     candidates = [it for it in pool.items if it.tier in policy.hook and usable_item(it)
-                  and media_pool.fits_scene(it, *p.texts)] or [
-        it for it in pool.items if usable_item(it) and media_pool.fits_scene(it, *p.texts)]
+                  and media_pool.fits_scene(it, *p.texts, common=p.common)] or [
+        it for it in pool.items if usable_item(it) and media_pool.fits_scene(it, *p.texts, common=p.common)]
     if not candidates:
         return []
     rank = {t: k for k, t in enumerate(policy.hook)}
@@ -1321,7 +1327,7 @@ def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: 
     for i, p in enumerate(picks):
         if p.source != "new" or p.ai_reason or i == hook or p.kind == "count":
             continue
-        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts)
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts, common=p.common)
         if item is None:
             continue
         _to_pool(p, item)
@@ -1333,7 +1339,9 @@ def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: 
 def _real_backgrounds(picks: list[_Pick], policy: SourcePolicy) -> None:
     """Fundo dos cartões com acervo: o item real mais perto (antes, no empate); o fundo liso pedido fica liso; fundo
     de IA só quando não há real nenhum. Material oficial só enquanto cabe no teto (`official_max_share`): passou dele,
-    o real não oficial mais perto ou, sem ele, o fundo liso. O contador do Top 10 e o mapa ficam como são."""
+    o real não oficial mais perto ou, sem ele, o fundo liso. Captura de página só no cartão que fala daquele fato ou
+    daquela fonte (`media_pool.fits_scene`): sem real que caiba, o fundo liso (cartão tipográfico), nunca a captura
+    alheia de papel de parede. O contador do Top 10 e o mapa ficam como são."""
     owners = [k for k, q in enumerate(picks) if q.source == "pool" and q.item is not None and usable_item(q.item)]
     for i, p in enumerate(picks):
         if p.kind not in CARD_KINDS or p.kind in ("count", "map") or p.plain or p.source == "pool":
@@ -1341,12 +1349,16 @@ def _real_backgrounds(picks: list[_Pick], policy: SourcePolicy) -> None:
         if p.source == "reuse" and p.root is not None and _pick_prov(picks, i) != "ai":
             continue
         room = _official_room(picks, policy, p.beat.seconds)
-        ranked = sorted((k for k in owners if k != i), key=lambda k: (abs(k - i), k > i))
+        others = [k for k in owners if k != i]
+        # Captura de página de fundo só no cartão que fala daquele fato ou fonte: não vira papel de parede do vizinho.
+        ranked = sorted((k for k in others if media_pool.fits_scene(picks[k].item, *p.texts, common=p.common)),  # type: ignore[arg-type]
+                        key=lambda k: (abs(k - i), k > i))
         near = next((k for k in ranked if room or _pick_prov(picks, k) != "official"), None)
         if near is not None:
             p.source, p.root = "reuse", near
-        elif ranked:
-            p.source, p.root = "none", None  # só havia real oficial e o teto acabou: fundo liso, nunca IA
+        elif others:
+            # Só havia real oficial com o teto acabado, ou captura de outro assunto: fundo liso, nunca IA.
+            p.source, p.root = "none", None
         elif p.source == "none":
             last = next((k for k in range(i - 1, -1, -1) if picks[k].source == "new"), None)
             if last is not None:
@@ -1414,7 +1426,7 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
         i = todo[0]
         tried.add(i)
         p = picks[i]
-        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts)
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts, common=p.common)
         if item is not None:
             _to_pool(p, item)
             what = f"mostra o item do acervo {_item_text(item)}"
@@ -1451,7 +1463,8 @@ def _enforce_official(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook
         i = todo[0]
         tried.add(i)
         p = picks[i]
-        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, official=False, texts=p.texts)
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, official=False, texts=p.texts,
+                             common=p.common)
         if p.kind in CARD_KINDS:
             # Cartão sobre o oficial: o fundo passa a ser outro real (ou liso).
             if item is not None:
@@ -1515,6 +1528,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     # O gancho (1ª cena do vídeo) tem prioridade no orçamento; o contador do Top 10 fica como é.
     hook = 0 if beats and storyboard_check.is_hook_beat(doc, beats[0]) else None
     data_style = is_data_style(style)
+    common = media_pool.video_terms(doc)
 
     picks: list[_Pick] = []
     early: list[Issue] = []
@@ -1554,20 +1568,21 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         prompt = data.get("prompt")
         texts = tuple(t for t in (beat.text, data.get("headline"), data.get("overlay_text"),
                                   media_pool.ScenePrompt(prompt) if isinstance(prompt, str) else None,
-                                  data.get("real_query")) if isinstance(t, str) and t.strip())
+                                  data.get("real_query"), card.source if card is not None else None)
+                      if isinstance(t, str) and t.strip())
         chosen_item: PoolItem | None = None
         plain = False
         if real_first and kind not in ("count", "map"):
             assert pool is not None
             if source == "pool":
                 cited = pool.item(_text(data.get("pool_id"), 12))
-                fits = cited is not None and media_pool.fits_scene(cited, *texts)
+                fits = cited is not None and media_pool.fits_scene(cited, *texts, common=common)
                 chosen_item = cited if cited is not None and usable_item(cited) and fits else None
                 if chosen_item is None:
                     # id inválido (ou ausente), item que não serve de imagem da batida (meme é reação, nunca
                     # decoração; imagem de IA e gráfico do acervo não são material real) ou foto de banco que não tem
                     # a ver com a fala (robô para "golpe", rolo de filme para "ISO"): a reserva no mesmo tópico.
-                    chosen_item = _fallback_item(pool, topic, picks, policy, texts)
+                    chosen_item = _fallback_item(pool, topic, picks, policy, texts, common)
                     why = ("A cena citava um item que não está no acervo" if cited is None else
                            f"A cena citava {_item_text(cited)}, que não tem a ver com a fala" if not fits else
                            f"A cena citava {_item_text(cited)}, que não serve de imagem da batida")
@@ -1612,7 +1627,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
 
         p = _Pick(beat, kind, source or "none", root, overlay=overlay, number=number, card=card, ahead=ahead,
                   real=_real_from(data, kind, doc.sources) if chosen_item is None else None, item=chosen_item,
-                  topic=topic, texts=texts, plain=plain, mark=_mark_from(data, beat, kind, i == hook, grammar.humor))
+                  topic=topic, texts=texts, common=common, plain=plain, mark=_mark_from(data, beat, kind, i == hook, grammar.humor))
         if p.source == "pool":
             p.prompt = _text(data.get("prompt"), 700)  # reserva de IA, quando a resposta trouxe
         if p.source == "new":

@@ -50,6 +50,7 @@ from studio.config import get_settings
 from studio.core.project.document import MediaRef, ProjectDoc, Scene
 from studio.core.project.pool import POOL_ID_RE, Pool, PoolItem, load_pool
 from studio.core.sources import (
+    CARD_BACKDROP_KINDS,
     FALLBACK,
     ITEM_MAX_USES,
     ITEM_REUSE_GAP_S,
@@ -498,7 +499,98 @@ def fits_text(tier: str, desc: str, tags: Iterable[str] = (), topic: str = "", *
     return any(models & cited.get(head, set()) for head, models in shown.items())
 
 
-def fits_scene(item: PoolItem, *texts: object) -> bool:
+CAPTURE_SHARED_MIN = 2
+"""Palavras de conteúdo em comum (fora as do assunto do vídeo inteiro) para a captura entrar numa cena que não cita
+o veículo dela."""
+_DOMAIN_SUFFIXES = frozenset("com br net org co uk io gg tv info news pt es fr de it us ca au jp me app".split())
+_OUTLET_SPLIT = re.compile(r"\s+[·•|—–-]\s+")
+
+
+def is_source_capture(item: PoolItem) -> bool:
+    """Captura de página (a matéria, a página oficial): é a prova de UM fato de UMA fonte, não material de assunto."""
+    return item.tier == "capture" or item.media == "capture"
+
+
+def _host_label(url: str) -> str:
+    """O nome do site no endereço ("https://www.welivesecurity.com/pt/..." → "welivesecurity")."""
+    host = re.sub(r"^[a-z]+://", "", (url or "").strip().lower()).split("/", 1)[0].split(":", 1)[0]
+    labels = [part for part in host.split(".") if part and part != "www"]
+    while len(labels) > 1 and labels[-1] in _DOMAIN_SUFFIXES:
+        labels.pop()
+    return fold(labels[-1]).replace(" ", "") if labels else ""
+
+
+def outlet_keys(item: PoolItem) -> set[str]:
+    """Como a fala cita a fonte da captura, sem acento, caixa nem espaço: o nome do site no endereço e no crédito
+    ("gamesbeat", "welivesecurity"), o veículo que abre o título da página ("Windows Central" → "windowscentral", e a
+    1ª palavra longa: "rockstar"), e o que vem entre parênteses ("WeLiveSecurity (ESET)" → "eset")."""
+    keys = {_host_label(item.page_url), _host_label(item.url)}
+    credit = (item.credit or "").strip()
+    keys.add(_host_label(credit) if "." in credit and " " not in credit else fold(credit).replace(" ", ""))
+    quoted = re.findall(r"[\"“]([^\"”]+)[\"”]", item.desc or "")
+    phrases = [_OUTLET_SPLIT.split(q, maxsplit=1)[0] for q in quoted]
+    if not quoted and _OUTLET_SPLIT.search(item.desc or ""):
+        phrases.append(_OUTLET_SPLIT.split(item.desc)[-1])
+    for phrase in phrases:
+        for inner in re.findall(r"\(([^)]+)\)", phrase):
+            keys.add(fold(inner).replace(" ", ""))
+        bare = fold(re.sub(r"\([^)]*\)", " ", phrase))
+        if bare and len(bare.split()) <= 4:
+            keys.add(bare.replace(" ", ""))
+            first = bare.split()[0]
+            if len(first) >= 5:
+                keys.add(first)
+    return {k for k in keys if len(k) >= 3}
+
+
+def _mentions(keys: set[str], texts: Iterable[object]) -> bool:
+    """Algum texto cita uma das `keys` (palavra inteira, ou 2 a 3 palavras seguidas juntas: "Windows Central")."""
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        words = fold(text).split()
+        grams = {"".join(words[i:i + n]) for n in (1, 2, 3) for i in range(len(words) - n + 1)}
+        if keys & grams:
+            return True
+    return False
+
+
+def video_terms(doc: ProjectDoc) -> frozenset[str]:
+    """As palavras do assunto do vídeo inteiro (o título): toda fala do vídeo divide com toda captura ("GTA", "PC"),
+    então não dizem que a captura é daquele trecho."""
+    return frozenset(content_terms(doc.title))
+
+
+def _names(*texts: object) -> set[str]:
+    """Nomes próprios e siglas dos textos (palavra que começa em maiúscula, com 3 letras ou mais), sem acento nem
+    caixa: "Xbox", "PlayStation", "Huntress"."""
+    out: set[str] = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for word in re.findall(r"[^\W\d_][\w'’]*", text):
+            if word[0].isupper() and len(word) >= 3:
+                out.add(fold(word.split("'")[0].split("’")[0]).replace(" ", ""))
+    return out
+
+
+def capture_fits(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> bool:
+    """A captura de página entra na cena só quando o trecho fala daquele fato ou daquela fonte: a cena cita o veículo
+    (`outlet_keys`), um nome próprio do título da página ("Xbox" na matéria do Xbox Cloud) ou divide com a página pelo
+    menos `CAPTURE_SHARED_MIN` palavras de conteúdo; nos dois últimos, fora as do assunto do vídeo inteiro (`common`).
+    Captura não é papel de parede: a página da GamesBeat sobre a data do PC não ilustra "ative a verificação em duas
+    etapas", e a da ESET sobre golpes não ilustra "pra quem tá no PC"."""
+    keys = outlet_keys(item)
+    if _mentions(keys, texts):
+        return True
+    skip = set(common) | keys
+    if (_names(item.desc, *item.entities) & _names(*texts)) - skip:
+        return True
+    shared = content_terms(item.desc, *item.tags, *item.entities) & content_terms(*texts)
+    return len(shared - skip) >= CAPTURE_SHARED_MIN
+
+
+def fits_scene(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> bool:
     """O item do acervo pode ilustrar a cena de `texts` (a fala, a faixa, o prompt de reserva)? Material de busca por
     palavra-chave (`KEYWORD_TIERS`) só quando:
 
@@ -515,7 +607,12 @@ def fits_scene(item: PoolItem, *texts: object) -> bool:
     - aparelho de marca (console, celular, placa) só com a marca citada na cena e, se a descrição diz o modelo, o
       mesmo modelo (foto de Xbox 360 não ilustra "Steam, PlayStation e Xbox").
 
+    Captura de página (`is_source_capture`) só no trecho que fala daquele fato ou daquela fonte (`capture_fits`, com
+    `common`: as palavras do assunto do vídeo inteiro, `video_terms`).
+
     Os outros níveis sempre podem: são a própria fonte ou a escolha do usuário."""
+    if is_source_capture(item):
+        return capture_fits(item, *texts, common=common)
     return fits_text(item.tier, item.desc, [*item.tags, *item.entities], item.topic, *texts)
 
 
@@ -1563,8 +1660,17 @@ def _scene_texts(doc: ProjectDoc, scene: Scene) -> tuple[str, ...]:
 
     lang = doc.primary_language
     headline = scene.card.headline.get(lang, "") if scene.card is not None else ""
+    # A fonte do cartão ("GamesBeat") diz de onde vem o fato da cena: a captura daquela fonte cabe nela.
+    source = (scene.card.source or "") if scene.card is not None else ""
     return tuple(t for t in (scene_text(doc, scene), ScenePrompt(scene.visual.prompt or ""), headline,
-                             scene.overlay_text.get(lang, "")) if t)
+                             scene.overlay_text.get(lang, ""), source) if t)
+
+
+def _media_fits(pool: Pool, media: MediaRef | None, texts: tuple[str, ...], common: Iterable[str]) -> bool:
+    """A mídia da cena vizinha (que a cena sem mídia repetiria) tem a ver com esta cena: o item do acervo dela passa
+    em `fits_scene`; mídia de fora do acervo (escolhida à mão) sempre."""
+    item = pool.item(media.pool_id) if media is not None and media.pool_id else None
+    return item is None or fits_scene(item, *texts, common=common)
 
 
 def _has_real(scene: Scene, project_id: str) -> bool:
@@ -1637,7 +1743,7 @@ class _Around:
 
 
 def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around,
-                    texts: tuple[str, ...]) -> list[PoolItem]:
+                    texts: tuple[str, ...], common: Iterable[str] = ()) -> list[PoolItem]:
     """A reserva do item que fere a distribuição: os da `fallbacks` que são material real (nem meme), que têm a ver
     com a cena (`fits_scene` com os `texts` dela), que cabem onde a cena está e, se o item não é oficial, que também
     não são (o teto de material oficial já foi feito no storyboard).
@@ -1645,7 +1751,7 @@ def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around
     distribuição é que decide), depois dos inéditos: pegar o item de uma cena adiante empurra a troca para ela."""
     fits = [c for c in fallbacks(pool, item, set())
             if c.tier in REAL_TIERS and c.media != "meme" and (c.tier != "official" or item.tier == "official")
-            and fits_scene(c, *texts) and around.problem(item_tokens(c)) is None]
+            and fits_scene(c, *texts, common=common) and around.problem(item_tokens(c)) is None]
     return sorted(fits, key=lambda c: c.id in taken)
 
 
@@ -1657,9 +1763,14 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
 
     Distribuição (`_Spread`): o item que voltaria cedo demais, pela 3ª vez ou por tempo demais seguido na tela (o que
     se sabe antes de baixar e, depois, pelo arquivo baixado: dois itens da mesma matéria podem baixar a mesma imagem
-    de capa) troca por um item real da reserva que caiba; sem nenhum, fica o escolhido, com aviso. A cena travada e a
-    mídia que o usuário escolheu não passam por aqui: contam como aparição e nunca trocam. Devolve os avisos, dizendo
-    o que de fato aconteceu."""
+    de capa) troca por um item real da reserva que caiba; sem nenhum, a cena de imagem fica com o escolhido, com aviso,
+    e o cartão fica com o fundo do estilo (cartão tipográfico): o fundo do cartão não repete a mesma imagem.
+
+    Assunto: a captura de página só entra na cena que fala daquele fato ou daquela fonte (`fits_scene`, com as
+    palavras do assunto do vídeo em `video_terms`). Fora dele, troca pela reserva que caiba; sem nenhuma, o cartão
+    fica com o fundo do estilo e a cena de imagem segue a falta de mídia (a IA de reserva, a mídia real vizinha que
+    caiba ou o fundo do estilo). A cena travada e a mídia que o usuário escolheu não passam por aqui: contam como
+    aparição e nunca trocam. Devolve os avisos, dizendo o que de fato aconteceu."""
     from studio.core.styles.library import get_style
 
     warnings: list[str] = []
@@ -1675,8 +1786,10 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     downloads = 0
     budget = attach_download_budget(sum(1 for s in doc.scenes if not s.locked and needs_attach(s.visual.media, doc.id)))
     failed: list[tuple[Scene, str]] = []
+    plain: list[str] = []  # cartões que ficaram com o fundo do estilo (o fundo não cabia ali)
     refused: dict[str, str] = {}  # item de banco recusado pela imagem (`refuse_empty_screen`) → motivo
     frame = _frame_of(style)
+    common = video_terms(doc)
     for scene in doc.ordered_scenes():
         media = scene.visual.media
         if scene.locked or not needs_attach(media, doc.id):
@@ -1692,16 +1805,27 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         reason = refused.get(item.id, "não baixou")
         # A reserva de banco só quando tem a ver com a cena (a fala, o prompt, a faixa): foto aleatória não entra.
         texts = _scene_texts(doc, scene)
+        card = scene.kind in CARD_BACKDROP_KINDS
+        # Assunto: a captura de outro fato (ou de outra fonte) não entra, nem como fundo do cartão. (A foto de banco o
+        # storyboard já conferiu com a fala; a captura passava sempre.)
+        off_topic = is_source_capture(item) and not capture_fits(item, *texts, common=common)
         # Distribuição: o que já se sabe antes de baixar (o item, o endereço) decide; o item que fere vai por último,
-        # depois da reserva que cabe. Sem problema, a ordem de sempre (o item e a reserva de download).
+        # depois da reserva que cabe (no cartão, nem vai: o fundo do cartão não repete). Sem problema, a ordem de
+        # sempre (o item e a reserva de download).
         around = spread.around(scene) if spread is not None else None
         pre = around.problem(item_tokens(item)) if around is not None else None
-        if pre is None:
-            reserve = [c for c in fallbacks(pool, item, used) if fits_scene(c, *texts)]
+        if pre is None and not off_topic:
+            reserve = [c for c in fallbacks(pool, item, used) if fits_scene(c, *texts, common=common)]
             order = [item, *reserve[:MAX_FALLBACK_TRIES]]
+        elif off_topic and card:
+            order = []  # a captura era só o fundo, e de outro assunto: o cartão fica tipográfico (fundo do estilo)
         else:
-            assert around is not None
-            order = [*_spread_reserve(pool, item, used | cited, around, texts)[:MAX_FALLBACK_TRIES], item]
+            fit_reserve = (_spread_reserve(pool, item, used | cited, around, texts, common) if around is not None else
+                           [c for c in fallbacks(pool, item, used) if c.tier in REAL_TIERS and c.media != "meme"
+                            and (c.tier != "official" or item.tier == "official")
+                            and fits_scene(c, *texts, common=common)])
+            keep_item = [] if off_topic or card else [item]
+            order = [*fit_reserve[:MAX_FALLBACK_TRIES], *keep_item]
         spread_why = pre
         held: MediaRef | None = None  # o item baixado que só fere a distribuição pelo arquivo: fica sem reserva
         k = 0
@@ -1727,10 +1851,10 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             late = around.problem(media_tokens(got)) if around is not None else None
             if late is not None and candidate is item and pre is None:
                 # O arquivo baixado já está noutra cena (dois itens da mesma matéria baixam a mesma capa): no lugar
-                # da reserva de download, a reserva que cabe; o item só se ela não vier.
+                # da reserva de download, a reserva que cabe; o item só se ela não vier (no cartão, nem assim).
                 assert around is not None
-                held, spread_why = got, late
-                order = [*order[:k], *(c for c in _spread_reserve(pool, item, used | cited, around, texts)
+                held, spread_why = (None if card else got), late
+                order = [*order[:k], *(c for c in _spread_reserve(pool, item, used | cited, around, texts, common)
                                        [:MAX_FALLBACK_TRIES] if c is not item)]
                 continue
             if late is not None and spread_why is not None and candidate is not item:
@@ -1739,14 +1863,28 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             break
         if chosen is None and held is not None:
             chosen, source = held, item
+        if (chosen is None or source is None) and card and (off_topic or spread_why is not None):
+            # Cartão: a imagem era só o fundo. Sem uma que caiba ali, o fundo do estilo (cartão tipográfico).
+            scene.visual.media = None
+            scene.visual.reuse_of = None
+            scene.visual.type = "none"
+            plain.append(_label(doc, scene))
+            continue
         if chosen is None or source is None:
             scene.visual.media = None
-            tail = "e a reserva também não" if reason == "não baixou" else "e a reserva não anexou"
-            failed.append((scene, f"a mídia do acervo ({item.id}) {reason} {tail}"))
+            if off_topic:
+                why = f"a captura do acervo ({item.id}) é de outro assunto e a reserva não tem material que caiba ali"
+            else:
+                tail = "e a reserva também não" if reason == "não baixou" else "e a reserva não anexou"
+                why = f"a mídia do acervo ({item.id}) {reason} {tail}"
+            failed.append((scene, why))
             continue
         scene.visual.media = chosen
         used.add(source.id)
-        if spread_why is not None and item.id not in refused:
+        if off_topic:
+            warnings.append(f"{_label(doc, scene)}: a captura {item.id} é de outro assunto; entrou {source.id} "
+                            f"({source.tier}, {source.topic or 'sem tópico'}).")
+        elif spread_why is not None and item.id not in refused:
             (swapped if source.id != item.id else kept).append(_label(doc, scene))
         elif source.id != item.id:
             warnings.append(f"{_label(doc, scene)}: o item {item.id} {reason}; entrou {source.id} ({source.tier}, "
@@ -1756,6 +1894,10 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     if swapped:
         verb = "trocou" if len(swapped) == 1 else "trocaram"
         warnings.append(f"{_scene_list(swapped)} {verb} de item do acervo ({rule}).")
+    if plain:
+        verb = "ficou" if len(plain) == 1 else "ficaram"
+        warnings.append(f"{_scene_list(plain)} {verb} com o fundo do estilo: a imagem do acervo era de outro assunto ou "
+                        f"já aparecia demais ({rule}).")
     if kept:
         verb = "repete" if len(kept) == 1 else "repetem"
         warnings.append(f"{_scene_list(kept)} {verb} material do acervo cedo demais ({rule}) e o acervo não tem outro "
@@ -1767,7 +1909,9 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             warnings.append(f"{label}: {why}; a cena ficou com a imagem de IA de reserva.")
             continue
         at = next(i for i, s in enumerate(ordered) if s.id == scene.id)
-        near = sorted((s for s in ordered if s.id != scene.id and _has_real(s, doc.id)),
+        texts = _scene_texts(doc, scene)
+        near = sorted((s for s in ordered if s.id != scene.id and _has_real(s, doc.id)
+                       and _media_fits(pool, s.visual.media, texts, common)),
                       key=lambda s: (abs(ordered.index(s) - at), ordered.index(s) > at))
         if near:
             scene.visual.reuse_of = near[0].id

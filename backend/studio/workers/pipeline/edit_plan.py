@@ -116,6 +116,9 @@ TEXT_MARGIN = 0.04
 """Folga (fração do quadro) em volta do trecho da captura no reenquadramento: a manchete não encosta na borda."""
 PUNCH_CAMERA = (1.15, 1.30)
 CLIP_END_PAD_S = 0.5
+CLOSING_STILL_S = 5.0
+"""O plano parado mais longo na última cena do vídeo (o CTA e a tela final ficam na tela: o QA do prj_gq4krrs11w
+achou ~9 s no mesmo plano congelado)."""
 """Trecho seguinte do clipe: a entrada fica a pelo menos 0,5 s do fim do material."""
 
 CAMERA_WEIGHTS: tuple[tuple[str, float], ...] = (
@@ -1400,13 +1403,55 @@ class _Planner:
                 spans.append((shot.t, shot.end))
         return spans
 
+    def _unfreeze(self, beat: _Beat) -> None:
+        """O plano do clipe que dura mais que o trecho útil dele (o renderer desacelera e congela o último quadro: o
+        fim do vídeo ficava ~9 s na mesma LAN house) corta onde o clipe acaba: para outro item do acervo com afinidade
+        (sem cota, é trava) ou, sem nenhum, para o começo do mesmo clipe, mais fechado (o material volta a andar).
+        Cortes do usuário ficam."""
+        media = beat.media
+        if beat.keep_shots or media is None or not media.video or media.dur_s is None:
+            return
+        if not self._frozen_clip_spans(beat):
+            return
+        if not beat.shots:
+            beat.shots = [_Shot(t=beat.start, word=None, prov=beat.prov, motion="none", end=beat.end)]
+        rng = self._rng(beat, "unfreeze")
+        guard = 0
+        while guard < MAX_SCENE_SHOTS and len(beat.shots) < MAX_SCENE_SHOTS:
+            guard += 1
+            k = next((i for i, (a, b) in enumerate((s.t, s.end) for s in beat.shots)
+                      if (a, b) in self._frozen_clip_spans(beat)), None)
+            if k is None:
+                return
+            shot = beat.shots[k]
+            clip_in = shot.clip_in if shot.clip_in is not None else media.start_s
+            useful = max(MIN_SHOT_S, media.start_s + media.dur_s - clip_in)
+            words = [w for w in beat.words if shot.t + MIN_SHOT_S < w.start < min(shot.end - MIN_SHOT_S,
+                                                                                   beat.latest_start())]
+            word = min(words, key=lambda w: abs(w.start - (shot.t + useful)), default=None)
+            if word is None:
+                return
+            cut = self._pool_shot(beat, beat.shots[:k + 1], word, rng, avoid=None, force=True)
+            if cut is None:
+                cut = _Shot(t=word.start, word=word, prov=beat.prov, clip_in=round(media.start_s, 2), motion="none",
+                            framing=ShotFraming(scale=REFRAME_SCALE if (shot.framing is None or shot.framing.scale < 1.1)
+                                                else 1.0, x=0.5, y=0.5))
+            cut.end = shot.end
+            shot.end = word.start
+            beat.shots.insert(k + 1, cut)
+
     def _max_still(self) -> None:
-        """Nenhum plano parado passa de `max_still_s`: punch no meio (ou o corte já resolve). O clipe que toca não é
-        parado; o plano do clipe que dura mais que o trecho útil dele é (`_frozen_clip_spans`)."""
-        limit = self.g.max_still_s
+        """Nenhum plano parado passa de `max_still_s` (no fim do vídeo, de `CLOSING_STILL_S`): punch no meio (ou o
+        corte já resolve). O clipe que toca não é parado; o plano do clipe que dura mais que o trecho útil dele é
+        (`_frozen_clip_spans`) e corta antes, onde o clipe acaba (`_unfreeze`)."""
         for beat in self.beats:
             if not beat.editable or beat.card or not beat.framed:
                 continue
+            limit = self.g.max_still_s
+            if beat is self.beats[-1]:
+                limit = min(limit, CLOSING_STILL_S)  # o fim fica na tela: plano parado ali é quadro morto
+            if beat.clip:
+                self._unfreeze(beat)
             # todo plano de imagem conta: um push lento de 20 s também é "parado" para quem assiste
             spans = self._frozen_clip_spans(beat) if beat.clip else self._still_spans(beat)
             # A captura de página não tem corte nem punch (só o `zoom_rect` no trecho): sem a folga dos cortes, a

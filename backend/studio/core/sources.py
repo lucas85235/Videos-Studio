@@ -58,6 +58,10 @@ _SYNTHETIC_RE = re.compile(
 _NOT_SYNTHETIC_KINDS = frozenset({"news", "capture"})
 """Notícia e captura de página: o print mostra a página como ela é. A manchete pode falar de arte de fã ou de IA (é o
 assunto) e o material continua sendo a captura real."""
+CARD_BACKDROP_KINDS = frozenset({"text", "title", "quote", "stat", "compare", "chart"})
+"""Cartões em que a imagem é só o fundo (escurecido e desfocado atrás do texto ou do painel, `DIM`/`BLUR` no
+renderer): sem uma que caiba (outro assunto, repetida, escura demais), o fundo do estilo serve (cartão tipográfico). O
+contador do Top 10 (mostra a imagem do item), o mapa (não usa fundo) e o documento ficam fora."""
 
 # Mídia anexada sem `tier`: o nível pelo tipo e, em foto e clipe, pela origem.
 _KIND_TIER: dict[str, Prov] = {"news": "capture", "capture": "capture", "official": "official", "meme": "meme"}
