@@ -503,7 +503,7 @@ Outros arquivos:
    - planos de até `official_max_clip_s`;
    - descrição de cada plano por `providers/vision.py`;
    - cache por sha.
-4. Fotos do `media_search` (`providers/media_search.py:491`) e **vídeos Pexels** (`/v1/videos/search`, nova `search_videos`; cache pelo `_cache_key` de `:461`; 200 req/h).
+4. Fotos do `media_search` (`providers/media_search.py:491`) e **vídeos Pexels** (`/v1/videos/search`, nova `search_videos`; cache pelo `_cache_key` de `:461`; 200 req/h). Mockup de banco com a tela vazia (chroma crua, branca ou desligada) não entra: a descrição/endereço barra na coleta e a imagem baixada (`media/empty_screen.py`: retângulo liso dentro da foto, de cor de chroma ou extrema) manda o anexo para a reserva.
 5. `media_find` (`workers/pipeline/media_find.py`) para `official`/`news`: uma chamada por vídeo, com até 15 tópicos extraídos do roteiro (o limite atual é de 8 cenas, `:40`).
 6. Anti-repetição: `media/novelty.py` (dHash) penaliza item usado nos últimos 10 vídeos do canal.
 

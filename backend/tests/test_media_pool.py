@@ -712,6 +712,70 @@ def test_attach_limits_retries_per_scene(isolated_settings, monkeypatch):
     assert len(tried) == 1 + media_pool.MAX_FALLBACK_TRIES
 
 
+def test_gather_drops_stock_mockups_described_as_empty_screens(isolated_settings, monkeypatch):
+    """O iMac de chroma verde (pela descrição) e o monitor branco (só o endereço do Pexels diz "blank screen") não
+    entram no acervo; o mesmo texto em material oficial ou na mídia anexada à mão fica."""
+    doc = _project()
+    raw = [
+        {"tier": "stock", "media": "image", "url": "https://images.pexels.com/photos/5082562/a.jpeg",
+         "desc": "Clean and minimalist setup with a computer and green screen on a white desk.",
+         "page_url": "https://www.pexels.com/photo/silver-imac-on-white-table-5082562/", "source_id": "pexels:5082562",
+         "topic": "Farol"},
+        {"tier": "stock", "media": "image", "url": "https://images.pexels.com/photos/5185166/a.jpeg",
+         "desc": "A minimalist white computer setup including monitor, keyboard, and mouse on desktop.",
+         "page_url": "https://www.pexels.com/photo/white-computer-and-blank-screen-monitor-5185166/",
+         "source_id": "pexels:5185166", "topic": "Farol"},
+        {"tier": "free", "media": "image", "desc": "Farol da Ilha Rasa ao entardecer", "url": "https://x.example/f.jpg",
+         "source_id": "commons:File:farol.jpg", "topic": "Farol"},
+        {"tier": "official", "media": "image", "desc": "Bastidores do trailer no green screen",
+         "url": "https://x.example/b.jpg", "source_id": "found:https://x.example/b.jpg", "topic": "Farol"},
+        {"tier": "stock", "media": "image", "desc": "Monitor com green screen", "path": f"uploads/{doc.id}/media/a.jpg",
+         "source_id": f"file:uploads/{doc.id}/media/a.jpg", "topic": media_pool.TOPIC_DOC},
+    ]
+    monkeypatch.setattr(media_pool, "COLLECTORS", [("teste", lambda ctx: [dict(r) for r in raw])])
+    pool = media_pool.gather(doc, get_style(STYLE))
+    assert {i.source_id for i in pool.items} == {"commons:File:farol.jpg", "found:https://x.example/b.jpg",
+                                                 f"file:uploads/{doc.id}/media/a.jpg"}
+    assert any(w.startswith("2 item(ns) de banco com a tela de chroma ou em branco") for w in pool.warnings)
+
+
+def test_attach_skips_stock_photos_with_an_empty_screen(isolated_settings, monkeypatch):
+    """A descrição não falou em chroma, mas a foto baixada é o monitor de tela verde (e a reserva, o monitor branco
+    apagado): a cena fica com a próxima reserva, e o aviso diz por quê. A outra cena que cita o mesmo item nem baixa
+    de novo os recusados."""
+    from test_empty_screen import blank_crt, chroma_monitor
+
+    from studio.media import real_media
+
+    doc = _project()
+    items = [PoolItem(id=f"p{n}", tier="stock", media="image", url=f"https://x.example/{n}.jpg", topic="Farol",
+                      source_id=f"pexels:{n}") for n in (1, 2, 3, 4)]
+    with Image.open(ACERVO / "farol.jpg") as im, Image.open(ACERVO / "ilha.jpg") as other:
+        pictures = {"pexels:1": chroma_monitor(), "pexels:2": blank_crt(), "pexels:3": im.convert("RGB"),
+                    "pexels:4": other.convert("RGB")}
+    tried: list[str] = []
+
+    def fake(candidate_id, project_id, *, kind="photo", http=None):
+        tried.append(candidate_id)
+        buf = io.BytesIO()
+        pictures[candidate_id].save(buf, "JPEG", quality=92)
+        stored = real_media.store_image(buf.getvalue(), project_id)
+        return MediaRef(kind=kind, source="pexels", asset=stored.rel, width=stored.width, height=stored.height,
+                        candidate_id=candidate_id), []
+
+    monkeypatch.setattr(real_media, "media_from_candidate", fake)
+    scene, again = doc.ordered_scenes()[:2]
+    scene.visual.media = media_pool.pending_ref(items[0])
+    again.visual.media = media_pool.pending_ref(items[0])
+    warnings = media_pool.attach_chosen(doc, Pool(items=items))
+    media = scene.visual.media
+    assert tried == ["pexels:1", "pexels:2", "pexels:3", "pexels:4"]
+    assert media is not None and media.pool_id == "p3" and media.tier == "stock"
+    assert again.visual.media is not None and again.visual.media.pool_id == "p4"
+    assert sum("o item p1 é foto de banco com tela de chroma; entrou" in w for w in warnings) == 2
+    assert media_pool.materialize(items[0], doc).pool_id == "p1"  # escolhido à mão no Acervo: entra como está
+
+
 def test_attach_download_budget_grows_with_the_scenes_waiting():
     assert media_pool.attach_download_budget(0) == media_pool.MAX_ATTACH_DOWNLOADS
     assert media_pool.attach_download_budget(10) == media_pool.MAX_ATTACH_DOWNLOADS

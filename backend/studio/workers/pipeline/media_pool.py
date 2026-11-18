@@ -10,6 +10,8 @@ independente: a falha de um vira aviso em `Pool.warnings` e os outros seguem.
    do roteiro (`doc.sources`) — sempre a imagem LIMPA, com os retângulos dos trechos para o renderer animar o destaque.
 3. Trechos de links oficiais dados pelo usuário (`settings.pool_links`), cortados em planos por `media/clips.py`.
 4. Fotos livres (`media_search`: Commons, Openverse, Pexels) e vídeos do Pexels, por tópico do roteiro (só online).
+   O mockup com a tela vazia (chroma crua, branca ou desligada) fica de fora: pela descrição na coleta (`is_mockup`)
+   e pela imagem baixada no anexo (`media/empty_screen.py`), que passa para a reserva.
 5. Arte oficial e notícias (`media_find`): uma chamada por vídeo, até 15 tópicos (só com o Claude Code buscando na web).
 6. Anti-repetição: item parecido (dHash) ou o mesmo (`source_id`; numa imagem, também o endereço do arquivo) usado
    nos últimos 10 vídeos do canal perde nota. Trecho de vídeo conta pelo plano, nunca pelo link inteiro.
@@ -94,6 +96,9 @@ OWN_VIDEO_MAX_BYTES = 2_000_000_000
 
 TIER_SCORE: dict[str, float] = {"own": 1.0, "official": 0.9, "capture": 0.85, "free": 0.7, "stock": 0.55,
                                 "meme": 0.45, "graphic": 0.3, "ai": 0.0}
+MOCKUP_TIERS = ("stock", "free")
+"""Banco de imagens e fotos livres: de onde vêm os mockups com a tela vazia (chroma crua, branca ou desligada; ver
+`media/empty_screen.py`). Material próprio, oficial e captura nunca são barrados por isso."""
 
 TOPIC_DOC = "Já no projeto"
 TOPIC_FILES = "Arquivos do projeto"
@@ -614,6 +619,18 @@ COLLECTORS: list[tuple[str, Callable[[_Ctx], list[dict[str, Any]]]]] = [
 # --------------------------------------------------------------------------------------------
 
 
+def is_mockup(item: dict[str, Any]) -> bool:
+    """Foto ou vídeo de banco que a própria descrição (ou o endereço da página, que no Pexels traz o título original)
+    diz ser de tela de chroma, tela em branco ou mockup: sai do acervo antes do pedido do storyboard. O que a
+    descrição não conta, a imagem baixada conta no anexo (`refuse_empty_screen`). A mídia anexada à mão (`file:`) é
+    escolha do usuário e fica."""
+    if item.get("tier") not in MOCKUP_TIERS or str(item.get("source_id") or "").startswith("file:"):
+        return False
+    from studio.media.empty_screen import describes_empty_screen
+
+    return describes_empty_screen(str(item.get("desc") or ""), str(item.get("page_url") or ""))
+
+
 def base_score(item: dict[str, Any]) -> float:
     """Nível primeiro (o mais real ganha); depois arquivo já local e resolução."""
     score = TIER_SCORE.get(str(item.get("tier")), 0.0)
@@ -818,14 +835,21 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
                         "acervo\" para incluí-los.")
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    mockups = 0
     for item in raw:
         sid = str(item.get("source_id") or "")
         if not sid or sid in seen:
             continue
         seen.add(sid)
+        if is_mockup(item):
+            mockups += 1
+            continue
         item["dhash"] = _hash_local(item)
         item["score"] = base_score(item)
         items.append(item)
+    if mockups:
+        warnings.append(f"{mockups} item(ns) de banco com a tela de chroma ou em branco (mockup) ficaram fora do "
+                        "acervo.")
     try:
         hashes, refs = history_marks(doc)
         apply_novelty(items, hashes, refs)
@@ -1047,6 +1071,22 @@ def _materialize_file(item: PoolItem, doc: ProjectDoc) -> MediaRef:
                     license=item.license, editorial=item.editorial, width=width, height=height)
 
 
+class EmptyScreenError(ValueError):
+    """Item de banco cuja imagem baixada tem a tela vazia (chroma crua, branca ou desligada): o anexo tenta a reserva."""
+
+
+def refuse_empty_screen(item: PoolItem, media: MediaRef) -> None:
+    """`EmptyScreenError` quando o item de banco (`MOCKUP_TIERS`) anexado mostra uma tela vazia: a foto, ou o pôster
+    do trecho. Só o anexo automático pergunta; o item que o usuário escolhe à mão no Acervo entra como está."""
+    if item.tier not in MOCKUP_TIERS or item.source_id.startswith("file:") or not media.asset:
+        return
+    from studio.media.empty_screen import empty_screen_file
+
+    why = empty_screen_file(get_settings().data_dir / media.asset)
+    if why is not None:
+        raise EmptyScreenError(f"é foto de banco com {why}")
+
+
 def materialize(item: PoolItem, doc: ProjectDoc, style: StyleSpec | None = None, *, http: Any = None,
                 base: MediaRef | None = None) -> MediaRef:
     """Baixa/copia o item para a pasta do projeto e devolve a `MediaRef` pronta, com `tier`, `pool_id`, `video`,
@@ -1175,6 +1215,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     downloads = 0
     budget = attach_download_budget(sum(1 for s in doc.scenes if not s.locked and needs_attach(s.visual.media, doc.id)))
     failed: list[tuple[Scene, str]] = []
+    refused: dict[str, str] = {}  # item de banco recusado por tela vazia (`refuse_empty_screen`) → motivo
     for scene in doc.ordered_scenes():
         media = scene.visual.media
         if scene.locked or not needs_attach(media, doc.id):
@@ -1187,25 +1228,34 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             continue
         chosen: MediaRef | None = None
         source: PoolItem | None = None
+        reason = refused.get(item.id, "não baixou")
         for candidate in [item, *fallbacks(pool, item, used)[:MAX_FALLBACK_TRIES]]:
+            if candidate.id in refused:
+                continue  # tela vazia já vista em outra cena: nem baixa de novo
             remote = _needs_network(candidate)
             if remote and downloads >= budget:
                 continue
             downloads += int(remote)
             try:
-                chosen = materialize(candidate, doc, style, http=http, base=media)
-                source = candidate
+                got = materialize(candidate, doc, style, http=http, base=media)
+                refuse_empty_screen(candidate, got)
+                chosen, source = got, candidate
                 break
             except Exception as exc:  # noqa: BLE001 - tenta a reserva
                 log.warning("item %s do acervo não anexou: %s", candidate.id, exc)
+                if isinstance(exc, EmptyScreenError):
+                    refused[candidate.id] = str(exc)
+                    if candidate is item:
+                        reason = str(exc)
         if chosen is None or source is None:
             scene.visual.media = None
-            failed.append((scene, f"a mídia do acervo ({item.id}) não baixou e a reserva também não"))
+            tail = "e a reserva também não" if reason == "não baixou" else "e a reserva não anexou"
+            failed.append((scene, f"a mídia do acervo ({item.id}) {reason} {tail}"))
             continue
         scene.visual.media = chosen
         used.add(source.id)
         if source.id != item.id:
-            warnings.append(f"{_label(doc, scene)}: o item {item.id} não baixou; entrou {source.id} ({source.tier}, "
+            warnings.append(f"{_label(doc, scene)}: o item {item.id} {reason}; entrou {source.id} ({source.tier}, "
                             f"{source.topic or 'sem tópico'}).")
     ordered = doc.ordered_scenes()
     for scene, why in failed:
