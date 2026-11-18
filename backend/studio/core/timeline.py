@@ -30,9 +30,11 @@ from studio.core.sources import (
     CARD_BACKDROP_KINDS,
     REAL_TIERS,
     ai_weight,
+    outlet_for_url,
     prov_of_item,
     prov_of_media,
     prov_of_scene,
+    scene_claims_source,
     title_keeps_source,
     visual_prov,
 )
@@ -966,16 +968,33 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
     de IA, "Fonte: Canaltech" sobre foto de banco, "Fonte: Rockstar Games" sobre a captura da GamesBeat). Fica no
     cartão de dado (o painel mostra a fonte, o fundo vai desfocado atrás), no cartão de notícia e sobre a captura (ou o
     material) daquela fonte. Um subplano de outro material na cena também tira a fonte: ela ficaria na tela durante
-    ele. O documento não muda (a fonte continua no cartão, na checagem e na descrição)."""
+    ele. O documento não muda (a fonte continua no cartão, na checagem e na descrição).
+
+    A captura de página leva o crédito de quem assina a página, pelo site dela (`outlet_for_url`): a captura da
+    WeLiveSecurity com "Fonte: Malwarebytes" passa a "Fonte: WeLiveSecurity (ESET)", e a página de busca não credita
+    ninguém. Fora a captura da própria fonte, a fonte só fica quando a cena diz algo dela (`scene_claims_source`): o
+    cartão tipográfico com o conselho do apresentador, a busca e o b-roll sem dado da fonte ficam sem crédito."""
     card = resolved.get("card")
     source = str((card or {}).get("source") or "").strip()
     if not source or scene.kind in DATA_KINDS or "news" in resolved:
         return
     owners = scene_owners(doc, scene, pool)
+    if owners and all(prov == "capture" and material is not None for prov, material in owners):
+        pages = {outlet_for_url(material.page_url or material.url or "", doc.sources)
+                 for _prov, material in owners if material is not None}
+        page = pages.pop() if len(pages) == 1 else None
+        if page == "":
+            source = ""  # página de busca: não é de veículo nenhum
+        elif page and not all(_names_source(source, _owner_names(material)) for _p, material in owners if material):
+            source = card["source"] = page
+    captured = bool(source) and bool(owners) and all(
+        prov == "capture" and material is not None and _names_source(source, _owner_names(material))
+        for prov, material in owners)
     # Título que só tem a fonte para apoiar (sem faixa nem carimbo) e não diz nada dela ("2. TAMANHO QUE NÃO BATE"):
     # a fonte sai também sobre fundo do app, senão credita a uma fonte só a conclusão que junta fatos de várias. A
     # conta usa o título no idioma principal (o das fontes): a dublagem mantém o mesmo crédito.
-    backed = title_keeps_source(doc, scene, source)
+    backed = bool(source) and title_keeps_source(doc, scene, source) and (
+        captured or scene_claims_source(doc, scene, source))
     if backed and all(_credits_source(prov, material, source) for prov, material in owners):
         return
     card.pop("source", None)

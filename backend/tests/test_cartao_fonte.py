@@ -129,11 +129,20 @@ def test_timeline_drops_source_from_title_that_says_nothing_of_it():
     assert backed["card"] == {"source": "Malwarebytes"}
 
 
-def test_timeline_keeps_source_on_title_with_stamp():
+def test_timeline_keeps_source_on_title_with_stamp_when_the_passage_cites_it():
     doc = _doc(_title("scn_stamp", "1. DOWNLOAD DE PC", 0, source="Malwarebytes", stamp={"pt-BR": "GOLPE"}))
+    doc.segments[0].text["pt-BR"] = "Em agosto, a Malwarebytes achou um download de PC falso."
     stamped = {"text": "1. DOWNLOAD DE PC", "card": {"source": "Malwarebytes", "stamp": "GOLPE"}}
     timeline.drop_foreign_source(doc, doc.scene("scn_stamp"), stamped, None)
     assert stamped["card"]["source"] == "Malwarebytes"
+
+
+def test_timeline_drops_source_from_stamped_title_that_says_nothing_of_it():
+    """O carimbo "GOLPE" é o veredito do vídeo, não dado da fonte: sem a fala citar a fonte, o crédito sai."""
+    doc = _doc(_title("scn_stamp", "1. DOWNLOAD DE PC", 0, source="Malwarebytes", stamp={"pt-BR": "GOLPE"}))
+    stamped = {"text": "1. DOWNLOAD DE PC", "card": {"source": "Malwarebytes", "stamp": "GOLPE"}}
+    timeline.drop_foreign_source(doc, doc.scene("scn_stamp"), stamped, None)
+    assert stamped["card"] == {"stamp": "GOLPE"}
 
 
 def test_dub_keeps_the_same_credit_as_the_primary_language():
@@ -152,14 +161,27 @@ def _beat(part: int, text: str, parts: int = 2) -> storyboard_check.Beat:
 
 
 def test_title_keeps_source_cited_by_the_same_passage():
-    """O conselho no meio das orientações da fonte fica com o mesmo crédito das outras cenas do trecho."""
-    advice = Scene(id="scn_txt", segment_id="seg_a", part=0, parts=2, kind="text", visual=Visual(),
+    """O conselho no meio das orientações da fonte fica com o mesmo crédito da cena do trecho que a cita."""
+    advice = Scene(id="scn_txt", segment_id="seg_a", part=0, parts=2, kind="text", visual=Visual(), span=7,
                    overlay_text={"pt-BR": "Comece pelo e-mail principal"}, card=SceneCard(source="Malwarebytes"))
-    doc = _doc(advice, _title("scn_2fa", "ATIVE A VERIFICAÇÃO EM 2 ETAPAS", 1, source="Malwarebytes"))
+    two_fa = _title("scn_2fa", "ATIVE A VERIFICAÇÃO EM 2 ETAPAS", 1, source="Malwarebytes")
+    two_fa.span = 6
+    doc = _doc(advice, two_fa)
+    doc.segments[0].text["pt-BR"] = ("Como recomenda a Malwarebytes, comece pelo e-mail. "
+                                     "Ative a verificação em duas etapas.")
     assert title_keeps_source(doc, doc.scene("scn_2fa"), "Malwarebytes")
     beats = [_beat(i, "Ative a verificação em duas etapas.") for i in range(2)]
     assert storyboard_check.fix_lone_sources(doc, beats) == []
     assert doc.scene("scn_2fa").card.source == "Malwarebytes"
+
+
+def test_title_does_not_borrow_credit_from_a_scene_that_does_not_cite_the_source():
+    """A outra cena do trecho só empresta o crédito quando ela mesma diz algo da fonte: o b-roll com "GOLPE" e
+    "Fonte: Malwarebytes" (a busca do Google, 5:39) não faz de "2. O TAMANHO NÃO BATE" um dado da Malwarebytes."""
+    broll = Scene(id="scn_busca", segment_id="seg_a", part=1, parts=2, kind="image", visual=Visual(prompt="busca"),
+                  card=SceneCard(stamp={"pt-BR": "GOLPE"}, source="Malwarebytes"))
+    doc = _doc(_title("scn_list", "2. O TAMANHO NÃO BATE", 0, source="Malwarebytes"), broll)
+    assert not title_keeps_source(doc, doc.scene("scn_list"), "Malwarebytes")
 
 
 def test_source_found_by_url_domain_when_title_has_no_publisher():

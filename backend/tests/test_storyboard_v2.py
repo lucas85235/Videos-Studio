@@ -1238,9 +1238,10 @@ def test_lone_source_check_keeps_text_cards_and_drops_empty_ones_quietly():
     doc.scenes = [
         Scene(id="scn_img", segment_id=seg, part=0, parts=5, kind="image", visual=Visual(prompt="A desk."),
               card=SceneCard(source="Take-Two")),
-        Scene(id="scn_text", segment_id=seg, part=1, parts=5, kind="text", visual=Visual(reuse_of="scn_img"),
+        # A fala em tipografia cuja frase traz o dado da fonte ("mais de duzentos milhões de cópias").
+        Scene(id="scn_text", segment_id=seg, part=2, parts=5, kind="text", visual=Visual(reuse_of="scn_img"),
               card=SceneCard(source="Take-Two")),
-        Scene(id="scn_empty", segment_id=seg, part=2, parts=5, kind="image", visual=Visual(prompt="A shelf."),
+        Scene(id="scn_empty", segment_id=seg, part=1, parts=5, kind="image", visual=Visual(prompt="A shelf."),
               card=SceneCard(highlight=1)),
         Scene(id="scn_news", segment_id=seg, part=3, parts=5, kind="image", visual=Visual(
             prompt="A desk.", media=MediaRef(kind="news", outlet="IGN Brasil")), card=SceneCard(source="IGN Brasil")),

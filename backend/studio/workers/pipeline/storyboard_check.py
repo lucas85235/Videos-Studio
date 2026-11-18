@@ -416,13 +416,8 @@ def allowed_numbers(doc: ProjectDoc) -> list[float]:
 
 
 def source_label(source: Source) -> str:
-    """Nome curto da fonte para o cartão: o título até o travessão ou os dois pontos, com até 40 caracteres
-    ("Guinness World Records — recorde do trailer" → "Guinness World Records")."""
-    title = re.split(r"\s+[—–|]\s+|\s+-\s+|:\s+", (source.title or "").strip(), maxsplit=1)[0].strip()
-    if len(title) > 40:
-        head = title[:41]
-        title = (head.rsplit(" ", 1)[0] if " " in head else head[:40]).rstrip(" ,;:-")
-    return title
+    """Nome curto da fonte para o cartão (`core.sources.source_label`)."""
+    return tiers.source_label(source)
 
 
 def card_numbers(card: SceneCard) -> list[str]:
@@ -795,9 +790,12 @@ def _backs_scene_text(doc: ProjectDoc, scene: Scene, lang: str, source: str = ""
     """A fonte apoia algo da própria cena fora do cartão (a mesma conta do renderer): o texto em destaque (título,
     citação, contador, a fala em tipografia) ou o cartão de notícia da mídia real. No título sem faixa nem carimbo, só
     quando ele diz algo da fonte ou o mesmo trecho já a credita (`title_keeps_source`): "2. TAMANHO QUE NÃO BATE" não
-    é dado de ninguém."""
+    é dado de ninguém. No cartão tipográfico (a fala do apresentador), só quando a frase nomeia a fonte ou traz um
+    número dela (`scene_claims_source`): "cartão ou Pix, fala com o seu banco" não é dado da Malwarebytes."""
     title = (scene.overlay_text.get(lang) or "").strip()
     if scene.kind == "title" and title and source and not tiers.title_keeps_source(doc, scene, source):
+        return False
+    if scene.kind == "text" and source and not tiers.scene_claims_source(doc, scene, source):
         return False
     if scene.kind in _TEXT_KINDS and (title or scene.kind == "text"
                                       or (scene.kind == "count" and scene.number is not None)):

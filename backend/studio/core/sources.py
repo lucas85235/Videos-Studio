@@ -11,9 +11,10 @@ import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from studio.core import verdict
 from studio.core.numbers import text_numbers
 from studio.core.project.document import CARD_KINDS, DATA_KINDS, PROVS, MediaRef, Prov, Visual
-from studio.core.text import normalize_token
+from studio.core.text import normalize_token, span_ranges, split_word_indices, words
 
 if TYPE_CHECKING:
     from studio.core.project.document import ProjectDoc, Scene, Source
@@ -356,9 +357,21 @@ def _same_word(a: str, b: str) -> bool:
     return common >= 5 and len(short) - common <= 3
 
 
-def _domain_name(url: str) -> str:
+# Segundo nível de domínio de país ("canaltech.com.br", "bbc.co.uk"): o nome do site é o rótulo antes dele.
+_SECOND_LEVEL = frozenset({"com", "co", "org", "net", "gov", "edu", "ac", "gob", "nom", "art", "blog"})
+
+
+def _host_labels(url: str) -> list[str]:
     host = re.sub(r"^[a-z]+://", "", (url or "").strip().lower()).split("/", 1)[0].split(":", 1)[0]
-    parts = [p for p in host.split(".") if p and p != "www"]
+    return [p for p in host.split(".") if p and p != "www"]
+
+
+def _domain_name(url: str) -> str:
+    """O nome do site no endereço: "welivesecurity" de "www.welivesecurity.com/pt/...", "canaltech" de
+    "canaltech.com.br" (e não "com")."""
+    parts = _host_labels(url)
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in _SECOND_LEVEL:
+        parts = parts[:-1]
     return parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
 
 
@@ -416,8 +429,147 @@ def title_keeps_source(doc: ProjectDoc, scene: Scene, cited: str) -> bool:
     if title_backs_source(title, cited, doc.sources, lang):
         return True
     key = _compact_name(cited)
+    # A outra cena só empresta o crédito quando ela mesma diz algo da fonte: o "GOLPE" com "Fonte: Malwarebytes" sobre
+    # a busca do Google não faz de "2. O TAMANHO NÃO BATE" (1 MB da Malwarebytes e ISO da ESET) um dado da Malwarebytes.
     return any(
         other.id != scene.id and other.card is not None and _compact_name(other.card.source or "") == key
-        and not _is_lone_title(other)
+        and not _is_lone_title(other) and scene_claims_source(doc, other, cited)
         for other in doc.scenes_of(scene.segment_id)
     )
+
+
+# --- "Fonte:" só onde a cena diz algo da fonte -------------------------------------------------
+
+SEARCH_SITES = frozenset({"google", "bing", "duckduckgo", "yahoo", "yandex", "baidu", "ecosia", "startpage"})
+"""Busca não é veículo: a captura da página de resultados não credita ninguém."""
+
+KNOWN_OUTLETS: dict[str, str] = {
+    "welivesecurity": "WeLiveSecurity (ESET)",
+    "malwarebytes": "Malwarebytes",
+    "rockstargames": "Rockstar Games",
+}
+"""Nome do veículo pelo site, quando o roteiro não tem fonte desse site para dar o nome (o blog da ESET é a
+WeLiveSecurity: o domínio sozinho não diz "ESET")."""
+
+_SENTENCE_END = (".", "!", "?", "…", ";")
+# Número falado até este valor, sem casa decimal, não liga a cena à fonte: "duas etapas", "cinco sinais" e o "6" de
+# "GTA 6" aparecem em qualquer nota ("PS5", "1º trimestre").
+_BARE_NUMBER_MAX = 12
+
+
+def source_label(source: Source) -> str:
+    """Nome curto da fonte para o cartão: o título até o travessão ou os dois pontos, com até 40 caracteres
+    ("Guinness World Records — recorde do trailer" → "Guinness World Records")."""
+    title = re.split(r"\s+[—–|]\s+|\s+-\s+|:\s+", (source.title or "").strip(), maxsplit=1)[0].strip()
+    if len(title) > 40:
+        head = title[:41]
+        title = (head.rsplit(" ", 1)[0] if " " in head else head[:40]).rstrip(" ,;:-")
+    return title
+
+
+def outlet_for_url(url: str, sources: Iterable[Source]) -> str | None:
+    """Quem assina a página deste endereço, para o "Fonte:" da captura: a fonte do roteiro do mesmo site (o nome dela
+    no cartão), o veículo conhecido do site ("welivesecurity.com" → "WeLiveSecurity (ESET)") ou "" para a página de
+    busca ("google.com": não credita ninguém). None quando não dá para saber."""
+    site = _domain_name(url)
+    if not site:
+        return None
+    if site in SEARCH_SITES:
+        return ""
+    for source in sources:
+        if _domain_name(source.url or "") == site and (label := source_label(source)):
+            return label
+    return KNOWN_OUTLETS.get(site)
+
+
+def scene_sentence(doc: ProjectDoc, scene: Scene) -> str:
+    """As frases da narração que a cena cobre, inteiras (idioma principal): a fala da cena estendida até o começo e o
+    fim das frases dela ("Em agosto, a Malwarebytes encontrou sites | com nomes tipo GTA 6 demo" vale nas duas)."""
+    try:
+        text = doc.segment(scene.segment_id).text_for(doc.primary_language)
+    except KeyError:
+        return ""
+    tokens = words(text)
+    if not tokens:
+        return ""
+    siblings = doc.scenes_of(scene.segment_id)
+    index = next((i for i, s in enumerate(siblings) if s.id == scene.id), 0)
+    if siblings and all(s.span is not None for s in siblings):
+        ranges = span_ranges([s.span or 0 for s in siblings], len(tokens))
+    else:
+        ranges = split_word_indices(len(tokens), len(siblings) or 1)
+    start, end = ranges[index] if index < len(ranges) else (0, len(tokens))
+    if start >= end:
+        return ""
+    while start > 0 and not tokens[start - 1].endswith(_SENTENCE_END):
+        start -= 1
+    while end < len(tokens) and not tokens[end - 1].endswith(_SENTENCE_END):
+        end += 1
+    return " ".join(tokens[start:end])
+
+
+def _name_keys(cited: str, own: list[Source]) -> set[str]:
+    """Como o texto nomeia a fonte: o nome inteiro e cada parte ("WeLiveSecurity (ESET)" → "welivesecurity",
+    "eset"), a primeira palavra longa de um nome composto ("Rockstar Games" → "rockstar") e o nome do site."""
+    keys: set[str] = set()
+    for part in (cited, *re.split(r"[()\[\]·|,/]", cited)):
+        key = _compact_name(part)
+        if len(key) >= 3:
+            keys.add(key)
+        head = part.split()
+        first = _compact_name(head[0]) if head else ""
+        if len(first) >= 6:
+            keys.add(first)
+    keys |= {name for s in own if len(name := _compact_name(_domain_name(s.url or ""))) >= 4}
+    return keys
+
+
+def names_source(text: str, cited: str, own: list[Source] | None = None) -> bool:
+    """O texto cita a fonte pelo nome ("a ESET descreve", "segundo a GamesBeat", "a Malwarebytes encontrou")."""
+    keys = _name_keys(cited, own or [])
+    tokens = [t for t in (_compact_name(raw) for raw in re.split(r"[^\w]+", text or "")) if t]
+    grams = set(tokens) | {a + b for a, b in zip(tokens, tokens[1:], strict=False)}
+    return bool(keys & grams)
+
+
+def _claim_numbers(text: str, lang: str, topic: set[float]) -> set[float]:
+    # "~1,1 MB", "≈19": o sinal de aproximação grudado no número esconde o número do leitor.
+    values = {abs(float(v)) for v in text_numbers(re.sub(r"[~≈±]", " ", text or ""), lang, names=True)}
+    return {v for v in values if v not in topic and (v > _BARE_NUMBER_MAX or v != int(v))}
+
+
+def scene_claims_source(doc: ProjectDoc, scene: Scene, cited: str) -> bool:
+    """A cena diz algo da fonte que o "Fonte: X" cita? Diz quando a frase da narração (inteira, `scene_sentence`) ou o
+    texto na tela nomeia a fonte ("a ESET descreve"), traz um número dela (título e nota; fora número pequeno sem casa
+    decimal e os do assunto do vídeo, como o "6" de "GTA 6"), quando o carimbo é veredito positivo ("CONFIRMADO" com
+    "Fonte: Rockstar Games": quem confirma é ela) ou, fora o cartão tipográfico, quando o título ou a faixa dizem algo
+    dela (`title_backs_source`; o título sozinho segue `title_keeps_source`).
+
+    Sem nada disso, o "Fonte: X" vira crédito de quem não disse aquilo: o conselho "cartão ou Pix, fala com o seu
+    banco" creditado à Malwarebytes, "ou de horas de nuvem" à Windows Central, a busca do Google à matéria que a
+    reproduz. O cartão tipográfico é a fala do apresentador: palavra comum com a nota ("nuvem") não basta. Fonte fora
+    do roteiro (não dá para conferir) passa."""
+    cited = (cited or "").strip()
+    if not cited:
+        return False
+    own = [s for s in doc.sources if cites_source(s, cited)]
+    if not own:
+        return True
+    lang = doc.primary_language
+    card = scene.card
+    stamp = (card.stamp.get(lang) or "") if card is not None else ""
+    if stamp.strip() and not verdict.is_negative(stamp):
+        return True
+    shown = [scene.overlay_text.get(lang) or "", (card.headline.get(lang) or "") if card is not None else ""]
+    said = " ".join([scene_sentence(doc, scene), *shown])
+    if names_source(said, cited, own):
+        return True
+    topic = {abs(float(v)) for v in text_numbers(f"{doc.title}. {doc.topic}", lang, names=True)}
+    held = _claim_numbers(" ".join(f"{s.title}. {s.note}" for s in own), lang, set())
+    if any(abs(v - h) <= 1e-6 * max(1.0, h) for v in _claim_numbers(said, lang, topic) for h in held):
+        return True
+    if scene.kind == "text":
+        return False
+    if _is_lone_title(scene):
+        return title_keeps_source(doc, scene, cited)
+    return any(title_backs_source(_LIST_INDEX_RE.sub("", t), cited, doc.sources, lang) for t in shown if t.strip())
