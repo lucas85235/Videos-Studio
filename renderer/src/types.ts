@@ -68,9 +68,19 @@ export type TimelineFx = { type: FxType; from: number; dur: number; params: Reco
 
 /**
  * Contrato de áudio da timeline (fica no backend: o som é mixado no FFmpeg, não vai para o renderer). SFX de evento:
- * `at` em segundos no vídeo, `scene` a cena dona, `lib_id` o som da biblioteca e `gain_db` o ganho relativo.
+ * `at` em segundos no vídeo (o ponto forte, na palavra), `scene` a cena dona, `lib_id` o som da biblioteca e `gain_db`
+ * o ganho relativo. `start` (onde o arquivo entra: `at` menos o ataque do tipo) e `scene_id` são as chaves que a
+ * mixagem e a conferência de áudio já leem em todo SFX da timeline (os de corte só têm estas).
  */
-export type TimelineSfxEvent = { type: string; at: number; scene: string; lib_id?: string; gain_db?: number };
+export type TimelineSfxEvent = {
+  type: string;
+  at: number;
+  scene: string;
+  start: number;
+  scene_id: string;
+  lib_id?: string;
+  gain_db?: number;
+};
 /** Queda da trilha (`timeline.music_drops`, só quando houver): início e duração em segundos. */
 export type TimelineMusicDrop = { at: number; dur: number };
 
