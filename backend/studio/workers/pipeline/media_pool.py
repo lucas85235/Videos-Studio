@@ -102,6 +102,9 @@ VIDEO_WALL_CLOCK_S = 180.0
 NOVELTY_WINDOW = 10
 NOVELTY_PENALTY = 0.5
 FIND_CACHE_KIND = "pool_find"
+FIND_CACHE_VERSION = 2
+"""Versão das regras da busca de arte oficial e notícias (`media_find`). A 2 recusa a capa de blog que é ilustração
+(o campo `made`): a coleta completa não reaproveita a busca da versão anterior."""
 OWN_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 OWN_VIDEO_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
 VIDEO_MAX_BYTES = 120_000_000
@@ -675,8 +678,12 @@ def _collect_found(ctx: _Ctx) -> list[dict[str, Any]]:
 
     topics = [(t.id, t.label, t.query) for t in ctx.topics[:media_find.MAX_TOPICS]]
     store = ArtifactStore()
-    key = hash_obj({"doc": ctx.project_id, "topics": topics, "v": 1})
+    key = hash_obj({"doc": ctx.project_id, "topics": topics, "v": FIND_CACHE_VERSION})
     cached = store.lookup(FIND_CACHE_KIND, key)
+    if cached is None and not ctx.full:
+        # A coleta rápida ainda usa a busca da versão anterior; a completa busca de novo, com as regras de agora.
+        cached = store.lookup(FIND_CACHE_KIND, hash_obj({"doc": ctx.project_id, "topics": topics,
+                                                          "v": FIND_CACHE_VERSION - 1}))
     if cached is not None and _fresh(cached.get("fetched_at")):
         found = cached.get("found") or {}
     elif not ctx.full or not media_find.web_available():
@@ -736,14 +743,15 @@ def is_mockup(item: dict[str, Any]) -> bool:
 
 
 def is_synthetic(item: dict[str, Any] | PoolItem) -> bool:
-    """Arte de fã ou gerada por IA que a própria fonte declara (`sources.looks_synthetic` na descrição, nos endereços e
-    no crédito): não é material real e sai do acervo antes do pedido do storyboard. Material próprio e biblioteca do canal (`acervo:`, `kit:`, `file:`) são escolha do usuário
-    e ficam."""
+    """Arte de fã ou gerada por IA que a própria fonte declara (`sources.looks_synthetic` na descrição e no crédito,
+    nunca no endereço): não é material real e sai do acervo antes do pedido do storyboard. Material próprio e
+    biblioteca do canal (`acervo:`, `kit:`, `file:`) são escolha do usuário e ficam; a captura de página (o print da
+    notícia, mesmo a que fala de arte de IA) é material real e fica."""
     get = item.get if isinstance(item, dict) else (lambda key: getattr(item, key, None))
     sid = str(get("source_id") or "")
-    if sid.startswith(OWN_SOURCE_PREFIXES) or get("tier") == "own":
+    if sid.startswith(OWN_SOURCE_PREFIXES) or get("tier") in ("own", "capture"):
         return False
-    return looks_synthetic(get("desc"), get("url"), get("page_url"), get("credit"))
+    return looks_synthetic(get("desc"), get("credit"))
 
 
 def base_score(item: dict[str, Any]) -> float:

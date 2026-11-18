@@ -58,11 +58,13 @@ cena do pedido, devolva até 3 candidatos, cada um com:
 - image: endereço DIRETO da imagem (jpg, png ou webp), o maior disponível;
 - page_url: a página onde a imagem está (para "news", a própria notícia; use o link da fonte quando vier no pedido);
 - outlet: o site ou veículo ("Rockstar Games", "PC Gamer"); title: descrição curta da imagem ou a manchete;
-- why: uma frase curta em português dizendo por que serve para a cena.
+- why: uma frase curta em português dizendo por que serve para a cena;
+- made: o que a imagem é (regra 2).
 
 Regras:
 1. Fonte oficial primeiro (sala de imprensa ou página de mídia do estúdio/editora/empresa, newswire oficial); depois
-   veículos de imprensa conhecidos (a imagem principal/og:image da matéria).
+   veículos de imprensa conhecidos (a imagem principal/og:image da matéria, só quando ela é foto, print ou arte
+   oficial do estúdio, nunca a ilustração que o próprio site fez para a matéria).
 2. Nunca banco de imagens com marca d'água, fan art, sites de wallpaper, Pinterest nem imagem gerada por IA. A
    imagem de capa de blog ou matéria que é ilustração (arte editorial, montagem, imagem de IA imitando o logotipo, a
    capa ou os personagens oficiais) também não serve: logotipo, capa e personagem só da fonte oficial do estúdio. Em
@@ -96,7 +98,7 @@ SCHEMA: dict[str, Any] = {
                                 "made": {"type": "string", "enum": ["photo", "official", "screenshot",
                                                                     "illustration"]},
                             },
-                            "required": ["image", "page_url", "title", "outlet", "why"],
+                            "required": ["image", "page_url", "title", "outlet", "why", "made"],
                         },
                     },
                 },
@@ -248,9 +250,10 @@ def parse_candidates(data: object, scene_ids: set[str]) -> dict[str, list[dict[s
             image = str(item.get("image") or "").strip()
             if not image or image in seen or len(bucket) >= MAX_PER_SCENE * 2:
                 continue
-            if str(item.get("made") or "").strip() == "illustration" or looks_synthetic(
-                    image, item.get("page_url"), item.get("title"), item.get("why")):
-                continue  # ilustração, arte de fã ou de IA: não é material real (regra 2)
+            # Ilustração, arte de fã ou de IA: não é material real (regra 2). O título diz quem fez a imagem; o
+            # endereço e o "why" não entram (o assunto da matéria e "não é fan art" não dizem nada da autoria).
+            if str(item.get("made") or "").strip().lower() == "illustration" or looks_synthetic(item.get("title")):
+                continue
             seen.add(image)
             bucket.append({k: str(item.get(k) or "").strip() for k in ("image", "page_url", "title", "outlet", "why")})
     return out

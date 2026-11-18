@@ -36,18 +36,26 @@ PANEL_AI_WEIGHT = 0.5
 metade do tempo da cena conta como IA na tela. O fundo do cartão de texto, a imagem na moldura de tela e o subplano
 de IA contam inteiros."""
 
-# Arte de fã ou gerada por IA que chega pela web (Flickr, Openverse, capa de matéria): o texto da própria fonte diz
-# ("GTA 6 Fan Cover", "fan art", "made with Midjourney", "AI-generated"). Não é material real: não entra no acervo e,
-# já anexada, conta como IA na tela. "Rockstar fan" (a foto de um fã) não casa: só arte, capa ou pôster de fã.
+# Arte de fã ou gerada por IA que chega pela web (Flickr, Openverse, capa de matéria): o texto que descreve a imagem
+# diz QUEM a fez ("GTA 6 Fan Cover", "fan art", "made with Midjourney", "AI-generated art"). Não é material real: não
+# entra no acervo e, já anexada, conta como IA na tela. Só sinal de autoria: o assunto não conta ("Midjourney v7
+# launches", "AI images are fooling people", "imagem de IA do papa viraliza" falam de IA, não são imagem de IA), e
+# "Rockstar fan" (a foto de um fã) não casa: só arte, capa ou pôster de fã.
+_AI_TOOLS = (r"(?:an? |the )?(?:ai|midjourney|stable[\s_-]?diffusion|dall[\s·._-]?e(?:[\s-]?\d)?|leonardo(?:\.ai)?|"
+             r"firefly|nightcafe)")
 _SYNTHETIC_RE = re.compile(
     r"\b(?:fan[\s_-]?(?:arts?|made|covers?|posters?|concepts?|renders?|edits?|artworks?|designs?|mock-?ups?|"
     r"wallpapers?)|fanarts?|fanmade|"
-    r"ai[\s_-]?(?:generated|arts?|artworks?|images?|illustrations?|renders?)|"
-    r"(?:generated|made|created) (?:with|by|using) (?:an? )?ai|midjourney|stable[\s_-]?diffusion|dall[\s·._-]?e|"
-    r"leonardo\.ai|nightcafe|"
-    r"gerad[ao]s? (?:por|com) (?:uma )?ia|arte (?:de|com|por) ia|imagem (?:de|por|com) ia|feit[ao] (?:por|com) ia|"
+    r"ai[\s_-]generated|"
+    r"(?:midjourney|stable[\s_-]?diffusion|dall[\s·._-]?e(?:[\s-]?\d)?|leonardo\.ai|firefly|nightcafe) "
+    r"(?:arts?|artworks?|renders?|illustrations?|creations?)|"
+    rf"(?:generated|made|created|rendered|drawn|imagined) (?:with|by|using|in|via) {_AI_TOOLS}|"
+    r"(?:gerad|feit|criad)[ao]s? (?:por|com|pela|na) (?:uma )?ia|"
     r"arte de f[aã]|fan ?arte)\b",
     re.IGNORECASE)
+_NOT_SYNTHETIC_KINDS = frozenset({"news", "capture"})
+"""Notícia e captura de página: o print mostra a página como ela é. A manchete pode falar de arte de fã ou de IA (é o
+assunto) e o material continua sendo a captura real."""
 
 # Mídia anexada sem `tier`: o nível pelo tipo e, em foto e clipe, pela origem.
 _KIND_TIER: dict[str, Prov] = {"news": "capture", "capture": "capture", "official": "official", "meme": "meme"}
@@ -65,16 +73,18 @@ def is_free_license(license_name: str) -> bool:
 
 
 def looks_synthetic(*texts: object) -> bool:
-    """O texto da fonte (título, endereço, crédito, descrição) diz que a imagem é arte de fã ou gerada por IA."""
+    """O texto que descreve a imagem (título, crédito, autor, descrição) diz que ela é arte de fã ou gerada por IA.
+    Endereço não entra: o caminho da página é o assunto da matéria, não o autor da imagem."""
     return any(_SYNTHETIC_RE.search(str(t)) for t in texts if t)
 
 
 def media_is_synthetic(media: MediaRef) -> bool:
-    """Mídia da web que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`). O arquivo enviado e a
-    biblioteca do canal são escolha do usuário e ficam com o nível deles."""
-    if media.source in ("upload", "library"):
+    """Mídia da web que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`). O arquivo enviado, a
+    biblioteca do canal (escolha do usuário) e a notícia ou captura de página (`_NOT_SYNTHETIC_KINDS`) ficam com o
+    nível deles."""
+    if media.source in ("upload", "library") or media.kind in _NOT_SYNTHETIC_KINDS or media.tier == "capture":
         return False
-    return looks_synthetic(media.title, media.url, media.page_url, media.credit, media.author)
+    return looks_synthetic(media.title, media.credit, media.author)
 
 
 OWN_SOURCE_PREFIXES = ("file:", "acervo:", "kit:", "kitvideo:")
@@ -82,10 +92,16 @@ OWN_SOURCE_PREFIXES = ("file:", "acervo:", "kit:", "kitvideo:")
 
 
 def item_is_synthetic(item: PoolItem) -> bool:
-    """Item do acervo que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`); o do usuário fica."""
-    if item.tier == "own" or item.source_id.startswith(OWN_SOURCE_PREFIXES):
+    """Item do acervo que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`); o do usuário e a captura de
+    página (o print da notícia) ficam."""
+    if item.tier in ("own", "capture") or item.source_id.startswith(OWN_SOURCE_PREFIXES):
         return False
-    return looks_synthetic(item.desc, item.url, item.page_url, item.credit)
+    return looks_synthetic(item.desc, item.credit)
+
+
+def prov_of_item(item: PoolItem) -> Prov:
+    """O nível de um item do acervo na tela: o `tier`, ou `ai` quando a fonte diz que é arte de fã ou de IA."""
+    return "ai" if item_is_synthetic(item) else item.tier
 
 
 def prov_of_media(media: MediaRef) -> Prov:

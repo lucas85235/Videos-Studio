@@ -1107,7 +1107,7 @@ def _pick_prov(picks: list[_Pick], i: int) -> str:
         seen.add(i)
         p = picks[i]
         if p.source == "pool" and p.item is not None:
-            return p.item.tier
+            return tiers.prov_of_item(p.item)
         if p.source == "new":
             return "ai"
         if p.source == "reuse" and p.root is not None:
@@ -1126,11 +1126,11 @@ def _seconds_by_prov(picks: list[_Pick]) -> dict[str, float]:
 
 
 def _pick_ai(picks: list[_Pick], i: int) -> float:
-    """Quanto da batida é imagem de IA na tela (espelho de `sources.ai_weight`): inteira quando ela mostra IA, e
-    `tiers.PANEL_AI_WEIGHT` no cartão de dado sobre imagem de IA (o fundo fica desfocado atrás do painel)."""
-    if _pick_prov(picks, i) != "ai":
-        return 0.0
-    return tiers.PANEL_AI_WEIGHT if picks[i].kind in tiers.PANEL_PROV_KINDS else 1.0
+    """Quanto da batida conta no teto de IA da distribuição: inteira quando ela mostra IA, também o cartão de dado
+    sobre imagem de IA. A distribuição trabalha com a duração estimada e ainda não sabe o desfoque nem o recorte do
+    painel: reserva a cena inteira (folga para a medida pesada, `sources.ai_weight`, que a revisão e as métricas
+    usam), e o teto nunca fica mais frouxo que antes."""
+    return 1.0 if _pick_prov(picks, i) == "ai" else 0.0
 
 
 def _ai_seconds(picks: list[_Pick]) -> float:

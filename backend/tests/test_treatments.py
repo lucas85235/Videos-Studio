@@ -136,6 +136,32 @@ def test_screen_never_frames_an_ai_image():
     assert all(s["treatment"] == "screen" for s in real["scenes"])
 
 
+def test_screen_never_frames_an_ai_subshot_inside_a_real_scene():
+    """A cena real com subplano de IA (reaproveitamento de cena de IA, item de IA ou arte de fã do acervo, mídia de
+    IA) também não ganha a moldura de tela: o post com curtida mostraria a IA como captura."""
+    from studio.core.project.document import MediaRef, SubShot
+    from studio.core.project.pool import Pool, PoolItem
+
+    style = get_style("interface-tela", {"edit": {"treatments": {"screen": 1, "plain": 0}}})
+    doc = _doc("interface-tela", n=3, visual="stock")
+    doc.scenes[2].visual = Visual(type="ai_image", prompt="x")
+    fan = PoolItem(id="p1", tier="free", media="image", desc="GTA 6 Fan Cover", source_id="openverse:1", path="a.jpg")
+    gen = PoolItem(id="p2", tier="ai", media="image", desc="x", source_id="gen:1", path="b.jpg")
+    real = PoolItem(id="p3", tier="free", media="image", desc="Golden Gate Bridge", source_id="openverse:3",
+                    path="c.jpg")
+    pool = Pool(items=[fan, gen, real])
+    scene = doc.scenes[0]
+    assert scene_treatment(doc, style, scene, pool=pool) == "screen"
+    cases = [SubShot(source="reuse", reuse_of="scn_2"), SubShot(source="pool", pool_id="p1"),
+             SubShot(source="pool", pool_id="p2"),
+             SubShot(source="media", media=MediaRef(kind="photo", source="link", asset="d.jpg", tier="ai"))]
+    for shot in cases:
+        scene.shots = [SubShot(), shot]
+        assert scene_treatment(doc, style, scene, pool=pool) == "plain", shot.source
+    scene.shots = [SubShot(), SubShot(source="pool", pool_id="p3"), SubShot(source="reuse", reuse_of="scn_1")]
+    assert scene_treatment(doc, style, scene, pool=pool) == "screen"
+
+
 def test_first_whiteboard_scene_starts_drawn_and_quick():
     _, _, timeline = _timeline("whiteboard-explicador")
     first, *rest = timeline["scenes"]

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from studio.core.hashing import seed_from
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, trigger_index, word_key
-from studio.core.sources import REAL_TIERS, prov_of_media, prov_of_scene
+from studio.core.sources import REAL_TIERS, prov_of_item, prov_of_media, prov_of_scene, visual_prov
 from studio.core.styles.library import pick_weighted
 from studio.media.audio import SFX_KINDS
 
@@ -296,7 +296,7 @@ def _shot_material(
             return own, f"o item {shot.pool_id or '?'} do acervo não existe; ficou o visual da cena"
         if not (item.path or item.poster):
             return own, f"o item {item.id} do acervo ainda não foi baixado; ficou o visual da cena"
-        out = {"prov": item.tier}
+        out = {"prov": prov_of_item(item)}  # arte de fã ou de IA do acervo antigo conta como IA
         mat = _Material(out, [list(r) for r in item.rects])
         is_video = bool(item.path) and (item.media == "clip" or item.path.lower().endswith(VIDEO_EXTS))
         if is_video:
@@ -330,7 +330,8 @@ def _shot_material(
             return own, f"a {scene_label(doc, target.id)} reaproveitada no subplano não tem imagem; ficou o visual da cena"
         media = doc.shown_media(target) if doc is not None else None
         rects = [list(r) for r in media.rects] if media is not None else []
-        return _Material({"prov": prov_of_scene(target, doc), "src": src}, rects), None
+        # Só a imagem da outra cena (sem o painel do cartão de dado): o nível da imagem.
+        return _Material({"prov": visual_prov(target, doc), "src": src}, rects), None
     if shot.source == "ai":
         if own.out["prov"] == "ai":
             return _Material({"prov": "ai"}, is_self=True), None

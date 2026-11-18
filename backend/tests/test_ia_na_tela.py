@@ -6,6 +6,7 @@ web entrava pelo nível do acervo (foto livre, oficial), e o fundo de IA atrás 
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -43,6 +44,12 @@ FAN_COVER = MediaRef(kind="photo", source="openverse", asset="uploads/p/media/a.
     ("AI-generated city at night", True), ("made with Midjourney", True), ("imagem gerada por IA", True),
     ("DALL-E render", True), ("Rockstar fan", False), ("fans at the concert", False), ("Fanatec wheel", False),
     ("AI chip on a motherboard", False), ("Grand Theft Auto VI hype leads to malware", False),
+    ("Imagined by AI: Vice City in 2030", True), ("Midjourney art of a neon city", True),
+    # só autoria: manchete e página sobre IA não são imagem de IA (canal de tecnologia, polêmica de imagem falsa)
+    ("Midjourney v7 launches with new features", False), ("OpenAI DALL-E 3 now in ChatGPT", False),
+    ("Stable Diffusion 3 released by Stability AI", False), ("AI images are fooling people", False),
+    ("Polêmica: imagem de IA de papa viraliza", False), ("leonardo.ai pricing page", False),
+    ("https://www.midjourney.com/explore", False),
 ])
 def test_source_text_tells_fan_and_ai_art(text, synthetic):
     assert sources.looks_synthetic(text) is synthetic
@@ -55,6 +62,23 @@ def test_fan_or_ai_art_from_the_web_is_ai_on_screen_whatever_the_pool_tier():
     assert sources.prov_of_media(own) == "official"
     real = FAN_COVER.model_copy(update={"title": "Golden Gate Bridge at dusk"})
     assert sources.prov_of_media(real) == "free"
+
+
+def test_news_and_captures_about_ai_stay_real_material():
+    """Canal de tecnologia: a captura da notícia sobre imagens de IA é material real, não IA na tela."""
+    news = MediaRef(kind="news", source="link", asset="uploads/p/media/n.jpg", title="AI-generated images flood Facebook",
+                    url="https://www.theverge.com/2024/ai-generated-images-flood-facebook.jpg",
+                    page_url="https://www.theverge.com/2024/ai-generated-images-flood-facebook", credit="The Verge")
+    assert sources.prov_of_media(news) == "capture"
+    assert sources.prov_of_media(news.model_copy(update={"kind": "capture"})) == "capture"
+    shot = MediaRef(kind="official", source="link", asset="uploads/p/media/m.jpg", title="Midjourney v7 launches",
+                    url="https://cdn.midjourney.com/hero.jpg", page_url="https://www.midjourney.com/explore",
+                    credit="Midjourney")
+    assert sources.prov_of_media(shot) == "official"  # o endereço e o nome da ferramenta não dizem a autoria
+    capture = {"tier": "capture", "media": "image", "desc": "AI-generated images flood Facebook",
+               "source_id": "found:https://x.com/a.jpg"}
+    assert not media_pool.is_synthetic(capture)
+    assert not sources.item_is_synthetic(PoolItem(id="p1", **capture))
 
 
 def test_ai_behind_a_data_card_counts_with_weight_in_the_metric():
@@ -137,8 +161,48 @@ def test_web_search_drops_illustrations_and_fan_art():
          "outlet": "C", "why": "print", "made": "screenshot"},
     ]}]}
     assert [c["image"] for c in media_find.parse_candidates(data, {"s1"})["s1"]] == ["https://c.com/shot.jpg"]
-    made = media_find.SCHEMA["properties"]["scenes"]["items"]["properties"]["candidates"]["items"]["properties"]["made"]
-    assert "illustration" in made["enum"]
+    item_schema = media_find.SCHEMA["properties"]["scenes"]["items"]["properties"]["candidates"]["items"]
+    assert "illustration" in item_schema["properties"]["made"]["enum"]
+    assert "made" in item_schema["required"]  # o modelo sempre diz o que a imagem é
+    # o "why" do modelo e o endereço não decidem: "não é fan art" e a página sobre IA passam
+    ok = {"scenes": [{"scene_id": "s1", "candidates": [
+        {"image": "https://d.com/ai-generated-art.jpg", "page_url": "https://d.com/ai-art-news", "title": "Key art",
+         "outlet": "D", "why": "arte oficial, não é fan art", "made": "official"}]}]}
+    assert len(media_find.parse_candidates(ok, {"s1"})["s1"]) == 1
+
+
+def test_full_collection_does_not_reuse_the_search_made_with_older_rules(monkeypatch):
+    """A capa de blog que é ilustração ficou no cache de 7 dias da busca antiga: a coleta completa busca de novo;
+    a rápida (que não busca) ainda usa a antiga."""
+    from studio.core.graph import store as store_mod
+    from studio.core.hashing import hash_obj
+
+    saved: dict[tuple[str, str], dict[str, Any]] = {}
+
+    class FakeStore:
+        def lookup(self, kind, key):
+            return saved.get((kind, key))
+
+        def save(self, kind, key, value):
+            saved[(kind, key)] = value
+
+    monkeypatch.setattr(store_mod, "ArtifactStore", FakeStore)
+    topics = [media_pool.Topic(id="t1", label="GTA 6", query="GTA 6")]
+    old_key = hash_obj({"doc": "prj_x", "topics": [("t1", "GTA 6", "GTA 6")], "v": media_pool.FIND_CACHE_VERSION - 1})
+    saved[(media_pool.FIND_CACHE_KIND, old_key)] = {"fetched_at": datetime.now(UTC).isoformat(), "found": {"t1": [
+        {"image": "https://blog.com/hero.jpg", "page_url": "https://blog.com/x", "title": "Hype", "kind": "official",
+         "outlet": "Blog"}]}}
+    searched: list[int] = []
+    monkeypatch.setattr(media_find, "web_available", lambda: True)
+    monkeypatch.setattr(media_find, "find_for_topics", lambda *a, **k: searched.append(1) or {})
+
+    def ctx(full: bool) -> Any:
+        return type("Ctx", (), {"offline": False, "topics": topics, "project_id": "prj_x", "full": full,
+                                "doc": None, "job_id": None, "http": None})()
+
+    quick = media_pool._collect_found(ctx(False))
+    assert [i["url"] for i in quick] == ["https://blog.com/hero.jpg"] and not searched
+    assert media_pool._collect_found(ctx(True)) == [] and searched == [1]
 
 
 @pytest.mark.parametrize("prompt, entities, expected", [

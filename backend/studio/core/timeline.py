@@ -26,7 +26,7 @@ from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, Projec
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
-from studio.core.sources import REAL_TIERS, ai_weight, prov_of_media, prov_of_scene
+from studio.core.sources import REAL_TIERS, ai_weight, prov_of_item, prov_of_media, prov_of_scene, visual_prov
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, EditGrammar, StyleSpec, grammar_for, treatment_pool
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
@@ -644,7 +644,8 @@ def build_timeline(
                 # Cada linha some quando a próxima começa
                 for i in range(len(scene_lines) - 1):
                     scene_lines[i]["to"] = min(scene_lines[i]["to"], scene_lines[i + 1]["from"]) or scene_lines[i]["to"]
-            resolved = resolve_scene(doc, style, scene, lang, is_first=(index == 0 and k == 0), grammar=grammar)
+            resolved = resolve_scene(doc, style, scene, lang, is_first=(index == 0 and k == 0), grammar=grammar,
+                                     pool=pool)
             if grammar is not None:
                 drop_foreign_source(doc, scene, resolved, pool)
             if resolved["motion"] == PARALLAX:
@@ -872,10 +873,11 @@ def _shot_owner(doc: ProjectDoc, scene: Scene, shot: SubShot, pool: Pool | None,
         return prov_of_media(shot.media), shot.media
     if shot.source == "pool":
         item = pool.item(shot.pool_id) if pool is not None and shot.pool_id else None
-        return (item.tier, item) if item is not None else own
+        return (prov_of_item(item), item) if item is not None else own
     if shot.source == "reuse":
+        # O subplano mostra só a imagem da outra cena (sem o painel do cartão de dado): o nível da imagem.
         target = next((s for s in doc.scenes if s.id == shot.reuse_of), None)
-        return (prov_of_scene(target, doc), doc.shown_media(target)) if target is not None else own
+        return (visual_prov(target, doc), doc.shown_media(target)) if target is not None else own
     if shot.source == "ai" and scene.visual.type in ("ai_image", "ai_video"):
         return "ai", None
     return own
@@ -1065,9 +1067,10 @@ def presenter_layer(
 
 
 def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *, is_first: bool,
-                  grammar: EditGrammar | None = None) -> dict[str, Any]:
+                  grammar: EditGrammar | None = None, pool: Pool | None = None) -> dict[str, Any]:
     """Escolhas visuais da cena (determinísticas pela semente da cena). `grammar`: a gramática efetiva no projeto com
-    a camada de edição (a cena ganha `prov` e, nos efeitos por nível, `clean`); None: como antes."""
+    a camada de edição (a cena ganha `prov` e, nos efeitos por nível, `clean`); None: como antes. `pool`: o acervo,
+    para saber o nível dos subplanos do acervo (a moldura de tela não vai sobre IA)."""
     media = doc.shown_media(scene)
     motion = scene_motion(doc, style, scene)
     if is_first:
@@ -1105,7 +1108,7 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     if frame:
         out["frame"] = frame
     _real_media_keys(doc, scene, lang, out)
-    treatment = scene_treatment(doc, style, scene, has_news="news" in out)
+    treatment = scene_treatment(doc, style, scene, has_news="news" in out, pool=pool)
     if treatment != "plain":
         out["treatment"] = treatment
         if is_first and treatment == "whiteboard":
@@ -1186,7 +1189,8 @@ def mark_treatment_continuations(scenes: list[dict[str, Any]]) -> None:
             cur["treatment_continue"] = prev.get("treatment_continue", prev["seed"])
 
 
-def scene_treatment(doc: ProjectDoc, style: StyleSpec, scene: Scene, *, has_news: bool = False) -> str:
+def scene_treatment(doc: ProjectDoc, style: StyleSpec, scene: Scene, *, has_news: bool = False,
+                    pool: Pool | None = None) -> str:
     """Variação de família da cena de imagem (whiteboard, colagem, tela), sorteada pelos pesos do estilo.
     "plain" (imagem com câmera, sem chave na timeline) para os outros tipos de cena, para a cena com cartão
     de notícia (o cartão já é o desenho dela) e para os estilos sem variação.
@@ -1196,19 +1200,21 @@ def scene_treatment(doc: ProjectDoc, style: StyleSpec, scene: Scene, *, has_news
     (o mesmo sorteio, sem a tela)."""
     if scene.kind != "image" or has_news:
         return "plain"
-    pool = treatment_pool(style)
-    if pool and "screen" in pool and _shows_ai(doc, scene):
-        pool = {k: v for k, v in pool.items() if k != "screen"}
-    if not pool or set(pool) == {"plain"}:
+    weights = treatment_pool(style)
+    if weights and "screen" in weights and _shows_ai(doc, scene, pool):
+        weights = {k: v for k, v in weights.items() if k != "screen"}
+    if not weights or set(weights) == {"plain"}:
         return "plain"
-    return pick_weighted(pool, seed_from(doc.seed, scene.id, "treatment"))
+    return pick_weighted(weights, seed_from(doc.seed, scene.id, "treatment"))
 
 
-def _shows_ai(doc: ProjectDoc, scene: Scene) -> bool:
-    """A cena mostra imagem de IA: a dela ou a de um subplano gerado por IA."""
-    if prov_of_scene(scene, doc) == "ai":
+def _shows_ai(doc: ProjectDoc, scene: Scene, pool: Pool | None = None) -> bool:
+    """A cena mostra imagem de IA: a dela ou a de qualquer subplano (o de IA, o item do acervo de IA ou arte de fã, a
+    mídia de IA, o reaproveitamento de uma cena de IA), pela mesma origem do crédito (`_shot_owner`)."""
+    own = (prov_of_scene(scene, doc), doc.shown_media(scene))
+    if own[0] == "ai":
         return True
-    return any(shot.source == "ai" for shot in scene.shots) and scene.visual.type in ("ai_image", "ai_video")
+    return any(_shot_owner(doc, scene, shot, pool, own)[0] == "ai" for shot in scene.shots)
 
 
 def image_framing(doc: ProjectDoc, scene: Scene) -> tuple[str | None, str | None]:
