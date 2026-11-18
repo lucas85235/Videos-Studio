@@ -191,6 +191,23 @@ def test_event_sfx_on_the_cut_replaces_the_automatic_cut_sound():
     assert [e["type"] for e in events] == ["impact"]
 
 
+def test_cut_sfx_only_fill_what_the_event_sfx_leave_of_the_budget():
+    """Vídeo longo com o planejador: os SFX automáticos do corte não passam do orçamento da gramática."""
+    events = [{"type": "impact", "at": float(t), "start": t - 0.05, "scene_id": f"e{t}"} for t in range(0, 60, 15)]
+    cut = [{"type": kind, "start": float(t), "scene_id": f"c{t}"}
+           for t, kind in [(1, "whoosh"), (2, "impact"), (3, "glitch"), (4, "whoosh"), (5, "impact")]]
+    chosen = {"type": "whoosh", "start": 6.0, "scene_id": "mine"}
+    out = edit_resolve.cap_cut_sfx(events + cut + [chosen], per_min=7.0, duration_s=60.0, keep_scene_ids={"mine"})
+    # orçamento 7: 4 de evento + o escolhido na cena + 2 do corte (os impactos primeiro)
+    assert len(out) == 7 and out == sorted(out, key=lambda e: e["start"])
+    assert [e["scene_id"] for e in out if e["scene_id"].startswith("c")] == ["c2", "c5"]
+    assert chosen in out and all(e in out for e in events)
+    # sobra orçamento: nada muda
+    assert edit_resolve.cap_cut_sfx(cut, per_min=10.0, duration_s=60.0) == cut
+    # orçamento estourado só com eventos: nenhum do corte entra, os eventos ficam
+    assert edit_resolve.cap_cut_sfx(events + cut, per_min=1.0, duration_s=60.0) == events
+
+
 # --- efeitos por nível --------------------------------------------------------------------------------------------
 
 

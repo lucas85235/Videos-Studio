@@ -863,6 +863,30 @@ def drop_stacked_sfx(
     return [c for c in cut if keep(c)]
 
 
+# Ordem de corte dos SFX automáticos do corte quando passam do orçamento: o impacto (cartão, carimbo) é o que mais
+# sustenta a edição; o glitch vem depois; o whoosh de transição é o primeiro a sair.
+_CUT_SFX_PRIORITY = {"impact": 0, "glitch": 1}
+
+
+def cap_cut_sfx(sfx: list[dict[str, Any]], per_min: float, duration_s: float,
+                keep_scene_ids: frozenset[str] | set[str] = frozenset()) -> list[dict[str, Any]]:
+    """Com a camada de edição, os SFX de evento do planejador (com `at`) já cumprem `grammar.sfx_per_min`; os
+    automáticos do corte (transição, cartão, carimbo) vinham por cima, em todo corte, e o vídeo longo passava de 10
+    por minuto (som de "editor automático"). Os do corte só preenchem o que sobra do orçamento, impacto primeiro; o
+    som escolhido na cena (`keep_scene_ids`) e os de evento ficam sempre."""
+    budget = math.ceil(max(0.0, per_min) * max(0.0, duration_s) / 60.0)
+    events = [e for e in sfx if "at" in e]
+    cut = [e for e in sfx if "at" not in e]
+    fixed = [c for c in cut if c.get("scene_id") in keep_scene_ids]
+    optional = [c for c in cut if c.get("scene_id") not in keep_scene_ids]
+    room = budget - len(events) - len(fixed)
+    if room >= len(optional):
+        return sfx
+    ranked = sorted(optional, key=lambda c: (_CUT_SFX_PRIORITY.get(c["type"], 2), c["start"]))
+    chosen = ranked[:max(0, room)]
+    return sorted(events + fixed + chosen, key=lambda e: e["start"])
+
+
 # --- material de terceiros ----------------------------------------------------------------------------------------
 
 

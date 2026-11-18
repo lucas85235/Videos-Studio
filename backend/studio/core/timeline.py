@@ -699,6 +699,9 @@ def build_timeline(
     if grammar is not None:
         for scene_out in scenes_out:
             edit_resolve.fit_to_length(scene_out, fps)
+        if style.audio.sfx.auto:
+            sfx = edit_resolve.cap_cut_sfx(sfx, grammar.sfx_per_min, total_frames / fps,
+                                           {s.id for s in doc.scenes if s.sfx})
 
     out: dict[str, Any] = {
         "version": 1,
