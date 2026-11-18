@@ -3,7 +3,7 @@ import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame
 import { frameLayout, sceneImageBox } from '../frame';
 import { hasEffect, imageFilter } from '../look';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type ShotEasing, type TextCardStyle, type TimelineScene } from '../types';
-import { MotionBackground, withAlpha } from './DataCards';
+import { MotionBackground } from './DataCards';
 import { EASE, isEasing, keepTransform, pRects, type Rect, rectThrough, rectToContainer } from './fx/math';
 
 type Props = {
@@ -19,7 +19,10 @@ type Props = {
   dim?: number;
   /** Desfoque em px (referência 1080 no menor lado), ex.: fundo dos cartões de dado. */
   blur?: number;
-  /** Sem imagem, cobre o fundo animado com a cor de fundo do estilo quase opaca (contraste do texto cinético). */
+  /**
+   * Cartão tipográfico: sem imagem, o fundo animado clareado (`MotionBackground` com `lift`), sem escurecer: nunca o
+   * fundo liso escuro que o detector de tela preta acusa.
+   */
   solid?: boolean;
   /** Curva do movimento (plano com `easing`). Ausente: a de sempre (inOut quad). */
   easing?: ShotEasing;
@@ -243,13 +246,12 @@ export const VisualLayer: React.FC<Props> = ({
 
   if (!url) {
     // Sem imagem (cartão ou referência solta): fundo animado nas cores do estilo.
-    const bgFilter = `${imageFilter(effects, { ...scene.look, blur: 0 })}${dim ? ` brightness(${1 - dim * 0.35})` : ''}`.trim();
+    const bgFilter = `${imageFilter(effects, { ...scene.look, blur: 0 })}${dim && !solid ? ` brightness(${1 - dim * 0.35})` : ''}`.trim();
     return (
       <AbsoluteFill>
         <AbsoluteFill style={{ filter: bgFilter || undefined }}>
-          <MotionBackground style={cards} seed={scene.seed} />
+          <MotionBackground style={cards} seed={scene.seed} lift={solid} />
         </AbsoluteFill>
-        {solid ? <AbsoluteFill style={{ backgroundColor: withAlpha(cards.background, 0.85) }} /> : null}
         {overlay}
       </AbsoluteFill>
     );

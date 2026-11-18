@@ -25,6 +25,7 @@ from studio.workers.pipeline import (
     media_find,
     media_pool,
     storyboard_check,
+    typographic,
     video_clips,
 )
 from studio.workers.pipeline.build import BuildCancelled, Builder
@@ -785,6 +786,8 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
 POOL_FAILED = "O acervo de material real não saiu nesta rodada: o storyboard seguiu sem ele (o detalhe está no log)."
 ATTACH_FAILED = "A mídia escolhida do acervo não foi anexada: as cenas ficaram como o storyboard deixou."
 PLAN_FAILED = "O planejador de edição falhou: as cenas ficaram com um plano só, sem eventos."
+TYPO_FAILED = ("A troca dos cartões tipográficos por material falhou: as cenas sem material ficaram como o anexo "
+               "deixou.")
 
 
 def _gather_pool(ctx: JobContext, project_id: str, doc: Any, style: Any) -> tuple[Pool, list[Issue]]:
@@ -818,7 +821,9 @@ def _attach_and_plan(doc: Any, style: Any, pool: Pool) -> tuple[Any, list[Issue]
     fica como estava antes do passo (nada aplicado pela metade) e sai um aviso em português (o detalhe vai para o log).
     Devolve o documento final e os achados."""
     issues: list[Issue] = []
+    # Depois do anexo, a cena que ficou sem material passa pela hierarquia do cartão tipográfico (`typographic`).
     steps = (("anexo do acervo", ATTACH_FAILED, lambda d: media_pool.attach_chosen(d, pool)),
+             ("cartões tipográficos", TYPO_FAILED, lambda d: typographic.settle(d, style, pool)),
              ("planejador de edição", PLAN_FAILED, lambda d: edit_plan.plan(d, style, pool)))
     for name, failed, step in steps:
         work = doc.model_copy(deep=True)

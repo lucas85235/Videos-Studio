@@ -75,7 +75,7 @@ def test_triggers_on_synthetic_timeline():
         "fps": 30,
         "scenes": [
             # número dito perto do fim: painel entra em 70 − 3 = 67, fica 23 quadros (0,8 s)
-            _scene("s_reveal", "stat", 0, 90, card={"value": "42%", "label": "dos casos"}, reveal=70),
+            _scene("s_reveal", "stat", 0, 90, card={"value": "42%", "label": "dos casos"}, reveal=70, src="img.png"),
             # carimbo com 1,0 s antes do corte (mínimo 1,3 s)
             _scene("s_stamp", "image", 90, 90, card={"stamp": "1900", "stamp_from": 60}),
             # título numa cena de 1,5 s
@@ -110,7 +110,7 @@ def test_triggers_empty_data_card_uses_loose_stamp():
 
 def test_triggers_kinetic_last_page_and_panel_stamp():
     words = [{"text": w, "from": f, "to": f + 5} for w, f in
-             [("Um", 0), ("dois", 10), ("três.", 20), ("Quatro", 70), ("cinco", 75)]]
+             [("Um", 0), ("dois", 10), ("três.", 20), ("Quatro", 70), ("cinco", 75), ("seis.", 80)]]
     timeline = {"fps": 30, "scenes": [
         _scene("s_kin", "text", 0, 120, words=words),  # última página entra no quadro 70: 1,7 s
         _scene("s_cmp", "compare", 120, 70, card={"items": [{"label": "A", "value": "1"}, {"label": "B", "value": "2"}],
@@ -118,7 +118,7 @@ def test_triggers_kinetic_last_page_and_panel_stamp():
     ]}
     items = late_triggers(timeline)
     assert [i["scene_id"] for i in items] == ["s_kin"]
-    assert "'Quatro cinco'" in items[0]["detail"]
+    assert "'Quatro cinco seis.'" in items[0]["detail"]
 
 
 # ---------------------------------------------------------------- conferência rápida

@@ -13,7 +13,16 @@ export type CardBand = { top: number; bottom: number };
 
 /** `pop`: o número é dito na cena (no corte ou quando o painel entra, e a legenda mostra o valor): entra parado, sem
  *  contar. Contando, o painel mostraria "87 GB+" no quadro em que a fala e a legenda dizem "100 gigabytes". */
-export type CardViewProps = { scene: TimelineScene; style: TextCardStyle; uppercase: boolean; lang: string; band?: CardBand; pop?: boolean };
+/** `avoid`: o retângulo (fração da tela) que o texto do cartão deixa livre, o do avatar na cena. */
+export type CardViewProps = {
+  scene: TimelineScene;
+  style: TextCardStyle;
+  uppercase: boolean;
+  lang: string;
+  band?: CardBand;
+  pop?: boolean;
+  avoid?: Rect | null;
+};
 
 // ---------------------------------------------------------------------------------------------
 // Cores
@@ -35,6 +44,27 @@ export const withAlpha = (color: string, a: number) => {
   const alpha = Math.max(0, Math.min(1, a));
   if (h) return `${h}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`;
   return `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`;
+};
+
+/** Brilho (0 a 1, pesos BT.601 do vídeo) de uma cor #RGB/#RRGGBB; 0,5 para outra forma de cor. */
+export const lumaOf = (color: string) => {
+  const h = hex6(color);
+  if (!h) return 0.5;
+  const ch = (i: number) => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+  return 0.299 * ch(0) + 0.587 * ch(1) + 0.114 * ch(2);
+};
+
+/** Brilho mínimo do fundo do cartão tipográfico: acima do limiar do detector de tela preta (`blackdetect` pix_th 0,10)
+ * na maior parte do quadro. O roxo #1A0A24 coberto a 85% (brilho 0,07) era acusado como tela preta. */
+export const TYPO_BG_MIN_LUMA = 0.16;
+
+/** A cor clareada na direção de `toward` (o destaque do estilo) até o brilho `min`; no máximo 60% do caminho. */
+export const liftTo = (color: string, toward: string, min: number) => {
+  for (let t = 0; t <= 0.6 + 1e-9; t += 0.02) {
+    const c = mix(color, toward, t);
+    if (lumaOf(c) >= min) return c;
+  }
+  return mix(color, toward, 0.6);
 };
 
 /** Mistura de duas cores (t = 0 é a primeira). */
@@ -955,8 +985,12 @@ export const SourceChip: React.FC<{ source: string; style: TextCardStyle; lang: 
 // ---------------------------------------------------------------------------------------------
 // Fundo animado (cena sem imagem)
 
-/** Gradientes radiais do fundo e do destaque do estilo, derivando devagar, com grade sutil. */
-export const MotionBackground: React.FC<{ style: TextCardStyle; seed: number }> = ({ style, seed }) => {
+/**
+ * Gradientes radiais do fundo e do destaque do estilo, derivando devagar, com grade sutil. `lift` (cartão
+ * tipográfico): a base clareada até `TYPO_BG_MIN_LUMA` na cor de destaque e uma faixa de luz atravessando devagar, para
+ * o fundo ter textura e movimento e nunca ler como tela preta.
+ */
+export const MotionBackground: React.FC<{ style: TextCardStyle; seed: number; lift?: boolean }> = ({ style, seed, lift = false }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const t = frame / fps;
@@ -967,7 +1001,10 @@ export const MotionBackground: React.FC<{ style: TextCardStyle; seed: number }> 
   const y2 = 74 + 10 * Math.sin(t * 0.29 + r('d'));
   const cell = Math.round(Math.min(width, height) * 0.085);
   const drift = (t * cell * 0.18) % cell;
-  const deep = mix(style.background, '#000000', 0.55);
+  const base = lift ? liftTo(style.background, style.accent, TYPO_BG_MIN_LUMA + 0.02) : style.background;
+  const deep = lift ? liftTo(mix(style.background, '#000000', 0.25), style.accent, TYPO_BG_MIN_LUMA - 0.02) : mix(style.background, '#000000', 0.55);
+  // Faixa de luz diagonal que atravessa a tela em ~9 s (só no cartão tipográfico).
+  const sweep = ((t / 9 + random(`${seed}-mb-sw`)) % 1) * 160 - 30;
   return (
     <AbsoluteFill style={{ backgroundColor: deep }}>
       <AbsoluteFill
@@ -975,10 +1012,17 @@ export const MotionBackground: React.FC<{ style: TextCardStyle; seed: number }> 
           background: [
             `radial-gradient(circle at ${x1}% ${y1}%, ${withAlpha(style.accent, 0.42)} 0%, ${withAlpha(style.accent, 0)} 48%)`,
             `radial-gradient(circle at ${x2}% ${y2}%, ${withAlpha(mix(style.accent, style.background, 0.45), 0.5)} 0%, ${withAlpha(style.background, 0)} 52%)`,
-            `linear-gradient(165deg, ${style.background} 0%, ${deep} 100%)`,
+            `linear-gradient(165deg, ${base} 0%, ${deep} 100%)`,
           ].join(', '),
         }}
       />
+      {lift ? (
+        <AbsoluteFill
+          style={{
+            background: `linear-gradient(115deg, transparent ${sweep - 18}%, ${withAlpha(style.color, 0.07)} ${sweep}%, transparent ${sweep + 18}%)`,
+          }}
+        />
+      ) : null}
       <AbsoluteFill
         style={{
           backgroundImage: `linear-gradient(${withAlpha(style.color, 0.06)} 1px, transparent 1px), linear-gradient(90deg, ${withAlpha(style.color, 0.06)} 1px, transparent 1px)`,

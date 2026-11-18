@@ -13,7 +13,9 @@
   8. fixas: abertura `oculos`, CTA (e pedido final) `feliz`;
   9. a thumb escolhida (pacote travado) tem o avatar: a mesma pose entra na 1ª cena do gancho, desde o começo dela (quem clicou na
      thumb reconhece o apresentador nos primeiros segundos), por cima da regra "nem na primeira cena" e do tipo da
-     cena; cena séria e o manual continuam valendo.
+     cena; cena séria e o manual continuam valendo;
+  10. o cartão tipográfico (a fala na tela sem imagem, `sources.is_typographic`) ganha o avatar, sem a regra do tempo
+     e nunca adjacente a outra aparição: é o último recurso da cena sem material (`typographic`).
 Os avisos saem no formato do `storyboard_check` (`Issue` com AVISO/CORRIGIDO).
 """
 
@@ -32,6 +34,7 @@ from studio.core.editing.serious import (  # noqa: F401 - os termos continuam im
 )
 from studio.core.project.document import Presenter, ProjectDoc, Scene, ScenePresenter
 from studio.core.project.presenter import fold, pose_exists, resolve_pose, trigger_index, word_key
+from studio.core.sources import is_typographic
 from studio.workers.pipeline.storyboard_check import AVISO, CORRIGIDO, Issue
 
 OPENING_POSE = "oculos"
@@ -264,6 +267,20 @@ def assign(
             pose = resolve_pose(presenter, CTA_POSE)
             chosen[slot.index] = (ScenePresenter(pose=pose.id if pose else None, mode="reacao"), "fixa")
             run_done = True
+    # 10. cartão tipográfico (a fala na tela sem imagem nenhuma, `sources.is_typographic`): o avatar entra nele, sem a
+    # regra do tempo (a cena não fica só com o texto sobre o fundo), mas nunca adjacente a outra aparição.
+    rotation = 0
+    for slot in slots:
+        if not is_typographic(slot.scene, doc) or not free(slot) or not fits(slot, timed=False):
+            continue
+        pose_id, word = _cue(presenter, slot)
+        if not pose_id:
+            names = [n for n in ROTATION if pose_exists(presenter, n)] or [p.id for p in presenter.poses]
+            pose_id = names[rotation % len(names)]
+            rotation += 1
+        mode = "explica" if pose_id in EXPLAIN_POSES else "reacao"
+        chosen[slot.index] = (ScenePresenter(pose=pose_id, at=_at_of(slot.words, word), mode=mode), "fixa")
+        hints.pop(slot.index, None)
     # 2-5. sugestões do storyboard, na ordem.
     for index, hint in sorted(hints.items()):
         slot = slots[index]

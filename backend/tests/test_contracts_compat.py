@@ -42,7 +42,7 @@ from studio.core.styles.schema import (
 )
 from studio.providers import vision
 from studio.workers.jobs import get_job, get_runner
-from studio.workers.pipeline import authoring, edit_plan, media_pool, mock_content
+from studio.workers.pipeline import authoring, edit_plan, media_pool, mock_content, typographic
 from studio.workers.pipeline.schemas import (
     STORYBOARD_EDIT_DEFAULTS,
     STORYBOARD_EDIT_FIELDS,
@@ -506,9 +506,11 @@ def test_storyboard_job_calls_the_hooks_in_order(isolated_settings, monkeypatch)
     monkeypatch.setattr(media_pool, "attach_chosen", attach)
     monkeypatch.setattr(edit_plan, "plan", plan)
     monkeypatch.setattr(authoring, "storyboard", storyboard)
+    # a hierarquia do cartão tipográfico roda entre o anexo e o planejador (`typographic.settle`)
+    monkeypatch.setattr(typographic, "settle", lambda doc, style, pool: calls.append("typographic") or [])
     doc = _farol()
     result = _run_job("storyboard", doc.id)
-    assert calls == ["gather", "storyboard", "attach", "plan"]
+    assert calls == ["gather", "storyboard", "attach", "typographic", "plan"]
     assert attached and "A cena ficou em IA sem motivo." in result["warnings"]
     saved = service.get_doc(doc.id)
     assert [e.type for s in saved.scenes for e in s.fx] == ["punch"]  # o que o planejador escreve é gravado

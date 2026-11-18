@@ -1,7 +1,8 @@
 import React from 'react';
 import { AbsoluteFill, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { fontStack } from '../fonts';
-import type { CaptionWord, TextCardStyle, TimelineScene } from '../types';
+import type { TextCardStyle, TimelineScene } from '../types';
+import { KINETIC_CENTER_Y, kineticMarks, pageAt, type Rect, scenePages } from './fx/math';
 
 /** Entrada dos cartões conforme a animação do estilo (`delay` em quadros). */
 export const useEntrance = (animation: TextCardStyle['animation'], seed: number, delay = 0) => {
@@ -98,83 +99,80 @@ export const QuoteCard: React.FC<CardProps> = ({ scene, style }) => {
   );
 };
 
-/** Palavras por página do texto cinético (a página também vira no fim de cada frase). */
-const KINETIC_PAGE = 6;
-
-export const kineticPages = (words: CaptionWord[]) => {
-  const pages: CaptionWord[][] = [];
-  let current: CaptionWord[] = [];
-  for (const w of words) {
-    current.push(w);
-    if (current.length >= KINETIC_PAGE || /[.!?…:;]["'”’»)]*$/u.test(w.text)) {
-      pages.push(current);
-      current = [];
-    }
-  }
-  if (current.length) pages.push(current);
-  return pages;
-};
-
-const core = (text: string) => text.replace(/[^\p{L}\p{N}]/gu, '');
-
-/** Palavras do texto cinético que já estão na página (mesma conta do quadro): sem fala, uma a cada 8 quadros. */
-export const kineticWords = (scene: TimelineScene): CaptionWord[] =>
-  scene.words.length ? scene.words : scene.text.split(/\s+/).map((t, i) => ({ text: t, from: i * 8, to: i * 8 + 8 }));
-
-/** Destaque da página: palavras longas e números (ou a mais longa), nunca "a última". */
-export const kineticMarks = (shown: CaptionWord[]) => {
-  const marked = shown.map((w) => core(w.text).length >= 7 || /\p{N}/u.test(w.text));
-  if (!marked.some(Boolean) && shown.length > 1) {
-    const longest = shown.reduce((best, w, i) => (core(w.text).length > core(shown[best].text).length ? i : best), 0);
-    marked[longest] = true;
-  }
-  return marked;
-};
+/** Quadros que a entrada da 1ª página do cartão tipográfico já correu no corte. */
+const FIRST_PAGE_LEAD = 4;
 
 /**
- * Tipografia cinética: as palavras da narração aparecem grandes, no ritmo da fala. A página inteira já está
- * diagramada desde o começo (a palavra ainda não dita fica invisível), então nada muda de lugar quando a próxima
- * entra; o destaque vai para as palavras longas e os números da página (ou a mais longa), nunca "a última".
- * Fica sobre a imagem escurecida e desfocada (ou o fundo do estilo, sem imagem: ver `VisualLayer`).
+ * Cartão tipográfico: a frase inteira, grande, no centro óptico da tela (`KINETIC_CENTER_Y`: o bloco não muda de
+ * lugar entre as páginas), com a palavra-chave na cor de destaque. A página entra de uma vez (um "pop" curto) quando
+ * a fala chega nela. Fica sobre a imagem escurecida e desfocada ou, sem imagem, sobre o fundo com textura do estilo
+ * (`VisualLayer`, `MotionBackground` com `lift`).
  */
-export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle; uppercase: boolean }> = ({ scene, style, uppercase }) => {
+export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle; uppercase: boolean; avoid?: Rect | null }> = ({
+  scene,
+  style,
+  uppercase,
+  avoid,
+}) => {
   const frame = useCurrentFrame();
-  const { fps, width } = useVideoConfig();
-  const words = kineticWords(scene);
-  const pages = kineticPages(words);
-  const said = words.filter((w) => w.from <= frame).length;
-  let index = 0;
-  for (let i = 0, seen = 0; i < pages.length; i += 1) {
-    if (said > seen) index = i;
-    seen += pages[i].length;
-  }
+  const { fps, width, height } = useVideoConfig();
+  const pages = scenePages(scene);
+  const index = pageAt(pages, frame);
   const shown = pages[index] ?? [];
+  const start = index > 0 && shown.length ? shown[0].from : 0;
   const marked = kineticMarks(shown);
+  // A 1ª página já vem entrando no corte (`FIRST_PAGE_LEAD` quadros adiantada): nem o 1º quadro fica vazio.
+  const lead = index === 0 ? FIRST_PAGE_LEAD : 0;
+  const pop = spring({ frame: frame - start + lead, fps, config: { damping: 14, stiffness: 220, mass: 0.6 } });
+  // Com o avatar no cartão (`presenter.assign` põe o avatar no cartão tipográfico), a frase sai do lado dele.
+  const margin = (side: 'left' | 'right') =>
+    width * (avoid && (side === 'left' ? avoid[0] < 0.5 : avoid[0] + avoid[2] > 0.5) ? Math.max(0.08, avoid[2] + 0.02) : 0.08);
   return (
-    <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center', padding: width * 0.08 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'baseline', gap: `${width * 0.01}px ${width * 0.025}px`, maxWidth: '92%' }}>
-        {shown.map((w, i) => {
-          const pop = frame >= w.from ? spring({ frame: frame - w.from, fps, config: { damping: 12, stiffness: 240, mass: 0.5 } }) : 0;
-          const accent = marked[i];
-          const text = uppercase ? w.text.toLocaleUpperCase() : w.text;
-          return (
-            <span
-              key={`${w.from}-${i}`}
-              style={{
-                fontFamily: fontStack(style.font),
-                fontSize: width * (accent ? 0.12 : 0.095),
-                lineHeight: 1,
-                color: accent ? style.accent : style.color,
-                transform: `translateY(${interpolate(pop, [0, 1], [30, 0])}px) scale(${interpolate(pop, [0, 1], [0.7, 1])})`,
-                opacity: pop,
-                display: 'inline-block',
-                textShadow: '0 4px 10px rgba(0,0,0,0.75), 0 6px 28px rgba(0,0,0,0.6)',
-              }}
-            >
-              {text}
-            </span>
-          );
-        })}
+    <AbsoluteFill>
+      <div
+        style={{
+          position: 'absolute',
+          left: margin('left'),
+          right: margin('right'),
+          top: 0,
+          height: height * KINETIC_CENTER_Y * 2,
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'center',
+            alignItems: 'baseline',
+            gap: `${width * 0.01}px ${width * 0.025}px`,
+            maxWidth: '92%',
+            opacity: pop,
+            transform: `translateY(${interpolate(pop, [0, 1], [24, 0])}px) scale(${interpolate(pop, [0, 1], [0.92, 1])})`,
+          }}
+        >
+          {shown.map((w, i) => {
+            const accent = marked[i];
+            const text = uppercase ? w.text.toLocaleUpperCase() : w.text;
+            return (
+              <span
+                key={`${start}-${i}`}
+                style={{
+                  fontFamily: fontStack(style.font),
+                  fontSize: width * (accent ? 0.12 : 0.095),
+                  lineHeight: 1,
+                  color: accent ? style.accent : style.color,
+                  display: 'inline-block',
+                  textShadow: '0 4px 10px rgba(0,0,0,0.75), 0 6px 28px rgba(0,0,0,0.6)',
+                }}
+              >
+                {text}
+              </span>
+            );
+          })}
+        </div>
       </div>
     </AbsoluteFill>
   );

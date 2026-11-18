@@ -171,6 +171,14 @@ def visual_prov(scene: Scene, doc: ProjectDoc | None = None) -> Prov:
     return _prov_of_visual(scene.visual)
 
 
+def is_typographic(scene: Scene, doc: ProjectDoc | None = None) -> bool:
+    """Cartão tipográfico: cena de texto (`kind` "text") sem imagem nenhuma na tela, só a fala sobre o fundo do estilo
+    (nem mídia real, nem imagem de IA, nem a imagem de outra cena de fundo). É o último recurso da cena que fica sem
+    material (`workers.pipeline.typographic`): o avatar entra nele (`presenter.assign`) e o renderer o desenha como
+    frase inteira sobre o fundo com textura."""
+    return scene.kind == "text" and visual_prov(scene, doc) == "graphic"
+
+
 def _bare_card(scene: Scene) -> bool:
     """Sem imagem nenhuma: visual `none`, ou cartão sem prompt, imagem fixada nem reaproveitamento."""
     visual = scene.visual

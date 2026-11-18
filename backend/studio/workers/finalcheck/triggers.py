@@ -21,12 +21,13 @@ STAMP_DELAY = 6  # SceneView: carimbo solto entra 6 quadros depois do corte (sem
 PANEL_STAMP_DELAY = 10  # DataCards: carimbo do painel de dado entra 10 quadros depois do painel
 REVEAL_LEAD = 3  # SceneView: o painel começa 3 quadros antes do número dito
 REVEAL_AT_CUT_S = 0.3  # número dito até 0,3 s depois do corte: o painel entra parado, no quadro 0
-KINETIC_PAGE = 6  # TextCards: palavras por página da tipografia cinética
+PAGE_MIN, PAGE_MAX = 3, 7  # TextCards: palavras por página do cartão tipográfico (`PAGE_MIN`/`PAGE_MAX`)
 
 PANEL_KINDS = ("stat", "compare")
 # Cartões que mostram o texto da própria cena em destaque desde o corte.
 TEXT_CARD_KINDS = ("title", "count", "quote", "document")
-SENTENCE_END = (".", "!", "?", "…", ":", ";")
+SENTENCE_END = (".", "!", "?", "…")
+CLAUSE_END = (*SENTENCE_END, ":", ";", ",")
 
 FIX = "alongue a fala da cena, divida a cena ou leve o texto para a próxima"
 
@@ -45,25 +46,76 @@ def _seconds(value: float) -> str:
     return f"{value:.1f}".replace(".", ",")
 
 
+def _ends(word: dict[str, Any], marks: tuple[str, ...]) -> bool:
+    return str(word.get("text", "")).rstrip("\"'”’»)").endswith(marks)
+
+
+def _is_link(word: dict[str, Any]) -> bool:
+    """Palavra curta de ligação ("a", "com", "de", "que"): nunca fecha uma página (`isLink` do renderer)."""
+    text = str(word.get("text", ""))
+    return 1 <= len(text) <= 3 and text.isalpha() and text.islower()
+
+
 def _kinetic_pages(words: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Mesmas páginas do `kineticPages` do renderer (6 palavras ou fim de frase)."""
-    pages: list[list[dict[str, Any]]] = []
+    """Mesmas páginas do `kineticPages` do renderer: a fala cortada na pontuação, orações da mesma frase juntas até
+    `PAGE_MAX` palavras (oração mais longa em pedaços iguais) e página de menos de `PAGE_MIN` junta com a vizinha."""
+    clauses: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     for w in words:
         current.append(w)
-        text = str(w.get("text", "")).rstrip("\"'”’»)")
-        if len(current) >= KINETIC_PAGE or text.endswith(SENTENCE_END):
-            pages.append(current)
+        if _ends(w, CLAUSE_END):
+            clauses.append(current)
             current = []
     if current:
-        pages.append(current)
+        clauses.append(current)
+    pieces: list[list[dict[str, Any]]] = []
+    for clause in clauses:
+        if len(clause) <= PAGE_MAX:
+            pieces.append(clause)
+            continue
+        parts = -(-len(clause) // PAGE_MAX)
+        size = -(-len(clause) // parts)
+        split = [clause[i:i + size] for i in range(0, len(clause), size)]
+        for k in range(len(split) - 1):
+            for _ in range(2):  # a palavra de ligação no fim do pedaço passa para o seguinte
+                piece, after = split[k], split[k + 1]
+                if len(piece) <= PAGE_MIN or len(after) >= PAGE_MAX or not _is_link(piece[-1]):
+                    break
+                after.insert(0, piece.pop())
+        pieces += split
+    pages: list[list[dict[str, Any]]] = []
+    for piece in pieces:
+        if pages and len(pages[-1]) + len(piece) <= PAGE_MAX and not _ends(pages[-1][-1], SENTENCE_END):
+            pages[-1] = [*pages[-1], *piece]
+        else:
+            pages.append(list(piece))
+    i = 0
+    while i < len(pages):
+        if len(pages) > 1 and len(pages[i]) < PAGE_MIN:
+            if i > 0:
+                pages[i - 1] += pages.pop(i)
+            else:
+                first = pages.pop(0)
+                pages[0] = first + pages[0]
+            continue
+        i += 1
     return pages
 
 
+def _backdrop_off(scene: dict[str, Any]) -> bool:
+    """O fundo do cartão sai (preto ou liso demais: `cardBackdropOff` do renderer, `core.timeline.card_backdrop`)."""
+    from studio.core.timeline import CARD_BG_MIN_DETAIL, CARD_BG_MIN_LUMA
+
+    luma, detail = scene.get("bg_luma"), scene.get("bg_detail")
+    return (isinstance(luma, (int, float)) and luma < CARD_BG_MIN_LUMA) or (
+        isinstance(detail, (int, float)) and detail < CARD_BG_MIN_DETAIL)
+
+
 def _panel_from(scene: dict[str, Any], fps: float) -> int:
-    """Quadro em que o painel do cartão de dado entra (`cardFrom` do SceneView)."""
+    """Quadro em que o painel do cartão de dado entra (`cardFrom` do SceneView). Sem imagem de fundo (sem `src` ou com
+    o fundo que sai), no corte."""
     reveal = scene.get("reveal")
-    if not isinstance(reveal, (int, float)):
+    if not isinstance(reveal, (int, float)) or not scene.get("src") or _backdrop_off(scene):
         return 0
     if reveal <= round(fps * REVEAL_AT_CUT_S):
         return 0
@@ -102,8 +154,9 @@ def scene_elements(scene: dict[str, Any], fps: float) -> list[dict[str, Any]]:
         if label:
             add("destaque", label, 0, HIGHLIGHT_MIN_S)
     if kind == "text":
-        # Tipografia cinética: cada página entra com a primeira palavra dela; a última é a que tem menos tempo.
-        words = [w for w in scene.get("words") or [] if isinstance(w, dict)]
+        # Cartão tipográfico: a frase da cena entra no corte; sem ela, cada página da fala entra com a primeira palavra
+        # dela, e a última é a que tem menos tempo.
+        words = [w for w in scene.get("words") or [] if isinstance(w, dict)] if not text else []
         if words:
             last = _kinetic_pages(words)[-1]
             add("texto cinético", " ".join(str(w.get("text", "")) for w in last), last[0].get("from", 0), HIGHLIGHT_MIN_S)

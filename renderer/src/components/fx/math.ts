@@ -2,7 +2,7 @@
 // Ficam fora dos componentes para o teste rodar no Node (`backend/tests/test_renderer_fx.py`): só `import type` aqui.
 //
 // Quadros relativos ao início da cena, como no contrato resolvido de `types.ts` (ADR 0004, fundação).
-import type { FxType, ShotEasing, ShotFraming, TimelineFx, TimelineShot } from '../../types';
+import type { CaptionWord, FxType, ShotEasing, ShotFraming, TimelineFx, TimelineScene, TimelineShot } from '../../types';
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const clamp01 = (v: number) => clamp(v, 0, 1);
@@ -985,4 +985,134 @@ export const remapFrame = (frame: number, segs: TimeSegment[]) => {
     prev = seg.to;
   }
   return t + (frame - prev);
+};
+
+// ---------------------------------------------------------------------------------------------
+// Cartão tipográfico (`KineticText` em TextCards.tsx; as caixas do texto em TextBoxes.ts)
+
+/**
+ * Cartão tipográfico (a fala na tela, sem imagem ou sobre a imagem desfocada): nunca legenda palavra a palavra. A
+ * frase da cena (`scene.text`, a ideia curta do cartão) entra inteira de uma vez; sem ela, a fala vai em sintagmas de
+ * `PAGE_MIN` a `PAGE_MAX` palavras, cada um inteiro desde o começo dele e na tela até o próximo entrar (a 1ª página
+ * desde o corte): nunca um quadro vazio nem de uma palavra solta ("e", "que", "logado.").
+ */
+export const PAGE_MIN = 3;
+export const PAGE_MAX = 7;
+/** Altura (fração da tela) do centro do bloco de texto: o centro óptico, um pouco acima do meio, fixo a cena inteira. */
+export const KINETIC_CENTER_Y = 0.45;
+/** Palavras acesas por página (a palavra-chave, não meia frase colorida). */
+const MAX_MARKS = 2;
+
+const CLAUSE_END = /[.!?…:;,]["'”’»)]*$/u;
+const SENTENCE_END = /[.!?…]["'”’»)]*$/u;
+
+/** Palavra curta de ligação (artigo, preposição, conjunção: "a", "com", "de", "que"): nunca fecha uma página. */
+const isLink = (text: string) => /^[\p{Ll}]{1,3}$/u.test(text);
+
+/**
+ * Divide um trecho longo (sem pontuação) em pedaços do mesmo tamanho, de até `PAGE_MAX` palavras; a palavra de
+ * ligação no fim de um pedaço passa para o seguinte (até 2, sem o pedaço ficar com menos de `PAGE_MIN` nem o
+ * seguinte passar de `PAGE_MAX`): "dependendo do site até com a" vira "dependendo do site até".
+ */
+const balanced = (chunk: CaptionWord[]): CaptionWord[][] => {
+  const parts = Math.ceil(chunk.length / PAGE_MAX);
+  const size = Math.ceil(chunk.length / parts);
+  const out: CaptionWord[][] = [];
+  for (let i = 0; i < chunk.length; i += size) out.push(chunk.slice(i, i + size));
+  for (let k = 0; k + 1 < out.length; k += 1) {
+    for (let moved = 0; moved < 2; moved += 1) {
+      const piece = out[k];
+      const last = piece[piece.length - 1];
+      if (piece.length <= PAGE_MIN || out[k + 1].length >= PAGE_MAX || !isLink(last.text)) break;
+      out[k + 1].unshift(piece.pop() as CaptionWord);
+    }
+  }
+  return out;
+};
+
+/**
+ * Páginas do cartão tipográfico: a fala cortada na pontuação (frase e oração), juntando orações da mesma frase até
+ * `PAGE_MAX` palavras; a página com menos de `PAGE_MIN` palavras se junta com a vizinha (a anterior; na primeira, a
+ * seguinte). Fala de uma ou duas palavras é uma página só.
+ */
+export const kineticPages = (words: CaptionWord[]): CaptionWord[][] => {
+  const clauses: CaptionWord[][] = [];
+  let current: CaptionWord[] = [];
+  for (const w of words) {
+    current.push(w);
+    if (CLAUSE_END.test(w.text)) {
+      clauses.push(current);
+      current = [];
+    }
+  }
+  if (current.length) clauses.push(current);
+  const pages: CaptionWord[][] = [];
+  for (const clause of clauses.flatMap((c) => (c.length > PAGE_MAX ? balanced(c) : [c]))) {
+    const last = pages[pages.length - 1];
+    if (last && last.length + clause.length <= PAGE_MAX && !SENTENCE_END.test(last[last.length - 1].text)) {
+      last.push(...clause);
+    } else {
+      pages.push([...clause]);
+    }
+  }
+  let i = 0;
+  while (i < pages.length) {
+    if (pages.length > 1 && pages[i].length < PAGE_MIN) {
+      if (i > 0) {
+        pages[i - 1].push(...pages[i]);
+        pages.splice(i, 1);
+      } else {
+        pages[1].unshift(...pages[0]);
+        pages.splice(0, 1);
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return pages;
+};
+
+const core = (text: string) => text.replace(/[^\p{L}\p{N}]/gu, '');
+
+/** Palavras do cartão: a frase da cena inteira (desde o corte) ou, sem ela, a fala com o tempo de cada palavra. */
+export const kineticWords = (scene: TimelineScene): CaptionWord[] => {
+  const phrase = scene.text?.trim();
+  if (phrase) return phrase.split(/\s+/).map((t) => ({ text: t, from: 0, to: scene.durationInFrames }));
+  return scene.words;
+};
+
+/** As páginas do cartão da cena (a frase da cena é sempre uma página só). */
+export const scenePages = (scene: TimelineScene): CaptionWord[][] => {
+  const words = kineticWords(scene);
+  if (!words.length) return [];
+  return scene.text?.trim() ? [words] : kineticPages(words);
+};
+
+/**
+ * A palavra-chave acesa da página: a marcada no storyboard (`emph`); senão número ou palavra longa; no máximo
+ * `MAX_MARKS`, as mais longas; sem nenhuma, a mais longa (página de mais de uma palavra).
+ */
+export const kineticMarks = (shown: CaptionWord[]) => {
+  const emph = shown.map((w) => Boolean(w.emph));
+  const candidates = emph.some(Boolean) ? emph : shown.map((w) => core(w.text).length >= 7 || /\p{N}/u.test(w.text));
+  const ranked = shown
+    .map((w, i) => ({ i, len: core(w.text).length }))
+    .filter((c) => candidates[c.i])
+    .sort((a, b) => b.len - a.len || a.i - b.i)
+    .slice(0, MAX_MARKS);
+  const marked = shown.map((_, i) => ranked.some((c) => c.i === i));
+  if (!marked.some(Boolean) && shown.length > 1) {
+    const longest = shown.reduce((best, w, i) => (core(w.text).length > core(shown[best].text).length ? i : best), 0);
+    marked[longest] = true;
+  }
+  return marked;
+};
+
+/** A página na tela no quadro `frame`: a última que já começou (a 1ª desde o corte, antes mesmo da fala). */
+export const pageAt = (pages: CaptionWord[][], frame: number) => {
+  let index = 0;
+  pages.forEach((page, i) => {
+    if (i > 0 && page.length && page[0].from <= frame) index = i;
+  });
+  return index;
 };

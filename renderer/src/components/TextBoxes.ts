@@ -3,13 +3,12 @@
 // para o carimbo solto não cair em cima dele (`placeStamp`).
 import type { SceneKind, TextCardStyle, TimelineScene } from '../types';
 import { charEm } from './DataCards';
-import { flowRows, type Rect } from './fx/math';
-import { kineticMarks, kineticPages, kineticWords } from './TextCards';
+import { flowRows, KINETIC_CENTER_Y, kineticMarks, type Rect, scenePages } from './fx/math';
 
-/** Fileiras centradas na tela, uma embaixo da outra, com o bloco no meio da altura. */
-const stackRows = (rows: { width: number; height: number }[], gap: number, width: number, height: number): Rect[] => {
+/** Fileiras centradas na tela, uma embaixo da outra, com o centro do bloco na altura `center` (fração; o meio). */
+const stackRows = (rows: { width: number; height: number }[], gap: number, width: number, height: number, center = 0.5): Rect[] => {
   const total = rows.reduce((t, r) => t + r.height, 0) + gap * Math.max(0, rows.length - 1);
-  let y = (height - total) / 2;
+  let y = height * center - total / 2;
   return rows.map((r) => {
     const rect: Rect = [(width - r.width) / 2 / width, y / height, r.width / width, r.height / height];
     y += r.height + gap;
@@ -59,11 +58,11 @@ export const textCardRects = (
     return stackRows(rows, 0, width, height);
   }
   if (kind === 'text') {
-    // KineticText: palavras de 9,5% da largura (12% as de destaque), em até 92% da área sem o padding de 8%.
-    const words = kineticWords(scene);
+    // KineticText: palavras de 9,5% da largura (12% as de destaque), em até 92% da área sem as margens de 8%, com o
+    // bloco centrado no centro óptico (`KINETIC_CENTER_Y`).
     const maxWidth = width * 0.84 * 0.92;
     const gapX = width * 0.025;
-    return kineticPages(words).flatMap((page) => {
+    return scenePages(scene).flatMap((page) => {
       const marks = kineticMarks(page);
       const sizes = page.map((_, i) => width * (marks[i] ? 0.12 : 0.095));
       const texts = page.map((w) => (uppercase ? w.text.toLocaleUpperCase() : w.text));
@@ -72,7 +71,7 @@ export const textCardRects = (
         const end = i + 1 < all.length ? all[i + 1].start : page.length;
         return { width: Math.min(maxWidth, r.width), height: Math.max(...sizes.slice(r.start, end)) };
       });
-      return stackRows(rows, width * 0.01, width, height);
+      return stackRows(rows, width * 0.01, width, height, KINETIC_CENTER_Y);
     });
   }
   return [];

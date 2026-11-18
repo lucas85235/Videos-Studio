@@ -88,11 +88,13 @@ const CARD_VIEWS: Partial<Record<SceneKind, React.FC<CardViewProps>>> = {
 const DIM: Partial<Record<SceneKind, number>> = { title: 0.55, count: 0.55, quote: 0.55, text: 0.62, stat: 0.6, compare: 0.6, chart: 0.62 };
 /** Desfoque do fundo (px a 1080): os cartões ficam sobre a imagem (em geral reaproveitada) desfocada. */
 const BLUR: Partial<Record<SceneKind, number>> = { stat: 8, compare: 8, chart: 8, text: 6, title: 4 };
-/** Sem imagem, o texto cinético fica sobre o fundo do estilo quase opaco (com imagem, só escurecida e desfocada). */
+/** Sem imagem, o cartão tipográfico fica sobre o fundo com textura do estilo, clareado (`VisualLayer` com `solid`; com
+ * imagem, ela só escurecida e desfocada). */
 const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text']);
 /** Cartão grande no meio da tela (ou o mapa, que ocupa a tela): a legenda desce para baixo dele. */
 const CARD_KINDS = new Set<SceneKind>(['title', 'count', 'stat', 'compare', 'chart', 'map']);
-/** O próprio cartão mostra as palavras, então não há legenda. */
+/** O próprio cartão mostra as palavras, então não há legenda (no cartão tipográfico com frase própria, `scene.text`,
+ * a fala continua na legenda). */
 const NO_CAPTIONS = new Set<SceneKind>(['text', 'quote']);
 /** O painel do cartão já mostra a fonte e o carimbo; o cartão entra quando o número é dito (`reveal`). */
 const PANEL_KINDS = new Set<SceneKind>(['stat', 'compare', 'chart']);
@@ -288,9 +290,15 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   // entra parado ("pop"), sem contar: a contagem passaria por valores que a fala e a legenda não dizem no mesmo quadro.
   const reveal = inPanel && typeof scene.reveal === 'number' ? scene.reveal : undefined;
   const spokenAtCut = reveal !== undefined && reveal <= Math.round(fps * 0.3);
-  const cardFrom = reveal !== undefined && !spokenAtCut ? Math.max(0, reveal - REVEAL_LEAD) : 0;
-  const card = Card ? <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={reveal !== undefined} /> : null;
-  const hideCaptions = NO_CAPTIONS.has(kind) || (kind === 'title' && titleEchoesSpeech(scene));
+  // Sem imagem de fundo, o cartão entra no corte: esperar o número deixaria o fundo do estilo vazio na tela (o QA
+  // achou 3 s de gradiente sem nada antes do "2013").
+  const cardFrom = reveal !== undefined && !spokenAtCut && url ? Math.max(0, reveal - REVEAL_LEAD) : 0;
+  const avatarRect = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
+  const card = Card ? (
+    <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={reveal !== undefined} avoid={avatarRect} />
+  ) : null;
+  const hideCaptions =
+    (NO_CAPTIONS.has(kind) && !(kind === 'text' && filled(scene.text))) || (kind === 'title' && titleEchoesSpeech(scene));
   const sourceChip = source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null;
 
   // Edição (ADR 0004): planos, câmera por eventos, tempo do fundo e eventos de tela. Cena sem `shots` nem `fx`
@@ -391,8 +399,6 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
     width,
     height,
   });
-  const avatarRect = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
-
   // Faixa do topo na cena de imagem: desce para a altura livre mais perto quando no topo ela cobriria a manchete ou o
   // logo da imagem (nunca sobre a legenda nem o avatar). Cartões e notícia ficam como sempre (o painel mora embaixo).
   let headY: number | undefined;
