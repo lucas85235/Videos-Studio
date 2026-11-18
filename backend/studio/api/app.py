@@ -26,6 +26,7 @@ from studio.api import (
     routes_media,
     routes_misc,
     routes_ops,
+    routes_package,
     routes_projects,
     routes_publish,
     routes_radar,
@@ -90,6 +91,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(routes_projects.router)
+    app.include_router(routes_package.router)  # título e thumb antes do roteiro
     app.include_router(routes_branches.router)
     app.include_router(routes_misc.router)
     app.include_router(routes_publish.router)

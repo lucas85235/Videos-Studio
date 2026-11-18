@@ -24,6 +24,7 @@ import {
   Unlink,
   UserRound,
   Users,
+  UserRoundCog,
   X,
 } from 'lucide-react';
 import React, { useEffect, useId, useRef, useState } from 'react';
@@ -76,6 +77,7 @@ import {
 } from '../ui';
 import { cleanGlossary, cleanPronunciation, GlossaryEditor, halfFilledPronunciation, PronunciationEditor } from './ChannelSpeech';
 import { CharactersSheet } from './characters/CharactersSheet';
+import { PresenterSheet } from './characters/PresenterSheet';
 import { chipClass, Sheet } from './ops/common';
 import { browserZone, sameOffsetAsBrowser, whenIn, zoneCity, zoneLabel } from './ops/zones';
 import { Notice } from './project/delivery/shared';
@@ -795,6 +797,12 @@ const YouTubeInfo: React.FC<{ y: ChannelYouTube }> = ({ y }) => {
 /** Quantos personagens fixos o canal tem (`style_bible.characters`). */
 const characterCount = (c: Channel) => (Array.isArray(c.style_bible?.characters) ? c.style_bible.characters.length : 0);
 
+/** Avatar do apresentador ligado no canal (`style_bible.presenter.enabled`). */
+const presenterOn = (c: Channel) => {
+  const raw = c.style_bible?.presenter;
+  return Boolean(raw && typeof raw === 'object' && (raw as { enabled?: unknown }).enabled === true);
+};
+
 type CardActions = {
   onEdit: () => void;
   onDelete: () => void;
@@ -804,6 +812,7 @@ type CardActions = {
   onForget: () => void;
   onSuggest: () => void;
   onCharacters: () => void;
+  onPresenter: () => void;
 };
 
 /** Playlist padrão do canal: os envios dos projetos dele entram nela. A lista só é lida ao abrir (gasta cota). */
@@ -884,6 +893,7 @@ const ChannelCard: React.FC<
   onForget,
   onSuggest,
   onCharacters,
+  onPresenter,
   refreshing,
   suggesting,
   suggestDisabled,
@@ -916,6 +926,9 @@ const ChannelCard: React.FC<
           </Link>
           <Button size="sm" icon={UserRound} onClick={onCharacters} aria-label={`Personagens do canal ${c.name}`}>
             Personagens{characterCount(c) ? ` (${characterCount(c)})` : ''}
+          </Button>
+          <Button size="sm" icon={UserRoundCog} onClick={onPresenter} aria-label={`Avatar do apresentador do canal ${c.name}`}>
+            Avatar{presenterOn(c) ? ' (ligado)' : ''}
           </Button>
           <Button size="sm" icon={Pencil} onClick={onEdit} aria-label={`Editar o canal ${c.name}`}>
             Editar
@@ -1216,6 +1229,7 @@ export const ChannelsPage: React.FC = () => {
   /** Painel "Vincular canal do YouTube" aberto (target null: canal novo). */
   const [linking, setLinking] = useState<{ target: Channel | null } | null>(null);
   const [charactersOf, setCharactersOf] = useState<Channel | null>(null);
+  const [presenterOf, setPresenterOf] = useState<Channel | null>(null);
   /** Proposta da IA aplicada no formulário aberto (ainda não salva). */
   const [suggestion, setSuggestion] = useState<ChannelSuggestion | null>(null);
 
@@ -1497,6 +1511,7 @@ export const ChannelsPage: React.FC = () => {
               onForget={() => void askForget(c)}
               onSuggest={() => suggest.mutate(c)}
               onCharacters={() => setCharactersOf(c)}
+              onPresenter={() => setPresenterOf(c)}
             />
           ))}
         </div>
@@ -1505,6 +1520,7 @@ export const ChannelsPage: React.FC = () => {
       {charactersOf ? (
         <CharactersSheet target={{ kind: 'channel', id: charactersOf.id, name: charactersOf.name }} onClose={() => setCharactersOf(null)} />
       ) : null}
+      {presenterOf ? <PresenterSheet target={{ id: presenterOf.id, name: presenterOf.name }} onClose={() => setPresenterOf(null)} /> : null}
 
       {linking ? (
         <LinkSheet

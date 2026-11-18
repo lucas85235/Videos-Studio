@@ -25,9 +25,12 @@ type Props = {
   saving: boolean;
   onChoose: () => void;
   onSave: (spec: ThumbSpec) => void;
+  /** Miniatura de um candidato do pacote: sem edição aqui (vai para a etapa "Título e thumb"); a prévia do pacote
+   * aparece enquanto a miniatura no tamanho do YouTube não foi gerada. */
+  packageMode?: { previewImage: string | null; onEdit?: () => void; extra?: React.ReactNode };
 };
 
-export const ThumbCard: React.FC<Props> = ({ n, label, spec, variant, chosen, goesOut, version, isLong, scenes, templates, disabled, choosing, saving, onChoose, onSave }) => {
+export const ThumbCard: React.FC<Props> = ({ n, label, spec, variant, chosen, goesOut, version, isLong, scenes, templates, disabled, choosing, saving, onChoose, onSave, packageMode }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ThumbSpec>(spec);
   const id = useId();
@@ -69,6 +72,15 @@ export const ThumbCard: React.FC<Props> = ({ n, label, spec, variant, chosen, go
             className={isLong ? 'aspect-video w-full object-cover' : 'mx-auto aspect-[9/16] max-h-80 object-contain'}
           />
         </a>
+      ) : packageMode?.previewImage ? (
+        <figure className="m-0 flex flex-col gap-1">
+          <img
+            src={fileUrl(packageMode.previewImage)}
+            alt={`Prévia do candidato: ${spec.text || 'sem texto'}`}
+            className={`rounded-md border border-dashed border-line ${isLong ? 'aspect-video w-full object-cover' : 'mx-auto aspect-[9/16] max-h-80 object-contain'}`}
+          />
+          <figcaption className="text-xs text-subtle">Prévia do pacote. Gere para ter o tamanho do YouTube.</figcaption>
+        </figure>
       ) : (
         <div className={`flex ${isLong ? 'aspect-video' : 'aspect-[9/16] max-h-80'} items-center justify-center rounded-md border border-dashed border-line text-xs text-subtle`}>Ainda não gerada</div>
       )}
@@ -95,7 +107,15 @@ export const ThumbCard: React.FC<Props> = ({ n, label, spec, variant, chosen, go
         </ul>
       ) : null}
 
-      {editing ? (
+      {packageMode ? (
+        <>
+          {spec.title ? <p className="m-0 text-[13px] text-fg">{spec.title}</p> : null}
+          <p className="m-0 text-xs text-subtle">
+            “{spec.text || 'sem texto'}” · {THUMB_TEMPLATE_LABELS[spec.template] ?? spec.template}
+          </p>
+          {packageMode.extra}
+        </>
+      ) : editing ? (
         <form
           className="flex flex-col gap-1.5"
           onSubmit={(e) => {
@@ -150,7 +170,13 @@ export const ThumbCard: React.FC<Props> = ({ n, label, spec, variant, chosen, go
             Usar esta
           </Button>
         ) : null}
-        {!editing ? (
+        {packageMode ? (
+          packageMode.onEdit ? (
+            <Button size="sm" variant="ghost" icon={Pencil} onClick={packageMode.onEdit}>
+              Editar no pacote
+            </Button>
+          ) : null
+        ) : !editing ? (
           <Button size="sm" variant="ghost" icon={Pencil} disabled={disabled} onClick={() => setEditing(true)}>
             Editar
           </Button>

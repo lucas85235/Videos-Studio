@@ -13,6 +13,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from studio.core.project.document import ThumbLayers
 from studio.media.thumbnail import make_thumbnail
 
 TEMPLATE_CYCLE = ("texto-grande-esquerda", "texto-centro", "texto-baixo")
@@ -80,17 +81,30 @@ def preview_size(width: int, height: int) -> tuple[int, int]:
 
 
 def render_variant(base: Path | None, out: Path, *, text: str, template: str, is_long: bool, font: str = "Anton",
-                   color: str = "#FFFFFF", accent: str = "#FFD400") -> dict[str, Any]:
-    """Miniatura no tamanho do YouTube + prévia; `errors` (tamanho, 2 MB) e `warnings` (3 palavras no longo)."""
+                   color: str = "#FFFFFF", accent: str = "#FFD400", layers: ThumbLayers | None = None,
+                   assets: Any = None, palette: dict[str, str] | None = None,
+                   logo_asset: str | None = None) -> dict[str, Any]:
+    """Miniatura no tamanho do YouTube + prévia; `errors` (tamanho, 2 MB) e `warnings` (3 palavras no longo).
+
+    Com `layers` (candidato do pacote), quem desenha é o compositor por camadas (`thumb_compose`), com o resolvedor
+    de imagens `assets` e a `palette` do estilo; `base`/`template`/`font` ficam para o caminho legado."""
     width, height = target_size(is_long)
-    tmp = out.with_suffix(".png")
-    make_thumbnail(base, tmp, text=text, template=template, width=width, height=height, font=font, color=color,
-                   accent=accent)
-    try:
-        with Image.open(tmp) as im:
-            img = im.convert("RGB")
-    finally:
-        tmp.unlink(missing_ok=True)
+    compose_warnings: list[str] = []
+    if layers is not None:
+        from studio.media import thumb_compose
+
+        img = thumb_compose.render(layers, (width, height), assets, palette, logo_asset=logo_asset)
+        compose_warnings = [str(w) for w in (img.info.get("layout") or {}).get("warnings") or []]
+        text = layers.text.words if layers.text else ""
+    else:
+        tmp = out.with_suffix(".png")
+        make_thumbnail(base, tmp, text=text, template=template, width=width, height=height, font=font, color=color,
+                       accent=accent)
+        try:
+            with Image.open(tmp) as im:
+                img = im.convert("RGB")
+        finally:
+            tmp.unlink(missing_ok=True)
     size_bytes, quality = encode_jpg(img, out)
     with Image.open(out) as done:
         w, h = done.size
@@ -100,7 +114,7 @@ def render_variant(base: Path | None, out: Path, *, text: str, template: str, is
     errors = [e for e in (f"{w}x{h}, esperava {width}x{height}" if (w, h) != (width, height) else "",
                           f"{mb:.2f} MB passa de 2 MB (limite pelo celular)" if size_bytes > MAX_BYTES else "") if e]
     return {"path": out, "preview": preview, "size": f"{w}x{h}", "mb": round(mb, 2), "quality": quality,
-            "errors": errors, "warnings": text_warnings(text, is_long)}
+            "errors": errors, "warnings": text_warnings(text, is_long) + compose_warnings}
 
 
 def sheet_big(previews: Sequence[Path], out: Path) -> Path:
@@ -133,9 +147,17 @@ def _badge(im: Image.Image, duration: str) -> None:
     di.text((bx0 + fs * 0.3, by0 + fs * 0.12), duration, font=font, fill=(255, 255, 255))
 
 
-def sheet_small(previews: Sequence[Path], labels: Sequence[str], duration: str, out: Path) -> Path:
+def sheet_small(previews: Sequence[Path], labels: Sequence[str], duration: str, out: Path, *,
+                references: Sequence[tuple[Path, str]] = ()) -> Path:
     """Folha "do tamanho do YouTube": larguras 168, 246 e 360 px (alturas 94, 138, 202), 40 px entre elas, fundo
-    (15, 15, 15), 230 px por linha, selo da duração e o rótulo "n. rótulo" em cinza."""
+    (15, 15, 15), 230 px por linha, selo da duração e o rótulo "n. rótulo" em cinza.
+
+    `references`: thumbs de concorrentes (arquivo, rótulo) em linhas depois das nossas, para comparar no mesmo
+    tamanho (arquivo que não abre é pulado)."""
+    refs = [(p, lab) for p, lab in references if Path(p).is_file()]
+    if refs:
+        previews = [*previews, *(p for p, _ in refs)]
+        labels = [*list(labels)[: len(previews) - len(refs)], *(f"ref: {lab}" for _, lab in refs)]
     W = sum(s[0] for s in SMALL_SIZES) + SMALL_GAP * (len(SMALL_SIZES) + 1)
     small = Image.new("RGB", (W, SMALL_GAP + len(previews) * SMALL_ROW), SMALL_BG)
     dr = ImageDraw.Draw(small)

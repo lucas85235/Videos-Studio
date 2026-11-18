@@ -438,7 +438,6 @@ export const OutputTab: React.FC<
                     <BuildSummary build={final} className="min-w-0 flex-1" />
                   ) : null}
                 </div>
-                <ThumbVariants detail={detail} lang={lang} />
               </>
             ) : renderJob || entry?.dub_of ? null : (
               <Empty
@@ -464,6 +463,14 @@ export const OutputTab: React.FC<
                 </div>
               </Empty>
             )}
+            {/* As miniaturas do A/B aparecem também antes do render: com pacote, saem dos candidatos aprovados. */}
+            {entry?.dub_of ? null : (
+              <ThumbVariants
+                detail={detail}
+                lang={lang}
+                onEditPackage={goTo ? () => goTo("package") : undefined}
+              />
+            )}
           </Section>
         </div>
 
@@ -485,6 +492,7 @@ export const OutputTab: React.FC<
             }
             metadataJob={metadataJob}
             emphasis={firstTodo === 1 && !bannerPrimary}
+            onEditPackage={goTo ? () => goTo("package") : undefined}
           />
           <AffiliateLinks detail={detail} lang={lang} />
         </div>

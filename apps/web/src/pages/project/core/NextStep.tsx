@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, FileText, Film, LayoutGrid, MonitorPlay, Play, RotateCw, Settings, TriangleAlert, Upload, Wand2, X } from 'lucide-react';
+import { Check, FileText, Film, Images, LayoutGrid, MonitorPlay, Play, RotateCw, Settings, TriangleAlert, Upload, Wand2, X } from 'lucide-react';
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { api, type Job, type ProjectDetail } from '../../../api';
@@ -66,6 +66,8 @@ const JobProgress: React.FC<{ job: Job }> = ({ job }) => {
  */
 export const tabOwnsAction = (action: NextAction, tab: ProjectTab): boolean => {
   switch (tab) {
+    case 'package':
+      return action.kind === 'generate_package' || action.kind === 'approve_package';
     case 'script':
       return action.kind === 'generate_script' || action.kind === 'approve_script';
     case 'scenes':
@@ -226,6 +228,21 @@ export const NextStepBanner: React.FC<{
   let note: React.ReactNode = null;
   let usesMedia = false;
   switch (action.kind) {
+    case 'generate_package':
+      primary = (
+        <Button variant={main} icon={Wand2} busy={startBusy} onClick={() => startJob('package')}>
+          Gerar título e thumb
+        </Button>
+      );
+      break;
+    case 'approve_package':
+      // Escolher título e thumb exige ver os candidatos: a faixa só leva até a etapa.
+      primary = (
+        <Button variant={main} icon={Images} onClick={() => goTo('package')}>
+          Escolher título e thumb
+        </Button>
+      );
+      break;
     case 'generate_script':
       primary = (
         <Button variant={main} icon={Wand2} busy={startBusy} onClick={() => startJob('script')}>

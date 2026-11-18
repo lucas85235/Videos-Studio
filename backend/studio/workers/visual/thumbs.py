@@ -12,15 +12,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+from pathlib import Path
 from statistics import median
 from typing import Any
 
 from studio.config import get_settings
 from studio.core.project import service
-from studio.core.project.document import ProjectDoc
+from studio.core.project.document import (
+    PackageCandidate,
+    ProjectDoc,
+    ThumbLayers,
+    effective_allow_editorial,
+)
 from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.media import thumb_variants as tv
@@ -35,11 +42,13 @@ CTR_MIN_IMPRESSIONS = 500  # abaixo disso o CTR é ruído: nem troca nem mantém
 CTR_SWAP = 4.0  # CTR (%) abaixo do qual a troca em 48 h vale
 CTR_HOURS = 48
 LABELS = ("Recomendada", "Outra cena", "Outro modelo")
+PACKAGE_LABELS = ("Escolhida no pacote", "Aprovada (A/B)", "Aprovada (A/B)")
 CARD_KINDS = ("stat", "compare", "title")
 RULE_AB = ("Teste A/B: use o 'Testar e comparar' do YouTube Studio com as 3 (a API não faz o teste).")
 STALE_WARNING = ("As miniaturas são de antes da última mudança na capa ou nas imagens: gere de novo. "
                  "Até lá vai a capa do vídeo final.")
 _LOCK = threading.Lock()
+log = logging.getLogger(__name__)
 
 
 class ThumbsError(ValueError):
@@ -218,33 +227,206 @@ def scene_images(row: dict[str, Any], doc: ProjectDoc, lang: str) -> dict[str, s
     return out
 
 
-def _editorial(doc: ProjectDoc, scene_id: str) -> bool:
+def _editorial(doc: ProjectDoc, scene_id: str, allow: bool = False) -> bool:
+    """A cena mostra material de terceiros que a capa deve evitar (com `allow`, o canal liberou: nunca evita)."""
+    if allow:
+        return False
     media = doc.shown_media(doc.scene(scene_id))
     return bool(media is not None and media.editorial)
 
 
-def default_specs(doc: ProjectDoc, template: str, lang: str, images: dict[str, str], count: int = 3
-                  ) -> list[dict[str, Any]]:
-    """As 3 de partida (1ª do projeto, 2ª outra cena, 3ª outro modelo)."""
+# --------------------------------------------------------------------------------------------
+# Pacote (título e thumb primeiro): as miniaturas saem dos candidatos, pelo compositor por camadas
+# --------------------------------------------------------------------------------------------
+
+
+def channel_bible(channel_id: str | None) -> dict[str, Any]:
+    if not channel_id:
+        return {}
+    with session_scope() as s:
+        row = s.get(Channel, channel_id)
+        return dict(row.style_bible or {}) if row is not None else {}
+
+
+def allow_editorial(doc: ProjectDoc, style: Any, bible: dict[str, Any] | None = None) -> bool:
+    """Material oficial liberado na thumb deste projeto: o canal (`style_bible["thumbs"]`) vale mais que o estilo."""
+    style_allow = bool(getattr(getattr(style, "thumbnail", None), "allow_editorial", False))
+    return effective_allow_editorial(style_allow, channel_bible(doc.channel_id) if bible is None else bible)
+
+
+def _media_finder(doc: ProjectDoc, images: dict[str, str] | None, allow: bool) -> Callable[[str], Path | None]:
+    """`media:<ref>` das camadas para um arquivo. `ref` pode ser o id de uma cena (a mídia real que ela mostra, a
+    imagem fixada ou a do último build: o "frame do próprio vídeo"), o nome do arquivo de uma mídia do projeto (com ou
+    sem extensão) ou um caminho relativo à pasta de dados. Mídia editorial só com `allow`."""
+    data_dir = get_settings().data_dir
+
+    def usable(rel: str | None, editorial: bool = False) -> Path | None:
+        if not rel or (editorial and not allow):
+            return None
+        path = data_dir / rel
+        return path if path.is_file() else None
+
+    def find(ref: str) -> Path | None:
+        ref = (ref or "").strip()
+        scene = next((s for s in doc.scenes if s.id == ref), None)
+        if scene is not None:
+            media = doc.shown_media(scene)
+            editorial = bool(media is not None and media.editorial)
+            for rel, ed in ((media.asset if media else None, editorial), (scene.visual.asset, False),
+                            ((images or {}).get(scene.id), editorial)):
+                found = usable(rel, ed)
+                if found is not None:
+                    return found
+            return None
+        for s in doc.scenes:
+            m = s.visual.media
+            if m is not None and m.asset and ref in (m.asset, Path(m.asset).name, Path(m.asset).stem):
+                return usable(m.asset, m.editorial)
+        if "/" in ref and ".." not in ref:
+            return usable(ref)
+        return None
+
+    return find
+
+
+def resolver_for(doc: ProjectDoc, style: Any, *, bible: dict[str, Any] | None = None,
+                 images: dict[str, str] | None = None) -> Any:
+    """O resolvedor de imagens das camadas deste projeto: biblioteca do canal (`library/thumbkit/<canal>`), poses do
+    avatar efetivo na thumb, mídia do projeto (`media:`) e a liberação do material oficial do canal. None sem o
+    compositor (fase 2)."""
+    try:
+        from studio.core.project import presenter as presenter_core
+        from studio.media.thumb_assets import AssetResolver
+    except ImportError:  # pragma: no cover - compositor ausente
+        return None
+    bible = channel_bible(doc.channel_id) if bible is None else bible
+    allow = allow_editorial(doc, style, bible)
+    if images is None and doc.scenes:
+        # "Frame do próprio vídeo" (`media:<cena>`): a imagem da cena no último build (prévia ou final).
+        try:
+            images = scene_images(service.get_project_row(doc.id), doc, doc.primary_language)
+        except Exception:  # noqa: BLE001 - projeto fora do banco (testes, conta): só mídia e imagem fixada
+            images = {}
+    presenter = presenter_core.effective(bible, doc, style, purpose="thumb") if doc.channel_id else None
+    media = _media_finder(doc, images, allow)
+    if doc.channel_id:
+        return AssetResolver.for_channel(doc.channel_id, presenter=presenter, allow_editorial=allow, media=media)
+    return AssetResolver(None, media=media, allow_editorial=allow)
+
+
+def _file_stamp(path: Path | None) -> list[Any]:
+    try:
+        st = Path(path).stat() if path else None
+    except OSError:
+        st = None
+    return [str(path) if path else None, st.st_size if st else 0, st.st_mtime_ns if st else 0]
+
+
+def assets_stamp(layers: ThumbLayers, resolver: Any) -> list[Any]:
+    """Impressão (caminho, tamanho, data) dos arquivos que as camadas usam pelo resolvedor, mais o manifesto da
+    biblioteca (logos, foco, rosto) e as poses do avatar: entra na chave do cache da capa."""
+    if resolver is None:
+        return []
+    refs: list[str] = []
+    bg = layers.background
+    if bg.kind in ("frame", "media", "upload") and bg.ref:
+        refs.append(bg.ref)
+    refs += [c.asset for c in layers.characters] + [c.asset for c in layers.cards if c.asset]
+    if layers.presenter is not None:
+        refs.append(f"pose:{layers.presenter.pose}")
+    out: list[Any] = []
+    for ref in dict.fromkeys(refs):
+        try:
+            out.append([ref, *_file_stamp(resolver.resolve(ref).path)])
+        except Exception:  # noqa: BLE001 - o que não resolve entra só pelo nome (a capa sai com o fallback)
+            out.append([ref, None])
+    kit = getattr(resolver, "kit_dir", None)
+    out.append(["manifest", *_file_stamp(Path(kit) / "thumbkit.json" if kit else None)])
+    used = getattr(resolver, "used", None)
+    if isinstance(used, list):
+        used.clear()  # a impressão não conta como uso
+    return out
+
+
+def candidate_layers(doc: ProjectDoc, candidate: PackageCandidate, lang: str | None = None) -> ThumbLayers:
+    """As camadas do candidato no idioma: no principal, as do pacote; nos outros, o mesmo desenho com o texto da
+    thumb traduzido (`doc.thumbnail.text[lang]`, gravado pela tradução do escolhido)."""
+    layers = candidate.layers.model_copy(deep=True)
+    lang = lang or doc.primary_language
+    if lang != doc.primary_language and layers.text is not None and doc.package.chosen_id == candidate.id:
+        translated = (doc.thumbnail.text.get(lang) or "").strip()
+        if translated:
+            layers.text.words = translated
+    return layers
+
+
+def package_specs(doc: ProjectDoc, lang: str, count: int = 3) -> list[dict[str, Any]]:
+    """As miniaturas do A/B quando há pacote escolhido: o escolhido e os aprovados, até `count`."""
+    out = []
+    for i, cand in enumerate(doc.package.approved()[: max(1, min(3, count))]):
+        layers = candidate_layers(doc, cand, lang)
+        out.append({"candidate_id": cand.id, "scene_id": None, "text": layers.text.words if layers.text else "",
+                    "template": layers.template, "title": cand.title,
+                    "label": PACKAGE_LABELS[min(i, len(PACKAGE_LABELS) - 1)]})
+    return out
+
+
+def package_stamp(doc: ProjectDoc, lang: str, count: int = 3) -> str | None:
+    """Impressão do pacote que as miniaturas usam (camadas + título + texto de cada uma); None sem pacote."""
+    if doc.locked_package() is None:
+        return None
+    parts = [[c.id, candidate_layers(doc, c, lang).model_dump(mode="json"), c.title]
+             for c in doc.package.approved()[: max(1, min(3, count))]]
+    return hashlib.sha1(json.dumps(parts, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
+def _image_digest(rel: str | None) -> str | None:
+    """Impressão do conteúdo da imagem: duas cenas com o mesmo arquivo (ou cópias iguais) dão a mesma."""
+    if not rel:
+        return None
+    try:
+        return hashlib.sha1((get_settings().data_dir / rel).read_bytes()).hexdigest()
+    except OSError:
+        return rel
+
+
+def default_specs(doc: ProjectDoc, template: str, lang: str, images: dict[str, str], count: int = 3,
+                  allow: bool = False) -> list[dict[str, Any]]:
+    """As 3 de partida. Com pacote escolhido: o escolhido e os aprovados (`package_specs`). Sem pacote (legado): 1ª
+    do projeto, 2ª outra cena, 3ª outro modelo. A 2ª nunca repete a imagem da 1ª (o cartão com `reuse_of` mostra a
+    imagem da cena original: vale a imagem de verdade, não o id; sem outra imagem, a 2ª sai) e o material oficial só
+    fica de fora sem `allow`."""
+    if doc.locked_package() is not None:
+        return package_specs(doc, lang, count)
     ordered = [s for s in doc.ordered_scenes() if s.id in images]
     first = doc.thumbnail.scene_id if doc.thumbnail.scene_id in {s.id for s in doc.scenes} else None
     if first is None:  # como o build: a primeira com imagem que não é material de terceiros
-        first = next((s.id for s in ordered if not _editorial(doc, s.id)), ordered[0].id if ordered else None)
+        first = next((s.id for s in ordered if not _editorial(doc, s.id, allow)), ordered[0].id if ordered else None)
     text = doc.thumbnail.text.get(lang) or doc.thumbnail.text.get(doc.primary_language) or ""
     roles = {seg.id: seg.role for seg in doc.segments}
-    others = [s for s in ordered if s.id != first and not _editorial(doc, s.id)]
-    second = next((s.id for s in others if s.kind in CARD_KINDS or roles.get(s.segment_id) == "hook"),
-                  others[0].id if others else next((s.id for s in ordered if s.id != first), first))
-    specs = [
-        {"scene_id": first, "text": text, "template": template},
-        {"scene_id": second, "text": text, "template": template},
-        {"scene_id": first, "text": text, "template": tv.next_template(template)},
-    ]
+    first_digest = _image_digest(images.get(first)) if first else None
+
+    def fresh(scene_id: str) -> bool:
+        root = doc.reuse_root(doc.scene(scene_id))
+        if root is not None and root.id == first:
+            return False
+        return first_digest is None or _image_digest(images.get(scene_id)) != first_digest
+
+    others = [s for s in ordered if s.id != first and fresh(s.id)]
+    clean = [s for s in others if not _editorial(doc, s.id, allow)]
+    pool = clean or others
+    second = next((s.id for s in pool if s.kind in CARD_KINDS or roles.get(s.segment_id) == "hook"),
+                  pool[0].id if pool else None)
+    specs = [{"scene_id": first, "text": text, "template": template}]
+    if second is not None:
+        specs.append({"scene_id": second, "text": text, "template": template})
+    specs.append({"scene_id": first, "text": text, "template": tv.next_template(template)})
     return specs[: max(1, min(3, count))]
 
 
 def _with_labels(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{**spec, "label": LABELS[i] if i < len(LABELS) else f"Opção {i + 1}"} for i, spec in enumerate(specs)]
+    return [{**spec, "label": spec.get("label") or (LABELS[i] if i < len(LABELS) else f"Opção {i + 1}")}
+            for i, spec in enumerate(specs)]
 
 
 def _context(project_id: str, lang: str | None) -> tuple[dict[str, Any], ProjectDoc, Any, str]:
@@ -262,9 +444,14 @@ def get_state(project_id: str, lang: str | None = None) -> dict[str, Any]:
     images = scene_images(row, doc, lang)
     spec_base = saved.get("spec_base") or saved.get("base")
     base_changed = bool(spec_base) and spec_base != _base(doc, style, lang)
-    # A capa do projeto mudou desde a geração: recomeça da especificação de partida (com o texto e a cena novos).
-    spec = (None if base_changed else saved.get("spec")) or default_specs(doc, style.thumbnail.template, lang, images,
-                                                                          count)
+    allow = allow_editorial(doc, style)
+    if doc.locked_package() is not None:
+        # Pacote escolhido: as miniaturas são o escolhido e os aprovados (editados na etapa "Título e thumb").
+        spec = package_specs(doc, lang, count)
+    else:
+        # A capa do projeto mudou desde a geração: recomeça da especificação de partida (com o texto e a cena novos).
+        spec = (None if base_changed else saved.get("spec")) or default_specs(doc, style.thumbnail.template, lang,
+                                                                              images, count, allow)
     chosen = int(saved.get("chosen") or 1)
     ab = ab_rule(row.get("channel_id") or doc.channel_id, chosen)
     return {
@@ -284,13 +471,32 @@ def get_state(project_id: str, lang: str | None = None) -> dict[str, Any]:
         "size": "x".join(map(str, tv.target_size(style.format.type == "long"))),
         "templates": list(tv.TEMPLATES),
         "max": count,
+        "package": _package_view(doc, lang, count),
+        "allow_editorial": allow,
     }
+
+
+def _package_view(doc: ProjectDoc, lang: str, count: int) -> dict[str, Any] | None:
+    """O pacote que as miniaturas seguem (None sem candidato escolhido): para a tela mostrar o escolhido e os
+    aprovados antes do render e mandar editar na etapa "Título e thumb"."""
+    chosen = doc.locked_package()
+    if chosen is None:
+        return None
+    picked = doc.package.approved()[: max(1, min(3, count))]
+    return {"chosen_id": chosen.id, "locked": doc.package.locked,
+            "candidates": [{"id": c.id, "title": c.title, "thumb_text": candidate_layers(doc, c, lang).text.words
+                            if c.layers.text else "", "template": c.layers.template, "image": c.image,
+                            "warnings": list((c.score or {}).get("warnings") or [])} for c in picked]}
 
 
 def _base(doc: ProjectDoc, style: Any, lang: str) -> dict[str, Any]:
     """A capa do projeto (texto, cena e modelo do estilo) de que as miniaturas partiram."""
     text = doc.thumbnail.text.get(lang) or doc.thumbnail.text.get(doc.primary_language) or ""
-    return {"text": text, "scene_id": doc.thumbnail.scene_id, "template": style.thumbnail.template}
+    base: dict[str, Any] = {"text": text, "scene_id": doc.thumbnail.scene_id, "template": style.thumbnail.template}
+    stamp = package_stamp(doc, lang, min(3, style.thumbnail.variations))
+    if stamp is not None:  # só com pacote: o projeto sem pacote mantém a mesma base (não fica "desatualizado")
+        base["package"] = stamp
+    return base
 
 
 def _images_stamp(specs: list[dict[str, Any]], images: dict[str, str]) -> str:
@@ -328,6 +534,9 @@ def _save(project_id: str, lang: str, patch: dict[str, Any]) -> None:
 def set_spec(project_id: str, lang: str | None, variants: list[dict[str, Any]]) -> dict[str, Any]:
     row, doc, style, lang = _context(project_id, lang)
     count = min(3, style.thumbnail.variations)
+    if doc.locked_package() is not None:
+        raise ThumbsError("Este projeto tem pacote: as miniaturas são o candidato escolhido e os aprovados. "
+                          "Edite na etapa \"Título e thumb\".")
     if not 1 <= len(variants) <= count:
         raise ThumbsError(f"Envie de 1 a {count} miniaturas.")
     scene_ids = {s.id for s in doc.scenes}
@@ -371,21 +580,37 @@ def make_variants(project_id: str, lang: str | None = None,
     folder.mkdir(parents=True, exist_ok=True)
     variants: list[dict[str, Any]] = []
     specs = state["spec"]
-    fallback = default_specs(doc, style.thumbnail.template, lang, images, 1)[0].get("scene_id")
+    has_package = doc.locked_package() is not None
+    fallback = None if has_package else default_specs(doc, style.thumbnail.template, lang, images, 1)[0].get("scene_id")
+    resolver = resolver_for(doc, style, images=images) if has_package else None
+    palette = dict(style.thumbnail.palette)
+    for old in folder.glob("miniatura-*.jpg"):  # menos variantes que da última vez: as sobras não ficam
+        if not any(old.name in (f"miniatura-{i}.jpg", f"miniatura-{i}-previa.jpg") for i in range(1, len(specs) + 1)):
+            old.unlink(missing_ok=True)
     for i, spec in enumerate(specs, 1):
         say(0.05 + 0.75 * (i - 1) / len(specs), f"Miniatura {i} de {len(specs)}")
-        base_rel = images.get(spec.get("scene_id") or "")
         note = None
-        if spec.get("scene_id") and not base_rel:
-            # A cena foi apagada ou ficou sem imagem depois da escolha: usa a cena da capa, ou fundo liso.
-            base_rel = images.get(fallback or "")
-            note = ("A cena escolhida não tem mais imagem: usei a cena da capa." if base_rel
-                    else "A cena escolhida não tem mais imagem: saiu com fundo liso.")
-        done = tv.render_variant(data_dir / base_rel if base_rel else None, folder / f"miniatura-{i}.jpg",
-                                 text=spec.get("text") or "", template=spec.get("template") or style.thumbnail.template,
-                                 is_long=is_long, font=style.thumbnail.font, color=style.thumbnail.color,
-                                 accent=style.thumbnail.accent)
+        cand = doc.package.candidate(spec["candidate_id"]) if spec.get("candidate_id") else None
+        if cand is not None:
+            # Pacote: o mesmo desenho da prévia do candidato, no tamanho do YouTube (compositor por camadas).
+            done = tv.render_variant(None, folder / f"miniatura-{i}.jpg", text=spec.get("text") or "",
+                                     template=style.thumbnail.template, is_long=is_long,
+                                     layers=candidate_layers(doc, cand, lang), assets=resolver, palette=palette,
+                                     logo_asset=style.thumbnail.logo_asset)
+        else:
+            base_rel = images.get(spec.get("scene_id") or "")
+            if spec.get("scene_id") and not base_rel:
+                # A cena foi apagada ou ficou sem imagem depois da escolha: usa a cena da capa, ou fundo liso.
+                base_rel = images.get(fallback or "")
+                note = ("A cena escolhida não tem mais imagem: usei a cena da capa." if base_rel
+                        else "A cena escolhida não tem mais imagem: saiu com fundo liso.")
+            done = tv.render_variant(data_dir / base_rel if base_rel else None, folder / f"miniatura-{i}.jpg",
+                                     text=spec.get("text") or "",
+                                     template=spec.get("template") or style.thumbnail.template,
+                                     is_long=is_long, font=style.thumbnail.font, color=style.thumbnail.color,
+                                     accent=style.thumbnail.accent)
         variants.append({"n": i, "label": spec.get("label") or LABELS[min(i - 1, 2)], "scene_id": spec.get("scene_id"),
+                         "candidate_id": spec.get("candidate_id"),
                          "text": spec.get("text") or "", "template": spec.get("template"), "path": _rel(done["path"]),
                          "preview": _rel(done["preview"]), "size": done["size"], "mb": done["mb"],
                          "errors": done["errors"], "warnings": ([note] if note else []) + done["warnings"]})
@@ -400,7 +625,8 @@ def make_variants(project_id: str, lang: str | None = None,
     chosen = state["chosen"] if 1 <= state["chosen"] <= len(variants) else 1
     ab = state["ab"]
     _save(project_id, lang, {"variants": variants, "chosen": chosen,
-                             "spec": [{k: s.get(k) for k in ("scene_id", "text", "template")} for s in specs],
+                             "spec": [] if has_package else [{k: s.get(k) for k in ("scene_id", "text", "template")}
+                                                             for s in specs],
                              "sheet_big": _rel(big), "sheet_small": _rel(small),
                              "made_at": datetime.now(UTC).isoformat(), "ab": ab, "base": _base(doc, style, lang),
                              "spec_base": _base(doc, style, lang), "images": _images_stamp(variants, images)})

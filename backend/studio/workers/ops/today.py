@@ -26,6 +26,7 @@ OFFER_CHECK_DAYS = 3  # oferta conferida há mais de 3 dias pede nova conferênc
 
 # status do projeto que esperam uma decisão sua: (texto, aba do projeto)
 REVIEWS = {
+    "package_review": ("Escolher título e thumb de", "titulo-thumb"),
     "script_review": ("Revisar o roteiro de", "roteiro"),
     "storyboard_review": ("Conferir as cenas de", "cenas"),
     "preview_ready": ("Assistir à prévia de", "previa"),

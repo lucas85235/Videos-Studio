@@ -5,8 +5,9 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from studio.core.project.document import ProjectDoc
+from studio.core.project.document import PackageCandidate, PackageDoc, ProjectDoc
 from studio.core.styles.library import get_style
+from studio.core.styles.schema import package_gate_default
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.models import Project, ProjectBranch, ProjectVersion
@@ -26,7 +27,11 @@ def create_project(
     languages: list[str] | None = None,
     settings: dict[str, Any] | None = None,
     voice: dict[str, str] | None = None,
+    seed_candidate: bool = False,
 ) -> ProjectDoc:
+    """Cria o projeto (versão 1). Projeto longo novo nasce com o portão do pacote (título e thumb antes do roteiro)
+    quando o estilo pede; Short não. `settings["gates"]` do chamador substitui os portões inteiros (sem a chave
+    "package", o pacote não trava). `seed_candidate`: o título vira o 1º candidato manual do pacote (ideia)."""
     style = get_style(style_id)
     overrides: dict[str, Any] = {}
     if voice:
@@ -49,8 +54,13 @@ def create_project(
         seed=secrets.randbelow(2**31),
         style_overrides=overrides,
     )
+    if seed_candidate and title.strip():
+        doc.package = PackageDoc(candidates=[PackageCandidate(title=title[:90], source="manual")])
     # Projeto novo para nas cenas antes de gastar imagens; projeto antigo, sem a chave "storyboard", segue direto.
-    default_settings = {"gates": {"script": True, "storyboard": True, "preview": True, "publish": True}}
+    # O pacote só trava no longo (formato efetivo, depois dos overrides) e quando o estilo pede.
+    package_gate = package_gate_default(get_style(style_id, overrides) if overrides else style)
+    default_settings = {"gates": {"package": package_gate, "script": True, "storyboard": True, "preview": True,
+                                  "publish": True}}
     with session_scope() as s:
         s.add(
             Project(

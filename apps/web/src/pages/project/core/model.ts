@@ -33,7 +33,7 @@ export const RETRYABLE_KINDS = new Set(['script', 'storyboard', 'translate', 'me
  * Jobs que leem o documento no início e gravam o documento inteiro no fim: uma edição salva no meio
  * seria desfeita quando eles terminam.
  */
-export const DOC_WRITING_KINDS = new Set(['script', 'storyboard', 'translate', 'metadata', 'autopilot']);
+export const DOC_WRITING_KINDS = new Set(['script', 'storyboard', 'translate', 'metadata', 'autopilot', 'package']);
 
 /** Há um job em andamento que vai regravar o documento do projeto? */
 export const docJobRunning = (detail: ProjectDetail) => detail.jobs.some((j) => isActive(j) && DOC_WRITING_KINDS.has(j.kind));
@@ -45,7 +45,14 @@ export const DOC_BUSY_REASON = 'Aguarde o trabalho em andamento: ele vai gravar 
 export const STYLE_MISSING_REASON = 'O estilo deste projeto foi removido. Escolha outro estilo para editar.';
 
 /** Nomes dos jobs para a tela (sem "Storyboard"/"Render"). */
-export const JOB_TEXT: Record<string, string> = { ...JOB_LABELS, storyboard: 'Criação das cenas', render: 'Vídeo final', metadata: 'Título e descrição' };
+export const JOB_TEXT: Record<string, string> = {
+  ...JOB_LABELS,
+  storyboard: 'Criação das cenas',
+  render: 'Vídeo final',
+  metadata: 'Título e descrição',
+  package: 'Títulos e thumbs',
+  package_thumbs: 'Prévias das thumbs',
+};
 
 /** Título da falha de um job, com artigo ("A prévia falhou"). */
 const FAILURE_TITLES: Record<string, string> = {
@@ -56,6 +63,8 @@ const FAILURE_TITLES: Record<string, string> = {
   preview: 'A prévia falhou',
   render: 'O vídeo final falhou',
   autopilot: 'O piloto automático falhou',
+  package: 'Os títulos e as thumbs falharam',
+  package_thumbs: 'As prévias das thumbs falharam',
   publish_youtube: 'O envio ao YouTube falhou',
 };
 
@@ -69,7 +78,8 @@ export const errorFirstLine = (job: Job) => (job.error || job.message || '').spl
 
 /** Custo de um job, dito perto do botão que o dispara. */
 export const jobCost = (kind: string): string | null => {
-  if (['script', 'storyboard', 'translate', 'metadata'].includes(kind)) return 'Usa o Claude.';
+  if (['script', 'storyboard', 'translate', 'metadata', 'package'].includes(kind)) return 'Usa o Claude.';
+  if (kind === 'package_thumbs') return 'Grátis: monta as thumbs no computador (sem cota de imagens).';
   if (kind === 'preview') return 'Usa a cota de imagens (a narração da prévia sai da voz local, grátis).';
   if (kind === 'render') return 'Grava a narração com a voz do vídeo final: usa a cota ou os créditos dela.';
   if (kind === 'autopilot') return 'Usa o Claude, a cota de imagens e a da voz do vídeo final.';
@@ -125,9 +135,11 @@ export const freshness = (detail: ProjectDetail): Freshness => {
 /* Etapas e próximo passo                                              */
 /* ------------------------------------------------------------------ */
 
-export type StepId = 'script' | 'scenes' | 'preview' | 'video' | 'publish';
+export type StepId = 'package' | 'script' | 'scenes' | 'preview' | 'video' | 'publish';
 
+/** Ordem das chaves = ordem das etapas (a lista de projetos lê `Object.keys`). */
 export const STEP_LABELS: Record<StepId, string> = {
+  package: 'Título e thumb',
   script: 'Roteiro',
   scenes: 'Cenas',
   preview: 'Prévia',
@@ -135,9 +147,10 @@ export const STEP_LABELS: Record<StepId, string> = {
   publish: 'Publicação',
 };
 
-const STEP_ORDER: StepId[] = ['script', 'scenes', 'preview', 'video', 'publish'];
+const STEP_ORDER: StepId[] = ['package', 'script', 'scenes', 'preview', 'video', 'publish'];
 
 export const STEP_TAB: Record<StepId, ProjectTab> = {
+  package: 'package',
   script: 'script',
   scenes: 'scenes',
   preview: 'preview',
@@ -147,6 +160,8 @@ export const STEP_TAB: Record<StepId, ProjectTab> = {
 
 /** Em que etapa cada tipo de job trabalha (para marcar a etapa com erro). */
 const JOB_STEP: Record<string, StepId> = {
+  package: 'package',
+  package_thumbs: 'package',
   script: 'script',
   storyboard: 'scenes',
   translate: 'scenes',
@@ -158,6 +173,8 @@ const JOB_STEP: Record<string, StepId> = {
 
 export type NextAction =
   | { kind: 'job' }
+  | { kind: 'generate_package' }
+  | { kind: 'approve_package' }
   | { kind: 'generate_script' }
   | { kind: 'approve_script' }
   | { kind: 'continue' }
@@ -179,13 +196,20 @@ export type NextStep = {
 };
 
 /**
- * Paradas do piloto automático. Projeto sem a chave: roteiro e prévia valem true; as cenas valem false
- * (a parada das cenas é nova e só vem ligada nos projetos criados depois dela).
+ * Paradas do piloto automático. Projeto sem a chave: roteiro e prévia valem true; as cenas e o pacote valem false
+ * (essas paradas são novas e só vêm ligadas nos projetos criados depois delas; o pacote nunca no Short nem em série).
  */
 export const gatesOf = (detail: ProjectDetail) => {
   const g = detail.project.settings.gates ?? {};
-  return { script: g.script ?? true, storyboard: g.storyboard ?? false, preview: g.preview ?? true };
+  return { package: g.package ?? false, script: g.script ?? true, storyboard: g.storyboard ?? false, preview: g.preview ?? true };
 };
+
+/**
+ * O projeto espera a escolha do título e da thumb antes do roteiro: a parada do pacote está ligada, não há roteiro e
+ * o pacote não foi aprovado. Projeto antigo (sem a chave) nunca espera.
+ */
+export const awaitingPackage = (detail: ProjectDetail) =>
+  gatesOf(detail).package && !detail.doc.segments.length && !detail.doc.package?.locked;
 
 /**
  * As cenas esperam a conferência do usuário antes das imagens: há cenas, a parada está ligada e elas não foram
@@ -235,7 +259,10 @@ export const nextStep = (
   // Cenas esperando conferência: as etapas seguintes voltam a ficar por fazer (a prévia e o vídeo vão mudar).
   const scenesOk = hasScenes && !sceneCheck;
 
+  const packageWait = awaitingPackage(detail);
   const done: Record<StepId, boolean> = {
+    // Sem a parada (projeto antigo, Short, série): a etapa é opcional e não segura a trilha.
+    package: !packageWait,
     script: hasScript && (doc.script_approved || hasScenes || !gates.script),
     scenes: scenesOk,
     preview: scenesOk && preview && (previewApprovedFresh || finalFresh),
@@ -276,6 +303,24 @@ export const nextStep = (
   const base = { current, steps };
   if (detail.jobs.some(isBlocking)) {
     return { ...base, action: { kind: 'job' }, title: 'Trabalhando no seu vídeo', description: 'Você pode sair desta página: o progresso continua.' };
+  }
+  if (packageWait) {
+    const candidates = doc.package?.candidates.length ?? 0;
+    return candidates
+      ? {
+          ...base,
+          action: { kind: 'approve_package' },
+          title: 'Escolha o título e a thumb',
+          description: 'Compare os candidatos no feed, escolha o que vai na capa e marque os que entram no A/B. Ao aprovar, o roteiro é escrito para cumprir essa promessa.',
+          cost: 'O roteiro usa o Claude.',
+        }
+      : {
+          ...base,
+          action: { kind: 'generate_package' },
+          title: 'Comece pelo título e pela thumb',
+          description: 'O Claude propõe títulos e thumbs a partir do tema e dos vídeos que mais performam na pesquisa do canal. O roteiro vem depois, para cumprir a promessa escolhida.',
+          cost: 'Usa o Claude (as thumbs são montadas no computador, sem cota de imagens).',
+        };
   }
   if (!hasScript) {
     return {
@@ -362,6 +407,7 @@ export const nextStep = (
 /** Aba que abre quando a URL não diz qual (ex.: projeto com prévia pronta abre na prévia). */
 export const defaultTab = (detail: ProjectDetail): ProjectTab => {
   const { doc, outputs } = detail;
+  if (awaitingPackage(detail)) return 'package';
   if (!doc.segments.length || (!doc.script_approved && !doc.scenes.length)) return 'script';
   if (!doc.scenes.length || awaitingScenes(detail)) return 'scenes';
   if (freshness(detail).finalFresh) return 'output';

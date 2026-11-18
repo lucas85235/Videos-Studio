@@ -29,7 +29,7 @@ from studio.core.graph.store import ArtifactStore
 from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import characters as characters_mod
 from studio.core.project import service
-from studio.core.project.document import ArtDirection, Character, ProjectDoc, Scene, Visual
+from studio.core.project.document import ArtDirection, Character, Presenter, ProjectDoc, Scene, Visual
 from studio.core.project.media_edit import scene_label
 from studio.core.speech import (
     SPEECH_VERSION,
@@ -1349,7 +1349,52 @@ class Builder:
         free = next((s.id for s in with_image if not ((m := doc.shown_media(s)) is not None and m.editorial)), None)
         return free or (with_image[0].id if with_image else None)
 
+    def package_thumbnail(self, lang: str, images: dict[str, str | None]) -> str | None:
+        """Capa pelo candidato escolhido no pacote: o mesmo desenho da prévia (compositor por camadas), no tamanho que
+        a capa já usa (1280 x 720 no longo, 1080 x 1920 no Short), com o texto da thumb no idioma. None sem pacote
+        escolhido ou se o compositor falhar (vale a capa antiga, pela cena)."""
+        doc, style = self.doc, self.style
+        chosen = doc.locked_package()
+        if chosen is None:
+            return None
+        from studio.workers.visual import thumbs as visual_thumbs
+
+        width, height = (1280, 720) if style.format.type == "long" else (1080, 1920)
+        try:
+            from studio.media import thumb_compose
+
+            layers = visual_thumbs.candidate_layers(doc, chosen, lang)
+            bible = visual_thumbs.channel_bible(doc.channel_id)
+            allow = visual_thumbs.allow_editorial(doc, style, bible)
+            resolver = visual_thumbs.resolver_for(doc, style, bible=bible,
+                                                  images={k: v for k, v in images.items() if v})
+            # A chave inclui o conteúdo do que as camadas usam (imagem da cena em `media:`, quadros, poses, o
+            # manifesto da biblioteca) e a versão do compositor: trocar qualquer um refaz a capa.
+            inputs = {"layers": layers.model_dump(mode="json"), "title": doc.effective_title(), "size": [width, height],
+                      "palette": dict(style.thumbnail.palette), "logo": style.thumbnail.logo_asset, "allow": allow,
+                      "candidate": chosen.id, "v": thumb_compose.VERSION,
+                      "files": visual_thumbs.assets_stamp(layers, resolver)}
+            h = hash_obj(inputs)
+            cached = self.store.lookup("thumbnail", h)
+            if cached:
+                return cached["path"]
+            img = thumb_compose.render(layers, (width, height), resolver, inputs["palette"],
+                                       logo_asset=style.thumbnail.logo_asset)
+        except Exception as exc:  # noqa: BLE001 - a capa antiga (pela cena) segura o render
+            log.warning("a capa pelo pacote falhou; vale a capa pela cena: %s", exc)
+            self.warnings.append(f"A capa pelo candidato escolhido falhou ({exc}): saiu a capa pela cena.")
+            return None
+        out = self.store.dir_for("thumbnail", h) / "thumbnail.jpg"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.convert("RGB").save(out, "JPEG", quality=92)
+        rel = self.store.rel(out)
+        self.store.save("thumbnail", h, {"path": rel, "files": [rel]}, "pillow")
+        return rel
+
     def thumbnail(self, lang: str, images: dict[str, str | None]) -> str | None:
+        packaged = self.package_thumbnail(lang, images)
+        if packaged:
+            return packaged
         doc, style = self.doc, self.style
         base_scene = doc.thumbnail.scene_id or self.default_thumbnail_scene(images)
         base = images.get(base_scene) if base_scene else None
@@ -1483,7 +1528,7 @@ class Builder:
                 narration[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=out["duration"], words=words)
                 hashes[seg.id] = h
                 self._tick("Alinhamento das palavras")
-            timeline = build_timeline(doc, self.style, lang, narration, timeline_images, layers, videos)
+            timeline = self.timeline(lang, narration, timeline_images, layers, videos)
             self._lut_news_photos(timeline)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
@@ -1506,6 +1551,45 @@ class Builder:
             "music": self.music_used,
             "artifacts": sorted(f"{kind}:{h}" for kind, h in self.store.touched),
         }
+
+    @cached_property
+    def video_presenter(self) -> Presenter | None:
+        """O avatar do apresentador que vale nas cenas deste projeto (canal + projeto + estilo; None desligado)."""
+        if not self.doc.channel_id:
+            return None
+        try:
+            from studio.core.project import presenter as presenter_core
+
+            return presenter_core.project_presenter(self.doc, self.style, purpose="video")
+        except Exception as exc:  # noqa: BLE001 - sem avatar o vídeo sai como antes
+            log.warning("avatar do apresentador indisponível no build: %s", exc)
+            return None
+
+    def timeline(self, lang: str, narration: dict[str, NarrationClip], images: dict[str, str | None],
+                 layers: dict[str, list[str]] | None, videos: dict[str, dict[str, Any]] | None) -> dict[str, Any]:
+        """A timeline do idioma. Com o avatar ligado, distribui o avatar pelas cenas com os tempos reais da narração
+        (`workers.pipeline.presenter.assign`, numa cópia do documento: o manual vence, o automático é refeito) e
+        monta a timeline com a camada do avatar. Sem avatar, é a timeline de sempre (mesmos hashes de bloco)."""
+        presenter = self.video_presenter
+        if presenter is None:
+            return build_timeline(self.doc, self.style, lang, narration, images, layers, videos)
+        from studio.workers.pipeline import presenter as presenter_scenes
+
+        draft = build_timeline(self.doc, self.style, lang, narration, images, layers, videos)
+        fps = float(draft["fps"])
+        words: dict[str, list[Word]] = {}
+        times: dict[str, tuple[float, float]] = {}
+        for scene in draft["scenes"]:
+            f0 = int(scene["from"])
+            times[scene["id"]] = (f0 / fps, (f0 + int(scene["durationInFrames"])) / fps)
+            words[scene["id"]] = [Word(w["text"], (f0 + w["from"]) / fps, (f0 + w["to"]) / fps)
+                                  for w in scene.get("words") or []]
+        doc = self.doc.model_copy(deep=True)
+        vertical = self.style.format.height > self.style.format.width
+        issues = presenter_scenes.assign(doc, presenter, words, scene_times=times, vertical=vertical)
+        if issues:
+            log.info("avatar: %s", "; ".join(i.message for i in issues))
+        return build_timeline(doc, self.style, lang, narration, images, layers, videos, presenter=presenter)
 
     def _write_outputs(self, lang: str, timeline: dict[str, Any], mix_rel: str, srt: str) -> dict[str, Any]:
         """Grava a timeline e as legendas do idioma na pasta de saída e devolve a entrada do resultado.
@@ -1608,7 +1692,7 @@ class Builder:
             clips[seg.id] = NarrationClip(segment_id=seg.id, path=out["path"], duration=fits[seg.id].slot, words=words)
             hashes[seg.id] = h
             self._tick("Alinhamento das palavras")
-        timeline = build_timeline(doc, self.style, primary, clips, images, layers, videos)
+        timeline = self.timeline(primary, clips, images, layers, videos)
         self._lut_news_photos(timeline)
         self.warnings += timeline.pop("warnings", [])
         starts = {n["segment_id"]: n["start"] for n in timeline["narration"]}

@@ -14,6 +14,9 @@ export const autopilotBlock = (detail: ProjectDetail, gates: Gates, busy: boolea
   if (busy) return 'Aguarde o trabalho em andamento terminar.';
   const { action } = nextStep(detail);
   if (action.kind === 'publish' || action.kind === 'done') return 'O vídeo já está pronto. Para refazer, use o menu Mais ações (…), ao lado.';
+  // Parada do pacote (projeto longo novo): o piloto não escolhe título e thumb por você.
+  if (action.kind === 'approve_package')
+    return 'Escolha o título e a thumb primeiro (aba Título e thumb): o piloto automático não pula essa escolha.';
   const { doc } = detail;
   const scriptPending = doc.segments.length > 0 && !doc.script_approved && !doc.scenes.length && gates.script;
   if (scriptPending) return 'Aprove o roteiro primeiro: o piloto automático não pula a sua revisão.';
@@ -30,6 +33,8 @@ const autopilotLabel = (detail: ProjectDetail, gates: Required<Gates>) => {
   const { action } = nextStep(detail);
   const afterScript = gates.storyboard ? 'Continuar até as cenas' : gates.preview ? 'Continuar até a prévia' : 'Continuar até o vídeo final';
   switch (action.kind) {
+    case 'generate_package':
+      return 'Gerar título e thumb e parar para escolher';
     case 'generate_script':
       return gates.script ? 'Gerar o roteiro e parar para revisão' : afterScript;
     case 'approve_script':

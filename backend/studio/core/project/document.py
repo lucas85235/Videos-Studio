@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from studio.core.styles.schema import SCENE_KINDS
+from studio.core.styles.schema import SCENE_KINDS, THUMB_TEMPLATES
 from studio.ids import new_id
 
 SceneKind = Literal["image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map"]
@@ -309,6 +309,39 @@ class SceneLook(BaseModel):
     grade: str | None = None
 
 
+PresenterMode = Literal["reacao", "explica"]
+PresenterSide = Literal["auto", "left", "right"]
+# Gatilho da pose na cena: uma palavra da narração, "palavra#2" (2ª ocorrência) ou "@1200" (milissegundos na cena).
+PRESENTER_AT_RE = re.compile(r"^(@\d{1,7}|[^\s#@][^\s#]{0,59}(#\d{1,3})?)$")
+
+
+class ScenePresenter(BaseModel):
+    """Avatar do apresentador numa cena (`Scene.presenter`). Escrito pela distribuição automática (`assign`) ou pelo
+    usuário (`source="manual"`, que a distribuição não troca)."""
+
+    pose: str | None = None
+    """Id da pose (ou apelido/emoção; `resolve_pose` resolve). None: a pose padrão do canal."""
+    at: str | None = None
+    """Palavra-gatilho: "palavra", "palavra#2" ou "@1200" (ms desde o início da cena). None: o começo da cena."""
+    mode: PresenterMode = "reacao"
+    side: PresenterSide = "auto"
+    source: Literal["auto", "manual"] = "auto"
+    off: bool = False
+    """Desliga o avatar nesta cena (vale mais que a distribuição automática)."""
+
+    @field_validator("at")
+    @classmethod
+    def _at(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not PRESENTER_AT_RE.match(value):
+            raise ValueError(f"gatilho do avatar inválido: {value!r} (use palavra, palavra#2 ou @1200)")
+        return value
+
+
 class Scene(BaseModel):
     id: str = Field(default_factory=lambda: new_id("scn", 8))
     segment_id: str
@@ -338,6 +371,9 @@ class Scene(BaseModel):
     video_hint: str | None = None
     """Sugestão do storyboard: esta batida ganha com vídeo IA; o texto é o movimento, em inglês. Nada é aplicado
     sozinho (vídeo IA é pago): o usuário marca a cena."""
+    presenter: ScenePresenter | None = None
+    """Avatar do apresentador nesta cena (pose, palavra-gatilho, modo). None: a cena não tem avatar (ou ainda não
+    passou pela distribuição automática)."""
 
 
 class Entity(BaseModel):
@@ -396,6 +432,160 @@ class Character(BaseModel):
         return [n for n in dict.fromkeys([self.name.strip(), *self.aliases]) if n]
 
 
+# --- Avatar do apresentador (style_bible["presenter"] do canal; ProjectDoc.presenter; Scene.presenter) -----------
+PRESENTER_KEY = "presenter"
+"""Chave do avatar no `style_bible` do canal (como `characters`, sem migração de banco)."""
+PRESENTER_POSE_ID_RE = r"^[a-z0-9][a-z0-9_\-]{0,39}$"
+# Arquivos das poses: só os guardados pelo app, na biblioteca do apresentador (PNG com alfa).
+PRESENTER_FILE_RE = r"^library/presenter/[A-Za-z0-9_\-]+/[A-Za-z0-9_\-.]+\.png$"
+
+
+def _clean_words(value: list[str], limit: int = 12, size: int = 40) -> list[str]:
+    clean = [" ".join(w.split()).lower()[:size] for w in value if w and w.strip()]
+    return list(dict.fromkeys(clean))[:limit]
+
+
+class PresenterPose(BaseModel):
+    """Uma pose do avatar (PNG RGBA recortado). O `render_file` (900 px de altura) vai para o vídeo; a thumb usa o
+    original (`file`), que aguenta o busto ampliado a 3840×2160."""
+
+    id: str = Field(pattern=PRESENTER_POSE_ID_RE)
+    file: str = Field(pattern=PRESENTER_FILE_RE)
+    render_file: str | None = Field(default=None, pattern=PRESENTER_FILE_RE)
+    emotions: list[str] = []
+    """Emoções que a pose expressa ("choque", "surpresa"): é por elas que o storyboard e o pacote escolhem."""
+    aliases: list[str] = []
+    """Outros nomes da pose ("espantado")."""
+    thumb_ok: bool = False
+    """Serve para thumb (expressão forte e legível pequena)."""
+    facing: Literal["center", "left", "right"] = "center"
+    """Para onde a pose olha/aponta (de quem vê): a thumb vira (`flip`) a pose que olha para o lado errado."""
+
+    @field_validator("emotions", "aliases")
+    @classmethod
+    def _words(cls, value: list[str]) -> list[str]:
+        return _clean_words(value)
+
+    def names(self) -> list[str]:
+        """Id e apelidos (as formas de citar a pose)."""
+        return list(dict.fromkeys([self.id, *self.aliases]))
+
+
+class PresenterVideo(BaseModel):
+    """Regras do avatar no vídeo (distribuição automática e render)."""
+
+    every_s: tuple[int, int] = (60, 90)
+    """Espaçamento entre aparições, em segundos (mínimo, máximo)."""
+    min_gap_scenes: int = Field(default=2, ge=0, le=20)
+    height_reacao: float = Field(default=0.55, gt=0, le=1.2)
+    height_explica: float = Field(default=0.48, gt=0, le=1.2)
+    outline_px: int = Field(default=5, ge=0, le=30)
+    hide_on_kinds: list[str] = ["document", "quote", "chart", "map", "news"]
+    hide_on_vertical: bool = True
+    skip_first_scene: bool = True
+
+    @field_validator("every_s")
+    @classmethod
+    def _every(cls, value: tuple[int, int]) -> tuple[int, int]:
+        low, high = value
+        if low < 0 or high < low:
+            raise ValueError("every_s precisa ser (mínimo, máximo) com 0 <= mínimo <= máximo")
+        return value
+
+
+class Presenter(BaseModel):
+    """Avatar do apresentador do canal (`style_bible["presenter"]`). Desligado por padrão: só o canal que o usuário
+    ligar usa (decisão de 17/11: ligado no Lucas em Vice para thumb e vídeo longo, desligado nos Shorts)."""
+
+    enabled: bool = False
+    character_id: str | None = None
+    """Liga ao `Character` do canal (aparência e âncoras de IA). None: avatar sem personagem."""
+    poses: list[PresenterPose] = []
+    default_pose: str = "base"
+    video: PresenterVideo = PresenterVideo()
+    use_in_thumb: bool = True
+    """Com o avatar ligado: entra nas thumbs (templates `avatar-reage`, `numero-lista`, canto do `heroi-palavra`)."""
+    use_in_video: bool = True
+    """Com o avatar ligado: aparece nas cenas do vídeo longo (reações)."""
+    use_in_shorts: bool = False
+    """Com o avatar ligado: aparece também nos Shorts (vídeo e capa vertical). Padrão: não."""
+    thumb_height: float = Field(default=1.5, gt=0, le=2.5)
+    thumb_crop: Literal["busto", "meio"] = "busto"
+    thumb_outline_px: int = Field(default=10, ge=0, le=40)
+
+    @model_validator(mode="after")
+    def _unique(self) -> Presenter:
+        ids = [p.id for p in self.poses]
+        if len(set(ids)) != len(ids):
+            raise ValueError("ids de pose repetidos")
+        return self
+
+    @classmethod
+    def from_bible(cls, bible: dict[str, Any] | None) -> Presenter:
+        """O avatar guardado no `style_bible` do canal; ausente ou inválido vira o padrão (desligado)."""
+        raw = (bible or {}).get(PRESENTER_KEY)
+        if not isinstance(raw, dict):
+            return cls()
+        try:
+            return cls.model_validate(raw)
+        except ValueError:
+            return cls()
+
+    def pose(self, pose_id: str | None) -> PresenterPose | None:
+        return next((p for p in self.poses if p.id == pose_id), None)
+
+    def thumb_poses(self) -> list[PresenterPose]:
+        """As poses marcadas como boas para thumb."""
+        return [p for p in self.poses if p.thumb_ok]
+
+
+class PresenterOverride(BaseModel):
+    """Ajuste do avatar no projeto (`ProjectDoc.presenter`). `enabled` None segue o canal."""
+
+    enabled: bool | None = None
+    thumb: bool | None = None
+    """Avatar nas thumbs deste projeto: None segue o canal (`use_in_thumb`)."""
+    video: bool | None = None
+    """Avatar nas cenas deste projeto: None segue o canal (`use_in_video`/`use_in_shorts`)."""
+    poses_off: list[str] = []
+    """Poses que este projeto não usa."""
+
+
+# --- Thumbs do canal (style_bible["thumbs"]) -------------------------------------------------------------------------
+CHANNEL_THUMBS_KEY = "thumbs"
+"""Chave das preferências de thumb no `style_bible` do canal."""
+EDITORIAL_NOTICE = (
+    "Thumb com material oficial (quadros de trailer, capa, logos): o risco de reivindicação de direitos fica com o "
+    "canal. Personagens oficiais nunca são gerados por IA."
+)
+
+
+class ChannelThumbs(BaseModel):
+    """Preferências de thumb do canal. `allow_editorial` None segue o estilo (`ThumbnailSpec.allow_editorial`)."""
+
+    allow_editorial: bool | None = None
+    """Libera frames e arte oficial (trailer, capa, logo) nas thumbs deste canal, com aviso na tela."""
+    ai_official_characters: Literal[False] = False
+    """Gerar por IA personagens oficiais (ex.: Jason/Lucia) é sempre proibido; o campo existe para deixar a regra
+    explícita no dado (qualquer valor diferente de False é recusado)."""
+
+    @classmethod
+    def from_bible(cls, bible: dict[str, Any] | None) -> ChannelThumbs:
+        raw = (bible or {}).get(CHANNEL_THUMBS_KEY)
+        if not isinstance(raw, dict):
+            return cls()
+        try:
+            return cls.model_validate(raw)
+        except ValueError:
+            return cls()
+
+
+def effective_allow_editorial(style_allow: bool, bible: dict[str, Any] | None) -> bool:
+    """Material oficial na thumb: o valor do canal (`style_bible["thumbs"]`) vale mais que o do estilo."""
+    channel = ChannelThumbs.from_bible(bible).allow_editorial
+    return style_allow if channel is None else channel
+
+
 class ArtDirection(BaseModel):
     """Direção de arte do vídeo, decidida pelo assunto (o estilo é só referência)."""
 
@@ -450,6 +640,153 @@ class ThumbnailDoc(BaseModel):
     variation: int = 0
 
 
+# --- Pacote: título e thumb antes do roteiro ---------------------------------------------------------------------
+ThumbTemplate = Literal["heroi-palavra", "avatar-reage", "lugar-mapa", "numero-lista", "versus", "livre"]
+assert set(ThumbTemplate.__args__) == set(THUMB_TEMPLATES)  # type: ignore[attr-defined]
+PACKAGE_TITLE_MAX = 90
+THUMB_WORDS_MAX = 3
+PACKAGE_STATUS = "package_review"
+"""Status do projeto parado na escolha do pacote (entre `draft` e `script_review`)."""
+
+
+class BgLayer(BaseModel):
+    """Fundo da thumb. `ref` depende do `kind`: "frame" usa `frame:<trailer>@<t>` ou o id do quadro da biblioteca,
+    "media" o id da mídia do projeto, "upload" o caminho do arquivo, "gradient" o nome/cores, "ai" o prompt."""
+
+    kind: Literal["frame", "media", "upload", "gradient", "ai"] = "gradient"
+    ref: str | None = None
+    t: float | None = Field(default=None, ge=0)
+    """Segundos no trailer (frames de vídeo)."""
+    blur: int = Field(default=0, ge=0, le=60)
+    darken: float = Field(default=0.0, ge=0, le=1)
+    zoom: float = Field(default=1.0, ge=1.0, le=4.0)
+    focus_x: float = Field(default=0.5, ge=0, le=1)
+    """Onde fica o rosto/assunto no quadro (fração da largura), para o enquadramento."""
+
+
+class CutoutLayer(BaseModel):
+    """Figura recortada (PNG com alfa) sobre o fundo."""
+
+    asset: str
+    x: float = Field(default=0.7, ge=-0.5, le=1.5)
+    y: float = Field(default=1.0, ge=-0.5, le=1.5)
+    h: float = Field(default=0.9, gt=0, le=2.5)
+    """Altura em fração da altura do quadro (> 1 vaza por baixo)."""
+    flip: bool = False
+
+
+class PresenterThumbLayer(BaseModel):
+    """Avatar do apresentador na thumb (PNG original da pose)."""
+
+    pose: str
+    side: Literal["left", "right"] = "right"
+    crop: Literal["busto", "meio"] = "busto"
+    h: float = Field(default=1.5, gt=0, le=2.5)
+    outline_px: int = Field(default=10, ge=0, le=40)
+    flip: bool = False
+
+
+class TextLayer(BaseModel):
+    words: str = ""
+    """Texto principal (até 3 palavras no longo; a checagem avisa, não corta)."""
+    fill: Literal["yellow", "vice", "white"] = "yellow"
+    pos: Literal["top", "left", "center"] = "left"
+    size: float = Field(default=0.3, ge=0, le=1)
+
+
+class CardLayer(BaseModel):
+    asset: str | None = None
+    label: str = ""
+
+
+class ArrowLayer(BaseModel):
+    """Seta (coordenadas em fração do quadro)."""
+
+    from_x: float = Field(default=0.35, ge=0, le=1)
+    from_y: float = Field(default=0.55, ge=0, le=1)
+    to_x: float = Field(default=0.55, ge=0, le=1)
+    to_y: float = Field(default=0.45, ge=0, le=1)
+    color: str = "yellow"
+
+
+class ThumbLayers(BaseModel):
+    """Descrição declarativa de uma thumb, consumida pelo compositor (`media/thumb_compose.py`). Ordem das camadas:
+    fundo, VI gigante, personagens, avatar, texto/pílula/cartões, seta, logo."""
+
+    template: ThumbTemplate = "heroi-palavra"
+    background: BgLayer = BgLayer()
+    big_vi: bool = False
+    characters: list[CutoutLayer] = []
+    presenter: PresenterThumbLayer | None = None
+    text: TextLayer | None = None
+    pill: str | None = None
+    """Pílula secundária ("SEM SPOILER", "ANTES DE JOGAR")."""
+    cards: list[CardLayer] = Field(default=[], max_length=3)
+    logo: Literal["corner", "none"] = "corner"
+    arrow: ArrowLayer | None = None
+    strike: bool = False
+    """Risco vermelho sobre a palavra."""
+
+
+class PackageCandidate(BaseModel):
+    """Um par título + thumb candidato. A `promise` vira o contrato do gancho do roteiro."""
+
+    id: str = Field(default_factory=lambda: new_id("pkc", 8))
+    title: str = ""
+    thumb_text: str = ""
+    promise: str = ""
+    concept: str = ""
+    layers: ThumbLayers = ThumbLayers()
+    score: dict[str, Any] = {}
+    """Saída da checagem de legibilidade (`thumb_check`): métricas e `warnings`."""
+    image: str | None = None
+    """Caminho relativo da prévia renderizada (1280×720 no longo, 1080×1920 no Short)."""
+    approved: bool = False
+    """Entra no A/B final."""
+    source: Literal["auto", "manual"] = "auto"
+
+    @field_validator("title", "thumb_text", "promise", "concept")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    def thumb_words(self) -> int:
+        return len(self.thumb_text.split())
+
+
+class PackageDoc(BaseModel):
+    candidates: list[PackageCandidate] = []
+    chosen_id: str | None = None
+    locked: bool = False
+    """True depois de aprovado: roteiro e metadata não trocam o título nem o texto da thumb."""
+    references: list[str] = []
+    """Ids de vídeos da pesquisa/radar usados como referência."""
+    generated_at: str | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> PackageDoc:
+        ids = [c.id for c in self.candidates]
+        if len(set(ids)) != len(ids):
+            raise ValueError("ids de candidato repetidos")
+        if self.chosen_id is not None and self.chosen_id not in ids:
+            # Escolhido apagado: perde a escolha (e a trava, que não vale sem escolhido).
+            self.chosen_id = None
+            self.locked = False
+        return self
+
+    def candidate(self, candidate_id: str) -> PackageCandidate | None:
+        return next((c for c in self.candidates if c.id == candidate_id), None)
+
+    def chosen(self) -> PackageCandidate | None:
+        return self.candidate(self.chosen_id) if self.chosen_id else None
+
+    def approved(self) -> list[PackageCandidate]:
+        """Os aprovados para o A/B, o escolhido primeiro."""
+        chosen = self.chosen()
+        rest = [c for c in self.candidates if c.approved and (chosen is None or c.id != chosen.id)]
+        return ([chosen] if chosen else []) + rest
+
+
 class Source(BaseModel):
     title: str
     url: str = ""
@@ -484,6 +821,10 @@ class ProjectDoc(BaseModel):
     """Cenas aprovadas no portão `gates.storyboard` (volta a False quando o storyboard roda de novo)."""
     frame_mode: FrameMode = "crop"
     """Modo padrão do reenquadramento das cenas com `Scene.frame` (o Short escolhe; a cena pode trocar)."""
+    package: PackageDoc = PackageDoc()
+    """Título e thumb escolhidos antes do roteiro. Vazio: projeto antigo ou sem pacote (nada muda)."""
+    presenter: PresenterOverride = PresenterOverride()
+    """Avatar neste projeto: padrão do canal, ligado ou desligado."""
 
     @model_validator(mode="after")
     def _check(self) -> ProjectDoc:
@@ -513,6 +854,23 @@ class ProjectDoc(BaseModel):
             if scene.id == scene_id:
                 return scene
         raise KeyError(f"cena não encontrada: {scene_id}")
+
+    def chosen_package(self) -> PackageCandidate | None:
+        """O candidato escolhido do pacote (None: sem pacote ou sem escolha)."""
+        return self.package.chosen()
+
+    def locked_package(self) -> PackageCandidate | None:
+        """O candidato escolhido com o pacote travado (aprovado); None sem pacote, sem escolha ou destravado. A capa
+        do render e as miniaturas do A/B só seguem o pacote travado: com ele destravado, o título dos metadados é
+        outro e o par título + thumb se desfaz."""
+        return self.chosen_package() if self.package.locked else None
+
+    def effective_title(self) -> str:
+        """O título do candidato escolhido quando o pacote está travado; senão `title`."""
+        chosen = self.chosen_package()
+        if self.package.locked and chosen is not None and chosen.title:
+            return chosen.title
+        return self.title
 
     def scenes_of(self, segment_id: str) -> list[Scene]:
         return sorted((s for s in self.scenes if s.segment_id == segment_id), key=lambda s: s.part)

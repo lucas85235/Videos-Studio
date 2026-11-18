@@ -27,6 +27,7 @@ from studio.core.project import service
 from studio.core.project.document import Metadata, MusicCue, ProjectDoc, Scene, SceneCard, Segment, Source
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import StyleSpec
+from studio.core.text import normalize_token
 from studio.core.timeline import lead_in, tail_out
 from studio.db import session_scope
 from studio.ids import new_id
@@ -399,6 +400,28 @@ def short_description(
     return "\n\n".join(p for p in parts if p)[:DESCRIPTION_MAX], hashtags[:15]
 
 
+
+COVER_WORDS_MAX = 3
+"""Texto da capa do Short: até 3 palavras no centro seguro (a frase inteira do gancho fica ilegível)."""
+_COVER_STOP = {
+    "a", "o", "as", "os", "um", "uma", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas", "que",
+    "se", "pra", "para", "por", "com", "sem", "voce", "nao", "vai", "isso", "isto", "esse", "essa", "ele", "ela",
+    "eu", "ja", "mais", "muito", "foi", "era", "ser", "tem", "ter", "como", "quando", "the", "you", "and", "of",
+    "to", "in", "is", "it", "this", "that", "what", "for", "on", "with", "your",
+}
+
+
+def short_cover_text(hook: str | None) -> str:
+    """Até 3 palavras fortes do gancho para a capa do Short: gancho curto vai inteiro; frase longa perde as palavras
+    de ligação ("Você não vai acreditar no que a Rockstar escondeu" → "ACREDITAR ROCKSTAR ESCONDEU"). Máx. 60."""
+    words = " ".join((hook or "").split()).split()
+    if len(words) <= COVER_WORDS_MAX:
+        return " ".join(words)[:60]
+    strong = [w for w in words if len(normalize_token(w)) >= 3 and normalize_token(w) not in _COVER_STOP]
+    picked = (strong or words)[:COVER_WORDS_MAX]
+    return " ".join(w.strip(".,;:!?…\"'()") for w in picked).strip()[:60]
+
+
 def derive_short(
     parent_id: str,
     ranges: list[list[str]],
@@ -460,8 +483,10 @@ def derive_short(
     sources = _short_sources(parent, scenes)
     description, hashtags = short_description(parent, hook, lang, hashtag, sources)
     parent_meta = parent.metadata.get(lang) or parent.metadata.get(fallback)
-    thumb = parent.thumbnail.model_copy(deep=True)
-    thumb.text = _fill_lang(thumb.text, lang, fallback)
+    # A capa do Short não herda o texto da capa do longo (era outra promessa: o "texto vazado"): só a cena e a
+    # variação. O texto sai do gancho do corte; o pacote do Short começa vazio (o documento novo não copia o do pai).
+    cover = short_cover_text(hook)
+    thumb = parent.thumbnail.model_copy(deep=True, update={"text": {lang: cover} if cover else {}})
     if thumb.scene_id and not any(sc.id == thumb.scene_id for sc in scenes):
         thumb.scene_id = None
     ceiling = limits.ceiling(tipo)

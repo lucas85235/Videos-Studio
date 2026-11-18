@@ -213,9 +213,128 @@ export type Scene = {
   clip?: ClipSpec | null;
   /** Sugestão do storyboard: esta cena ganha com vídeo IA (o texto é o movimento). Nada é aplicado sozinho. */
   video_hint?: string | null;
+  /** Avatar do apresentador nesta cena (null/ausente: sem avatar). */
+  presenter?: ScenePresenter | null;
 };
 
 export type ClipSpec = { prompt: string; seconds: number };
+
+/* --- Avatar do apresentador (espelho de core/project/document.py) --------------------------------------------- */
+export type PresenterMode = 'reacao' | 'explica';
+export type PresenterSide = 'auto' | 'left' | 'right';
+/** Avatar numa cena. `at`: palavra, "palavra#2" ou "@1200" (ms na cena). `source: 'manual'` a distribuição não troca. */
+export type ScenePresenter = {
+  pose: string | null;
+  at: string | null;
+  mode: PresenterMode;
+  side: PresenterSide;
+  source: 'auto' | 'manual';
+  off: boolean;
+};
+export type PresenterPose = {
+  id: string;
+  /** PNG RGBA original (caminho relativo na pasta de dados: library/presenter/<canal>/<pose>.png). */
+  file: string;
+  /** Versão de 900 px de altura (vídeo). */
+  render_file: string | null;
+  emotions: string[];
+  aliases: string[];
+  thumb_ok: boolean;
+  facing: 'center' | 'left' | 'right';
+};
+export type PresenterVideo = {
+  every_s: [number, number];
+  min_gap_scenes: number;
+  height_reacao: number;
+  height_explica: number;
+  outline_px: number;
+  hide_on_kinds: string[];
+  hide_on_vertical: boolean;
+  skip_first_scene: boolean;
+};
+/** Avatar do canal (style_bible.presenter). Desligado por padrão. */
+export type Presenter = {
+  enabled: boolean;
+  character_id: string | null;
+  poses: PresenterPose[];
+  default_pose: string;
+  video: PresenterVideo;
+  use_in_thumb: boolean;
+  use_in_video: boolean;
+  use_in_shorts: boolean;
+  thumb_height: number;
+  thumb_crop: 'busto' | 'meio';
+  thumb_outline_px: number;
+};
+/** Avatar no projeto: null segue o canal. */
+export type PresenterOverride = { enabled: boolean | null; thumb: boolean | null; video: boolean | null; poses_off: string[] };
+/** Preferências de thumb do canal (style_bible.thumbs). `allow_editorial` null segue o estilo. */
+export type ChannelThumbs = { allow_editorial: boolean | null; ai_official_characters: false };
+
+/* --- Pacote: título e thumb antes do roteiro (espelho de core/project/document.py) ------------------------------ */
+export type ThumbTemplate = 'heroi-palavra' | 'avatar-reage' | 'lugar-mapa' | 'numero-lista' | 'versus' | 'livre';
+export const THUMB_TEMPLATES: ThumbTemplate[] = ['heroi-palavra', 'avatar-reage', 'lugar-mapa', 'numero-lista', 'versus', 'livre'];
+export type BgLayer = {
+  kind: 'frame' | 'media' | 'upload' | 'gradient' | 'ai';
+  ref: string | null;
+  /** Segundos no trailer (frames de vídeo). */
+  t: number | null;
+  blur: number;
+  darken: number;
+  zoom: number;
+  /** Onde fica o assunto no quadro (fração da largura). */
+  focus_x: number;
+};
+export type CutoutLayer = { asset: string; x: number; y: number; h: number; flip: boolean };
+export type PresenterThumbLayer = { pose: string; side: 'left' | 'right'; crop: 'busto' | 'meio'; h: number; outline_px: number; flip: boolean };
+export type TextLayer = { words: string; fill: 'yellow' | 'vice' | 'white'; pos: 'top' | 'left' | 'center'; size: number };
+export type CardLayer = { asset: string | null; label: string };
+export type ArrowLayer = { from_x: number; from_y: number; to_x: number; to_y: number; color: string };
+export type ThumbLayers = {
+  template: ThumbTemplate;
+  background: BgLayer;
+  big_vi: boolean;
+  characters: CutoutLayer[];
+  presenter: PresenterThumbLayer | null;
+  text: TextLayer | null;
+  pill: string | null;
+  cards: CardLayer[];
+  logo: 'corner' | 'none';
+  arrow: ArrowLayer | null;
+  strike: boolean;
+};
+/** Saída da checagem de legibilidade (`thumb_check`): métricas e avisos (nunca bloqueia). */
+export type ThumbScore = {
+  words?: number;
+  text_h?: number;
+  legib_168?: number;
+  face_h?: number;
+  luminance?: number;
+  warnings?: string[];
+  [key: string]: unknown;
+};
+export type PackageCandidate = {
+  id: string;
+  title: string;
+  thumb_text: string;
+  /** O que o espectador ganha: o contrato do gancho. */
+  promise: string;
+  concept: string;
+  layers: ThumbLayers;
+  score: ThumbScore;
+  /** Prévia renderizada (caminho relativo na pasta de dados). */
+  image: string | null;
+  approved: boolean;
+  source: 'auto' | 'manual';
+};
+export type PackageDoc = {
+  candidates: PackageCandidate[];
+  chosen_id: string | null;
+  /** Aprovado: roteiro e metadata não trocam o título nem o texto da thumb. */
+  locked: boolean;
+  references: string[];
+  generated_at: string | null;
+};
 
 /** Estado do vídeo IA do projeto (GET /api/projects/{id}/video). */
 export type VideoClipItem = {
@@ -288,8 +407,8 @@ export type StoryboardReview = {
   version?: number;
 };
 
-/** Paradas do piloto automático (projeto sem a chave: script e prévia valem true; storyboard vale false). */
-export type ProjectGates = { script?: boolean; storyboard?: boolean; preview?: boolean; publish?: boolean; [k: string]: boolean | undefined };
+/** Paradas do piloto automático (projeto sem a chave: script e prévia valem true; storyboard e package valem false). */
+export type ProjectGates = { package?: boolean; script?: boolean; storyboard?: boolean; preview?: boolean; publish?: boolean; [k: string]: boolean | undefined };
 
 export type Metadata = { title: string; description: string; tags: string[]; hashtags: string[] };
 
@@ -315,6 +434,10 @@ export type ProjectDoc = {
   art?: ArtDirection | null;
   /** Cenas aprovadas na parada "conferir as cenas". */
   storyboard_approved?: boolean;
+  /** Título e thumb escolhidos antes do roteiro (servidor antigo: ausente). */
+  package?: PackageDoc;
+  /** Avatar neste projeto (servidor antigo: ausente). */
+  presenter?: PresenterOverride;
 };
 
 export type ProjectRow = {
@@ -571,9 +694,31 @@ export type StyleSpec = {
     progress_color: string;
     watermark: string | null;
     zoom_strength: number;
+    /** Avatar do apresentador nas cenas: 'auto' segue canal/projeto; 'off' desliga neste estilo. */
+    presenter?: 'auto' | 'off';
   };
   audio: { music: { source: string; mood: string; volume_db: number; ducking: boolean }; sfx: { auto: boolean; pack: string; volume_db: number }; loudness_lufs: number };
-  thumbnail: { template: string; variations: number; per_language: boolean; font: string; color: string; accent: string };
+  thumbnail: {
+    template: string;
+    variations: number;
+    per_language: boolean;
+    font: string;
+    color: string;
+    accent: string;
+    /* Pacote e compositor por camadas (servidor antigo: ausentes). */
+    /** Templates do compositor em ordem de preferência. */
+    templates?: ThumbTemplate[];
+    title_candidates?: number;
+    thumb_candidates?: number;
+    /** Usa o avatar na thumb quando o canal o tem ligado. */
+    presenter?: boolean;
+    palette?: Record<string, string>;
+    logo_asset?: string | null;
+    /** Libera frame oficial e key art na thumb (o canal pode trocar em style_bible.thumbs). */
+    allow_editorial?: boolean;
+    /** Projeto longo novo para na etapa do pacote (ignorado no Short). */
+    gate_package?: boolean;
+  };
   [key: string]: unknown;
 };
 
@@ -921,6 +1066,7 @@ export const LANGUAGES: { code: string; label: string }[] = [
 
 export const STATUS_LABELS: Record<string, string> = {
   draft: 'Rascunho',
+  package_review: 'Escolher título e thumb',
   script_review: 'Roteiro para revisar',
   storyboard: 'Storyboard pronto',
   storyboard_review: 'Cenas para conferir',

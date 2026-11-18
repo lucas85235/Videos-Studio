@@ -7,6 +7,7 @@ import { ChartCard, chartRows } from './ChartCard';
 import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
 import { MapCard, mapItems } from './MapCard';
+import { PresenterLayer } from './PresenterLayer';
 import { assetUrl, NewsCard } from './RealMedia';
 import { ClipLayer } from './ClipLayer';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
@@ -229,6 +230,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       ) : (
         sourceChip
       )}
+      {scene.presenter ? (
+        <PresenterLayer presenter={scene.presenter} words={scene.words} assetBaseUrl={assetBaseUrl} minTop={band.top} />
+      ) : null}
       {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} />}
       <TransitionIn type={scene.transition} frames={style.transitionFrames} seed={scene.seed} />
     </AbsoluteFill>

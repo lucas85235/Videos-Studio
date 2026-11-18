@@ -1,7 +1,8 @@
 /** Abas da página do projeto (também usadas na URL: ?aba=roteiro, ?aba=cenas…). */
-export type ProjectTab = 'script' | 'scenes' | 'preview' | 'output' | 'versions';
+export type ProjectTab = 'package' | 'script' | 'scenes' | 'preview' | 'output' | 'versions';
 
 export const PROJECT_TAB_SLUGS: Record<ProjectTab, string> = {
+  package: 'titulo-thumb',
   script: 'roteiro',
   scenes: 'cenas',
   preview: 'previa',

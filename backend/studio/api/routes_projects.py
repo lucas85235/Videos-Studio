@@ -28,7 +28,8 @@ from studio.workers.publish.package import build_dub_package, build_package, lis
 
 router = APIRouter(prefix="/api/projects", tags=["projetos"])
 
-JOB_KINDS = {"script", "storyboard", "translate", "metadata", "preview", "render", "autopilot", "media_find"}
+JOB_KINDS = {"script", "storyboard", "translate", "metadata", "preview", "render", "autopilot", "media_find", "package",
+             "package_thumbs"}
 
 
 class VoiceChoice(BaseModel):
@@ -46,6 +47,8 @@ class CreateProject(BaseModel):
     languages: list[str] | None = None
     autopilot: bool = False
     voice: VoiceChoice | None = None
+    seed_candidate: bool = False
+    """O título de trabalho entra como 1º candidato manual do pacote (tela Novo projeto, com título digitado)."""
 
 
 class DocUpdate(BaseModel):
@@ -151,6 +154,7 @@ def create(body: CreateProject) -> dict[str, Any]:
             channel_id=body.channel_id,
             languages=body.languages,
             voice=body.voice.model_dump() if body.voice else None,
+            seed_candidate=body.seed_candidate,
         )
     except StyleNotFound as exc:
         raise HTTPException(status_code=400, detail=f"estilo não encontrado: {exc}") from exc
@@ -256,6 +260,11 @@ def patch_settings(project_id: str, body: SettingsPatch) -> dict[str, Any]:
 
 @router.post("/{project_id}/approve")
 def approve(project_id: str, body: ApproveRequest) -> dict[str, Any]:
+    if body.stage == "package":
+        # Alias de POST /package/approve (trava o título e a thumb escolhidos e segue para o roteiro).
+        from studio.api.routes_package import approve_package
+
+        return approve_package(project_id, continue_pipeline=body.continue_pipeline)
     doc = service.get_doc(project_id)
     if body.stage == "script":
         if not doc.segments:
@@ -278,7 +287,7 @@ def approve(project_id: str, body: ApproveRequest) -> dict[str, Any]:
         version = service.commit(project_id, doc, "Prévia aprovada")
         job = get_runner().submit("render", {}, project_id) if body.continue_pipeline else None
     else:
-        raise HTTPException(status_code=400, detail="etapa inválida (use script, storyboard ou preview)")
+        raise HTTPException(status_code=400, detail="etapa inválida (use package, script, storyboard ou preview)")
     return {"version": version, "job": job}
 
 

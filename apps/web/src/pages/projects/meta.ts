@@ -16,7 +16,7 @@ export type ProjectListItem = {
 };
 
 /**
- * As cinco etapas de um vídeo, na ordem em que acontecem. Mesma tabela da página do projeto
+ * As etapas de um vídeo (título e thumb, roteiro, cenas, prévia, vídeo, publicação), na ordem em que acontecem. Mesma tabela da página do projeto
  * (STEP_LABELS de core/model.ts), para a lista e o projeto nunca darem etapas diferentes.
  */
 export const PIPELINE_STEP_IDS = Object.keys(STEP_LABELS) as StepId[];
@@ -40,6 +40,14 @@ const stepIndex = (id: StepId) => PIPELINE_STEP_IDS.indexOf(id);
 // "Cenas prontas" quer dizer Roteiro e Cenas concluídos, então a etapa atual é a Prévia.
 const STATUS_META: Record<string, StatusMeta> = {
   draft: { label: 'Rascunho', tone: 'neutral', step: stepIndex('script'), next: 'Gerar o roteiro', waiting: false },
+  // Parado na escolha do título e da thumb (parada do pacote, ligada só no projeto longo novo).
+  package_review: {
+    label: 'Escolher título e thumb',
+    tone: 'warn',
+    step: stepIndex('package'),
+    next: 'Escolher o título e a thumb e aprovar',
+    waiting: true,
+  },
   script_review: { label: 'Roteiro para revisar', tone: 'warn', step: stepIndex('script'), next: 'Revisar e aprovar o roteiro', waiting: true },
   storyboard: { label: 'Cenas prontas', tone: 'info', step: stepIndex('preview'), next: 'Conferir as cenas e gerar a prévia', waiting: false },
   // Parado na conferência das cenas (a parada vem ligada nos projetos novos): nada anda até o usuário aprovar.
@@ -50,10 +58,20 @@ const STATUS_META: Record<string, StatusMeta> = {
 
 const FALLBACK_META: StatusMeta = { label: 'Etapa desconhecida', tone: 'neutral', step: 0, next: 'Abrir o projeto', waiting: false };
 
-export const statusMeta = (status: string): StatusMeta => STATUS_META[status] ?? FALLBACK_META;
+/** Rascunho com a parada do pacote ligada: a etapa atual é "Título e thumb", não o roteiro. */
+const DRAFT_WITH_PACKAGE: StatusMeta = { label: 'Rascunho', tone: 'neutral', step: stepIndex('package'), next: 'Gerar títulos e thumbs', waiting: false };
+
+/**
+ * Selo, etapa e próximo passo pelo status salvo. `packageGate`: a parada do pacote do projeto (quem tem os
+ * `settings.gates`); sem ela (a lista não tem), o rascunho aponta para o roteiro, como nos projetos antigos.
+ */
+export const statusMeta = (status: string, opts: { packageGate?: boolean } = {}): StatusMeta =>
+  status === 'draft' && opts.packageGate ? DRAFT_WITH_PACKAGE : (STATUS_META[status] ?? FALLBACK_META);
 
 /** Em que etapa cada tipo de tarefa trabalha (igual à página do projeto). Sem etapa própria: a etapa atual. */
 const JOB_STEP: Record<string, StepId> = {
+  package: 'package',
+  package_thumbs: 'package',
   script: 'script',
   storyboard: 'scenes',
   translate: 'scenes',

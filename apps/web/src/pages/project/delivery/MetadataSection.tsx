@@ -135,6 +135,8 @@ type Props = {
   metadataJob?: Job;
   /** Este passo tem a ação principal da aba. */
   emphasis: boolean;
+  /** Abre a etapa "Título e thumb" (o título travado no pacote é editado lá). */
+  onEditPackage?: () => void;
 };
 
 export const MetadataSection: React.FC<Props> = ({
@@ -148,8 +150,11 @@ export const MetadataSection: React.FC<Props> = ({
   generateBlock,
   metadataJob,
   emphasis,
+  onEditPackage,
 }) => {
   const { doc } = detail;
+  // Pacote aprovado (título e thumb primeiro): o título é o do candidato escolhido e não se edita aqui.
+  const packageLocked = Boolean(doc.package?.locked && doc.package.chosen_id);
   const projectId = doc.id;
   const meta = doc.metadata[lang];
   const client = useQueryClient();
@@ -315,12 +320,31 @@ export const MetadataSection: React.FC<Props> = ({
             id={titleId}
             value={title}
             disabled={locked}
+            readOnly={packageLocked}
             invalid={titleTooLong}
             placeholder="Escreva ou gere com IA"
             aria-describedby={`${ids}-titulo${title.trim() ? "" : ` ${ids}-titulo-vazio`}`}
-            onChange={(e) => update("title", e.target.value)}
+            onChange={(e) => {
+              if (!packageLocked) update("title", e.target.value);
+            }}
           />
         </Field>
+        {packageLocked ? (
+          <p className="m-0 text-xs text-subtle">
+            Título travado no pacote (o roteiro foi escrito para ele).{" "}
+            {onEditPackage ? (
+              <button
+                type="button"
+                className="text-accent underline-offset-2 hover:underline"
+                onClick={onEditPackage}
+              >
+                Editar no pacote
+              </button>
+            ) : (
+              "Para trocar, destrave na etapa “Título e thumb”."
+            )}
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <Counter id={`${ids}-titulo`} value={title.length} max={TITLE_MAX} />
@@ -334,7 +358,7 @@ export const MetadataSection: React.FC<Props> = ({
             <Button
               size="sm"
               variant="ghost"
-              disabled={locked}
+              disabled={locked || packageLocked}
               onClick={() => update("title", doc.title.slice(0, TITLE_MAX))}
             >
               Usar o título do projeto

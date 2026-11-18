@@ -122,6 +122,30 @@ export type TimelineScene = {
   video?: string;
   /** Duração do clipe em segundos (para cobrir a cena: um pouco mais lento e, se faltar, o último quadro). */
   video_seconds?: number;
+  /** Avatar do apresentador nesta cena (montado pelo `core/timeline.py`). Ausente: sem avatar. */
+  presenter?: TimelinePresenter;
+};
+
+/**
+ * Avatar do apresentador numa cena. Quadros relativos ao início da cena; `src` relativo à pasta de dados (o
+ * `render_file` de 900 px da pose, servido pelo mesmo `assetBaseUrl`).
+ */
+export type TimelinePresenter = {
+  src: string;
+  /** Impressão do arquivo da pose (tamanho e data): troca a URL quando o PNG muda com o mesmo nome. */
+  rev?: string;
+  /** Quadro de entrada (2 antes da palavra-gatilho, ou 6). */
+  from: number;
+  /** Duração em quadros. */
+  dur: number;
+  mode: 'reacao' | 'explica';
+  side: 'left' | 'right';
+  /** Altura em fração da altura do quadro. */
+  height: number;
+  /** Contorno branco de adesivo, em px. */
+  outline: number;
+  /** Soco de escala na entrada (pose "surpreso"). */
+  punch?: boolean;
 };
 
 export type SceneTreatment = 'whiteboard' | 'collage' | 'screen';

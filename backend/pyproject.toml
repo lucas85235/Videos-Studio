@@ -25,6 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.0"]
+# Recorte de personagem nas thumbs (opcional: sem ele o compositor usa o quadro inteiro enquadrado).
+# Baixa cada modelo (~175 MB) na 1ª execução, em ~/.rembg/models (isnet-general-use e u2net_human_seg).
+cutout = ["rembg[cpu]>=2.0.60"]
 
 [dependency-groups]
 dev = ["pytest>=8.2", "ruff>=0.6"]

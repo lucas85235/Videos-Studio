@@ -276,6 +276,7 @@ def to_project(idea_id: str, style_id: str | None = None, languages: list[str] |
         style_id=style_id or _default_style(idea["channel_id"], idea["format"]),
         languages=languages or None,
         voice=voice,
+        seed_candidate=True,  # o título da ideia é o 1º candidato (manual) do pacote
     )
     with session_scope() as s:
         row = s.get(Idea, idea_id)

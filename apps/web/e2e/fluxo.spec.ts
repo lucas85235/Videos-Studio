@@ -42,8 +42,10 @@ test('criar projeto → roteiro → cenas → prévia', async ({ page }) => {
   await expect(page.getByText('Voz e imagens de teste')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Aprovar e renderizar' })).toBeVisible();
   await expect(page.getByText(/Cena 1\/\d+/)).toBeVisible();
-  // O histórico registra cada etapa.
-  for (const etapa of ['Projeto criado', 'Roteiro gerado', 'Roteiro aprovado', 'Cenas aprovadas']) {
+  // O histórico registra cada etapa. As "Últimas versões" mostram 5: o pacote de título e thumb (gerado e travado
+  // sozinho no Short, antes do roteiro) empurra o "Projeto criado" para o "Ver todas".
+  await expect(page.getByText(/^Pacote aprovado: /).first()).toBeVisible();
+  for (const etapa of ['Roteiro gerado', 'Roteiro aprovado', 'Cenas aprovadas']) {
     await expect(page.getByText(etapa, { exact: true }).first()).toBeVisible();
   }
 });

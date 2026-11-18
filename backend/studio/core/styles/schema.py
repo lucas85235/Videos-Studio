@@ -125,6 +125,12 @@ FAMILY_TREATMENTS: dict[Family, str] = {
     Family.handmade: "collage",
     Family.screen_ui: "screen",
 }
+# Templates do compositor de thumbs por camadas (espelho de `ThumbTemplate` em `core/project/document.py`).
+THUMB_TEMPLATES = ("heroi-palavra", "avatar-reage", "lugar-mapa", "numero-lista", "versus", "livre")
+# Paleta padrão das thumbs (Vice): amarelo, rosa, laranja, verde-água e a tinta do contorno.
+DEFAULT_THUMB_PALETTE: dict[str, str] = {
+    "yellow": "#FFD400", "pink": "#FF2E88", "orange": "#FF8A1F", "teal": "#19D3C5", "ink": "#1A0B2E",
+}
 SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map")
 # Tipos do cartão `chart` (família de dados): barras, linha, pizza e rosca.
 CHART_TYPES = ("bar", "line", "pie", "donut")
@@ -340,6 +346,8 @@ class EditSpec(StrictModel):
     zoom_strength: float = Field(default=0.12, ge=0, le=0.6)
     treatments: dict[str, float] = {}
     """Pesos do tratamento das cenas de imagem (ids de `TREATMENTS`). Vazio: automático pela família."""
+    presenter: Literal["auto", "off"] = "auto"
+    """Avatar do apresentador nas cenas: "auto" segue o canal/projeto; "off" desliga neste estilo."""
 
     @field_validator("treatments")
     @classmethod
@@ -398,6 +406,44 @@ class ThumbnailSpec(StrictModel):
     font: str = "Bebas Neue"
     color: str = "#FFFFFF"
     accent: str = "#FFD400"
+    # --- Pacote (título e thumb antes do roteiro) e compositor por camadas. Todos com padrão: os estilos gravados
+    # antes deles continuam validando (o modelo é estrito).
+    templates: list[str] = ["heroi-palavra", "numero-lista", "avatar-reage"]
+    """Templates do compositor, em ordem de preferência (ids de `THUMB_TEMPLATES`)."""
+    title_candidates: int = Field(default=5, ge=3, le=8)
+    thumb_candidates: int = Field(default=3, ge=2, le=4)
+    presenter: bool = True
+    """Usa o avatar do apresentador na thumb quando o canal o tem ligado (o canal é quem liga; padrão desligado)."""
+    palette: dict[str, str] = dict(DEFAULT_THUMB_PALETTE)
+    logo_asset: str | None = None
+    """Id do ativo do logo na biblioteca de thumbs do canal."""
+    allow_editorial: bool = False
+    """Libera frame oficial e key art na thumb (com aviso de direitos). O canal pode ligar/desligar por cima
+    (`style_bible["thumbs"].allow_editorial`)."""
+    gate_package: bool = True
+    """Projeto longo novo para na etapa do pacote. Ignorado (vale False) quando o formato efetivo é Short."""
+
+    @field_validator("templates")
+    @classmethod
+    def _templates(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if item not in THUMB_TEMPLATES:
+                raise ValueError(f"template de thumb desconhecido: {item} (válidos: {', '.join(THUMB_TEMPLATES)})")
+        return list(dict.fromkeys(value))
+
+    @field_validator("palette")
+    @classmethod
+    def _palette(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, color in value.items():
+            if not re.match(r"^#[0-9A-Fa-f]{6}$", color):
+                raise ValueError(f"cor inválida na paleta da thumb: {key}={color} (use #RRGGBB)")
+        return {**DEFAULT_THUMB_PALETTE, **value}
+
+
+def package_gate_default(style: StyleSpec) -> bool:
+    """O gate `package` de um projeto NOVO: ligado no longo quando o estilo pede; nunca no Short. Passe o estilo
+    efetivo (depois de `style_overrides`): um Short derivado pode usar um estilo longo com override de formato."""
+    return style.format.type != "short" and style.thumbnail.gate_package
 
 
 class VariationSpec(StrictModel):

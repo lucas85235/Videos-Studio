@@ -105,7 +105,9 @@ def test_list_topics_fill_stock_and_stop_at_target(isolated_settings):
     assert [k for k, _, _ in submit.calls] == ["autopilot", "autopilot"]
     assert all("skip_gates" not in payload for _, payload, _ in submit.calls)
     first = service.get_project_row(result["created"][0]["project_id"])
-    assert first["settings"]["gates"] == {"script": True, "storyboard": True, "preview": True, "publish": True}
+    # série nunca para no pacote (título e thumb): gera sem travar o lote
+    assert first["settings"]["gates"] == {"script": True, "storyboard": True, "preview": True, "publish": True,
+                                          "package": False}
     assert first["settings"]["series"] == {"id": item["id"], "name": "Faróis malditos", "number": 1}
     assert first["channel_id"] == cid and first["style_id"] == "misterios-short"
     doc = service.get_doc(first["id"])

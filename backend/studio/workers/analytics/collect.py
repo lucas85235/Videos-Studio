@@ -260,7 +260,9 @@ def collect_channel(channel_id: str, http: httpx.Client, now: datetime | None = 
     extras: dict[str, Any] = {}
     reach_data: dict[str, dict[str, Any]] = {}
     revenue_data: dict[str, dict[str, Any]] = {}
-    if kept and (scope or prev_scope) != "missing":
+    # O alcance roda mesmo sem vídeo público ainda (só agendados/privados): o job do relatório tem de existir cedo,
+    # porque o Google só entrega o histórico dos 30 dias anteriores à criação dele.
+    if (scope or prev_scope) != "missing":
         reach_state, reach_data, reach_msg = reach.fetch_reach(channel_id, http, token, now)
         extras.update(reach=reach_state, reach_error=reach_msg)
     if kept:

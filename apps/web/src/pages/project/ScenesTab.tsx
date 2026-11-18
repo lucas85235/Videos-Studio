@@ -50,6 +50,7 @@ import {
   storyboardReviewOf,
   STYLE_MISSING_REASON,
 } from './core/model';
+import { PresenterChip } from './PresenterChip';
 import { RealMediaFinder, RealMediaPanel } from './RealMediaPanel';
 import { StoryboardReview } from './StoryboardReview';
 import { SceneVideoControl, VideoClipsPanel } from './VideoClipsPanel';
@@ -585,6 +586,7 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
         disabled={disabled}
         hasMedia={Boolean(mediaAsset) || Boolean(scene.visual.media)}
       />
+      <PresenterChip projectId={projectId} doc={doc} scene={scene} short={short} disabled={disabled} />
       {directed.length ? <p className="text-xs text-subtle">{directed.join(' · ')}</p> : null}
       {showPrompt ? promptBlock : null}
       {short ? null : <div className="grid grid-cols-1 gap-2 @md:grid-cols-3">{selects}</div>}

@@ -6,6 +6,7 @@ import {
   FileText,
   Film,
   History,
+  ImageIcon,
   LayoutGrid,
   MonitorPlay,
   MoreHorizontal,
@@ -56,6 +57,7 @@ import {
 } from './project/core/drafts';
 import { useDismissedFailures } from './project/core/dismissedFailures';
 import {
+  awaitingPackage,
   awaitingScenes,
   defaultTab,
   DOC_BUSY_REASON,
@@ -69,6 +71,7 @@ import {
 import { NextStepBanner } from './project/core/NextStep';
 import { Popover, PopoverItem } from './project/core/Popover';
 import { OutputTab } from './project/OutputTab';
+import { PackageTab } from './project/package/PackageTab';
 import { ScenesTab } from './project/ScenesTab';
 import { ScriptTab } from './project/ScriptTab';
 import { PROJECT_TAB_SLUGS, type ProjectTab } from './project/types';
@@ -437,7 +440,7 @@ export const ProjectPage: React.FC = () => {
     doc.segments.map((s) => s.text[doc.primary_language] ?? ''),
   );
   const fmt = style?.format ? formatLabel(style.format) : null;
-  const status = statusMeta(row.status);
+  const status = statusMeta(row.status, { packageGate: row.settings.gates?.package === true });
 
   const meta = (
     <>
@@ -565,7 +568,21 @@ export const ProjectPage: React.FC = () => {
     </span>
   );
 
+  // Título e thumb: aprovado (cadeado verde) ou esperando a escolha (ponto âmbar, com a parada do pacote ligada).
+  const packageBadge = doc.package?.locked ? (
+    <>
+      <CircleCheck size={14} aria-hidden="true" className="text-emerald-400" />
+      <span className="sr-only">(aprovado)</span>
+    </>
+  ) : awaitingPackage(data) ? (
+    <span className="inline-flex items-center">
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
+      <span className="sr-only">(aguardando sua escolha)</span>
+    </span>
+  ) : null;
+
   const tabs = [
+    { id: 'package', label: tabLabel('Título e thumb', 'Thumb'), icon: ImageIcon, badge: packageBadge },
     { id: 'script', label: 'Roteiro', icon: FileText, badge: scriptBadge },
     {
       id: 'scenes',
@@ -718,6 +735,7 @@ export const ProjectPage: React.FC = () => {
         {...tabPanelProps(tab, 'projeto')}
         className="rounded-lg pt-5 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent"
       >
+        {tab === 'package' ? <PackageTab detail={data} busy={busy} goTo={goTo} /> : null}
         {tab === 'script' ? <ScriptTab detail={data} busy={busy} goTo={goTo} /> : null}
         {tab === 'scenes' ? <ScenesTab detail={data} busy={busy} goTo={goTo} /> : null}
         {tab === 'preview' ? (

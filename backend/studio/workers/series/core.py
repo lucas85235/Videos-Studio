@@ -41,7 +41,7 @@ EDITABLE = ("channel_id", "name", "theme", "notes", "format", "style_id", "caden
             "max_per_run", "source", "topics", "idea_filter", "autopilot", "active")
 
 # Situação do episódio pelo status do projeto e pelo job mais recente dele.
-REVIEW_STATUSES = ("script_review", "storyboard_review", "preview_ready")
+REVIEW_STATUSES = ("package_review", "script_review", "storyboard_review", "preview_ready")
 READY_STATUS = "rendered"
 ACTIVE_JOB_STATUSES = ("queued", "running")
 # Falhou e parado contam no estoque: esperam você tentar de novo ou apagar (a série não empilha episódios novos
@@ -462,8 +462,9 @@ def _create_episode(series_id: str, origin: str, submit: Submit, now: datetime) 
         brief=spec["brief"],
         channel_id=spec["channel_id"],
         style_id=spec["style_id"],
-        # Portões ligados sempre: o piloto da série para no roteiro e nas cenas e nunca publica sozinho.
-        settings={"gates": {"script": True, "storyboard": True, "preview": True, "publish": True},
+        # Portões ligados sempre: o piloto da série para no roteiro e nas cenas e nunca publica sozinho. O pacote
+        # (título e thumb antes do roteiro) não trava o lote: o episódio gera o pacote sem parar.
+        settings={"gates": {"package": False, "script": True, "storyboard": True, "preview": True, "publish": True},
                   "series": spec["series"]},
     )
     taken = {"topic": False}

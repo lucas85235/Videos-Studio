@@ -30,6 +30,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -56,12 +57,66 @@ class ReachScopeMissing(Exception):
     """O token não tem o escopo do Analytics (a Reporting API usa o mesmo)."""
 
 
+class ReachApiDisabled(yt.YouTubeError):
+    """A YouTube Reporting API está desligada no projeto do Google Cloud do OAuth: o job não pode ser criado até
+    alguém ativá-la no console (nenhum código resolve isso; a coleta tenta de novo a cada rodada)."""
+
+
+# Motivos do erro do Google que querem dizer "o token não tem o escopo" (vincular de novo resolve) e "a API está
+# desligada no projeto do OAuth" (ativar no Google Cloud resolve; vincular de novo não adianta).
+_SCOPE_REASONS = {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}
+_DISABLED_REASONS = {"accessNotConfigured", "SERVICE_DISABLED"}
+_CONSOLE = "https://console.developers.google.com/apis/api/youtubereporting.googleapis.com/overview"
+
+
+def _error_info(resp: httpx.Response) -> tuple[set[str], dict[str, str]]:
+    """`reason` de `error.errors[]` e `error.details[]` + `error.status`, e o `metadata` do `ErrorInfo` (com o
+    `activationUrl` e o `consumer` quando a API está desligada). Lê o corpo inteiro: a mensagem do Google passa de
+    300 caracteres e o motivo vem depois dela (por isso o `SERVICE_DISABLED` não era reconhecido)."""
+    try:
+        err = (resp.json() or {}).get("error") or {}
+    except ValueError:
+        return set(), {}
+    if not isinstance(err, dict):
+        return set(), {}
+    reasons = {str(e.get("reason")) for e in err.get("errors") or [] if isinstance(e, dict) and e.get("reason")}
+    meta: dict[str, str] = {}
+    for d in err.get("details") or []:
+        if isinstance(d, dict):
+            if d.get("reason"):
+                reasons.add(str(d["reason"]))
+            if isinstance(d.get("metadata"), dict):
+                meta.update({str(k): str(v) for k, v in d["metadata"].items()})
+    if err.get("status"):
+        reasons.add(str(err["status"]))
+    return reasons, meta
+
+
+def _project_of(resp: httpx.Response, meta: dict[str, str]) -> str:
+    """Número do projeto do Google Cloud do OAuth (do `consumer` ou da mensagem "... in project 123 ...")."""
+    consumer = meta.get("consumer") or ""
+    if consumer.startswith("projects/"):
+        return consumer.split("/", 1)[1]
+    match = re.search(r"project[= ](\d+)", resp.text)
+    return match.group(1) if match else ""
+
+
+def disabled_message(project: str = "", url: str = "") -> str:
+    """Mensagem curta (a tela mostra 160 caracteres) com o que fazer quando a Reporting API está desligada."""
+    where = f" (projeto {project})" if project else ""
+    link = url or (f"{_CONSOLE}?project={project}" if project else _CONSOLE)
+    return (f"ative a YouTube Reporting API no Google Cloud{where}; a próxima coleta cria o relatório de impressões"
+            f" sozinha. Link: {link}")
+
+
 def _error(resp: httpx.Response) -> Exception:
     text = resp.text[:300]
-    if resp.status_code == 401 or "insufficientPermissions" in text or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in text:
+    reasons, meta = _error_info(resp)
+    body = resp.text
+    if reasons & _DISABLED_REASONS or "has not been used in project" in body or "it is disabled" in body:
+        return ReachApiDisabled(disabled_message(_project_of(resp, meta), meta.get("activationUrl", "")))
+    if resp.status_code == 401 or reasons & _SCOPE_REASONS or any(r in body for r in _SCOPE_REASONS):
         return ReachScopeMissing(text)
-    if "accessNotConfigured" in text or "SERVICE_DISABLED" in text:
-        return yt.YouTubeError("ative a YouTube Reporting API no Google Cloud (o projeto do OAuth está sem ela)")
     return yt.YouTubeError(f"erro da YouTube Reporting API ({resp.status_code}): {text}")
 
 

@@ -54,7 +54,22 @@ export type ReferenceVideo = {
   created_at: string | null;
 };
 
-export type ThumbSpec = { scene_id: string | null; text: string; template: string; label?: string };
+export type ThumbSpec = {
+  scene_id: string | null;
+  text: string;
+  template: string;
+  label?: string;
+  /** Com pacote: a miniatura é este candidato (escolhido ou aprovado), desenhado pelo compositor por camadas. */
+  candidate_id?: string | null;
+  title?: string;
+};
+
+/** O pacote que as miniaturas seguem (null sem candidato escolhido). */
+export type ThumbsPackage = {
+  chosen_id: string;
+  locked: boolean;
+  candidates: { id: string; title: string; thumb_text: string; template: string; image: string | null; warnings: string[] }[];
+};
 
 export type ThumbVariant = ThumbSpec & {
   n: number;
@@ -97,6 +112,10 @@ export type ThumbsState = {
   templates: string[];
   /** Quantas miniaturas o estilo pede (até 3). */
   max: number;
+  /** Com pacote escolhido, as miniaturas são o escolhido e os aprovados (editados na etapa "Título e thumb"). */
+  package?: ThumbsPackage | null;
+  /** Material oficial liberado nas thumbs deste projeto (canal ou estilo). */
+  allow_editorial?: boolean;
 };
 
 /** De onde veio cada valor do estilo criado a partir da referência. */

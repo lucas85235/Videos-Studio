@@ -1,0 +1,51 @@
+{
+ "about": "Semente da biblioteca de thumbs (thumbkit) do canal Lucas em Vice. Caminhos relativos à pasta do canais. face_box e focus em fração da imagem (x0, y0, x1, y1). Material da Rockstar: editorial=true (só entra com allow_editorial). Nenhum personagem oficial gerado por IA.",
+ "videos": {
+  "GTAVI_Trailer_1": "plantao-vice/assets/trailers/GTAVI_Trailer_1.mp4",
+  "GTAVI_Trailer_2": "plantao-vice/assets/trailers/GTAVI_Trailer_2.mp4",
+  "GTAVI_Launch_Trailer": "plantao-vice/assets/trailers/GTAVI_Launch_Trailer.mp4",
+  "GTAVI_Official_Cover_Art_Landscape": "plantao-vice/assets/trailers/GTAVI_Official_Cover_Art_Landscape.mp4"
+ },
+ "files": [
+  {"id": "lockup", "kind": "logo", "src": "plantao-vice/assets/oficial/logo_gta6_lockup.png", "tags": ["lockup", "gta6"], "credit": "Rockstar Games", "editorial": true},
+  {"id": "vi", "kind": "logo", "src": "plantao-vice/assets/oficial/logo_vi.png", "tags": ["vi"], "credit": "Rockstar Games", "editorial": true},
+  {"id": "gta", "kind": "logo", "src": "plantao-vice/assets/oficial/logo_gta.png", "tags": ["gta"], "credit": "Rockstar Games", "editorial": true},
+  {"id": "capa-casal", "kind": "frame", "src": "plantao-vice/video/public/img/capa-casal.jpg", "crop": [0, 0, 0.972, 1], "tags": ["personagem", "jason", "lucia", "casal", "keyart", "claro"], "credit": "Rockstar Games (capa oficial)", "editorial": true, "focus_x": 0.5, "focus_y": 0.38, "face_box": [0.30, 0.05, 0.68, 0.75]},
+  {"id": "capa-oficial", "kind": "frame", "src": "plantao-vice/video/public/thumb/ad19/gta6-capa.jpg", "tags": ["keyart", "capa", "claro"], "credit": "Rockstar Games (capa oficial)", "editorial": true, "focus_x": 0.5, "focus_y": 0.3},
+  {"id": "lucia-carro-noite", "kind": "frame", "src": "plantao-vice/video/public/thumb/lucia.png", "tags": ["personagem", "lucia", "noite"], "credit": "Rockstar Games (trailer)", "editorial": true, "focus_x": 0.56, "focus_y": 0.28, "face_box": [0.50, 0.13, 0.63, 0.43]},
+  {"id": "casal-conversivel", "kind": "frame", "src": "plantao-vice/video/public/thumb/casal-carro.png", "tags": ["personagem", "jason", "lucia", "casal", "dia", "claro"], "credit": "Rockstar Games (trailer)", "editorial": true, "focus_x": 0.48, "focus_y": 0.38, "face_box": [0.28, 0.18, 0.72, 0.60]},
+  {"id": "letreiro-vice", "kind": "frame", "src": "plantao-vice/video/public/thumb/vice.png", "tags": ["lugar", "por-do-sol", "vice"], "credit": "Rockstar Games (trailer)", "editorial": true, "focus_x": 0.5, "focus_y": 0.45}
+ ],
+ "frames": [
+  {"id": "t1-por-do-sol", "video": "GTAVI_Trailer_1", "t": 3, "tags": ["lugar", "por-do-sol", "aereo", "claro"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.5, "focus_y": 0.45},
+  {"id": "t1-praia-aerea", "video": "GTAVI_Trailer_1", "t": 13, "tags": ["lugar", "praia", "aereo", "dia", "claro"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.5, "focus_y": 0.5},
+  {"id": "t1-praia", "video": "GTAVI_Trailer_1", "t": 23, "tags": ["lugar", "praia", "dia", "claro"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.5, "focus_y": 0.5},
+  {"id": "t1-rua-dia", "video": "GTAVI_Trailer_1", "t": 28, "tags": ["lugar", "rua", "carro", "dia", "claro"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.55, "focus_y": 0.5},
+  {"id": "t1-neon", "video": "GTAVI_Trailer_1", "t": 33, "tags": ["lugar", "neon", "carro", "por-do-sol"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.5, "focus_y": 0.5},
+  {"id": "t1-lucia-janela", "video": "GTAVI_Trailer_1", "t": 8, "tags": ["personagem", "lucia"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.25, "focus_y": 0.35, "face_box": [0.16, 0.18, 0.34, 0.52]},
+  {"id": "t1-lucia-carro", "video": "GTAVI_Trailer_1", "t": 63, "tags": ["personagem", "lucia", "dia", "claro"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.49, "focus_y": 0.3, "face_box": [0.42, 0.13, 0.56, 0.47]},
+  {"id": "t1-assalto", "video": "GTAVI_Trailer_1", "t": 78, "tags": ["personagem", "jason", "lucia", "casal", "acao", "claro"], "credit": "Rockstar Games (Trailer 1)", "focus_x": 0.48, "focus_y": 0.4, "face_box": [0.35, 0.30, 0.61, 0.52]},
+  {"id": "t2-keys-aerea", "video": "GTAVI_Trailer_2", "t": 8, "tags": ["lugar", "mapa", "aereo", "dia", "claro"], "credit": "Rockstar Games (Trailer 2)", "focus_x": 0.5, "focus_y": 0.5, "zoom": 1.4},
+  {"id": "t2-telhado", "video": "GTAVI_Trailer_2", "t": 13, "tags": ["lugar", "dia", "claro"], "credit": "Rockstar Games (Trailer 2)", "focus_x": 0.6, "focus_y": 0.5, "zoom": 1.4},
+  {"id": "t2-placas", "video": "GTAVI_Trailer_2", "t": 38, "tags": ["lugar", "mapa", "estrada", "dia", "claro"], "credit": "Rockstar Games (Trailer 2)", "focus_x": 0.5, "focus_y": 0.45, "zoom": 1.4},
+  {"id": "t2-jason-rua", "video": "GTAVI_Trailer_2", "t": 68, "tags": ["personagem", "jason", "por-do-sol"], "credit": "Rockstar Games (Trailer 2)", "focus_x": 0.66, "focus_y": 0.35, "face_box": [0.61, 0.13, 0.71, 0.38], "zoom": 1.4},
+  {"id": "t2-jason-carro", "video": "GTAVI_Trailer_2", "t": 98, "tags": ["personagem", "jason", "por-do-sol"], "credit": "Rockstar Games (Trailer 2)", "focus_x": 0.44, "focus_y": 0.5, "face_box": [0.35, 0.35, 0.52, 0.75], "zoom": 1.4},
+  {"id": "t2-jason-moto", "video": "GTAVI_Trailer_2", "t": 143, "tags": ["personagem", "jason", "acao", "dia", "claro"], "credit": "Rockstar Games (Trailer 2)", "focus_x": 0.45, "focus_y": 0.35, "face_box": [0.40, 0.22, 0.51, 0.47], "zoom": 1.4},
+  {"id": "lt-jason-telefone", "video": "GTAVI_Launch_Trailer", "t": 13, "tags": ["personagem", "jason", "dia"], "credit": "Rockstar Games (Launch Trailer)", "focus_x": 0.61, "focus_y": 0.3, "face_box": [0.54, 0.12, 0.69, 0.50], "zoom": 1.1},
+  {"id": "lt-casal-por-do-sol", "video": "GTAVI_Launch_Trailer", "t": 68, "tags": ["personagem", "jason", "lucia", "casal", "por-do-sol", "claro"], "credit": "Rockstar Games (Launch Trailer)", "focus_x": 0.5, "focus_y": 0.3, "face_box": [0.30, 0.10, 0.63, 0.45], "zoom": 1.1},
+  {"id": "lt-policia", "video": "GTAVI_Launch_Trailer", "t": 48, "tags": ["lugar", "policia", "carro", "dia", "claro"], "credit": "Rockstar Games (Launch Trailer)", "focus_x": 0.45, "focus_y": 0.5, "zoom": 1.1},
+  {"id": "lt-estrada", "video": "GTAVI_Launch_Trailer", "t": 3, "tags": ["lugar", "estrada", "dia", "claro"], "credit": "Rockstar Games (Launch Trailer)", "focus_x": 0.5, "focus_y": 0.5, "zoom": 1.1},
+  {"id": "capa-video", "video": "GTAVI_Official_Cover_Art_Landscape", "t": 17, "crop": [0.29, 0.08, 0.71, 0.92], "tags": ["keyart", "capa", "claro"], "credit": "Rockstar Games (capa oficial)", "focus_x": 0.5, "focus_y": 0.3}
+ ],
+ "cutouts_about": "Recortes de personagem gerados pelo rembg (Fase 2b, algoritmo v2) a partir de itens acima (from). crop em fração do item de origem (as capas têm tarja escura de ~1% na esquerda e ~2% na direita: o crop deixa de fora); model: o modelo do rembg (birefnet-portrait separa a Lucia do Jason na capa; birefnet-general é o melhor nos quadros de trailer; comparado em 17/11/2026 contra isnet-general-use, u2net_human_seg e isnet-anime); minus: ids de outros recortes do mesmo quadro cuja figura sai deste (o rosto da Lucia na frente do peito do Jason); face_src: rosto em fração do ORIGINAL (vira face_box no recorte aparado); occluded: lado em que a figura termina reta atrás de um objeto (o casal no carro: a porta embaixo e o retrovisor que corta o braço do Jason à direita; o crop pega o cabelo inteiro da Lucia, para só um lado ficar cortado na horizontal), ancorado como se fosse borda; quality baixa tira o recorte do seletor do pacote. Os lados cortados pela borda do quadro (cut_edges) são medidos sozinhos e o compositor ancora a figura neles. Sem rembg a importação só avisa e as thumbs usam o quadro inteiro.",
+ "cutouts": [
+  {"id": "jason-capa", "from": "capa-casal", "crop": [0.41, 0, 0.975, 1], "model": "birefnet-portrait", "minus": ["lucia-capa"], "tags": ["personagem", "jason", "keyart", "rosto"], "face_src": [0.439, 0.04, 0.821, 0.58]},
+  {"id": "lucia-capa", "from": "capa-casal", "crop": [0.012, 0.12, 0.5, 1], "model": "birefnet-portrait", "tags": ["personagem", "lucia", "keyart", "rosto"], "face_src": [0.21, 0.47, 0.5, 0.89]},
+  {"id": "casal-capa", "from": "capa-casal", "crop": [0.012, 0, 0.975, 1], "model": "birefnet-general", "tags": ["personagem", "jason", "lucia", "casal", "keyart"], "face_src": [0.171, 0.02, 0.77, 0.92]},
+  {"id": "lucia-trailer", "from": "t1-lucia-carro", "crop": [0.3, 0.05, 0.7, 0.95], "model": "birefnet-portrait", "tags": ["personagem", "lucia", "rosto"], "face_src": [0.432, 0.143, 0.569, 0.409]},
+  {"id": "jason-carro", "from": "t2-jason-carro", "crop": [0.25, 0.14, 0.62, 0.86], "model": "birefnet-general", "tags": ["personagem", "jason", "rosto"], "face_src": [0.348, 0.226, 0.547, 0.586]},
+  {"id": "jason-rua", "from": "t2-jason-rua", "crop": [0.52, 0.12, 0.8, 0.9], "model": "birefnet-general", "tags": ["personagem", "jason", "corpo"], "face_src": [0.637, 0.223, 0.7, 0.347]},
+  {"id": "casal-carro", "from": "casal-conversivel", "crop": [0.09, 0.06, 0.85, 0.8], "model": "birefnet-general", "occluded": ["bottom", "right"], "tags": ["personagem", "jason", "lucia", "casal"], "face_src": [0.25, 0.094, 0.732, 0.532]},
+  {"id": "casal-por-do-sol", "from": "lt-casal-por-do-sol", "crop": [0.25, 0.12, 0.78, 0.88], "model": "birefnet-general", "tags": ["personagem", "jason", "lucia", "casal", "por-do-sol"], "face_src": [0.307, 0.178, 0.633, 0.599]}
+ ]
+}

@@ -19,8 +19,9 @@ from typing import Any
 
 from studio.core.hashing import hash_obj, seed_from
 from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
-from studio.core.project.document import MediaRef, ProjectDoc, Scene
+from studio.core.project.document import MediaRef, Presenter, ProjectDoc, Scene
 from studio.core.project.media_edit import scene_label
+from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, StyleSpec, treatment_pool
@@ -468,10 +469,12 @@ def build_timeline(
     images: dict[str, str | None],
     parallax: dict[str, list[str]] | None = None,
     clips: dict[str, dict[str, Any]] | None = None,
+    presenter: Presenter | None = None,
 ) -> dict[str, Any]:
     """Monta a timeline completa de um idioma (em quadros). `parallax`: camadas por cena (fundo → frente) para o
     movimento "parallax"; cena com parallax sem camadas (ou sem imagem) cai no Ken Burns. `clips`: vídeo IA pronto
-    por cena ({"path", "seconds"})."""
+    por cena ({"path", "seconds"}). `presenter`: o avatar efetivo do projeto (`core.project.presenter.effective`);
+    None: nenhuma cena ganha avatar (a timeline fica igual à de antes)."""
     fps = style.format.fps
     if not doc.segments:
         raise TimelineError("o projeto não tem roteiro")
@@ -565,6 +568,12 @@ def build_timeline(
                 if clip.get("seconds"):
                     resolved["video_seconds"] = round(float(clip["seconds"]), 3)
             _spoken_timing(resolved, scene, raw_words, lang, f0, frame, fps)
+            layer = presenter_layer(presenter, scene, resolved, raw_words, f0, f1, frame, fps,
+                                    vertical=style.format.height > style.format.width,
+                                    merged_words=scene_words if scene_words is not raw_words else None)
+            if layer is not None:
+                # Só na cena com avatar: as outras geram o mesmo dict (e o mesmo hash de bloco) de antes.
+                resolved["presenter"] = layer
             scenes_out.append(resolved)
             sfx.extend(_scene_sfx(style, scene, resolved, s0, fps, first=(index == 0 and k == 0)))
 
@@ -694,6 +703,116 @@ def scene_motion(doc: ProjectDoc, style: StyleSpec, scene: Scene) -> str:
     real sorteia só entre os movimentos calmos (REAL_MOTIONS)."""
     camera = real_motion_pool(style) if doc.shown_media(scene) is not None else style.edit.camera
     return scene.motion or pick_weighted(camera, seed_from(doc.seed, scene.id, "motion"))
+
+
+PRESENTER_LEAD_FRAMES = 2
+"""O avatar entra 2 quadros antes da palavra-gatilho."""
+PRESENTER_DEFAULT_FROM = 6
+"""Sem gatilho (ou palavra ausente): entra no 6º quadro da cena."""
+PRESENTER_REACAO_S = (1.5, 2.2, 2.5)
+"""Reação: mínimo, padrão e máximo em segundos."""
+PRESENTER_EXPLICA_MAX_S = 8.0
+PRESENTER_MIN_FRAMES = 8
+"""Menos que isto na cena (8 quadros: a própria saída) e o avatar não entra."""
+
+
+def _presenter_side(scene_side: str, facing: str, resolved: dict[str, Any]) -> str:
+    """Lado do avatar. "auto": a pose que aponta/olha para um lado fica do lado oposto (aponta para o assunto);
+    senão, oposto ao foco da câmera e ao carimbo; sem pista, à direita."""
+    if scene_side in ("left", "right"):
+        return scene_side
+    if facing == "right":
+        return "left"
+    if facing == "left":
+        return "right"
+    focus = str(resolved.get("focus") or "")
+    stamp = str((resolved.get("card") or {}).get("stamp_at") or "")
+    if focus.endswith("right") or stamp == "right":
+        return "left"
+    return "right"
+
+
+def _file_rev(rel: str | None) -> str:
+    """Tamanho e data do arquivo (relativo à pasta de dados), em base 36; vazio se não existir."""
+    if not rel:
+        return ""
+    try:
+        from studio.config import get_settings
+
+        st = (get_settings().data_dir / rel).stat()
+    except (OSError, ValueError):
+        return ""
+    return f"{st.st_size:x}-{st.st_mtime_ns // 1_000_000:x}"
+
+
+def presenter_layer(
+    presenter: Presenter | None,
+    scene: Scene,
+    resolved: dict[str, Any],
+    words: list[Word],
+    f0: int,
+    f1: int,
+    frame: Callable[[float], int],
+    fps: int,
+    *,
+    vertical: bool = False,
+    merged_words: list[Any] | None = None,
+) -> dict[str, Any] | None:
+    """O avatar da cena pronto para o renderer ({src, from, dur, mode, side, height, outline, punch}), em quadros
+    relativos à cena. None: sem avatar efetivo, cena sem avatar (ou "sem avatar"), vertical com `hide_on_vertical`,
+    pose sem arquivo ou cena curta demais. `words`: as palavras da cena, com tempo absoluto em segundos."""
+    spec = scene.presenter
+    if presenter is None or spec is None or spec.off or not presenter.poses:
+        return None
+    if vertical and presenter.video.hide_on_vertical:
+        return None
+    pose = resolve_pose(presenter, spec.pose)
+    if pose is None:
+        return None
+    length = f1 - f0
+    if length < PRESENTER_MIN_FRAMES:
+        return None
+    _word, _nth, ms = parse_at(spec.at)
+    if ms is not None:
+        start = int(math.floor(ms / 1000 * fps + 0.5))
+    else:
+        idx = trigger_index([w.text for w in words], spec.at)
+        if idx is None and merged_words:
+            # Legenda com algarismos: o gatilho validado pode ser o número fundido ("2026" de "dois mil e vinte e seis")
+            j = trigger_index([w.text for w in merged_words], spec.at)
+            if j is not None:
+                words, idx = merged_words, j
+        start = frame(words[idx].start) - f0 - PRESENTER_LEAD_FRAMES if idx is not None else PRESENTER_DEFAULT_FROM
+    start = max(0, start)
+    low, default, high = PRESENTER_REACAO_S
+    if spec.mode == "explica":
+        wanted = int(PRESENTER_EXPLICA_MAX_S * fps)
+        minimum = PRESENTER_MIN_FRAMES
+    else:
+        wanted = int(round(max(low, min(high, default)) * fps))
+        minimum = int(round(low * fps))
+    # Gatilho perto do fim: recua para caber o mínimo (sem passar do começo da cena).
+    if length - start < minimum:
+        start = max(0, length - minimum)
+    dur = min(wanted, length - start)
+    if dur < PRESENTER_MIN_FRAMES:
+        return None
+    height = presenter.video.height_explica if spec.mode == "explica" else presenter.video.height_reacao
+    src = pose.render_file or pose.file
+    out: dict[str, Any] = {
+        "src": src,
+        # O arquivo da pose tem nome fixo: a impressão do conteúdo muda o bloco (e a URL) quando o PNG é trocado.
+        "rev": _file_rev(src),
+        "from": start,
+        "dur": dur,
+        "mode": spec.mode,
+        "side": _presenter_side(spec.side, pose.facing, resolved),
+        "height": round(height, 4),
+        "outline": presenter.video.outline_px,
+    }
+    if pose.id == "surpreso":
+        out["punch"] = True
+    return out
 
 
 def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *, is_first: bool) -> dict[str, Any]:

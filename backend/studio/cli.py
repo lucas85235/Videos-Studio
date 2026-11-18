@@ -3,8 +3,37 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import webbrowser
+from types import ModuleType
+
+# Subcomandos em arquivo próprio (cada fase cuida do seu sem disputar este arquivo). Contrato de cada módulo:
+#   COMMAND: str                                      nome do subcomando ("thumbkit", "presenter")
+#   register(sub: argparse._SubParsersAction) -> None  cria o parser do subcomando (com os sub-subcomandos)
+#   run(args: argparse.Namespace) -> int | None        executa; um inteiro diferente de 0 vira o código de saída
+# O import é tolerante: módulo ainda inexistente (fase em andamento) ou quebrado não derruba os outros comandos.
+PLUGIN_MODULES = ("studio.cli_thumbkit", "studio.cli_presenter")
+
+
+def _load_plugins() -> dict[str, ModuleType]:
+    plugins: dict[str, ModuleType] = {}
+    for name in PLUGIN_MODULES:
+        try:
+            module = importlib.import_module(name)
+        except ModuleNotFoundError as exc:
+            if exc.name != name:  # o módulo existe, mas importa algo que falta
+                logging.getLogger(__name__).warning("subcomando %s indisponível: %s", name, exc)
+            continue
+        except Exception as exc:  # noqa: BLE001 - um subcomando quebrado não pode derrubar o `serve`
+            logging.getLogger(__name__).warning("subcomando %s indisponível: %s", name, exc)
+            continue
+        command = getattr(module, "COMMAND", None)
+        if isinstance(command, str) and callable(getattr(module, "register", None)) and callable(
+            getattr(module, "run", None)
+        ):
+            plugins[command] = module
+    return plugins
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -33,6 +62,9 @@ def main(argv: list[str] | None = None) -> None:
         "--canal", action="append", default=[], metavar="SLUG=DESTINO",
         help="destino de um canal do canais: auto (padrão), pular ou o id de um canal do Vulto; repita por canal",
     )
+    plugins = _load_plugins()
+    for module in plugins.values():
+        module.register(sub)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -42,7 +74,11 @@ def main(argv: list[str] | None = None) -> None:
     from studio.config import get_settings
 
     settings = get_settings()
-    if args.command == "serve":
+    if args.command in plugins:
+        code = plugins[args.command].run(args)
+        if code:
+            raise SystemExit(code)
+    elif args.command == "serve":
         import uvicorn
 
         host = args.host or settings.host

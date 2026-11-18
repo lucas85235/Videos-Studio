@@ -1681,6 +1681,13 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                           <ColorField label="Cor da barra" value={style.edit.progress_color} onChange={(v) => set((s) => void (s.edit.progress_color = v))} />
                         </div>
                       ) : null}
+                      <Checkbox
+                        label="Avatar do apresentador nas cenas"
+                        description="Marcado (automático): segue o avatar do canal e do projeto. Desmarcado (nunca): o vídeo feito com este estilo não mostra o avatar, mesmo com ele ligado no canal. A thumb não muda."
+                        checked={(style.edit.presenter ?? 'auto') !== 'off'}
+                        disabled={preset}
+                        onChange={(v) => set((s) => void (s.edit.presenter = v ? 'auto' : 'off'))}
+                      />
                     </Fields>
                     <TextCardPreview style={style} />
                   </div>

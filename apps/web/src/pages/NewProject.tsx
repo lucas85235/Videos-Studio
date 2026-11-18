@@ -212,6 +212,8 @@ export const NewProjectPage: React.FC = () => {
         languages: langs,
         autopilot,
         voice: chosenVoice,
+        // O título digitado vira o 1º candidato do pacote (o tema sozinho, não).
+        seed_candidate: Boolean(title.trim()),
       });
     },
     onSuccess: (data) => {
@@ -546,8 +548,8 @@ export const NewProjectPage: React.FC = () => {
             />
           </Field>
           <Field
-            label="Título de trabalho (opcional)"
-            hint={`Até ${TITLE_MAX} caracteres. Se ficar vazio, o projeto usa o tema como título (cortado nesse limite). Você pode trocar depois.`}
+            label="Título de trabalho (vai virar candidato)"
+            hint={`Até ${TITLE_MAX} caracteres. Opcional: se ficar vazio, o projeto usa o tema. No vídeo longo ele entra como 1º candidato na etapa Título e thumb, ao lado dos títulos que o Claude propõe.`}
           >
             <Input value={title} maxLength={TITLE_MAX} onChange={(e) => setTitle(e.target.value)} placeholder="ex.: O farol sem faroleiro" />
           </Field>

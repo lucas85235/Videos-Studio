@@ -13,6 +13,7 @@ from studio.core.styles.schema import (
     GRADE_PRESETS,
     LUT_PRESETS,
     SCENE_KINDS,
+    THUMB_TEMPLATES,
     TRANSITIONS,
     TREATMENTS,
 )
@@ -135,6 +136,30 @@ METADATA_SCHEMA = _obj(
         "thumbnail_text": S,
     }
 )
+
+# Pacote (título e thumb antes do roteiro): N pares candidatos. Os ativos (fundo, personagens, pose) só podem citar o
+# que está na lista de ativos do pedido; o pós-processamento (`_normalize_candidates`) troca o que não existe.
+PACKAGE_CANDIDATE_SCHEMA = _obj(
+    {
+        "title": S,
+        "thumb_text": S,
+        "promise": S,
+        "concept": S,
+        "template": {"type": "string", "enum": list(THUMB_TEMPLATES)},
+        "background_hint": NS,
+        "characters_hint": {"type": "array", "items": S},
+        "presenter_pose": NS,
+        "pill": NS,
+        "cards": {"type": "array", "items": _obj({"asset": NS, "label": S})},
+    }
+)
+PACKAGE_SCHEMA = _obj({"candidates": {"type": "array", "items": PACKAGE_CANDIDATE_SCHEMA}})
+
+# Dica do avatar do apresentador por cena, em campos achatados (objeto anulável aninhado é arriscado no --json-schema
+# do Claude): pose (id/apelido/emoção), palavra-gatilho e modo ("reacao" | "explica"), validados no Python; null nas
+# cenas sem reação clara. Ainda não entra no STORYBOARD_SCHEMA: quem liga o avatar no pedido do storyboard (Fase 8)
+# soma estes campos às cenas (`{**campos_da_cena, **PRESENTER_HINT_FIELDS}`), para não mudar a saída de quem não usa.
+PRESENTER_HINT_FIELDS: dict[str, Any] = {"presenter_pose": NS, "presenter_at": NS, "presenter_mode": NS}
 
 EDIT_OPS = [
     "update_segment_text",

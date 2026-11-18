@@ -215,12 +215,16 @@ def _apply_channel(row: Channel, body: ChannelBody, fields: set[str]) -> None:
 
     data = body.model_dump()
     if "style_bible" in fields:
-        # Os personagens têm rota própria: o formulário do canal (aberto antes de um cadastro) não os apaga.
+        # Os personagens, o avatar do apresentador e a liberação do material oficial têm rota própria: o formulário do canal (aberto antes de um
+        # cadastro ou de uma importação) não os apaga nem os troca.
         from studio.core.project.characters import BIBLE_KEY
+        from studio.core.project.document import CHANNEL_THUMBS_KEY, PRESENTER_KEY
 
-        bible = {k: v for k, v in (data["style_bible"] or {}).items() if k != BIBLE_KEY}
-        if BIBLE_KEY in (row.style_bible or {}):
-            bible[BIBLE_KEY] = row.style_bible[BIBLE_KEY]
+        own = (BIBLE_KEY, PRESENTER_KEY, CHANNEL_THUMBS_KEY)  # thumbs: liberação do material oficial (rota própria)
+        bible = {k: v for k, v in (data["style_bible"] or {}).items() if k not in own}
+        for key in own:
+            if key in (row.style_bible or {}):
+                bible[key] = row.style_bible[key]
         data["style_bible"] = bible
     for key in fields - {"posting", "pronunciation", "glossary", "novelty"}:
         setattr(row, key, data[key])

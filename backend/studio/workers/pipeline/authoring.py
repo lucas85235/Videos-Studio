@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from studio.config import get_settings
 from studio.core.glossary import GlossaryEntry, check_pairs, glossary_prompt
 from studio.core.hashing import seed_from
 from studio.core.numbers import card_number, notable_number_runs, number_runs
@@ -17,18 +18,25 @@ from studio.core.project import characters as characters_mod
 from studio.core.project.document import (
     DATA_KINDS,
     REAL_KINDS,
+    THUMB_WORDS_MAX,
     ArtDirection,
+    BgLayer,
     CardItem,
     Character,
     Entity,
     Metadata,
+    PackageCandidate,
+    Presenter,
     ProjectDoc,
     RealHint,
     Scene,
     SceneCard,
+    ScenePresenter,
     Segment,
     Source,
+    ThumbLayers,
     Visual,
+    effective_allow_editorial,
 )
 from studio.core.regions import find_regions, is_us_state, region_code, region_codes
 from studio.core.styles.library import StyleNotFound, get_style
@@ -62,8 +70,11 @@ from studio.providers.base import LLMResult
 from studio.workers.analytics.lessons import lessons_block, lessons_key
 from studio.workers.pipeline import characters as character_scenes
 from studio.workers.pipeline import dubbing, storyboard_check
+from studio.workers.pipeline import presenter as presenter_scenes
 from studio.workers.pipeline.schemas import (
     METADATA_SCHEMA,
+    PACKAGE_SCHEMA,
+    PRESENTER_HINT_FIELDS,
     SCRIPT_SCHEMA,
     STORYBOARD_KINDS,
     STORYBOARD_SCHEMA,
@@ -155,6 +166,9 @@ Proibido usar: {", ".join(style.script.banned_phrases) or "(nada)"}
 {f"Persona do canal: {persona}" if persona else ""}
 Use role 'hook' no primeiro segmento, 'chapter' para aberturas de capítulo, 'cta' no último e 'body' no resto.
 Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
+    package_block = locked_package_block(doc, style)
+    if package_block:
+        prompt += "\n" + package_block
     if lessons:
         prompt += "\n" + lessons_block(lessons, stage="roteiro")
     context = {
@@ -166,6 +180,8 @@ Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
         # muda com a lista de lições: o pedido não é o mesmo de antes
         "lessons_key": lessons_key(lessons or []),
     }
+    if package_block:
+        context["package"] = package_block  # o pedido muda com o pacote travado
     result, provider_id = _llm("script", SCRIPT_SYSTEM, prompt, SCRIPT_SCHEMA, context, project_id, job_id)
     data = result.data
     new_doc = doc.model_copy(deep=True)
@@ -190,7 +206,8 @@ Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
     new_doc.scenes = []
     new_doc.script_approved = False
     new_doc.storyboard_approved = False
-    if data.get("title"):
+    if data.get("title") and not package_block:
+        # Pacote travado: o título é o do candidato escolhido e o roteiro não o troca.
         new_doc.title = data["title"].strip()[:200]
     new_doc.sources = [Source(**s) for s in data.get("sources", []) if s.get("title")]
     return ProjectDoc.model_validate(new_doc.model_dump()), provider_id
@@ -1185,29 +1202,105 @@ def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = No
     if characters is None:
         characters = characters_mod.for_doc(doc, (channel or {}).get("style_bible") or {})
     prompt = storyboard_prompt(doc, style, beats, budget, channel=channel, styles=catalog, characters=characters)
+    # Avatar do apresentador (só com o avatar efetivo no vídeo): as poses entram no pedido e as cenas ganham os campos
+    # achatados da dica (pose, palavra, modo).
+    presenter = _storyboard_presenter(doc, style, channel)
+    schema = storyboard_schema(presenter is not None)
+    if presenter is not None:
+        prompt += "\n" + "\n".join([*presenter_scenes.prompt_lines(presenter), PRESENTER_FIELDS_LINE])
     context = _storyboard_context(doc, style, beats, budget)
-    result, provider_id = _llm("storyboard", STORYBOARD_SYSTEM, prompt, STORYBOARD_SCHEMA, context, project_id, job_id)
+    result, provider_id = _llm("storyboard", STORYBOARD_SYSTEM, prompt, schema, context, project_id, job_id)
     best = _attempt(doc, style, beats, result.data, keep_segments, budget, set(catalog), characters)
+    best_data: object = result.data
     severe = best.graves
     retried = False
     if severe:
         retry_context = {**context, "retry": True, "issues": [i.as_dict() for i in severe]}
         try:
             second, second_provider = _llm("storyboard", STORYBOARD_SYSTEM, prompt + _correction_block(result.data, severe),
-                                           STORYBOARD_SCHEMA, retry_context, project_id, job_id)
+                                           schema, retry_context, project_id, job_id)
         except Exception as exc:  # noqa: BLE001 - a primeira resposta continua valendo
             log.warning("a correção do storyboard falhou; fica a primeira resposta: %s", exc)
         else:
             retried = True
             other = _attempt(doc, style, beats, second.data, keep_segments, budget, set(catalog), characters)
             if len(other.graves) < len(severe):
-                best, provider_id = other, second_provider
+                best, provider_id, best_data = other, second_provider, second.data
     issues = best.issues
     swapped = _swap_invented_cards(best.doc, issues)
     if swapped:
         issues = [i for i in issues if not (i.code == "numero_inventado" and i.severity == storyboard_check.GRAVE)]
         issues += swapped
+    if presenter is not None:
+        issues += _apply_presenter_hints(best.doc, style, presenter, best_data)
     return best.doc, provider_id, _review(best.doc, budget, issues, retried)
+
+
+PRESENTER_FIELDS_LINE = ('Campos da dica em cada cena: presenter_pose (id da pose), presenter_at (a palavra) e '
+                         'presenter_mode ("reacao" ou "explica"); null nos três quando a cena não tem avatar.')
+
+
+def storyboard_schema(with_presenter: bool) -> dict[str, Any]:
+    """O esquema do storyboard; com o avatar, as cenas ganham os campos achatados da dica (`PRESENTER_HINT_FIELDS`).
+    Sem avatar, o esquema é exatamente o de antes (a saída de quem não usa não muda)."""
+    if not with_presenter:
+        return STORYBOARD_SCHEMA
+    schema = json.loads(json.dumps(STORYBOARD_SCHEMA))
+    item = schema["properties"]["scenes"]["items"]
+    item["properties"].update(json.loads(json.dumps(PRESENTER_HINT_FIELDS)))
+    item["required"] = list(item["properties"])
+    return schema
+
+
+def _storyboard_presenter(doc: ProjectDoc, style: StyleSpec, channel: dict[str, Any] | None) -> Presenter | None:
+    """O avatar efetivo nas cenas deste projeto (canal, projeto e estilo), ou None."""
+    from studio.core.project import presenter as presenter_core
+
+    if not doc.channel_id:
+        return None
+    try:
+        bible = (channel or {}).get("style_bible")
+        source = bible if isinstance(bible, dict) else presenter_core.channel_presenter(doc.channel_id)
+        return presenter_core.effective(source, doc, style, purpose="video")
+    except Exception as exc:  # noqa: BLE001 - sem avatar o storyboard sai como antes
+        log.warning("avatar do apresentador indisponível no storyboard: %s", exc)
+        return None
+
+
+def _apply_presenter_hints(doc: ProjectDoc, style: StyleSpec, presenter: Presenter, data: object) -> list[Issue]:
+    """Converte as dicas do LLM (`presenter_pose/at/mode` por cena) em `Scene.presenter` com `source="auto"` (a
+    distribuição trata como sugestão) e roda a distribuição com os tempos estimados pela velocidade da fala: as regras
+    (espaçamento, cena séria, CTA feliz, abertura) já valem na tela antes da narração. O build distribui de novo com
+    os tempos reais."""
+    from studio.core.project import presenter as presenter_core
+
+    by_key: dict[str, dict[str, Any]] = {}
+    for item in (data.get("scenes") if isinstance(data, dict) else None) or []:
+        if isinstance(item, dict) and isinstance(item.get("key"), str):
+            by_key[item["key"]] = item
+    for scene in doc.scenes:
+        if scene.presenter is not None and scene.presenter.source == "manual":
+            continue
+        hint = by_key.get(f"{scene.segment_id}:{scene.part}") or {}
+        pose = presenter_core.resolve_pose(presenter, _text(hint.get("presenter_pose"), 60)) if (
+            hint.get("presenter_pose")) else None
+        if pose is None:
+            continue
+        mode = hint.get("presenter_mode") if hint.get("presenter_mode") in ("reacao", "explica") else "reacao"
+        try:
+            scene.presenter = ScenePresenter(pose=pose.id, at=_text(hint.get("presenter_at"), 60) or None, mode=mode,
+                                             source="auto")
+        except ValueError:
+            scene.presenter = ScenePresenter(pose=pose.id, mode=mode, source="auto")
+    lang = doc.primary_language
+    wpm = style.script.words_per_minute.get(lang, 150)
+    vertical = style.format.height > style.format.width
+    try:
+        return presenter_scenes.assign(doc, presenter, presenter_scenes.estimate_words(doc, lang, wpm),
+                                       vertical=vertical)
+    except Exception as exc:  # noqa: BLE001 - a distribuição roda de novo no build
+        log.warning("a distribuição do avatar falhou no storyboard: %s", exc)
+        return []
 
 
 TRANSLATE_SYSTEM = """Você é tradutor e adaptador de roteiros de vídeo narrado. Traduza mantendo o tom, o ritmo de fala e
@@ -1411,19 +1504,27 @@ def translate(doc: ProjectDoc, target_lang: str, *, screen_only: bool = False, p
     head = "Segmentos (cada um com o tempo que tem para ser falado; não passe dele):" if budgets else "Segmentos:"
     body = (head + "\n" + "\n".join(_segment_line(s) for s in segments)) if segments else (
         "A narração já está traduzida: traduza só os textos de tela.")
+    # Pacote travado: o título traduzido é o do candidato escolhido, e o texto da thumb vai junto dos textos de tela.
+    chosen = doc.chosen_package() if doc.package.locked else None
+    if chosen is not None and chosen.thumb_text and not doc.thumbnail.text.get(target_lang):
+        overlays = [*overlays, {"id": PACKAGE_THUMB_TEXT_ID, "text": chosen.thumb_text}]
+    title = doc.effective_title()
     prompt = f"""Traduza de {lang_name(source)} para {lang_name(target_lang)}.
-Título: {doc.title}
+Título: {title}
 """ + body + (
         "\nTextos de tela (curtos; números com algarismos, adapte a unidade e o separador: 475 MI → 475M, "
         "3,5% → 3.5%):\n" + "\n".join(f"- {o['id']}: {o['text']}" for o in overlays) if overlays else "")
-    terms = glossary_prompt(glossary or [], [doc.title] + [t["text"] for t in segments + overlays], target_lang)
+    terms = glossary_prompt(glossary or [], [title] + [t["text"] for t in segments + overlays], target_lang)
     if terms:
         prompt += "\n\n" + terms
-    context = {"target_lang": target_lang, "title": doc.title, "segments": segments, "overlays": overlays}
+    context = {"target_lang": target_lang, "title": title, "segments": segments, "overlays": overlays}
     result, provider_id = _llm("translate", TRANSLATE_SYSTEM, prompt, TRANSLATE_SCHEMA, context, project_id, job_id)
     new_doc = doc.model_copy(deep=True)
     seg_text = {} if screen_only else {item["id"]: item["text"] for item in result.data.get("segments", [])}
     ov_text = {item["id"]: item["text"] for item in result.data.get("overlays", [])}
+    thumb_text = (ov_text.pop(PACKAGE_THUMB_TEXT_ID, "") or "").strip()
+    if thumb_text:
+        new_doc.thumbnail.text[target_lang] = thumb_text[:60]
     for seg in new_doc.segments:
         if seg.id in seg_text and seg_text[seg.id].strip():
             seg.text[target_lang] = seg_text[seg.id].strip()
@@ -1456,17 +1557,24 @@ def metadata(doc: ProjectDoc, style: StyleSpec, lang: str, *, chapters: list[str
              lessons: list[dict[str, Any]] | None = None) -> tuple[ProjectDoc, str]:
     text = doc.full_text(lang)
     sources = "\n".join(f"- {s.title} {s.url}".strip() for s in doc.sources)
+    locked = locked_title_and_thumb(doc, lang)
     prompt = f"""Idioma: {lang_name(lang)}
 Plataforma principal: {"YouTube Shorts / TikTok / Reels" if style.format.type == "short" else "YouTube (vídeo longo)"}
-Título de trabalho: {doc.title}
+Título de trabalho: {doc.effective_title()}
 Capítulos (tempo e nome): {", ".join(chapters or []) or "(nenhum)"}
 Fontes: {sources or "(nenhuma)"}
 Narração completa:
 {text[:6000]}"""
+    if locked is not None:
+        prompt += (f'\n\nO título e o texto da thumbnail já foram escolhidos e não mudam: título "{locked[0]}", '
+                   f'thumbnail "{locked[1]}". Escreva só a descrição, as tags e as hashtags (devolva o título e o '
+                   "texto da thumbnail iguais a esses).")
     if lessons:
         prompt += "\n\n" + lessons_block(lessons, stage="título, descrição e miniatura")
-    context = {"title": doc.title, "topic": doc.topic, "summary": text[:300], "chapters": chapters or [],
+    context = {"title": doc.effective_title(), "topic": doc.topic, "summary": text[:300], "chapters": chapters or [],
                "lessons_key": lessons_key(lessons or [])}
+    if locked is not None:
+        context["locked"] = list(locked)
     result, provider_id = _llm("metadata", METADATA_SYSTEM, prompt, METADATA_SCHEMA, context, project_id, job_id)
     data = result.data
     new_doc = doc.model_copy(deep=True)
@@ -1474,11 +1582,617 @@ Narração completa:
     if sources and "http" not in description:
         description += "\n\nFontes:\n" + sources
     new_doc.metadata[lang] = Metadata(
-        title=(data.get("title") or doc.title)[:100],
+        title=(locked[0] if locked is not None else (data.get("title") or doc.title))[:100],
         description=description.strip(),
         tags=[t for t in data.get("tags", []) if t][:30],
         hashtags=[h if h.startswith("#") else f"#{h}" for h in data.get("hashtags", []) if h][:15],
     )
-    if data.get("thumbnail_text"):
+    if locked is not None:
+        if locked[1]:
+            new_doc.thumbnail.text[lang] = locked[1][:60]
+    elif data.get("thumbnail_text"):
         new_doc.thumbnail.text[lang] = data["thumbnail_text"][:60]
     return ProjectDoc.model_validate(new_doc.model_dump()), provider_id
+
+
+# --- Pacote: título e thumb antes do roteiro (seção A do desenho) ---------------------------------------------------
+PACKAGE_THUMB_TEXT_ID = "package#thumb_text"
+"""Id do texto da thumb do pacote no pedido de tradução (vai junto dos textos de tela)."""
+
+
+def locked_title_and_thumb(doc: ProjectDoc, lang: str) -> tuple[str, str] | None:
+    """(título, texto da thumb) fixos pelo pacote travado, no idioma `lang`; None sem pacote travado. No idioma
+    principal valem os do candidato escolhido; nos outros, a tradução já gravada (ou o original, se não houver)."""
+    chosen = doc.chosen_package()
+    if not doc.package.locked or chosen is None:
+        return None
+    if lang == doc.primary_language:
+        return chosen.title or doc.title, chosen.thumb_text
+    meta = doc.metadata.get(lang)
+    title = (meta.title if meta is not None and meta.title else "") or chosen.title or doc.title
+    return title, doc.thumbnail.text.get(lang) or chosen.thumb_text
+
+
+def locked_package_block(doc: ProjectDoc, style: StyleSpec) -> str:
+    """O bloco do pedido do roteiro com o pacote travado (título, thumb e promessa); vazio sem pacote travado."""
+    chosen = doc.chosen_package()
+    if not doc.package.locked or chosen is None:
+        return ""
+    hook = f"{style.script.hook_max_s:.0f}"
+    thumb = f'Thumb: "{chosen.thumb_text}"' + (f", {chosen.concept}" if chosen.concept else "")
+    promise = chosen.promise or "(a da thumb e do título)"
+    return (f'Título fixo: "{chosen.title or doc.title}"; {thumb}; Promessa: "{promise}". '
+            f"Os primeiros {hook}s mostram ou dizem a promessa da thumb; não troque o título.")
+
+
+# Títulos do pacote (medidos em 17/11 nos longos de 6 concorrentes do nicho, 75 vídeos): os outliers (≥ 5x a mediana do
+# canal) têm mediana de 38 caracteres; os vídeos medianos, 54. O título aprovado pelo dono ("GTA 6: sua PRIMEIRA
+# SEMANA, dia a dia") tem 37. O manual continua até `PACKAGE_TITLE_MAX` (90).
+PACKAGE_TITLE_IDEAL = 45
+"""Alvo dos títulos gerados (ideal de 30 a 45 caracteres)."""
+PACKAGE_TITLE_TARGET = 50
+"""Acima disso a checagem da thumb avisa (título gerado)."""
+PACKAGE_TITLE_GEN_MAX = 55
+"""Teto rígido dos títulos gerados: acima disso o candidato é descartado (nunca é cortado)."""
+PACKAGE_TITLE_CAPS_MAX = 2
+"""Palavras em CAIXA ALTA (fora siglas e números) num título gerado."""
+THUMB_TOTAL_WORDS_MAX = 3
+"""Texto total visível da thumb (palavra grande + pílula + cartões). Nas 16 vencedoras do nicho: metade sem texto e o
+resto com 1 ou 2 palavras."""
+SEAL_WORDS = {"CONFIRMADO", "CONFIRMADA", "OFICIAL", "IMPRENSA", "BOATO", "RUMOR", "TESTADO", "VERIFICADO", "FATO",
+              "SEM SPOILER", "SEM SPOILERS", "SPOILER FREE", "NOVO", "URGENTE", "EXCLUSIVO"}
+"""Selos de verificação e rótulos genéricos: não vão na thumb (o selo fica no vídeo)."""
+
+THUMB_RULES = """Regras de thumb (vêm dos vídeos que estouram no nicho: metade das vencedoras não tem texto, o resto tem 1 ou
+2 palavras):
+- TEXTO TOTAL VISÍVEL de no máximo 3 palavras, somando palavra grande + pílula + cartões. Ideal: 1 ou 2 palavras
+  (ou nenhuma). A imagem (rosto, avatar, lugar) carrega o resto.
+- "pill" é null e "cards" é [] por padrão. Só use se o conceito depender deles, e eles contam nas 3 palavras.
+- Selo de verificação (CONFIRMADO, IMPRENSA, BOATO, TESTADO, OFICIAL) e rótulo genérico (SEM SPOILER, NOVO) não vão na
+  thumb.
+- numero-lista sem cartões: número gigante + 1 palavra ("7 DIAS", "1ª SEMANA"), com a figura ao lado.
+- O texto da thumb complementa o título, não repete: nenhuma palavra em comum de preferência (no máximo 1).
+- Protagonista grande: um rosto ocupando 30% ou mais da altura. Cena larga, colagem ou pessoa pequena perdem.
+- Um foco só, quadro claro e saturado (pôr do sol, magenta, laranja, verde-água). Nada de tarja preta nem quadro escuro.
+- Logo no canto quando houver logo na lista de ativos.
+- O avatar do apresentador ajuda quando é grande e expressivo junto de um elemento do tema; pequeno, perde.
+- Cada candidato é uma variante real: template, fundo, pose ou palavra diferentes. Nunca dois iguais.
+- Personagens oficiais (de jogo, filme ou série) nunca são desenhados por IA: só aparecem em quadros oficiais da lista."""
+
+TITLE_RULES = f"""Regras de título (medidas no nicho: os vídeos que estouram têm títulos de ~38 caracteres; os medianos, ~54):
+- Curto: de 30 a {PACKAGE_TITLE_IDEAL} caracteres, nunca mais de {PACKAGE_TITLE_GEN_MAX} (conte; título maior é descartado).
+- Uma ideia só, com gancho ou curiosidade. Sem segunda promessa: nada de parênteses com outra promessa, nada de
+  "e o que...", nada de listar 3 coisas.
+- No máximo {PACKAGE_TITLE_CAPS_MAX} palavras em CAIXA ALTA (siglas e números não contam), na palavra que dá o punch.
+- Honesto e cumprível pelo vídeo; nada de clickbait enganoso.
+- Ângulos diferentes entre os candidatos, não paráfrases: promessa direta, lacuna de curiosidade, alerta ("NÃO
+  faça..."), número/prazo, pergunta, prova pessoal ("testei..."). Diga o ângulo no "concept".
+Exemplos de forma (de um canal de GTA; copie a forma, não o assunto):
+- Bons: "GTA 6: sua PRIMEIRA SEMANA, dia a dia" (37, o aprovado pelo dono do canal); "GTA 6: NÃO jogue dia 19 sem ver
+  o mapa" (38, 57x a mediana); "GTA 6 TROUXE O QUE A GENTE MAIS PEDIA…" (38, 47x); "GTA 6: NÃO jogue igual ao GTA 5"
+  (31, 14x); "GTA 6: POR QUE SÓ 30 FPS?" (25, 9x).
+- Ruins (longos, duas promessas, sem punch): "GTA 6 já no console: o plano da primeira semana (e o que não comprar
+  ainda)"; "GTA 6: o que fazer, o que evitar e o que tem prazo depois de começar"; "GTA 6: itens da Ultimate saem por
+  capítulo e o Online fica pra depois"; "GTA 6: upgrade pra Ultimate, 60 FPS e GTA+ antes de abrir a carteira"; "GTA 6:
+  testei salvar, o 1º dinheiro e a 1ª garagem (e o golpe do cheat)"."""
+
+PACKAGE_SYSTEM = """Você é o estrategista de embalagem (título + thumbnail) de um canal do YouTube. Antes do roteiro, você
+propõe pares candidatos de título e thumb para o tema. O título é curto e tem punch; a thumb tem 1 ou 2 palavras que
+são a promessa. A "promise" é uma frase com o que o espectador ganha: ela vira o contrato do gancho do roteiro, então
+tem de ser cumprível com o tema.
+Templates de thumb: heroi-palavra (quadro com personagem/rosto grande + 1 palavra), avatar-reage (avatar do
+apresentador grande reagindo + objeto do tema, 0 a 2 palavras), lugar-mapa (quadro aéreo de um lugar + 1-2 palavras),
+numero-lista (número gigante + 1 palavra, sem cartões), versus (dois lados comparados), livre (Short vertical: 2-3
+palavras no centro).
+Use só os templates e ativos (ids) que o pedido lista; para o que não existir, use null.
+
+""" + TITLE_RULES + "\n\n" + THUMB_RULES
+
+PACKAGE_RESEARCH_MAX = 12
+_TEMPLATE_NEEDS_PRESENTER = {"avatar-reage"}
+_STOPWORDS = {"de", "da", "do", "das", "dos", "e", "o", "a", "os", "as", "em", "no", "na", "nos", "nas", "um", "uma",
+              "para", "pra", "por", "com", "que", "the", "of", "and", "to", "in", "on", "for", "is"}
+
+
+@dataclass
+class PackageAssets:
+    """O que a thumb pode usar (o LLM só cita o que está aqui). Itens do manifesto da biblioteca do canal
+    (`library/thumbkit/<canal>/thumbkit.json`) e as poses do avatar boas para thumb."""
+
+    frames: list[dict[str, Any]] = field(default_factory=list)
+    cutouts: list[dict[str, Any]] = field(default_factory=list)
+    logos: list[dict[str, Any]] = field(default_factory=list)
+    objects: list[dict[str, Any]] = field(default_factory=list)
+    poses: list[dict[str, Any]] = field(default_factory=list)
+    """[{id, emotions, aliases, facing}] (vazio: sem avatar nesta thumb)."""
+    allow_editorial: bool = False
+    presenter_height: float = 1.5
+    presenter_crop: str = "busto"
+    presenter_outline: int = 10
+
+    def ids(self, kind: str) -> set[str]:
+        return {str(item.get("id")) for item in getattr(self, kind) if item.get("id")}
+
+    def prompt_lines(self) -> str:
+        def line(items: list[dict[str, Any]], extra: str = "tags") -> str:
+            return "; ".join(f"{i['id']}" + (f" ({', '.join(i.get(extra) or [])})" if i.get(extra) else "")
+                             for i in items[:30]) or "(nenhum)"
+
+        rows = [f"Fundos (quadros): {line(self.frames)}", f"Recortes de personagem: {line(self.cutouts)}",
+                f"Objetos: {line(self.objects)}"]
+        rows.append(f"Poses do avatar (com emoções): {line(self.poses, 'emotions')}" if self.poses
+                    else "Avatar do apresentador: não usar nesta thumb.")
+        if not self.allow_editorial:
+            rows.append("Material oficial (quadros de trailer, capa, logos) não está liberado neste canal.")
+        return "\n".join(rows)
+
+
+def thumbkit_manifest(channel_id: str | None) -> list[dict[str, Any]]:
+    """Itens do manifesto da biblioteca de thumbs do canal (vazio sem canal, sem manifesto ou com manifesto
+    ilegível). Aceita a lista pura ou `{"items": [...]}`."""
+    if not channel_id:
+        return []
+    path = get_settings().library_dir / "thumbkit" / channel_id / "thumbkit.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    return [i for i in items or [] if isinstance(i, dict) and i.get("id")]
+
+
+def package_assets(doc: ProjectDoc, style: StyleSpec, bible: dict[str, Any] | None) -> PackageAssets:
+    """Ativos que a thumb deste projeto pode usar: a biblioteca do canal (sem o material oficial quando o canal não o
+    libera) e as poses do avatar, só com o avatar ligado (canal ou projeto) e o estilo pedindo avatar na thumb."""
+    allow = effective_allow_editorial(style.thumbnail.allow_editorial, bible)
+    items = [i for i in thumbkit_manifest(doc.channel_id) if allow or not i.get("editorial")]
+    by_kind: dict[str, list[dict[str, Any]]] = {"frame": [], "cutout": [], "logo": [], "object": []}
+    from studio.media.thumb_assets import QUALITY_LOW, cutout_quality
+
+    kit_dir = get_settings().library_dir / "thumbkit" / doc.channel_id if doc.channel_id else None
+    for item in items:
+        if item.get("kind") == "cutout" and cutout_quality(item, kit_dir) == QUALITY_LOW:
+            continue  # recorte que sai torto na thumb (marcado ou cortado sem encaixe): o LLM nem vê
+        by_kind.setdefault(str(item.get("kind") or "frame"), []).append(item)
+    from studio.core.project import presenter as presenter_core
+
+    presenter = Presenter.from_bible(bible)
+    # A mesma regra do resolvedor da thumb (`presenter.effective(purpose="thumb")`): canal/projeto, Short, poses_off.
+    active = presenter_core.effective(presenter, doc, style, purpose="thumb") if style.thumbnail.presenter else None
+    poses: list[dict[str, Any]] = []
+    if active is not None:
+        poses = [{"id": p.id, "emotions": p.emotions, "aliases": p.aliases, "facing": p.facing}
+                 for p in active.thumb_poses()]
+    return PackageAssets(frames=by_kind["frame"], cutouts=by_kind["cutout"], logos=by_kind["logo"],
+                         objects=by_kind["object"], poses=poses, allow_editorial=allow,
+                         presenter_height=presenter.thumb_height, presenter_crop=presenter.thumb_crop,
+                         presenter_outline=presenter.thumb_outline_px)
+
+
+def _topic_words(text: str) -> set[str]:
+    return {w for w in (normalize_token(t) for t in re.split(r"\W+", text or "")) if len(w) >= 4 and w not in _STOPWORDS}
+
+
+def package_references(channel_id: str | None, topic: str, limit: int = PACKAGE_RESEARCH_MAX) -> list[dict[str, Any]]:
+    """Títulos de outliers para o pedido e para a tela comparar: a última pesquisa do canal (concorrentes e buscas,
+    sem Shorts) e o radar (multiplicador contra a mediana do canal no radar; sem mediana, sem `mult`). Só vídeos
+    longos; os do radar só quando o título tem alguma palavra do tema. Nunca derruba o pacote."""
+    from studio.db import session_scope
+    from studio.models import RadarChannel, RadarVideo, ResearchRun
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(vid: str, title: str, channel: str, views: Any, mult: Any, source: str) -> None:
+        if not vid or vid in seen or not title:
+            return
+        seen.add(vid)
+        out.append({"id": vid, "title": title, "channel": channel or "", "views": views,
+                    "mult": round(float(mult), 2) if isinstance(mult, (int, float)) else None, "source": source})
+
+    try:
+        with session_scope() as s:
+            if channel_id:
+                run = (s.query(ResearchRun).filter(ResearchRun.channel_id == channel_id,
+                                                   ResearchRun.status != "falhou")
+                       .order_by(ResearchRun.created_at.desc()).first())
+                signals = dict(run.signals or {}) if run is not None else {}
+                rows: list[dict[str, Any]] = []
+                for key in ("competitors", "keywords"):
+                    rows += [r for r in ((signals.get(key) or {}).get("items") or []) if isinstance(r, dict)]
+                rows = [r for r in rows if r.get("format") != "short"]
+                rows.sort(key=lambda r: -float(r.get("mult") or r.get("ratio") or 0))
+                for r in rows:
+                    add(str(r.get("id") or r.get("youtube_id") or ""), str(r.get("title") or ""),
+                        str(r.get("channel") or ""), r.get("views"), r.get("mult", r.get("ratio")), "pesquisa")
+            words = _topic_words(topic)
+            if words and len(out) < limit:
+                videos = (s.query(RadarVideo).filter(RadarVideo.duration_s > 180)
+                          .order_by(RadarVideo.views.desc()).limit(400).all())
+                meds: dict[str, float] = {}
+                for v in videos:
+                    if not (_topic_words(v.title) & words):
+                        continue
+                    if v.channel_youtube_id not in meds:
+                        ch = s.get(RadarChannel, v.channel_youtube_id)
+                        recent = dict(ch.recent or {}) if ch is not None else {}
+                        med = recent.get("med")
+                        meds[v.channel_youtube_id] = float(med) if isinstance(med, (int, float)) else 0.0
+                    med = meds[v.channel_youtube_id]
+                    add(v.youtube_id, v.title, "", v.views, (v.views / med) if med else None, "radar")
+    except Exception as exc:  # noqa: BLE001 - referência é um extra; sem ela o pacote sai igual
+        log.warning("não consegui ler as referências do pacote: %s", exc)
+    out.sort(key=lambda r: -(r["mult"] or 0))
+    return out[:limit]
+
+
+def _cut_words(text: str, n: int) -> str:
+    return " ".join(text.split()[:n])
+
+
+def _title_overlap(thumb_text: str, title: str) -> tuple[str, list[str]]:
+    """Deixa no texto da thumb no máximo 1 palavra que já está no título (as outras saem)."""
+    title_words = {normalize_token(w) for w in re.split(r"\W+", title) if w}
+    kept: list[str] = []
+    repeated = 0
+    removed: list[str] = []
+    for word in thumb_text.split():
+        token = normalize_token(re.sub(r"\W+", "", word))
+        if token and token not in _STOPWORDS and token in title_words:
+            repeated += 1
+            if repeated > 1:
+                removed.append(word)
+                continue
+        kept.append(word)
+    return " ".join(kept), removed
+
+
+def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str]) -> str | None:
+    """Pose citada (id, apelido ou emoção) que existe; senão a 1ª ainda não usada; senão None."""
+    if not poses:
+        return None
+    name = normalize_token(str(hint or ""))
+    if name:
+        for key in ("id", "aliases", "emotions"):
+            for pose in poses:
+                values = pose.get(key)
+                names = [values] if isinstance(values, str) else list(values or [])
+                if any(normalize_token(v) == name for v in names) and pose["id"] not in used:
+                    return pose["id"]
+    free = [p["id"] for p in poses if p["id"] not in used]
+    return free[0] if free else poses[0]["id"]
+
+
+def _frame_layer(frame: dict[str, Any] | None, template: str) -> dict[str, Any]:
+    if frame is None:
+        return BgLayer(kind="gradient", ref="vice").model_dump()
+    ref = str(frame["id"])
+    file = str(frame.get("file") or "")
+    zoom = 1.4 if "trailer_2" in (ref + file).lower() else 1.0
+    focus = frame.get("focus_x")
+    if template == "heroi-palavra" and isinstance(focus, (int, float)):
+        zoom = max(zoom, 1.5)  # sem recorte: o rosto do quadro vai para o terço direito
+    return BgLayer(kind="frame", ref=ref, t=frame.get("t"), zoom=zoom,
+                   focus_x=float(focus) if isinstance(focus, (int, float)) else 0.5).model_dump()
+
+
+_ACRONYM = re.compile(r"^(?:[IVX]+|[A-Z]{1,3}\d*|[A-Z]*\d+[A-Z0-9ªº]*)$")
+_SECOND_PROMISE = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _caps_words(title: str) -> list[int]:
+    """Índices das palavras em CAIXA ALTA do título (2+ letras), fora siglas curtas (GTA, FPS, PS5, VI) e números."""
+    out: list[int] = []
+    for i, word in enumerate(title.split()):
+        letters = re.sub(r"[\W_]", "", word)
+        if len(re.sub(r"\d", "", letters)) < 2 or not letters.isupper():
+            continue
+        if any(ch.isdigit() for ch in letters) or (len(letters) <= 3 and _ACRONYM.match(letters)):
+            continue
+        out.append(i)
+    return out
+
+
+def normalize_generated_title(title: str, max_len: int = PACKAGE_TITLE_GEN_MAX) -> tuple[str | None, list[str]]:
+    """Título gerado pelo LLM já no formato do pacote, ou None quando ainda passa do teto (`max_len`) e precisa ser
+    refeito. Nunca corta no meio: só tira a segunda promessa entre parênteses no fim (quando o resto fica de pé) e
+    deixa em caixa alta só as `PACKAGE_TITLE_CAPS_MAX` primeiras palavras gritadas. Devolve também as notas."""
+    notes: list[str] = []
+    title = " ".join(title.split())
+    match = _SECOND_PROMISE.search(title)
+    if match:
+        rest = title[:match.start()].rstrip(" -–—:,;")
+        if len(rest) >= 15:
+            notes.append(f"CORRIGIDO: saiu a segunda promessa do título: {match.group().strip()}")
+            title = rest
+    caps = _caps_words(title)
+    if len(caps) > PACKAGE_TITLE_CAPS_MAX:
+        words = title.split()
+        for i in caps[PACKAGE_TITLE_CAPS_MAX:]:
+            words[i] = words[i].lower()
+        for i in range(caps[PACKAGE_TITLE_CAPS_MAX], len(words)):  # "antes DE jogar" vira "antes de jogar"
+            if words[i].isupper() and re.sub(r"\W", "", words[i]).lower() in _STOPWORDS:
+                words[i] = words[i].lower()
+        title = " ".join(words)
+        title = title[:1].upper() + title[1:]
+        notes.append(f"CORRIGIDO: título com {len(caps)} palavras em caixa alta (máximo {PACKAGE_TITLE_CAPS_MAX})")
+    if len(title) > max_len:
+        return None, notes
+    return title, notes
+
+
+_MONTHS = {"jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6, "jul": 7, "ago": 8, "set": 9, "out": 10,
+           "nov": 11, "dez": 12}
+_DATE_TAIL = r"(?:\s*/\s*(?P<m>[01]?\d)|\s+de\s+(?P<mn>[a-zç]{3})[a-zç]*)"
+_TITLE_DATE = re.compile(
+    # prazo: "SOME dia 20", "até o dia 20", "acaba 20/11"; data com mês: "dia 20/11", "dia 3 de dezembro". "dia 1
+    # do jogo" e "em 7 dias" não são data
+    r"\b(?:at[ée]|antes\s+d[eo]|acaba|termina|expira|vence|some|sai\s+do\s+ar)\s+(?:o\s+)?(?:dia\s+)?"
+    r"(?P<d>[0-3]?\d)" + _DATE_TAIL + r"?\b(?!\s*(?:dias?|horas?|semanas?|meses|anos?|fps|%|x)\b)"
+    r"|\bdia\s+(?P<d3>[0-3]?\d)(?=" + _DATE_TAIL.replace("?P<m>", "?P<m3>").replace("?P<mn>", "?P<mn3>") + r")"
+    r"|\b(?P<d2>[0-3]?\d)\s*/\s*(?P<m2>[01]?\d)\b", re.IGNORECASE)
+
+
+def title_deadline(title: str, today: date) -> date | None:
+    """A data que o título promete ("SOME dia 20", "até 20/11", "dia 20 de novembro"), ou None. Sem mês, vale o mês
+    de `today` (ou o seguinte, quando o dia já passou há mais de 15 dias)."""
+    m = _TITLE_DATE.search(title)
+    if not m:
+        return None
+    day = int(m.group("d") or m.group("d3") or m.group("d2"))
+    month_raw = m.group("m") or m.group("m3") or m.group("m2")
+    month_name = m.group("mn") or m.group("mn3") or ""
+    month = int(month_raw) if month_raw else _MONTHS.get(month_name[:3].lower(), 0) or today.month
+    year = today.year
+    try:
+        found = date(year, month, day)
+    except ValueError:
+        return None
+    if not month_raw and not month_name and (today - found).days > 15:
+        try:
+            found = date(year + (month == 12), month % 12 + 1, day)
+        except ValueError:
+            return None
+    elif (today - found).days > 180:  # "20/01" em novembro: é o ano que vem
+        found = found.replace(year=year + 1)
+    if m.group("d2") and abs((found - today).days) > 60:
+        return None  # "24/7" não é data: a forma solta só vale perto de hoje
+    return found
+
+
+def thumb_visible_words(text: str | None, pill: str | None = None, cards: list[Any] | None = None) -> int:
+    """Texto total visível da thumb: palavra grande + pílula + rótulos dos cartões."""
+    labels = [c.get("label") if isinstance(c, dict) else getattr(c, "label", "") for c in cards or []]
+    return sum(len(str(t or "").split()) for t in [text, pill, *labels])
+
+
+def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list[str], is_long: bool,
+                          title_max: int = PACKAGE_TITLE_GEN_MAX,
+                          existing_titles: list[str] | None = None,
+                          rejected: list[str] | None = None,
+                          used_poses: set[str] | None = None,
+                          publish_date: date | None = None) -> list[PackageCandidate]:
+    """Pós-processamento determinístico dos candidatos do LLM: título curto (`normalize_generated_title`; o que passa
+    de `title_max` é descartado e vai para `rejected`, nunca é cortado), texto da thumb até 3 palavras e no máximo 1
+    palavra do título, pílula e cartões só quando cabem nas 3 palavras do texto total visível (selo de verificação
+    nunca), template permitido, ativos que existem (o que não existe vira o fallback do template: o próximo quadro da
+    biblioteca, ou o degradê), uma pose diferente por candidato e ids `pkc_`. Os avisos ficam em `score["notes"]`.
+    Com `publish_date`, título com prazo ("SOME dia 20") anterior à publicação ganha AVISO e vai para o fim da lista
+    (o vídeo sairia com o título vencido)."""
+    allowed = [t for t in templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses] or ["heroi-palavra"]
+    if not is_long:
+        allowed = ["livre"]
+    frames = assets.frames
+    frame_ids = {str(f["id"]): f for f in frames}
+    cutouts, objects = assets.ids("cutouts"), assets.ids("objects") | assets.ids("cutouts")
+    seen_titles = {normalize_token(t) for t in existing_titles or []}
+    used_poses = used_poses if used_poses is not None else set()
+    out: list[PackageCandidate] = []
+    frame_turn = 0
+    for item in _list(raw):
+        if not isinstance(item, dict):
+            continue
+        raw_title = " ".join(str(item.get("title") or "").split())
+        if not raw_title:
+            continue
+        title, notes = normalize_generated_title(raw_title, title_max)
+        if title is None:
+            if rejected is not None:
+                rejected.append(raw_title)
+            continue
+        if normalize_token(title) in seen_titles:
+            continue
+        seen_titles.add(normalize_token(title))
+        deadline = title_deadline(title, publish_date) if publish_date else None
+        if deadline and publish_date and deadline < publish_date:
+            notes.append(f"AVISO: o título promete um prazo ({deadline:%d/%m}) que vence antes da publicação "
+                         f"prevista ({publish_date:%d/%m}); troque o ângulo")
+        thumb_text = " ".join(str(item.get("thumb_text") or "").split()).upper()
+        if len(thumb_text.split()) > THUMB_WORDS_MAX:
+            thumb_text = _cut_words(thumb_text, THUMB_WORDS_MAX)
+            notes.append(f"CORRIGIDO: texto da thumb cortado em {THUMB_WORDS_MAX} palavras")
+        thumb_text, removed = _title_overlap(thumb_text, title)
+        if removed:
+            notes.append(f"CORRIGIDO: o texto da thumb repetia o título ({', '.join(removed)} saiu)")
+        template = str(item.get("template") or "")
+        if template not in allowed:
+            if template:
+                notes.append(f"CORRIGIDO: template {template} indisponível, usei {allowed[len(out) % len(allowed)]}")
+            template = allowed[len(out) % len(allowed)]
+        hint = str(item.get("background_hint") or "").strip()
+        frame = frame_ids.get(hint)
+        if frame is None and frames:
+            if hint:
+                notes.append(f"CORRIGIDO: fundo {hint} não existe na biblioteca")
+            frame = frames[frame_turn % len(frames)]
+            frame_turn += 1
+        chars = [str(c) for c in _list(item.get("characters_hint")) if str(c) in cutouts][:2]
+        missing = [str(c) for c in _list(item.get("characters_hint")) if str(c) not in cutouts]
+        if missing:
+            notes.append(f"CORRIGIDO: sem recorte de {', '.join(missing[:3])} (o personagem fica no fundo)")
+        pose_id = None
+        if is_long and assets.poses and (template in ("avatar-reage", "numero-lista") or item.get("presenter_pose")):
+            pose_id = _pick_pose(item.get("presenter_pose"), assets.poses, used_poses)
+            if pose_id:
+                used_poses.add(pose_id)
+        if pose_id and chars and template != "versus":
+            # Um foco só: avatar e personagem recortado juntos se atropelam no mesmo lado da thumb.
+            if template in ("avatar-reage", "numero-lista"):
+                notes.append(f"CORRIGIDO: {', '.join(chars)} saiu (o avatar é o foco desta thumb)")
+                chars = []
+            else:
+                notes.append("CORRIGIDO: o avatar saiu (o personagem é o foco desta thumb)")
+                used_poses.discard(pose_id)
+                pose_id = None
+        # Pílula e cartões: desligados por padrão; ficam só se cabem no texto total visível (3 palavras).
+        pill = " ".join(str(item.get("pill") or "").split()).upper()[:24] or None
+        if pill and pill in SEAL_WORDS:
+            notes.append(f"CORRIGIDO: o selo {pill} não vai na thumb")
+            pill = None
+        if pill and thumb_visible_words(thumb_text, pill) > THUMB_TOTAL_WORDS_MAX:
+            notes.append(f"CORRIGIDO: a pílula {pill} saiu (texto total acima de {THUMB_TOTAL_WORDS_MAX} palavras)")
+            pill = None
+        cards = [{"asset": c.get("asset") if c.get("asset") in objects else None,
+                  "label": " ".join(str(c.get("label") or "").split())[:30]}
+                 for c in _list(item.get("cards")) if isinstance(c, dict)][:3] if template == "numero-lista" else []
+        if cards and thumb_visible_words(thumb_text, pill, cards) > THUMB_TOTAL_WORDS_MAX:
+            notes.append(f"CORRIGIDO: os cartões saíram (texto total acima de {THUMB_TOTAL_WORDS_MAX} palavras)")
+            cards = []
+        layers: dict[str, Any] = {
+            "template": template,
+            "background": _frame_layer(frame, template),
+            "big_vi": bool(chars) and template in ("heroi-palavra", "lugar-mapa") and assets.allow_editorial,
+            "characters": [{"asset": c, "x": 0.72 - 0.18 * i, "y": 1.0, "h": 0.95} for i, c in enumerate(chars)],
+            "text": ({"words": thumb_text, "fill": "yellow",
+                      "pos": {"livre": "center", "lugar-mapa": "center", "heroi-palavra": "top"}.get(template, "left"),
+                      "size": 0.6 if template == "numero-lista" else 0.3} if thumb_text else None),
+            "pill": pill,
+            "cards": cards,
+            "logo": "corner" if assets.logos and assets.allow_editorial else "none",
+        }
+        if pose_id:
+            # Busto à direita em todos, menos no heroi-palavra (avatar pequeno de corpo à esquerda, embaixo do texto
+            # de cima): à esquerda, o busto ficaria embaixo da coluna de texto.
+            busto = template != "heroi-palavra"
+            layers["presenter"] = {"pose": pose_id, "side": "right" if busto else "left",
+                                   "crop": assets.presenter_crop if busto else "meio",
+                                   "h": assets.presenter_height if busto else 0.9,
+                                   "outline_px": assets.presenter_outline}
+        candidate = PackageCandidate(
+            title=title, thumb_text=thumb_text, promise=str(item.get("promise") or ""),
+            concept=str(item.get("concept") or ""), layers=ThumbLayers.model_validate(layers), source="auto",
+            score={"notes": notes} if notes else {},
+        )
+        out.append(candidate)
+    # título vencido na publicação vai para o fim: os bons ficam na frente da tela
+    out.sort(key=lambda c: any(str(n).startswith("AVISO: o título promete um prazo")
+                               for n in (c.score.get("notes") or [])))
+    return out
+
+
+def _offline_candidates(doc: ProjectDoc, n: int, templates: list[str]) -> dict[str, Any]:
+    """Candidatos por regra (modo offline/testes, sem LLM): variações curtas do tema."""
+    base = " ".join((doc.topic or doc.title).split()) or "Vídeo"
+    base = base if len(base) <= 30 else (base[:30].rsplit(" ", 1)[0] or base[:30])
+    words = ["TUDO", "SEGREDO", "ANTES", "VALE?", "ERRO", "NOVO", "7 DIAS", "FINAL"]
+    shapes = ["{b}: o que ninguém conta", "{b} em minutos", "Tudo sobre {b}", "{b}: vale a pena?",
+              "O ERRO com {b}", "{b}: antes de começar", "{b}: o guia", "{b} em 7 pontos"]
+    return {"candidates": [
+        {"title": shapes[i % len(shapes)].format(b=base), "thumb_text": words[i % len(words)],
+         "promise": f"Entender {base} sem perder tempo.", "concept": "palavra gigante sobre quadro claro",
+         "template": templates[i % len(templates)], "background_hint": None, "characters_hint": [],
+         "presenter_pose": None, "pill": None, "cards": []}
+        for i in range(n)]}
+
+
+def _retry_block(rejected: list[str], kept: list[str], missing: int) -> str:
+    return (f"\n\nREFAÇA {missing} candidato(s). Estes títulos passaram de {PACKAGE_TITLE_GEN_MAX} caracteres e foram "
+            f"descartados: {'; '.join(rejected)}. Cada título novo com no máximo {PACKAGE_TITLE_IDEAL} caracteres, "
+            f"uma ideia só, ângulo diferente destes que ficaram: {'; '.join(kept) or '(nenhum)'}.")
+
+
+def package_ideas(doc: ProjectDoc, channel: dict[str, Any], style: StyleSpec, n_titles: int, n_thumbs: int, *,
+                  assets: PackageAssets | None = None, references: list[dict[str, Any]] | None = None,
+                  lessons: list[dict[str, Any]] | None = None, existing_titles: list[str] | None = None,
+                  today: date | None = None, project_id: str | None = None,
+                  job_id: str | None = None, publish_date: date | None = None) -> tuple[list[PackageCandidate], str]:
+    """Candidatos do pacote (título + thumb), já normalizados, e o provedor usado. Pede `max(n_titles, n_thumbs)`
+    pares com pelo menos `n_thumbs` conceitos de thumb diferentes. Título gerado acima do teto é descartado e o LLM
+    refaz os que faltam uma vez; o que ainda passar fica de fora, com aviso no 1º candidato. No Short: só título e
+    texto da capa, template `livre`. `channel` é o de `_channel_info` (nome, nicho, persona, style_bible).
+    `publish_date`: publicação prevista (o prompt pede para não prometer prazo que vença antes dela; sem ela, vale
+    hoje). Se a 2ª chamada falhar, seguem os candidatos da 1ª (com o aviso dos descartados)."""
+    today = today or date.today()
+    publish_date = publish_date or today
+    is_long = style.format.type != "short"
+    assets = assets or package_assets(doc, style, channel.get("style_bible"))
+    templates = list(style.thumbnail.templates) if is_long else ["livre"]
+    templates = [t for t in templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses] or ["heroi-palavra"]
+    if not is_long:
+        templates, n_thumbs = ["livre"], 1
+    n = max(1, n_titles, n_thumbs)
+    refs = references or []
+    ref_lines = "\n".join(
+        f"- {r['title']}" + (f" ({r['mult']:.1f}x)" if r.get("mult") else "") + (f" · {r['channel']}" if r.get("channel") else "")
+        for r in refs[:PACKAGE_RESEARCH_MAX]) or "(nenhuma)"
+    prompt = f"""Data de hoje: {today.isoformat()}
+Publicação prevista: {publish_date.isoformat()} (não prometa no título prazo que vença antes disso)
+Canal: {channel.get("name") or "(sem nome)"}{f" · nicho: {channel['niche']}" if channel.get("niche") else ""}
+Tema: {doc.topic or doc.title}
+Título de trabalho: {doc.title}
+Briefing: {doc.brief or "(nenhum)"}
+Idioma: {lang_name(doc.primary_language)}
+Formato: {"Short vertical: só título e texto da capa (2-3 palavras, centro da tela)" if not is_long else "vídeo longo"}
+Quantos candidatos: {n} (pelo menos {min(n, n_thumbs)} thumbs de conceito diferente: template, fundo, pose ou palavra)
+Títulos: de 30 a {PACKAGE_TITLE_IDEAL} caracteres, nunca mais de {PACKAGE_TITLE_GEN_MAX}; um ângulo diferente por candidato.
+Thumb: texto total visível (palavra + pílula + cartões) de no máximo {THUMB_TOTAL_WORDS_MAX} palavras, ideal 1-2; pill null e cards [].
+Templates permitidos (ordem de preferência): {", ".join(templates)}
+Títulos que já existem (não repita): {"; ".join(existing_titles or []) or "(nenhum)"}
+Títulos que estouraram no nicho (referência de forma, não copie):
+{ref_lines}
+Ativos disponíveis (cite só estes ids):
+{assets.prompt_lines()}"""
+    if lessons:
+        prompt += "\n\n" + lessons_block(lessons, stage="título, descrição e miniatura")
+    context = {"topic": doc.topic or doc.title, "title": doc.title, "n": n, "templates": templates,
+               "is_long": is_long, "lessons_key": lessons_key(lessons or [])}
+    offline = get_settings().offline
+    if offline:
+        data, provider_id = _offline_candidates(doc, n, templates), "offline"
+    else:
+        result, provider_id = _llm("package", PACKAGE_SYSTEM, prompt, PACKAGE_SCHEMA, context, project_id, job_id)
+        data = result.data
+    rejected: list[str] = []
+    used_poses: set[str] = set()
+    candidates = _normalize_candidates(data.get("candidates"), assets=assets, templates=templates, is_long=is_long,
+                                       existing_titles=existing_titles, rejected=rejected, used_poses=used_poses,
+                                       publish_date=publish_date)
+    if rejected and len(candidates) < n and not offline:
+        missing = n - len(candidates)
+        kept = [c.title for c in candidates]
+        try:
+            retry, _ = _llm("package", PACKAGE_SYSTEM, prompt + _retry_block(rejected, kept, missing), PACKAGE_SCHEMA,
+                            {**context, "retry": rejected}, project_id, job_id)
+            still: list[str] = []
+            extra = _normalize_candidates(retry.data.get("candidates"), assets=assets, templates=templates,
+                                          is_long=is_long, existing_titles=[*(existing_titles or []), *kept],
+                                          rejected=still, used_poses=used_poses, publish_date=publish_date)[:missing]
+        except Exception as exc:  # noqa: BLE001 - a 2ª rodada é bônus: falhou, seguem os bons da 1ª com o aviso
+            if not candidates:
+                raise
+            log.warning("pacote: a chamada que refaz os títulos descartados falhou (%s); seguem %d candidato(s)",
+                        exc, len(candidates))
+        else:
+            candidates += extra
+            rejected = still
+    if not candidates:
+        raise ValueError("o LLM não devolveu nenhum candidato de título e thumb"
+                         + (f" (títulos longos demais: {'; '.join(rejected)})" if rejected else ""))
+    if rejected:
+        log.warning("pacote: %d título(s) gerado(s) acima de %d caracteres descartado(s): %s", len(rejected),
+                    PACKAGE_TITLE_GEN_MAX, rejected)
+        first = candidates[0]
+        notes = [*(first.score.get("notes") or []),
+                 f"AVISO: {len(rejected)} título(s) gerado(s) acima de {PACKAGE_TITLE_GEN_MAX} caracteres descartado(s)"]
+        first.score = {**first.score, "notes": notes}
+    return candidates[:n], provider_id
