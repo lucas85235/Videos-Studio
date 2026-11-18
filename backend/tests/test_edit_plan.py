@@ -104,7 +104,7 @@ def _fixture_pool() -> Pool:
 
 def test_mock_project_comes_out_with_shots_and_fx_within_quotas(isolated_settings, monkeypatch):
     pool = _fixture_pool()
-    monkeypatch.setattr(media_pool, "gather", lambda doc, style: pool)
+    monkeypatch.setattr(media_pool, "gather", lambda doc, style, **_: pool)
     doc = _mock_project(LONG)
     style = get_style(doc.style_id, doc.style_overrides)
     grammar = grammar_for(style)

@@ -366,7 +366,7 @@ def _fake_storyboard(monkeypatch, pid: str) -> None:
         planned, "falso", {"counts": {"scenes": 4, "new_images": 4, "reused": 0, "cards": 0, "real_hints": 3}}))
     monkeypatch.setattr(tasks.media_search, "prefetch", lambda *a, **k: 0)
     # O acervo (ADR 0004 §3.4) busca na web por conta própria quando está online: aqui só interessa a busca por cena.
-    monkeypatch.setattr(tasks.media_pool, "gather", lambda doc, style: Pool())
+    monkeypatch.setattr(tasks.media_pool, "gather", lambda doc, style, **_: Pool())
 
 
 def test_storyboard_queues_the_search_as_its_own_job(online, monkeypatch):

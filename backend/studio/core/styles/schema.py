@@ -79,8 +79,10 @@ CAMERA_MOVES = (
     "parallax",  # 2.5D: camadas pelo mapa de profundidade (studio.media.depth); sem o modelo vira ken_burns_in
 )
 # Movimentos que os LLMs (storyboard, estilo gerado) podem escolher sozinhos. O parallax fica de fora: baixa um modelo de
-# ~99 MB e custa CPU por imagem, então só entra quando o usuário (ou o editor, a pedido dele) escolhe.
-AUTO_CAMERA_MOVES = tuple(m for m in CAMERA_MOVES if m != "parallax")
+# ~99 MB e custa CPU por imagem, então só entra quando o usuário (ou o editor, a pedido dele) escolhe. O `push` ficou
+# aqui até o `renderer-fx` desenhar o movimento (VisualLayer, aproximação reta no foco); agora é automático.
+NOT_AUTO_CAMERA_MOVES = frozenset({"parallax"})
+AUTO_CAMERA_MOVES = tuple(m for m in CAMERA_MOVES if m not in NOT_AUTO_CAMERA_MOVES)
 TRANSITIONS = ("cut", "flash", "fade_black", "glitch", "light_leak", "zoom_blur", "film_burn", "static_burst")
 EFFECTS = (
     "grain",
@@ -257,6 +259,17 @@ class VoiceSpec(StrictModel):
     """Pausa entre segmentos de narração."""
 
 
+def normalize_mix(mix: dict[str, float]) -> dict[str, float]:
+    """A mistura por nível somando 1 (pesos → frações, 6 casas). Já normalizada (soma 1 ± 1e-4), volta igual: a
+    validação é idempotente e o padrão fica exatamente `DEFAULT_SOURCE_MIX`."""
+    total = sum(mix.values())
+    if total <= 0:
+        raise ValueError("a mistura de fontes precisa de pelo menos um nível com fração maior que zero")
+    if abs(total - 1.0) <= 1e-4:
+        return dict(mix)
+    return {k: round(v / total, 6) for k, v in mix.items()}
+
+
 def _check_tiers(value: list[str], label: str) -> list[str]:
     for tier in value:
         if tier not in SOURCE_TIERS:
@@ -269,7 +282,9 @@ class SourcePolicy(StrictModel):
     número de cenas; o resto é a mistura-alvo por nível de fonte."""
 
     mix: dict[str, float] = dict(DEFAULT_SOURCE_MIX)
-    """Fração-alvo do tempo de tela por nível (`SOURCE_TIERS`)."""
+    """Fração-alvo do tempo de tela por nível (`SOURCE_TIERS`). Sempre soma 1: o que vier é lido como pesos e
+    normalizado na validação (`{"stock": 1, "ai": 1}` vira 0,5 e 0,5). Nível ausente vale 0. Os consumidores
+    (storyboard, planejador, métricas) leem `mix[nível]` direto como fração do tempo de tela."""
     ai_max_share: float = Field(default=0.20, ge=0, le=1)
     """Teto de imagem de IA, em fração do tempo de tela."""
     ai_photo: bool = False
@@ -291,7 +306,11 @@ class SourcePolicy(StrictModel):
                 raise ValueError(f"nível de fonte desconhecido: {key} (válidos: {', '.join(SOURCE_TIERS)})")
             if share < 0:
                 raise ValueError(f"fração negativa para {key}")
-        return value
+        return normalize_mix(value)
+
+    def share(self, tier: str) -> float:
+        """A fração-alvo do tempo de tela de um nível (0 quando ele não está na mistura)."""
+        return self.mix.get(tier, 0.0)
 
     @field_validator("hook")
     @classmethod
@@ -327,7 +346,8 @@ class ArtSpec(StrictModel):
     @classmethod
     def _legacy_sources(cls, data: Any) -> Any:
         """Estilo antigo (sem `sources`): a política padrão. As chaves de `sources_mix` que são nível de fonte entram
-        na mistura por cima do padrão; o `{"ai_image": 1.0}` de sempre (campo que nunca foi lido) fica só o padrão."""
+        na mistura por cima do padrão e o resultado é normalizado para somar 1 (`SourcePolicy._mix`); o
+        `{"ai_image": 1.0}` de sempre (campo que nunca foi lido) fica só o padrão."""
         if not isinstance(data, dict) or "sources" in data:
             return data
         legacy = data.get("sources_mix")
@@ -407,6 +427,10 @@ class HookGrammar(StrictModel):
     sfx_per_min: float | None = Field(default=None, ge=0, le=120)
 
 
+HUMOR_MEME_PER_MIN = 0.5
+"""Cota de piadas (meme ou "meme sem meme") por minuto quando o estilo liga o humor e não escreve `meme_per_min`."""
+
+
 class EditGrammar(StrictModel):
     """Gramática de edição (ADR 0004 §3.0): ritmo dos planos, densidade de eventos por minuto e travas. O planejador
     (`workers/pipeline/edit_plan`) transforma isto em `Scene.shots` e `Scene.fx`; `grammar_for` dá a efetiva."""
@@ -424,7 +448,10 @@ class EditGrammar(StrictModel):
     punch_scale: Range = Range(min=1.12, max=1.30)
     shake_per_min: float = Field(default=0.3, ge=0, le=60)
     text_pop_per_min: float = Field(default=2.0, ge=0, le=60)
-    meme_per_min: float = Field(default=0.5, ge=0, le=30)
+    meme_per_min: float = Field(default=0.0, ge=0, le=30)
+    """Padrão 0 (conservador, como `humor="none"`): o humor entra por preset ou pelo perfil da referência, nunca por
+    padrão num vídeo de true crime ou mistério. Com `humor` ligado e sem `meme_per_min` escrito, vale
+    `HUMOR_MEME_PER_MIN` (a cota das piadas do planejador, com ou sem meme)."""
     annot_per_min: float = Field(default=0.5, ge=0, le=30)
     sfx_per_min: float = Field(default=4.0, ge=0, le=120)
     sfx_on_cut_share: float = Field(default=0.3, ge=0, le=1)
@@ -436,7 +463,9 @@ class EditGrammar(StrictModel):
     max_still_s: float = Field(default=6.0, gt=0, le=60)
     slow_zoom_share: float = Field(default=0.30, ge=0, le=1)
     static_share_min: float = Field(default=0.25, ge=0, le=1)
-    humor: Literal["none", "light", "meme"] = "light"
+    humor: Literal["none", "light", "meme"] = "none"
+    """none: nada cômico (padrão); light: gag sem meme ("meme sem meme"); meme: memes da biblioteca. Batida séria
+    (`core.editing.serious.is_serious`) nunca recebe humor, seja qual for o valor."""
     caption_emphasis: Literal["none", "color", "pop", "emoji"] = "pop"
     effects_policy: Literal["global", "per_tier"] = "per_tier"
     """per_tier: grão e vinheta só no material de arquivo (a timeline marca `clean` em captura, gráfico e próprio)."""
@@ -446,6 +475,14 @@ class EditGrammar(StrictModel):
     """Ids das referências cujo perfil gerou esta gramática."""
     tolerance: float = Field(default=0.35, gt=0, le=3)
     """Tolerância relativa das cotas (aderência e conferência)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _humor_quota(cls, data: Any) -> Any:
+        """Humor ligado (preset `humor: light`) sem cota escrita: as piadas usam a cota de antes, não o 0 do padrão."""
+        if isinstance(data, dict) and data.get("humor", "none") != "none" and "meme_per_min" not in data:
+            return {**data, "meme_per_min": HUMOR_MEME_PER_MIN}
+        return data
 
     @field_validator("sfx_palette")
     @classmethod

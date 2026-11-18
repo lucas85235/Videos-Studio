@@ -186,17 +186,20 @@ Campos novos nas classes existentes:
 
 `backend/studio/core/sources.py` (novo, só funções puras):
 - `TIERS`, a ordem de reserva `FALLBACK=["own","capture","official","free","stock","graphic","ai"]`;
-- `prov_of_scene(scene) -> Prov`, a fonte única de verdade usada pela timeline e pelas métricas. Regras:
-  - `media.tier` quando existir;
+- `prov_of_scene(scene, doc=None) -> Prov`, a fonte única de verdade usada pela timeline e pelas métricas. Regras (como ficaram na revisão da fundação):
+  - cartão de dado (`stat`, `compare`, `chart`, `map`) → `graphic`: o painel cobre o fundo desfocado; os cartões de texto contam pelo fundo;
+  - `media.tier` quando existir; senão pelo tipo e pela origem (`prov_of_media`). Link só é `free` com licença livre declarada (CC*, domínio público); sem ela é `official`;
+  - com `doc`, a cena que reaproveita outra vale pelo visual da cena dona (raiz `upload` → `own`, `stock` → `stock`); referência solta → `graphic` (fundo animado);
   - `ai_image`/`ai_video` → `ai`;
   - `stock` → `stock`;
   - `upload` → `own`;
   - cartão sem visual → `graphic`.
+- `MediaRef` de nível `official` (tipo `official`, clipe de trailer, link sem licença, YouTube) sai sempre com `editorial=True`. A exceção é o arquivo do próprio usuário (`upload`, `library`), em que ele pode declarar que tem os direitos.
 
 `backend/studio/core/project/pool.py` (novo):
 - `PoolItem{id:str("p12"), tier:Prov, media:"image|clip|capture|meme", desc, tags, entities, path|None, poster, url, page_url, start_s, dur_s, rects, w, h, license, credit, editorial:bool, dhash, score}`;
-- `Pool{items, gathered_at, warnings}`;
-- `load_pool(project_id)` e `save_pool(...)` em `<pasta do projeto>/pool.json`.
+- `Pool{items, gathered_at, warnings, searched}` (`searched`: a coleta já rodou o `media_find` pago, e o job não o chama de novo);
+- `load_pool(project_id)` e `save_pool(...)` em `<pasta do projeto>/pool.json`. O job grava sempre o resultado da coleta, vazio também, e passa o mesmo `Pool` ao storyboard (`authoring.storyboard(pool=...)`) e ao anexo.
 
 `backend/studio/core/editing/profile.py` (novo):
 - `EditProfile` com os blocos `pace`, `camera`, `materials`, `overlays`, `captions`, `audio`, `speech`, `humor`, `recurring` e `meta{campo:{confidence,origin}}`, exatamente como no desenho REFERÊNCIA §1;
@@ -211,22 +214,25 @@ Campos novos nas classes existentes:
   - `hook=["own","official","capture","free"]`;
   - `official_max_clip_s=4.0`, `official_max_share=0.35`, `require_ai_reason=True`.
 - Um `model_validator` cobre o legado: estilo sem `sources` e com `sources_mix=={"ai_image":1.0}` recebe a política padrão. Chaves válidas de `sources_mix` são copiadas para `sources.mix`. O campo `sources_mix` fica marcado como obsoleto.
+- `sources.mix` sempre soma 1: o que vier é lido como pesos e normalizado na validação (`share(nível)` devolve 0 para nível ausente).
 - `EditSpec.grammar: EditGrammar = EditGrammar()`, com:
   - `editor:"off|auto"="auto"`, `intensity:0..3=2`;
   - `shot_median_s=2.6`, `shot_cv=0.6`, `shot_max_s=7.0`, `micro_per_min=1.0`, `burst_prob=0.15`;
   - `punch_per_min=3.0`, `punch_scale=Range(1.12,1.30)`, `shake_per_min=0.3`;
-  - `text_pop_per_min=2.0`, `meme_per_min=0.5`, `annot_per_min=0.5`;
+  - `text_pop_per_min=2.0`, `meme_per_min=0` (revisão: padrão conservador; com `humor` ligado e sem valor escrito vale 0,5, a cota das piadas do planejador), `annot_per_min=0.5`;
   - `sfx_per_min=4.0`, `sfx_on_cut_share=0.3`, `sfx_palette:dict[str,float]={}`, `sfx_tonal_ok=True`;
   - `switch_per_min=2.0`, `max_still_s=6.0`, `slow_zoom_share=0.30`, `static_share_min=0.25`;
-  - `humor:"none|light|meme"="light"`, `caption_emphasis:"none|color|pop|emoji"="pop"`;
+  - `humor:"none|light|meme"="none"` (revisão: o humor entra por preset ou perfil, nunca por padrão num true crime), `caption_emphasis:"none|color|pop|emoji"="pop"`;
   - `effects_policy:"global|per_tier"="per_tier"`, `music_drop_before_reveal=True`;
   - `hook:HookGrammar|None`, `profile_refs:list[str]=[]`, `tolerance=0.35`.
-- Movimento de câmera novo: `push`.
+- Movimento de câmera novo: `push`. A revisão da fundação o tirou de `AUTO_CAMERA_MOVES` (`NOT_AUTO_CAMERA_MOVES`) até o `renderer-fx` desenhar o movimento; com o `renderer-fx` mesclado (`VisualLayer`, aproximação reta no foco), ele voltou ao automático e só o `parallax` fica manual.
+- `core/editing/serious.py`: `is_serious(scene, text)` = `mark.serious` OU termo sério do playbook na fala (os termos saíram de `workers/pipeline/presenter.py`). O editor-planejador e o apresentador usam a mesma regra.
 - Função pura `grammar_for(style) -> EditGrammar`. No Short, quando o valor está no padrão, ela troca: mediana 1.6, `max_still` 3.0, SFX 6/min, `ai_max_share` 0.30.
 
 `backend/studio/workers/pipeline/schemas.py`, só campos, achatados:
 - `STORYBOARD_SOURCES += ["pool"]`;
-- por cena: `pool_id: NS`, `ai_reason: NS`, `role: enum`, `emphasis: NSA` (até 3), `serious: bool`, `gag_payoff: NS`, `gag_line: NS`, `gag_at: NS`;
+- `STORYBOARD_EDIT_FIELDS`, por cena: `pool_id: NS`, `ai_reason: NS`, `role: enum`, `emphasis: NSA` (até 3, cortado no `BeatMark`: a saída estrita não aceita `maxItems`), `serious: bool`, `gag_payoff: NS`, `gag_line: NS`, `gag_at: NS`; `STORYBOARD_EDIT_DEFAULTS` dá `role` e `serious` para mocks;
+- a revisão da fundação chegou a tirar esses campos do `STORYBOARD_SCHEMA` de produção até o `storyboard-real` explicá-los; com ele mesclado, o pedido do storyboard sempre os explica e eles ficam no esquema de produção;
 - os campos `real_kind`, `real_query` e `real_note` (:110) ficam como reserva.
 
 `renderer/src/types.ts`, espelho do contrato **resolvido** (quadros relativos ao início da cena):
@@ -239,20 +245,22 @@ scene.fx?: {type:FxType;from:number;dur:number;params:Record<string,unknown>}[];
 captions.words[i].emph?: 'color'|'pop'|'emoji'; captions.words[i].emoji?: string;
 ```
 Contrato de áudio na timeline (`timeline.py:426`):
-- evento SFX = `{type, at, scene, lib_id?, gain_db?}`;
-- chave nova `timeline.music_drops=[{at, dur}]`, emitida só quando houver drop.
+- evento SFX = `{type, start, scene_id, lib_id?, gain_db?}`. São as chaves que `_sfx_event` já emite e que o mixer (`build.py`) e a conferência de áudio leem. `start` está em segundos no vídeo, já descontado o lead. `lib_id` e `gain_db` saem só quando preenchidos. O SFX de evento do `timeline-fx` soma `at` (o ponto forte, na palavra) e `scene`, que a biblioteca de inserts usa para calcular o `start` pelo ataque do som; o SFX de corte antigo sai igual (mesmo hash).
+- chave nova `timeline.music_drops=[{at, dur}]`, emitida só quando houver drop (a revisão da fundação propôs `start`; o `timeline-fx`, o editor e a mixagem já usam `at`, e ficou `at`).
 
 `backend/studio/providers/vision.py`:
 - interface `classify_frames(sheets:list[Path], schema:dict) -> list[dict]`;
 - `MockVision` determinístico, usando saturação e bordas.
 
 Encaixes vazios:
-- `workers/pipeline/media_pool.py: gather(doc, style) -> Pool` devolve vazio; `attach_chosen(doc, pool)` não faz nada;
-- `workers/pipeline/edit_plan.py: plan(doc, style, pool) -> None` não faz nada;
+- `workers/pipeline/media_pool.py: gather(doc, style, *, progress=None, cancelled=None) -> Pool` devolve vazio; `attach_chosen(doc, pool) -> list[Issue]` não faz nada;
+- `workers/pipeline/edit_plan.py: plan(doc, style, pool) -> list[Issue]` não faz nada;
 - `core/editing/metrics.py: fingerprint_from_timeline(timeline, doc) -> EditFingerprint` devolve zeros;
 - ligação em `workers/tasks.py`:
-  - `gather` antes de `authoring.storyboard` (~`:474`);
-  - `attach_chosen` e `edit_plan.plan` depois dele (`:484-497`);
+  - `gather` antes de `authoring.storyboard` (~`:474`), com progresso ("Juntando material real") e cancelamento do job; o resultado é sempre gravado em `pool.json`;
+  - `attach_chosen` e `edit_plan.plan` depois dele (`:484-497`), cada um sobre uma cópia do documento, que só vale se não houver exceção;
+  - as `Issue`s deles entram em `storyboard_review.issues`, e as contagens e a mensagem do commit são recalculadas do documento final; falha vira aviso em português, e o detalhe vai para o log;
+  - com `pool.searched`, o `media_find` depois do storyboard não roda;
   - o mesmo no piloto (`:731`).
 
 **Contrato com os outros itens:** tudo acima. Ninguém mais edita esses arquivos; se precisar, abre um PR pequeno na fundação.
@@ -636,7 +644,7 @@ Também: `api/routes_edit.py` com `POST /projects/{id}/reedit {intensity}`, que 
 - `clean=True` quando `effects_policy=per_tier` e a `prov` for `capture`, `graphic` ou `own`.
 
 Áudio:
-- `_scene_sfx` (:431) junta os SFX de evento: `{type, at, scene, lib_id?, gain_db?}`;
+- `_scene_sfx` (:431) junta os SFX de evento no formato que já existe, `{type, start, scene_id, lib_id?, gain_db?}`, mais `at` e `scene` (ver §3.0);
 - o SFX de transição continua igual quando não há `grammar` ativa.
 
 Câmera:
@@ -747,7 +755,7 @@ Rotas: `api/routes_library.py` com GET, POST e DELETE para SFX e memes, mais `PO
 
 Camadas alteradas:
 - `ClipLayer.tsx`: toca `MediaRef.video` em qualquer `kind` (hoje só o vídeo de IA, `:32`), com `OffthreadVideo`, `startFrom`, `playbackRate`, `hold` (congela no último quadro) e mudo.
-- `VisualLayer.tsx`: `push`/`static` e easing variável em `:68`; o `punch_zoom` do quadro 0 continua por compatibilidade.
+- `VisualLayer.tsx`: `push`/`static` e easing variável em `:68`; o `punch_zoom` do quadro 0 continua por compatibilidade. Com o `push` desenhado, ele saiu de `NOT_AUTO_CAMERA_MOVES` (`core/styles/schema.py`).
 - `EffectsLayer.tsx`: pula grão e vinheta quando `scene.clean`.
 - `Captions.tsx`: `emph` com cor de destaque, escala 1,3 e emoji (Noto Emoji). Substitui o realce de +6% de `:228`.
 - `sample.ts`: cena de exemplo com todos os eventos, todos os `shots` e um clipe.
@@ -804,7 +812,9 @@ Camadas alteradas:
 - `pages/StyleEditor.tsx`:
   - seção "Gramática de edição" com intensidade, cotas e humor;
   - seção "Fontes" com a mistura em `sources` e o teto de IA;
-  - esconder `sources_mix` e `new_image_ratio` (`StyleEditor.tsx:134`).
+  - esconder `sources_mix` e `new_image_ratio` (`StyleEditor.tsx:134`);
+  - a fundação já pôs `art.sources.mix` e `edit.grammar.sfx_palette` em `OPEN_MAPS` (apagar um nível não volta mais em silêncio).
+- Cena: `push` em `MOTIONS` (`ScenesTab.tsx:59`), com o rótulo "Aproximação reta" em `CAMERA_LABELS`. Os rótulos de `clip`/`capture`/`meme` e das origens `youtube`/`library`/`capture` já estão em `labels.ts`, e o select "Tipo" da mídia fica só leitura nesses tipos.
 - Projeto:
   - painel "Acervo": lista do `pool.json`, colar links oficiais, trocar candidato;
   - `EditScore` montado na Prévia e na revisão do storyboard;

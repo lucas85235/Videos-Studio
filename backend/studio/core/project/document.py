@@ -31,6 +31,8 @@ REAL_KINDS: tuple[str, ...] = ("photo", "news", "official")
 MediaKind = Literal["photo", "news", "official", "clip", "capture", "meme"]
 MEDIA_KINDS: tuple[str, ...] = ("photo", "news", "official", "clip", "capture", "meme")
 MediaSource = Literal["commons", "openverse", "pexels", "link", "upload", "youtube", "library", "capture"]
+# Arquivos do próprio usuário: ele declara se tem os direitos (o `editorial` não é forçado).
+OWN_MEDIA_SOURCES = frozenset({"upload", "library"})
 MEDIA_SOURCES: tuple[str, ...] = ("commons", "openverse", "pexels", "link", "upload", "youtube", "library", "capture")
 # Nível (origem) do material na tela, do mais real ao gerado: a hierarquia T0-T7 do ADR 0004. `core.sources` decide
 # o nível de cada cena (`prov_of_scene`), a fonte única usada pela timeline e pelas métricas.
@@ -79,7 +81,8 @@ class MediaRef(BaseModel):
     """Texto do crédito, sem o prefixo ("Fulano / Wikimedia Commons · CC BY-SA 4.0", "Rockstar Games"). O prefixo
     ("Foto:", "Imagem:") vem do idioma do vídeo (`credit_line`). Editável pelo usuário."""
     editorial: bool = False
-    """Material de terceiros com direitos (oficial, imprensa): aviso de Content ID e crédito obrigatório."""
+    """Material de terceiros com direitos (oficial, imprensa): aviso de Content ID e crédito obrigatório. Forçado em
+    material de nível `official` (ver `_third_party_is_editorial`)."""
     width: int | None = None
     height: int | None = None
     """Tamanho do original normalizado (px)."""
@@ -109,7 +112,7 @@ class MediaRef(BaseModel):
     rects: list[list[float]] = []
     """Retângulos de destaque na imagem (captura de página): `[x, y, w, h]` em fração (0 a 1) da largura/altura."""
     tier: Prov | None = None
-    """Nível do material (`Prov`); None: deduzido do `kind`/`source` por `core.sources.prov_of_scene`."""
+    """Nível do material (`Prov`); None: deduzido do `kind`/`source`/`license` por `core.sources.prov_of_media`."""
     pool_id: str = ""
     """Id do item do acervo do projeto (`pool.json`) de onde a mídia veio; vazio: anexada à mão."""
 
@@ -128,6 +131,20 @@ class MediaRef(BaseModel):
     @classmethod
     def _rects(cls, value: list[list[float]]) -> list[list[float]]:
         return [_unit_rect(r) for r in value]
+
+    @model_validator(mode="after")
+    def _third_party_is_editorial(self) -> MediaRef:
+        """Material oficial de terceiros (tipo `official` ou nível `official` por `core.sources.prov_of_media`: clipe
+        de trailer/gameplay, link sem licença livre, YouTube) é sempre `editorial`: aviso de Content ID e crédito
+        obrigatório. Exceção: arquivo do próprio usuário (`upload`, `library`), em que ele pode declarar que tem os
+        direitos (`media_from_upload(editorial=False)`). Não mexe na timeline (o campo não entra nela)."""
+        from studio.core.sources import prov_of_media  # sources importa este módulo
+
+        if self.editorial or self.source in OWN_MEDIA_SOURCES:
+            return self
+        if self.kind == "official" or prov_of_media(self) == "official":
+            self.editorial = True
+        return self
 
     def credit_line(self, lang: str) -> str:
         """Crédito na tela no idioma do vídeo ("Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0"); vazio sem crédito."""
@@ -403,6 +420,8 @@ BEAT_ROLES: tuple[str, ...] = BeatRole.__args__  # type: ignore[attr-defined]
 GagPayoff = Literal["meme", "freeze", "zoom", "sfx", "text"]
 GAG_PAYOFFS: tuple[str, ...] = GagPayoff.__args__  # type: ignore[attr-defined]
 EditOrigin = Literal["planner", "llm", "user"]
+EMPHASIS_MAX = 3
+"""Palavras de ênfase por batida (`BeatMark.emphasis`)."""
 
 
 def _check_at(value: str | None, *, required: bool) -> str | None:
@@ -502,16 +521,23 @@ class BeatMark(BaseModel):
     energia, se é séria (nada cômico) e a piada."""
 
     role: BeatRole = "breath"
-    emphasis: list[str] = Field(default_factory=list, max_length=3)
-    """Até 3 palavras faladas na batida (ênfase de legenda, texto que pula, ponto de corte)."""
+    emphasis: list[str] = []
+    """Até `EMPHASIS_MAX` palavras faladas na batida (ênfase de legenda, texto que pula, ponto de corte). O excesso
+    do LLM é cortado, não recusado (a saída estrita do CLI não aceita `maxItems`)."""
     energy: int = Field(default=1, ge=0, le=3)
     serious: bool = False
     gag: GagHint | None = None
 
-    @field_validator("emphasis")
+    @field_validator("emphasis", mode="before")
     @classmethod
-    def _emphasis(cls, value: list[str]) -> list[str]:
-        return [w for w in dict.fromkeys(" ".join(v.split()) for v in value) if w]
+    def _emphasis(cls, value: Any) -> Any:
+        """Espaços normalizados, sem vazias nem repetidas, e no máximo `EMPHASIS_MAX` (as primeiras ficam)."""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return value
+        clean = (" ".join(v.split()) if isinstance(v, str) else v for v in value)
+        return [w for w in dict.fromkeys(clean) if w != ""][:EMPHASIS_MAX]
 
 
 class Scene(BaseModel):

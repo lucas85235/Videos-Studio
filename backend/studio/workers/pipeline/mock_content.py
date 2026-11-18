@@ -78,12 +78,11 @@ _MOCK_SHOTS = ["wide", "close", "low_angle", "medium", "detail", "aerial"]
 
 
 def _mock_scene(key: str, kind: str = "image", source: str = "new", **fields: Any) -> dict[str, Any]:
-    from studio.workers.pipeline.schemas import STORYBOARD_SCHEMA
+    from studio.workers.pipeline.schemas import STORYBOARD_EDIT_DEFAULTS, STORYBOARD_SCHEMA
 
     props = STORYBOARD_SCHEMA["properties"]["scenes"]["items"]["properties"]
     base: dict[str, Any] = {k: None for k in props}
-    # Campos que o esquema estrito não deixa nulos (marcas de edição do ADR 0004).
-    base.update({"role": "breath", "serious": False})
+    base.update(STORYBOARD_EDIT_DEFAULTS)  # campos que o esquema estrito não deixa nulos (marcas do ADR 0004)
     base.update({"key": key, "kind": kind, "source": source})
     base.update(fields)
     return base

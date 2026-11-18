@@ -71,8 +71,9 @@ const KIND_ICONS: Record<MediaKind, typeof Camera> = {
   capture: AppWindow,
   meme: Smile,
 };
-const isRealKind = (kind: MediaKind | undefined): kind is RealKind => kind === 'photo' || kind === 'news' || kind === 'official';
 const KINDS: RealKind[] = ['photo', 'news', 'official'];
+/** O tipo que o usuário pode trocar ou reenviar (clipe, captura e meme vêm do acervo e ficam como estão). */
+const isRealKind = (kind: MediaKind | null | undefined): kind is RealKind => KINDS.includes(kind as RealKind);
 const FITS = ['auto', 'cover', 'contain'];
 const URL_MAX = 2000;
 const NEWS_OUTSIDE_IMAGE = 'O cartão de notícia só aparece em cena do tipo Imagem.';
@@ -910,8 +911,13 @@ export const RealMediaPanel: React.FC<Props> = ({ scene, index, doc, projectId, 
       />
 
       <div className="grid grid-cols-1 gap-2 @md:grid-cols-3">
-        <SmallSelect label="Tipo" value={m.kind} disabled={locked || busy} onChange={(v) => runEdit({ kind: v as RealKind })}>
-          {KINDS.map((k) => (
+        <SmallSelect
+          label="Tipo"
+          value={m.kind}
+          disabled={locked || busy || !isRealKind(m.kind)}
+          onChange={(v) => runEdit({ kind: v as RealKind })}
+        >
+          {(isRealKind(m.kind) ? KINDS : [m.kind]).map((k) => (
             <option key={k} value={k}>
               {label(REAL_KIND_LABELS, k)}
             </option>

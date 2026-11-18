@@ -18,8 +18,16 @@ from studio.providers import media_search
 from studio.workers import novelty
 from studio.workers.analytics import lessons as lessons_mod
 from studio.workers.jobs import JobContext, get_runner, job
-from studio.workers.pipeline import authoring, edit_plan, media_find, media_pool, video_clips
+from studio.workers.pipeline import (
+    authoring,
+    edit_plan,
+    media_find,
+    media_pool,
+    storyboard_check,
+    video_clips,
+)
 from studio.workers.pipeline.build import BuildCancelled, Builder
+from studio.workers.pipeline.storyboard_check import Issue
 
 log = logging.getLogger(__name__)
 
@@ -469,15 +477,19 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
     `media_find` próprio na fila."""
     project_id = ctx.project_id
     assert project_id
-    ctx.progress(0.1, "Planejando as cenas")
     doc = service.get_doc(project_id)
     style = get_style(doc.style_id, doc.style_overrides)
-    pool, edit_warnings = _gather_pool(project_id, doc, style)
+    ctx.progress(0.05, "Juntando material real")
+    pool, edit_issues = _gather_pool(ctx, project_id, doc, style)
+    ctx.progress(0.1, "Planejando as cenas")
     new_doc, provider, review = authoring.storyboard(
         doc, style, project_id=project_id, job_id=ctx.job_id,
-        channel=_channel_info(doc.channel_id), styles=authoring.style_catalog(style),
+        channel=_channel_info(doc.channel_id), styles=authoring.style_catalog(style), pool=pool,
     )
-    edit_warnings += _attach_and_plan(new_doc, style, pool)
+    new_doc, plan_issues = _attach_and_plan(new_doc, style, pool)
+    edit_issues += plan_issues
+    # A revisão (contagens e achados) sai do documento FINAL, depois do anexo do acervo e do planejador.
+    review = _final_review(new_doc, review, edit_issues, style=style, pool=pool)
     counts = review["counts"]
     message = f"Cenas planejadas ({provider}): {counts['scenes']} cenas, {counts['new_images']} imagens novas"
     version = service.commit(project_id, new_doc, message, author="ai")
@@ -492,6 +504,8 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
     warning: str | None = None
     if ctx.cancelled():
         pass  # cancelado: a busca na web (paga) não começa
+    elif pool.searched:
+        pass  # a coleta do acervo já rodou o `media_find` (pago): não roda duas vezes
     elif find_inline:
         found, warning = _find_media(ctx, new_doc)
         if found:
@@ -501,40 +515,73 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
         if find_job:
             result["media_find_job"] = find_job
     ctx.progress(1.0, "Cenas prontas para revisão")
-    warnings = [*edit_warnings, *([warning] if warning else [])]
+    warnings = [*(i.message for i in edit_issues if i.severity != storyboard_check.CORRIGIDO),
+                *([warning] if warning else [])]
     if warnings:
         result["warnings"] = warnings
     return result
 
 
-def _gather_pool(project_id: str, doc: Any, style: Any) -> tuple[Pool, list[str]]:
-    """Acervo de material real ANTES do storyboard (ADR 0004): coletado, gravado em `pool.json` (o storyboard lê de
-    lá com `load_pool`) e devolvido. Acervo vazio não grava nada. Falha vira aviso: o storyboard sai como antes."""
-    try:
-        pool = media_pool.gather(doc, style)
-        if pool.items or pool.warnings:
-            save_pool(project_id, pool)
-        return pool, list(pool.warnings)
-    except Exception as exc:  # noqa: BLE001 - sem acervo, o storyboard segue com IA e cartões
-        log.warning("a coleta do acervo falhou: %s", exc)
-        return Pool(), [f"O acervo de material real não saiu: {exc}"]
+POOL_FAILED = "O acervo de material real não saiu nesta rodada: o storyboard seguiu sem ele (o detalhe está no log)."
+ATTACH_FAILED = "A mídia escolhida do acervo não foi anexada: as cenas ficaram como o storyboard deixou."
+PLAN_FAILED = "O planejador de edição falhou: as cenas ficaram com um plano só, sem eventos."
 
 
-def _attach_and_plan(doc: Any, style: Any, pool: Pool) -> list[str]:
-    """Depois do storyboard e antes de gravar: anexa a mídia escolhida do acervo e planeja subplanos e eventos (no
-    próprio `doc`). Falha vira aviso e a cena fica como o storyboard deixou."""
-    warnings: list[str] = []
+def _gather_pool(ctx: JobContext, project_id: str, doc: Any, style: Any) -> tuple[Pool, list[Issue]]:
+    """Acervo de material real ANTES do storyboard (ADR 0004). Uma fonte só: o resultado da coleta é SEMPRE gravado
+    em `pool.json` (vazio também, com `gathered_at`) e é o mesmo `Pool` que o job passa ao storyboard e ao anexo, então
+    nenhum acervo velho de uma rodada anterior sobra no disco. Falha vira um acervo vazio com aviso (o detalhe vai para
+    o log): o storyboard sai como antes. Devolve o acervo e os avisos como achados da revisão."""
     try:
-        warnings += media_pool.attach_chosen(doc, pool)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("o anexo do acervo falhou: %s", exc)
-        warnings.append(f"A mídia do acervo não foi anexada: {exc}")
+        pool = media_pool.gather(doc, style, progress=lambda f, m: ctx.progress(0.05 + 0.05 * min(1.0, max(0.0, f)), m),
+                                 cancelled=ctx.cancelled)
+    except Exception:  # noqa: BLE001 - sem acervo, o storyboard segue com IA e cartões
+        log.warning("a coleta do acervo falhou", exc_info=True)
+        pool = Pool(warnings=[POOL_FAILED])
+    if pool.gathered_at is None:
+        pool = pool.model_copy(update={"gathered_at": utcnow().isoformat(timespec="seconds")})
     try:
-        edit_plan.plan(doc, style, pool)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("o planejador de edição falhou: %s", exc)
-        warnings.append(f"O planejador de edição falhou: {exc}")
-    return warnings
+        save_pool(project_id, pool)
+    except OSError:
+        log.warning("não deu para gravar o acervo do projeto %s", project_id, exc_info=True)
+    return pool, [Issue("acervo_aviso", storyboard_check.AVISO, w) for w in pool.warnings]
+
+
+def _as_issues(found: Any) -> list[Issue]:
+    """Os achados de um encaixe (`Issue`; texto solto vira aviso sem cena)."""
+    return [i if isinstance(i, Issue) else Issue("edicao_aviso", storyboard_check.AVISO, str(i)) for i in found or []]
+
+
+def _attach_and_plan(doc: Any, style: Any, pool: Pool) -> tuple[Any, list[Issue]]:
+    """Depois do storyboard e antes de gravar: anexa a mídia escolhida do acervo e planeja subplanos e eventos. Cada
+    passo roda numa CÓPIA do documento e só vale se terminar sem exceção e o resultado validar; senão, o documento
+    fica como estava antes do passo (nada aplicado pela metade) e sai um aviso em português (o detalhe vai para o log).
+    Devolve o documento final e os achados."""
+    issues: list[Issue] = []
+    steps = (("anexo do acervo", ATTACH_FAILED, lambda d: media_pool.attach_chosen(d, pool)),
+             ("planejador de edição", PLAN_FAILED, lambda d: edit_plan.plan(d, style, pool)))
+    for name, failed, step in steps:
+        work = doc.model_copy(deep=True)
+        try:
+            found = _as_issues(step(work))
+            work = type(doc).model_validate(work.model_dump())
+        except Exception:  # noqa: BLE001 - o storyboard continua valendo sem este passo
+            log.warning("o %s falhou", name, exc_info=True)
+            issues.append(Issue("edicao_falhou", storyboard_check.AVISO, failed))
+            continue
+        doc = work
+        issues += found
+    return doc, issues
+
+
+def _final_review(doc: Any, review: dict[str, Any], extra: list[Issue], *, style: Any = None,
+                  pool: Pool | None = None) -> dict[str, Any]:
+    """A revisão do storyboard recalculada sobre o documento final: as contagens (`review_counts`) e os achados do
+    storyboard mais os do acervo e do planejador, ordenados por gravidade."""
+    order = {storyboard_check.GRAVE: 0, storyboard_check.AVISO: 1, storyboard_check.CORRIGIDO: 2}
+    issues = [*review.get("issues", []), *(i.as_dict() for i in extra)]
+    counts = storyboard_check.review_counts(doc, int(review.get("counts", {}).get("budget", 0)), style=style, pool=pool)
+    return {**review, "counts": counts, "issues": sorted(issues, key=lambda i: order.get(i.get("severity"), 9))}
 
 
 def _find_media(ctx: JobContext, doc: Any) -> tuple[dict[str, Any] | None, str | None]:

@@ -81,7 +81,10 @@ class Pool(BaseModel):
     gathered_at: str | None = None
     """Quando a coleta rodou (ISO, UTC). None: nunca."""
     warnings: list[str] = []
-    """Avisos dos coletores (falha de um coletor não derruba os outros)."""
+    """Avisos dos coletores (falha de um coletor não derruba os outros), em português, sem texto cru de exceção."""
+    searched: bool = False
+    """A coleta já rodou a busca na web paga (`media_find`) deste storyboard: o job não chama `media_find` de novo
+    depois do storyboard. O item `acervo-real` liga quando puser o `media_find` dentro do `gather`."""
 
     @field_validator("items")
     @classmethod

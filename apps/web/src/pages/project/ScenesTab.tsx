@@ -57,7 +57,7 @@ import { StoryboardReview } from './StoryboardReview';
 import { SceneVideoControl, VideoClipsPanel } from './VideoClipsPanel';
 import type { TabNavigation } from './types';
 
-const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'zoom_to', 'drift', 'static', 'parallax'];
+const MOTIONS = ['', 'ken_burns_in', 'ken_burns_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'punch_zoom', 'zoom_to', 'drift', 'static', 'push', 'parallax'];
 const TRANSITIONS = ['', 'cut', 'flash', 'fade_black', 'glitch', 'light_leak', 'zoom_blur', 'film_burn', 'static_burst'];
 const KINDS = ['image', 'stat', 'compare', 'chart', 'map', 'text', 'title', 'count', 'document', 'quote'];
 const AUTO = 'Automática';

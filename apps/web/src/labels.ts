@@ -24,6 +24,7 @@ export const CAMERA_LABELS: LabelMap = {
   punch_zoom: 'Zoom de impacto',
   drift: 'Deriva suave',
   static: 'Parada',
+  push: 'Aproximação reta',
   zoom_to: 'Zoom no detalhe',
   parallax: 'Parallax 2.5D (profundidade)',
 };

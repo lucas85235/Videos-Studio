@@ -59,6 +59,24 @@ assert set(STORYBOARD_KINDS) <= set(SCENE_KINDS)
 # "pool": item do acervo de material real do projeto (`pool.json`), citado em `pool_id` (ADR 0004).
 STORYBOARD_SOURCES = ["new", "reuse", "none", "pool"]
 
+# Campos de edição por cena (ADR 0004 §3.0), achatados e validados no Python. Fazem parte do STORYBOARD_SCHEMA de
+# produção: o pedido do storyboard (real primeiro) sempre os explica.
+STORYBOARD_EDIT_FIELDS: dict[str, Any] = {
+    "pool_id": NS,  # id do item do acervo ("p12") com source "pool"
+    "ai_reason": NS,  # por que esta cena é IA (hipótese, futuro, conceito); null fora de "new"
+    "role": {"type": "string", "enum": list(BEAT_ROLES)},  # papel da batida na edição
+    # até 3 palavras FALADAS na batida (ênfase, texto que pula). Sem maxItems (a saída estrita do CLI não aceita
+    # limite de itens): o excesso é cortado em `BeatMark.emphasis`.
+    "emphasis": NSA,
+    "serious": {"type": "boolean"},  # batida séria: nada cômico
+    "gag_payoff": NS,  # meme | freeze | zoom | sfx | text
+    "gag_line": NS,  # frase curta do "meme sem meme"
+    "gag_at": NS,  # palavra onde a piada cai
+}
+STORYBOARD_EDIT_DEFAULTS: dict[str, Any] = {"role": "breath", "serious": False}
+"""Valores dos campos de edição que o esquema estrito não deixa nulos (para mocks e respostas incompletas)."""
+
+
 # Storyboard v2: direção de arte do vídeo + uma cena por batida. Os ids de catálogo (linguagem, plano,
 # composição, foco, câmera, gradação) vão como string anulável e são validados no Python: enum que aceita
 # null pode falhar no --json-schema do Claude.
@@ -116,15 +134,7 @@ STORYBOARD_SCHEMA = _obj(
                     "real_source_ref": NI,  # número da fonte com o link da notícia em "Fontes do roteiro"
                     # Vídeo IA (pago): o movimento em inglês nas poucas batidas que ganham com o clipe; null nas outras.
                     "video_motion": NS,
-                    # --- ADR 0004 (achatados, validados no Python) ---
-                    "pool_id": NS,  # id do item do acervo ("p12") com source "pool"
-                    "ai_reason": NS,  # por que esta cena é IA (hipótese, futuro, conceito); null fora de "new"
-                    "role": {"type": "string", "enum": list(BEAT_ROLES)},  # papel da batida na edição
-                    "emphasis": NSA,  # até 3 palavras FALADAS na batida (ênfase, texto que pula)
-                    "serious": {"type": "boolean"},  # batida séria: nada cômico
-                    "gag_payoff": NS,  # meme | freeze | zoom | sfx | text
-                    "gag_line": NS,  # frase curta do "meme sem meme"
-                    "gag_at": NS,  # palavra onde a piada cai
+                    **STORYBOARD_EDIT_FIELDS,  # ADR 0004 (achatados, validados no Python)
                 }
             ),
         },

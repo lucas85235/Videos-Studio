@@ -21,6 +21,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from studio.core.editing.serious import (  # noqa: F401 - os termos continuam importáveis daqui
+    SERIOUS_NOT,
+    SERIOUS_PREFIXES,
+    SERIOUS_TERMS,
+    serious_term,
+)
 from studio.core.project.document import Presenter, ProjectDoc, Scene, ScenePresenter
 from studio.core.project.presenter import fold, pose_exists, resolve_pose, trigger_index, word_key
 from studio.workers.pipeline.storyboard_check import AVISO, CORRIGIDO, Issue
@@ -32,17 +38,7 @@ OPENING_WINDOW_S = 30.0
 # Rodízio das poses no preenchimento sem pista na fala (das mais neutras às mais fortes).
 ROTATION = ("apontando", "pensativo", "surpreso", "rindo", "lupa", "preocupado", "celular", "comemorando", "base")
 
-# Cena séria: o avatar nunca entra (playbook: vítimas, menores, pessoas em crise, ataque racial, maus-tratos, Kurtaj).
-SERIOUS_TERMS = (
-    "vitima", "vitimas", "menor de idade", "menores de idade", "crianca", "criancas", "morte", "mortes", "morreu",
-    "morreram", "morto", "mortos", "assassin", "homicid", "suicid", "crise", "racismo", "racista", "racial",
-    "maus-tratos", "maus tratos", "abuso sexual", "estupro", "kurtaj", "luto", "tragedia", "tragedias", "crises",
-)
-SERIOUS_PREFIXES = ("assassin", "homicid", "suicid")
-"""Os termos sérios que valem como começo de palavra (assassinato, homicídio, suicídio...); os outros são palavra
-inteira ("luto" não pega "lutou")."""
-SERIOUS_NOT = ("assassin's creed", "assassins creed", "assassin s creed")
-"""Nomes que contêm um termo sério e não são cena séria (jogos)."""
+# Cena séria: o avatar nunca entra. Os termos moram em `core.editing.serious` (a mesma regra do editor-planejador).
 CTA_TERMS = ("inscrev", "se inscreve", "deixa o like", "deixe o like", "deixa seu like", "sininho", "ativa o sino",
              "manda pra um amigo", "mil inscritos")
 # Pista da fala → pose (pela emoção do playbook). A pose que o canal não tem cai na mais próxima (`resolve_pose`).
@@ -113,17 +109,8 @@ def _has(text: str, terms: Iterable[str]) -> str | None:
     return None
 
 
-def _serious(text: str) -> str | None:
-    """O termo de cena séria que aparece no texto (palavra inteira; prefixo só em `SERIOUS_PREFIXES`)."""
-    folded = " " + " ".join(fold(text).replace("-", " ").split()) + " "
-    for name in SERIOUS_NOT:
-        folded = folded.replace(name, " ")
-    for term in SERIOUS_TERMS:
-        t = " ".join(fold(term).replace("-", " ").split())
-        tail = "" if term in SERIOUS_PREFIXES else r"(?![a-z0-9])"
-        if re.search(r"(?<![a-z0-9])" + re.escape(t) + tail, folded):
-            return term
-    return None
+_serious = serious_term
+"""O termo de cena séria que aparece no texto (`core.editing.serious.serious_term`)."""
 
 
 def _cue(presenter: Presenter, slot: _Slot) -> tuple[str, str | None]:
@@ -183,7 +170,7 @@ def _slots(doc: ProjectDoc, presenter: Presenter, words_by_scene: dict[str, Sequ
         text = " ".join(texts) + " " + overlay
         blocked: str | None = None
         media = doc.shown_media(scene)
-        if scene.id in serious:
+        if scene.id in serious or (scene.mark is not None and scene.mark.serious):
             blocked = "cena séria"
         elif term := _serious(text):
             blocked = f"cena séria ({term})"

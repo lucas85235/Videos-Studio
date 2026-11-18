@@ -598,9 +598,11 @@ def _order(items: list[dict[str, Any]], topics: list[Topic]) -> list[dict[str, A
 
 
 def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: Any = None, runner: Any = None,
-           job_id: str | None = None, progress: Callable[[float, str], None] | None = None) -> Pool:
+           job_id: str | None = None, progress: Callable[[float, str], None] | None = None,
+           cancelled: Callable[[], bool] | None = None) -> Pool:
     """Coleta o acervo do projeto (falha de um coletor vira aviso em `Pool.warnings`). Offline não toca a rede: só
-    o material local (projeto, canal, provas já feitas e links já baixados)."""
+    o material local (projeto, canal, provas já feitas e links já baixados). Com `cancelled()` verdadeiro, para entre
+    os coletores e devolve o que juntou."""
     from studio.core.project import service
 
     try:
@@ -614,6 +616,8 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
     raw: list[dict[str, Any]] = []
     warnings: list[str] = []
     for i, (label, collect) in enumerate(COLLECTORS):
+        if cancelled is not None and cancelled():
+            break
         say(0.05 + 0.85 * i / len(COLLECTORS), f"Acervo: {label}")
         try:
             raw += collect(ctx)
