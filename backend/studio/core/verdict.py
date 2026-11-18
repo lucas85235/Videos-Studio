@@ -12,8 +12,9 @@ Usado na revisão do storyboard (`storyboard_check.fix_verdict_stamps`, que tira
 resolução da timeline (`timeline.drop_false_verdict`, que tira só da tela, para o projeto já pronto e a edição à mão).
 
 Veredito positivo (CONFIRMADO, VERDADE) ao lado de uma frase negativa na tela ("PC: NÃO ANUNCIADO", "NÃO EXISTE")
-lê como contradição: confirmado o quê? O carimbo só casa com o texto quando confirma uma afirmação; ao lado da negação
-ele sai (`ambiguous_positive`), na revisão do storyboard (`storyboard_check.fix_ambiguous_stamps`) e na timeline
+lê como contradição: confirmado o quê? O carimbo só casa com o texto quando confirma uma afirmação ou diz quem
+confirma ("CONFIRMADO PELA ROCKSTAR"); solto ao lado do verbo negado ele sai (`ambiguous_positive`; "SEM ATRASO" não é
+negação), na revisão do storyboard (`storyboard_check.fix_ambiguous_stamps`) e na timeline
 (`timeline.drop_ambiguous_verdict`).
 """
 
@@ -87,11 +88,18 @@ def _stamp_words(stamp: str | None) -> list[str]:
     return [normalize_token(w) for w in re.split(r"[\s·•|/—–:,.!?()-]+", stamp or "") if w]
 
 
-# Palavra que faz da frase da tela uma negação ("NÃO ANUNCIADO", "NEM DEMO", "SEM DATA", "NUNCA SAIU", "NOT ON PC").
-# "no" e "sin" só fora do português ("no site" é "em o site").
-_TEXT_NEGATORS = frozenset({"nao", "nem", "nunca", "jamais", "sem", "nenhum", "nenhuma", "nada", "inexistente",
-                            "not", "never", "none", "without", "nope", "ningun", "ninguna", "tampoco"})
-_TEXT_NEGATORS_FOREIGN = frozenset({"no", "sin", "ni"})
+# Negação de frase na tela: o verbo ou o estado negado ("PC: NÃO ANUNCIADO", "NÃO EXISTE", "NUNCA SAIU", "NOT ON PC",
+# "ISN'T OUT"). Fica de fora a negação de quantidade ou de preposição ("SEM ATRASO", "SEM ADIAMENTO", "CELULAR NENHUM
+# RODA", "NEM DEMO"): ela afirma um estado, e "CONFIRMADO" ao lado lê certo. "no" só em espanhol ("NO EXISTE"): em
+# português é "em o" ("no site") e em inglês abre nome próprio ("No Man's Sky").
+_TEXT_NEGATORS = frozenset({
+    "nao", "nunca", "jamais", "inexistente", "not", "never", "isnt", "arent", "wasnt", "werent", "doesnt", "dont",
+    "didnt", "wont", "cant", "cannot", "hasnt", "havent",
+})  # fmt: skip
+_TEXT_NEGATORS_ES = frozenset({"no", "jamas"})
+# Carimbo que diz quem confirma ("CONFIRMADO PELA ROCKSTAR", "CONFIRMED BY ROCKSTAR"): é a fala da fonte, não um
+# status contra outro, e casa com a frase negada.
+_ATTRIBUTION = frozenset({"pela", "pelo", "por", "segundo", "by", "per", "according", "segun"})
 
 
 def _tokens(text: str | None) -> list[str]:
@@ -107,16 +115,23 @@ def is_positive(stamp: str | None) -> bool:
     return positive and not is_negative(stamp)
 
 
+def attributed(stamp: str | None) -> bool:
+    """O carimbo diz quem confirma ("CONFIRMADO PELA ROCKSTAR", "CONFIRMED BY ROCKSTAR")."""
+    return any(w in _ATTRIBUTION for w in _tokens(stamp))
+
+
 def negates(text: str | None, lang: str = "pt-BR") -> bool:
-    """A frase da tela é uma negação ("PC: NÃO ANUNCIADO", "PC HOJE: NÃO EXISTE", "SEM DATA", "NOT ON PC")."""
-    extra = _TEXT_NEGATORS_FOREIGN if not (lang or "").lower().startswith("pt") else frozenset()
+    """A frase da tela nega um verbo ou um estado ("PC: NÃO ANUNCIADO", "PC HOJE: NÃO EXISTE", "NOT ON PC"). "SEM
+    ATRASO" e "NENHUM" não contam: afirmam o estado."""
+    extra = _TEXT_NEGATORS_ES if (lang or "").lower().startswith("es") else frozenset()
     return any(t in _TEXT_NEGATORS or t in extra for t in _tokens(text))
 
 
 def ambiguous_positive(stamp: str | None, texts: list[str], lang: str = "pt-BR") -> bool:
-    """Veredito positivo ao lado de frase negativa na tela: "CONFIRMADO" com "PC: NÃO ANUNCIADO" lê como contradição
-    (confirma a negação? confirma o PC?). O carimbo sai; o texto e a fonte do cartão já dizem quem afirma."""
-    return is_positive(stamp) and any(negates(t, lang) for t in texts if t)
+    """Veredito positivo solto ao lado de frase negada na tela: "CONFIRMADO" com "PC: NÃO ANUNCIADO" lê como
+    contradição (confirma a negação? confirma o PC?). O carimbo sai; o texto e a fonte do cartão já dizem quem afirma.
+    Com a fonte no carimbo ("CONFIRMADO PELA ROCKSTAR") ele fica: é a fala de alguém sobre a frase."""
+    return is_positive(stamp) and not attributed(stamp) and any(negates(t, lang) for t in texts if t)
 
 
 def is_negative(stamp: str | None) -> bool:

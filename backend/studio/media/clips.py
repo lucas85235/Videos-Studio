@@ -72,14 +72,24 @@ MOOD_WORDS = {"dark": "escuro", "bright": "claro", "neutral": ""}
 # Quadro morto (`dead_frame`), medido no quadro em cinza (0 a 1) da passada dos cortes. O "fundo" é o tom mediano do
 # quadro; o que fica a menos de DEAD_TOL dele é fundo liso.
 DEAD_TOL = 0.03
+DEAD_BLANK_SHARE = 0.97
+"""Quadro em branco de verdade, em qualquer tom: tela preta, flash ou fade para branco, cor lisa."""
+DEAD_DARK = 0.2
+"""Fora o quadro em branco, só fundo escuro (tom mediano até aqui) é quadro morto: a cartela legal, a tela final e o
+fade são letra ou logo sobre o preto. Fundo claro ou médio com conteúdo é material (matéria e post sobre o branco,
+produto no fundo infinito, quadro branco, infográfico), mesmo com muito fundo liso."""
+DEAD_SPREAD = 0.7
+DEAD_COL_INK = 0.02
+"""Cartela e tela final são um bloco no meio do fundo: o conteúdo (fora do fundo liso em mais de DEAD_COL_INK da
+coluna) ocupa até DEAD_SPREAD das colunas. Página ou post no modo escuro enche a largura e fica."""
 DEAD_FLAT_SHARE = 0.85
-"""Fundo liso em tanto do quadro: tela preta, branca ou de uma cor, fade, cartela final com logo ou data pequenos."""
+"""Fundo escuro liso em tanto do quadro: fade, cartela final com logo ou data pequenos."""
 SLATE_BG_SHARE = 0.6
 SLATE_FAR = 0.45
 SLATE_TWO_TONE = 0.5
-"""Cartela (aviso legal, classificação etária, texto sobre fundo liso): fundo liso em SLATE_BG_SHARE do quadro e, do
-que sobra, pelo menos esta parte em contraste duro com ele (letra ou moldura branca no preto). Arte com fundo liso
-(a capa no meio de um fundo cinza) tem meio-tom de sobra e fica."""
+"""Cartela (aviso legal, classificação etária, texto sobre fundo escuro liso): fundo liso em SLATE_BG_SHARE do quadro
+e, do que sobra, pelo menos esta parte em contraste duro com ele (letra ou moldura branca no preto). Arte com fundo
+liso (a capa no meio de um fundo cinza) tem meio-tom de sobra e fica."""
 # Texto de cartela legal lido pela visão no plano (`texto "..."` da descrição): aviso de classificação etária, direitos
 # e marca registrada. Vale também para a análise já em cache (feita antes da medida dos quadros).
 _SLATE_TEXT_RE = re.compile(
@@ -369,17 +379,27 @@ def scan_step() -> float:
 
 
 def dead_frame(gray: np.ndarray) -> str | None:
-    """Por que o quadro (em cinza, 0–255 ou 0–1) não serve de material, ou None. "tela lisa": quase tudo num tom só
-    (preto, branco, cor lisa, fade, cartela final com logo ou data pequenos no meio); "cartela": texto ou moldura em
-    contraste duro sobre fundo liso (aviso de classificação etária, aviso legal). Imagem escura de verdade (cena
-    noturna) tem meio-tom e não cai aqui; arte sobre fundo liso (a capa do jogo num fundo cinza) também não."""
+    """Por que o quadro (em cinza, 0–255 ou 0–1) não serve de material, ou None. "tela lisa": em branco num tom só
+    (preto, branco, cor lisa) ou quase tudo preto com um bloco pequeno no meio (fade, cartela final com logo ou data);
+    "cartela": texto ou moldura em contraste duro num bloco sobre o fundo escuro liso (aviso de classificação etária,
+    aviso legal). Fica: imagem escura de verdade (cena noturna, com meio-tom), arte sobre fundo liso (a capa num fundo
+    cinza), o que tem fundo claro (matéria, post, produto no fundo infinito, quadro branco) e o que enche a largura
+    sobre o preto (página no modo escuro). A cartela legal sobre fundo claro sai pelo texto lido (`slate_text`)."""
     g = np.asarray(gray, dtype=np.float32)
-    if g.size == 0:
+    if g.size == 0 or g.ndim != 2:
         return None
     if float(g.max()) > 1.0:
         g = g / 255.0
-    dev = np.abs(g - float(np.median(g)))
-    bg = float((dev < DEAD_TOL).mean())
+    tone = float(np.median(g))
+    dev = np.abs(g - tone)
+    flat = dev < DEAD_TOL
+    bg = float(flat.mean())
+    if bg >= DEAD_BLANK_SHARE:
+        return "tela lisa"  # em branco de verdade, em qualquer tom: preto, branco do flash, cor lisa
+    if tone > DEAD_DARK:
+        return None  # fundo claro ou médio com conteúdo: página, matéria, produto no fundo infinito, quadro branco
+    if float(((~flat).mean(axis=0) > DEAD_COL_INK).mean()) > DEAD_SPREAD:
+        return None  # o conteúdo enche a largura: página ou post no modo escuro, não um bloco no meio do preto
     if bg >= DEAD_FLAT_SHARE:
         return "tela lisa"
     far = float((dev > SLATE_FAR).mean())

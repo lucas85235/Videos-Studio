@@ -67,6 +67,57 @@ def _art_on_flat() -> np.ndarray:
     return g
 
 
+def _text_lines(g: np.ndarray, rows: range, x0: int, x1: int, ink: int) -> np.ndarray:
+    """Linhas de texto: traços curtos com espaço entre as palavras, que não caem na mesma coluna de linha a linha."""
+    for i, y in enumerate(rows):
+        for x in range(x0 + (i * 4) % 9, x1, 9):
+            g[y:y + 2, x:x + 6] = ink
+    return g
+
+
+def _article() -> np.ndarray:
+    """Captura de matéria sobre o branco: manchete, linhas de texto na largura toda e a foto de abertura (a gravação
+    de tela de uma matéria ou de um post num vídeo de notícia)."""
+    g = np.full((H, W), 255, dtype=np.uint8)
+    g[8:22, 8:150] = 255
+    _text_lines(g, range(10, 22, 4), 8, 150, 20)  # manchete
+    _text_lines(g, range(28, 44, 4), 8, 152, 90)  # corpo
+    g[50:84, 8:60] = _scene(7)[50:84, 8:60]  # foto pequena
+    return g
+
+
+def _product_on_backdrop() -> np.ndarray:
+    """Foto de produto no fundo infinito claro: dois aparelhos (um branco, um preto) e o controle."""
+    g = np.full((H, W), 230, dtype=np.uint8)
+    g[25:80, 30:62] = 248  # console branco
+    g[38:46, 38:54] = 200
+    g[12:84, 70:118] = 18  # console preto
+    g[64:84, 112:140] = 25  # controle
+    return g
+
+
+def _dark_page() -> np.ndarray:
+    """Página ou post no modo escuro: texto claro na largura toda sobre o preto."""
+    g = _black()
+    _text_lines(g, range(10, 80, 6), 6, 154, 235)
+    return g
+
+
+def test_dead_frame_keeps_pages_products_and_whiteboards_on_flat_background() -> None:
+    """Fundo liso não basta: matéria e post sobre o branco, produto no fundo infinito claro, quadro branco com pouco
+    escrito e página no modo escuro são material (o QA r4 achou o detector derrubando a matéria do GamesBeat e a foto
+    do Xbox)."""
+    assert clips.dead_frame(_article()) is None
+    assert clips.dead_frame(_product_on_backdrop()) is None
+    assert clips.dead_frame(_dark_page()) is None
+    board = np.full((H, W), 245, dtype=np.uint8)
+    board[30:34, 40:120] = 30  # um traço de caneta no quadro branco
+    board[50:53, 50:100] = 30
+    assert clips.dead_frame(board) is None
+    # o slate sobre o claro não sai pela imagem; sai pelo texto lido (`slate_text`)
+    assert clips.dead_frame(255 - _slate()) is None
+
+
 def test_dead_frame_catches_slates_black_white_and_end_cards() -> None:
     assert clips.dead_frame(_black()) == "tela lisa"
     assert clips.dead_frame(np.full((H, W), 250, dtype=np.uint8)) == "tela lisa"  # fade para branco
@@ -135,8 +186,19 @@ def test_slate_text_from_vision_leaves_the_pool() -> None:
 @pytest.mark.parametrize(("stamp", "texts", "lang", "ambiguous"), [
     ("CONFIRMADO", ["PC: NÃO ANUNCIADO"], "pt-BR", True),
     ("CONFIRMADO", ["PC HOJE: NÃO EXISTE"], "pt-BR", True),
-    ("Confirmado", ["Sem data para o PC"], "pt-BR", True),
     ("CONFIRMED", ["NOT ON PC"], "en", True),
+    ("CONFIRMED", ["PC VERSION ISN'T OUT"], "en", True),
+    ("CONFIRMADO", ["PC: NO ANUNCIADO"], "es", True),
+    ("VERDADE", ["O PC nunca recebeu demo"], "pt-BR", True),
+    # o carimbo diz quem confirma: casa com a frase negada (o pedido do QA r3)
+    ("CONFIRMADO PELA ROCKSTAR", ["PC HOJE: NÃO EXISTE"], "pt-BR", False),
+    ("CONFIRMED BY ROCKSTAR", ["NOT ON PC"], "en", False),
+    # "sem", "nenhum", "nem" afirmam o estado: o carimbo confirma certo
+    ("CONFIRMADO", ["LANÇAMENTO SEM ATRASO"], "pt-BR", False),
+    ("CONFIRMADO", ["26 DE MAIO, SEM ADIAMENTO"], "pt-BR", False),
+    ("Confirmado", ["Sem data para o PC"], "pt-BR", False),
+    ("VERDADE", ["Celular nenhum roda isso"], "pt-BR", False),
+    ("CONFIRMED", ["No Man's Sky update"], "en", False),  # "no" fora do espanhol abre nome próprio
     ("CONFIRMADO", ["REMOTE PLAY"], "pt-BR", False),
     ("CONFIRMADO", ["SAIU 19/11 · PS5 E XBOX"], "pt-BR", False),
     ("CONFIRMADO", ["Disponível no site oficial"], "pt-BR", False),  # "no" em português não é negação

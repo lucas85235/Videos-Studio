@@ -121,10 +121,10 @@ PUNCH_CAMERA = (1.15, 1.30)
 CLIP_END_PAD_S = 0.5
 """Trecho seguinte do clipe: a entrada fica a pelo menos 0,5 s do fim do material."""
 CLOSING_STILL_S = 5.0
-CARD_STILL_S = 5.0
-"""Teto de cartão (título, texto, dado) parado sem evento: o punch no meio quebra o que passa disso."""
 """O plano parado mais longo na última cena do vídeo (o CTA e a tela final ficam na tela: o QA do prj_gq4krrs11w
 achou ~9 s no mesmo plano congelado)."""
+CARD_STILL_S = 5.0
+"""Teto de cartão (título, texto, dado) parado sem evento: o punch no meio quebra o que passa disso."""
 
 CAMERA_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("static", 0.35), ("push", 0.25), ("drift", 0.15), ("punch", 0.15), ("pan", 0.10),

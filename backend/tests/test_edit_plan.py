@@ -177,8 +177,12 @@ def test_intensity_zero_has_less_than_half_the_events_of_two(isolated_settings):
     calm, normal = _fresh(doc), _fresh(doc)
     edit_plan.plan(calm, style, Pool(), intensity=0, recent=set())
     edit_plan.plan(normal, style, Pool(), intensity=2, recent=set())
-    n_calm, n_normal = len(_fx(calm)), len(_fx(normal))
+    # O punch do cartão parado (`CARD_STILL_S`) é trava, igual em toda intensidade: conta só o que a intensidade escolhe.
+    cards = {s.id for s in doc.scenes if s.kind in edit_plan.CARD_KINDS}
+    n_calm = len([1 for sid, _ in _fx(calm) if sid not in cards])
+    n_normal = len([1 for sid, _ in _fx(normal) if sid not in cards])
     assert n_normal > 10 and n_calm < n_normal / 2, (n_calm, n_normal)
+    assert [e for sid, e in _fx(calm, "punch") if sid in cards] == [e for sid, e in _fx(normal, "punch") if sid in cards]
     hot = _fresh(doc)
     edit_plan.plan(hot, style, Pool(), intensity=3, recent=set())
     assert len(_fx(hot)) > n_normal
