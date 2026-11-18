@@ -570,21 +570,36 @@ HOLE_MIN_AREA = 0.004
 HOLE_MIN_RADIUS = 0.012
 """Espessura mínima do buraco (raio do maior círculo que cabe nele), em fração do lado maior da figura: a fresta
 fina do cabelo solto não mostra o fundo; o pedaço de pescoço que falta mostra."""
-HOLE_LIMB = 0.045
-"""Raio (fração do lado maior da figura) da abertura morfológica que apaga braço, perna e pescoço finos (até ~9% do
-lado): o buraco que continua cercado depois dela está no meio do corpo; o vão entre o braço e o tronco (mão na
-cintura) abre para fora junto com o braço e não conta."""
+HOLE_LIMB = 0.075
+"""Raio (fração do lado maior da figura) da abertura morfológica que apaga braço, perna e pescoço (até ~15% do
+lado; o braço grosso de quem aparece da cintura para cima, com a mão na cintura, tem uns 9-14%): o buraco que
+continua cercado depois dela está no meio do corpo, com parede de mais de ~15% do lado em volta; o vão entre o braço
+e o tronco abre para fora junto com o braço e não conta. Falta com parede mais fina que isso só é vista quando se
+sabe que foi o `minus` que a abriu (`detect_holes` com `removed`): pelo alfa, ela é igual ao vão do braço."""
 HOLE_SCALE = 400
 """Lado maior da cópia em que o buraco é medido (rápido e igual para recorte de qualquer tamanho)."""
 
 
-def detect_holes(alpha: Image.Image) -> list[dict[str, Any]]:
-    """Faltas de dentro do recorte: região transparente (alfa < 128) cercada pela figura por todos os lados, que não
-    encosta na borda da imagem, com área de pelo menos `HOLE_MIN_AREA` da figura, espessura de `HOLE_MIN_RADIUS` e
-    no meio do corpo (continua cercado depois de apagar os membros finos, `HOLE_LIMB`). É o que sobra quando a figura da
-    frente (`minus`) estava inteira por cima do corpo, ou quando o rembg comeu um pedaço da roupa: na thumb, o fundo
-    aparece por dentro do personagem. O vão natural (braço aberto, mão na cintura) e o cabelo solto não contam.
-    Devolve [{box: [x0, y0, x1, y1] em fração da figura aparada, area: fração da figura}]; [] sem scipy."""
+HOLES_TEXT_KEY = "vs:holes"
+"""Chave do texto no PNG do recorte com as faltas deixadas pelo `minus` que abrem para um lado cortado (JSON)."""
+
+
+def detect_holes(alpha: Image.Image, cut: list[str] | None = None,
+                 removed: Image.Image | None = None) -> list[dict[str, Any]]:
+    """Faltas de dentro do recorte: região transparente (alfa < 128) cercada pela figura, com área de pelo menos
+    `HOLE_MIN_AREA` da figura, espessura de `HOLE_MIN_RADIUS` e no meio do corpo (continua cercada depois de apagar
+    os membros, `HOLE_LIMB`). É o que sobra quando a figura da frente (`minus`) estava por cima do corpo, ou quando o
+    rembg comeu um pedaço da roupa: na thumb, o fundo aparece por dentro do personagem. O vão natural (braço aberto,
+    mão na cintura) e o cabelo solto não contam.
+
+    `removed` (máscara do que o `minus` tirou, do tamanho de `alpha`; o recorte mede com ela e grava no PNG): a
+    falta que foi o `minus` que abriu (metade ou mais dela) conta mesmo com parede fina (não é vão de braço: a pessoa
+    de trás estava ali) e também quando abre só para um lado cortado (`cut`, parede como em `_clean_alpha`; a cabeça
+    da pessoa da frente que desce até a base do quadro): o lado vai encostado na borda da thumb, e o fundo aparece por
+    dentro do corpo igual. Sem `removed`, a que abre para o lado cortado não conta, porque pelo alfa ela é igual ao
+    vão de verdade que chega na base (entre o rosto da Lucia e o pescoço do Jason na capa do casal, entre as
+    pernas). A que abre para dois lados cortados é o canto do quadro, nunca buraco. Devolve [{box: [x0, y0, x1, y1] em fração da figura aparada, area: fração da figura}];
+    [] sem scipy."""
     try:
         import numpy as np
         from scipy import ndimage  # type: ignore[import-untyped]
@@ -595,37 +610,66 @@ def detect_holes(alpha: Image.Image) -> list[dict[str, Any]]:
     if not box:
         return []
     a = a.crop(box)
+    r = removed.convert("L").crop(box) if removed is not None and removed.size == alpha.size else None
     scale = min(1.0, HOLE_SCALE / max(a.size))
     if scale < 1.0:
-        a = a.resize((max(1, round(a.width * scale)), max(1, round(a.height * scale))), Image.Resampling.BOX)
+        small = (max(1, round(a.width * scale)), max(1, round(a.height * scale)))
+        a = a.resize(small, Image.Resampling.BOX)
+        r = r.resize(small, Image.Resampling.BOX) if r is not None else None
     solid = np.asarray(a, dtype=np.uint8) >= 128
     total = int(solid.sum())
     if not total:
         return []
     h, w = solid.shape
     side = max(h, w)
-    holes = ndimage.binary_fill_holes(solid) & ~solid
+    limb = side * HOLE_LIMB
+    # moldura: transparente nos lados de contorno natural; nos cortados (só com `removed`), parede mais grossa que o
+    # raio da abertura, que sobrevive a ela
+    m = int(limb) + 3
+    sides = [s for s in CUT_SIDES if s in set(cut or [])] if r is not None else []
+    wall = np.zeros((h + 2 * m, w + 2 * m), dtype=bool)
+    bands = {"top": np.s_[:m, :], "bottom": np.s_[h + m:, :], "left": np.s_[:, :m], "right": np.s_[:, w + m:]}
+    for s in sides:
+        wall[bands[s]] = True
+    body = np.pad(solid, m) | wall
+    holes = (ndimage.binary_fill_holes(body) & ~body)[m:-m, m:-m]
     labels, n = ndimage.label(holes)
     if not n:
         return []
-    # abertura (erosão + dilatação, pela distância): some com os membros finos; o que segue cercado é corpo grosso
-    limb = side * HOLE_LIMB
-    core = ndimage.distance_transform_edt(ndimage.distance_transform_edt(solid) <= limb) <= limb
-    core_holes = ndimage.binary_fill_holes(core) & ~core
+    # abertura (erosão + dilatação, pela distância): some com os membros; o que segue cercado é corpo grosso
+    core = ndimage.distance_transform_edt(ndimage.distance_transform_edt(body) <= limb) <= limb
+    core_holes = (ndimage.binary_fill_holes(core) & ~core)[m:-m, m:-m]
+    rims = {"top": labels[0], "bottom": labels[-1], "left": labels[:, 0], "right": labels[:, -1]}
+    cut_off = np.asarray(r, dtype=np.uint8) >= 128 if r is not None else None
     out: list[dict[str, Any]] = []
     sizes = ndimage.sum(holes, labels, range(1, n + 1))
     for i, (sl, size) in enumerate(zip(ndimage.find_objects(labels), sizes, strict=True), start=1):
         if sl is None or size < total * HOLE_MIN_AREA:
             continue
         comp = labels[sl] == i
+        opens = sum(bool((rims[s] == i).any()) for s in sides)
+        if opens > 1:
+            continue  # abre para dois lados cortados: o canto do quadro, fundo de verdade
+        by_minus = cut_off is not None and float(cut_off[sl][comp].mean()) >= 0.5
+        if opens and not by_minus:
+            continue  # abre para o lado cortado e não foi o `minus` que abriu: vão de verdade
         if float(ndimage.distance_transform_edt(np.pad(comp, 1)).max()) < side * HOLE_MIN_RADIUS:
             continue
-        if float(core_holes[sl][comp].mean()) < 0.5:
-            continue  # cercado só por um braço (ou pescoço) fino: vão natural
+        if not by_minus and float(core_holes[sl][comp].mean()) < 0.5:
+            continue  # cercado só por um braço, uma perna ou o pescoço: vão natural (o do `minus` é falta certa)
         y0, y1, x0, x1 = sl[0].start, sl[0].stop, sl[1].start, sl[1].stop
         out.append({"box": [round(x0 / w, 4), round(y0 / h, 4), round(x1 / w, 4), round(y1 / h, 4)],
                     "area": round(float(size) / total, 4)})
     return out
+
+
+def _norm_holes(value: Any) -> list[dict[str, Any]] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return [h for h in value if isinstance(h, dict)] if isinstance(value, list) else None
 
 
 @lru_cache(maxsize=64)
@@ -633,15 +677,18 @@ def _holes_cached(path: str, mtime: float, size: int) -> str:
     with Image.open(path) as im:
         if im.mode not in ("RGBA", "LA", "PA") and "transparency" not in im.info:
             return "[]"
-        return json.dumps(detect_holes(im.convert("RGBA").getchannel("A")))
+        stored = _norm_holes(im.info.get(HOLES_TEXT_KEY)) or []
+        measured = detect_holes(im.convert("RGBA").getchannel("A"))
+        return json.dumps([*stored, *(h for h in measured if h not in stored)])
 
 
 def holes_of(path: Path, meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Buracos de dentro do recorte (`detect_holes`): os do manifesto (`holes`, gravados na importação); senão
-    medidos no PNG, com cache pela data do arquivo."""
-    stored = (meta or {}).get("holes")
-    if isinstance(stored, list):
-        return [h for h in stored if isinstance(h, dict)]
+    """Buracos de dentro do recorte: os do manifesto (`holes`, gravados na importação); senão os que o recorte
+    gravou no PNG (`HOLES_TEXT_KEY`: a falta do `minus` que abre para o lado cortado) mais os medidos no alfa
+    (`detect_holes`), com cache pela data do arquivo."""
+    stored = _norm_holes((meta or {}).get("holes"))
+    if stored is not None:
+        return stored
     try:
         stat = path.stat()
         return json.loads(_holes_cached(str(path), stat.st_mtime, stat.st_size))
@@ -855,8 +902,13 @@ def cutout(path: Path, out: Path, *, model: str | None = None, crop: list[float]
         return out
     im, box = _load_crop(path, crop)
     alpha = _raw_mask(im, model, matting)
+    removed = None
     if minus:
+        raw = alpha
         alpha = _subtract(alpha, box, minus)
+        # o que era figura e o `minus` tirou: a falta que ele abre para o lado cortado é buraco (`detect_holes`)
+        removed = ImageChops.subtract(raw.point(lambda v: 255 if v >= 128 else 0),
+                                      alpha.point(lambda v: 255 if v >= 128 else 0))
     band = _cut_band(alpha.size)
     alpha = _clean_alpha(alpha, fill_holes=fill_holes, min_part=min_part,
                          cut=detect_cut_edges(alpha, trimmed=False, band=band))
@@ -882,6 +934,8 @@ def cutout(path: Path, out: Path, *, model: str | None = None, crop: list[float]
     info.add_text(SRC_BOX_KEY, ",".join(f"{v:.5f}" for v in src_box))
     info.add_text(STRAIGHT_TEXT_KEY, json.dumps(detect_straight_cuts(result.getchannel("A"))))
     info.add_text("vs:cutout_v", str(CUTOUT_VERSION))
+    if removed is not None:
+        info.add_text(HOLES_TEXT_KEY, json.dumps(detect_holes(result.getchannel("A"), cut, removed.crop(trim))))
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f".{out.stem}.tmp.png")
     result.save(tmp, "PNG", optimize=True, pnginfo=info)
@@ -1352,9 +1406,10 @@ def make_cutouts(kit: Path, manifest: dict[str, Any], entries: list[dict[str, An
                     # o alfa não mostra como borda do quadro mas precisa ser ancorado igual
                     cut_edges=_norm_edges([*cut_edges_of(dest), *(entry.get("occluded") or [])]),
                     # trechos retos de dentro (crop, `minus`, objeto na frente): o compositor some com eles
-                    straight_cuts=straight_cuts_of(dest),
-                    # falta de dentro do corpo (a figura da frente tirada com `minus`): sai do seletor
-                    holes=holes_of(dest))
+                    straight_cuts=straight_cuts_of(dest))
+        # falta de dentro do corpo (a figura da frente tirada com `minus`, também a que abre para o lado cortado,
+        # gravada no PNG pelo recorte): sai do seletor
+        item["holes"] = holes_of(dest)
         defect = cutout_defect(item)
         item["quality"] = QUALITY_LOW if defect else "ok"
         if defect and not item.get("quality_note"):

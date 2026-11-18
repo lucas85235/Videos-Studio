@@ -3064,8 +3064,12 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             notes.append(f"CORRIGIDO: objeto sem objeto na biblioteca; usei {fallback[turn % len(fallback)]}")
             template = fallback[turn % len(fallback)]
         card = template in thumb_variety.CARD_TEMPLATES
-        hints = _fix_low_cutouts([str(c) for c in _list(item.get("characters_hint"))], assets.low_cutouts,
-                                 assets.cutouts, template, recent, batch, notes)
+        hints = [str(c) for c in _list(item.get("characters_hint"))]
+        if card:  # o cartão não leva figura: o recorte ruim só sai da lista, sem nota de troca que não acontece
+            low_ids = {str(c.get("id")) for c in assets.low_cutouts}
+            hints = [c for c in hints if c not in low_ids]
+        else:
+            hints = _fix_low_cutouts(hints, assets.low_cutouts, assets.cutouts, template, recent, batch, notes)
         chars = list(dict.fromkeys(c for c in hints if c in cutouts))[:2]
         missing = [c for c in hints if c not in cutouts]
         if missing:

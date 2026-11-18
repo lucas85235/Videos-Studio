@@ -292,10 +292,13 @@ def _swap_figure(layers: Any, cutouts: list[dict[str, Any]], cost: Any) -> tuple
 
 
 def _fix_low_figures(layers: Any, cutouts: list[dict[str, Any]], low: dict[str, dict[str, Any]],
-                     cost: Any) -> tuple[Any, list[str]]:
+                     cost: Any, frames: list[dict[str, Any]] | None = None,
+                     bg_cost: Any = None) -> tuple[Any, list[str]]:
     """As camadas sem recorte que não serve para thumb (`PackageAssets.low_cutouts`: buraco no corpo, corte sem
     encaixe): cada um troca pelo melhor recorte bom do mesmo personagem (`authoring.replace_low_cutout`); sem
-    alternativa, a figura sai. Devolve (camadas, avisos CORRIGIDO); as mesmas camadas quando não há o que trocar."""
+    alternativa, a figura sai, e o heroi-palavra que fica sem figura nenhuma (nem avatar) troca o quadro de fundo pelo
+    de rosto menos usado (`bg_cost`), como o gerador faz na thumb sem personagem: o quadro escolhido para ficar atrás
+    da figura é só um lugar. Devolve (camadas, avisos CORRIGIDO); as mesmas camadas quando não há o que trocar."""
     def key(asset: str) -> str:
         return asset.removeprefix("cutout:")
 
@@ -320,6 +323,17 @@ def _fix_low_figures(layers: Any, cutouts: list[dict[str, Any]], low: dict[str, 
             notes.append(f"CORRIGIDO: recorte {key(c.asset)} não serve para thumb ({why}) e não há outro do "
                          "personagem; a figura saiu")
     out.characters = keep
+    bg = out.background
+    if (not keep and out.presenter is None and out.template == "heroi-palavra" and frames and bg.kind == "frame"):
+        ref_id = (bg.ref or "").removeprefix("frame:")
+        current = next((f for f in frames if str(f["id"]) == ref_id), None)
+        faces = [f for f in frames if f.get("face_box")]
+        if faces and not (current or {}).get("face_box"):
+            pick = min(faces, key=lambda f: bg_cost(str(f["id"])) if bg_cost else 0.0)
+            fresh = authoring._frame_layer(pick, out.template)
+            bg.ref, bg.t = str(pick["id"]), fresh.get("t")
+            bg.focus_x, bg.zoom = float(fresh["focus_x"]), float(fresh["zoom"])
+            notes.append(f"CORRIGIDO: sem a figura, o fundo virou {pick['id']} (quadro com rosto)")
     return out, notes
 
 
@@ -441,7 +455,8 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
         fixed_notes: list[str] = []
         if may_fix and low_cutouts:
             # recorte com buraco no corpo (ou que não encaixa) não fica no automático: o do mesmo personagem
-            layers, fixed_notes = _fix_low_figures(layers, cutouts, low_cutouts, cost_of("character"))
+            layers, fixed_notes = _fix_low_figures(layers, cutouts, low_cutouts, cost_of("character"), frames,
+                                                   cost_of("background"))
         img, notes = _compose(layers, size, resolver=resolver, palette=palette, logo_asset=logo)
         digest, dup = dup_of(img)
         if dup < DUP_MIN_DISTANCE and may_fix and layers.background.kind == "frame" and frames:

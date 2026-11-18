@@ -105,6 +105,106 @@ def test_silhueta_normal_nao_tem_buraco():
     assert A.detect_holes(_straight_figure().getchannel("A")) == []
 
 
+def _arm(d: ImageDraw.ImageDraw, pts: list[tuple[int, int]], width: int) -> None:
+    for a, b in zip(pts, pts[1:], strict=False):
+        d.line((*a, *b), fill=255, width=width)
+    for x, y in pts:
+        d.ellipse((x - width // 2, y - width // 2, x + width // 2, y + width // 2), fill=255)
+
+
+def _waist_up(arm: int) -> Image.Image:
+    """Da cintura para cima (640×800, cortado embaixo), mão na cintura com braço de `arm` px."""
+    m = Image.new("L", (640, 800), 0)
+    d = ImageDraw.Draw(m)
+    d.ellipse((220, 40, 380, 230), fill=255)
+    d.rectangle((265, 215, 335, 290), fill=255)
+    d.rounded_rectangle((170, 270, 450, 800), 40, fill=255)
+    _arm(d, [(440, 300), (600, 480), (450, 620)], arm)
+    return m
+
+
+def _gap_to_base() -> tuple[Image.Image, Image.Image]:
+    """Busto cortado embaixo com uma falta redonda no peito que desce até a base (a cabeça da pessoa da frente,
+    tirada com `minus`), e a máscara do que o `minus` tirou."""
+    m = Image.new("L", (500, 600), 0)
+    d = ImageDraw.Draw(m)
+    d.ellipse((170, 20, 330, 210), fill=255)
+    d.rectangle((210, 190, 290, 260), fill=255)
+    d.rounded_rectangle((40, 240, 460, 600), 60, fill=255)
+    d.ellipse((170, 400, 330, 700), fill=0)
+    removed = Image.new("L", m.size, 0)
+    ImageDraw.Draw(removed).ellipse((170, 400, 330, 700), fill=255)
+    return m, removed
+
+
+def test_braco_grosso_na_cintura_e_vaos_ate_a_base_nao_sao_buraco():
+    # da cintura para cima o braço tem 9-14% da altura: o vão da mão na cintura continua natural
+    for arm in (70, 90, 110):
+        assert A.detect_holes(_waist_up(arm), ["bottom"]) == [], arm
+    # braços soltos afastados do tronco até a base cortada, e dois corpos que se tocam no abraço
+    m = Image.new("L", (600, 700), 0)
+    d = ImageDraw.Draw(m)
+    d.ellipse((220, 20, 380, 210), fill=255)
+    d.rounded_rectangle((170, 200, 430, 700), 40, fill=255)
+    _arm(d, [(190, 280), (90, 700)], 90)
+    _arm(d, [(410, 280), (510, 700)], 90)
+    assert A.detect_holes(m, ["bottom"]) == []
+    casal = Image.new("L", (900, 700), 0)
+    d = ImageDraw.Draw(casal)
+    d.ellipse((120, 40, 300, 250), fill=255)
+    d.rounded_rectangle((60, 240, 400, 700), 50, fill=255)
+    d.ellipse((560, 20, 740, 230), fill=255)
+    d.rounded_rectangle((500, 220, 860, 700), 50, fill=255)
+    _arm(d, [(330, 300), (600, 290)], 70)
+    assert A.detect_holes(casal, ["bottom"]) == []
+
+
+def test_falta_do_minus_que_abre_para_o_lado_cortado_e_buraco():
+    """A cabeça da pessoa da frente que desce até a base do quadro: a falta abre para o lado cortado, que vai
+    encostado na borda da thumb (o fundo aparece pelo peito igual). Pelo alfa sozinho ela é igual ao vão de verdade
+    entre duas pessoas até a base; com o que o `minus` tirou, é buraco."""
+    alpha, removed = _gap_to_base()
+    assert A.detect_holes(alpha, ["bottom"]) == []
+    holes = A.detect_holes(alpha, ["bottom"], removed)
+    assert len(holes) == 1 and holes[0]["box"][3] == 1.0 and holes[0]["area"] > 0.1
+    # o `minus` que tirou outra coisa não transforma o vão até a base em buraco
+    other = Image.new("L", alpha.size, 0)
+    ImageDraw.Draw(other).ellipse((40, 560, 90, 610), fill=255)
+    assert A.detect_holes(alpha, ["bottom"], other) == []
+    # sem o lado cortado embaixo, a falta é contorno (abre para fora)
+    assert A.detect_holes(alpha, [], removed) == []
+    # a falta do `minus` com parede fina (do tamanho de um braço) também conta: não é vão, a pessoa estava ali
+    thin = _waist_up(80)
+    ImageDraw.Draw(thin).ellipse((240, 330, 380, 470), fill=0)
+    cut_off = Image.new("L", thin.size, 0)
+    ImageDraw.Draw(cut_off).ellipse((240, 330, 380, 470), fill=255)
+    assert A.detect_holes(thin, ["bottom"]) == []  # pelo alfa, igual ao vão do braço: não dá para saber
+    assert len(A.detect_holes(thin, ["bottom"], cut_off)) == 1
+
+
+def test_recorte_com_minus_grava_a_falta_que_abre_para_a_base(tmp_path, monkeypatch):
+    """O recorte (`cutout`) mede a falta com o que o `minus` tirou e grava no PNG; `holes_of` e `cutout_defect`
+    leem de lá. O `minus` que só morde o contorno (a Lucia ao lado do queixo do Jason) não grava nada."""
+    alpha, _ = _gap_to_base()
+    whole = Image.new("L", alpha.size, 0)
+    ImageDraw.Draw(whole).rounded_rectangle((40, 240, 460, 600), 60, fill=255)
+    whole.paste(255, (0, 0), alpha)
+    src = tmp_path / "capa.png"
+    Image.new("RGB", alpha.size, (200, 120, 90)).save(src)
+    monkeypatch.setattr(A, "rembg_available", lambda: True)
+    monkeypatch.setattr(A, "_raw_mask", lambda im, model, matting: whole.copy())
+    head = Image.new("L", (160, 300), 0)
+    ImageDraw.Draw(head).ellipse((0, 0, 159, 299), fill=255)
+    out = A.cutout(src, tmp_path / "furado.png", minus=[(head, (170, 400, 330, 700))], force=True)
+    assert out is not None
+    holes = A.holes_of(out)
+    assert len(holes) == 1 and holes[0]["box"][3] == 1.0
+    assert A.cutout_defect({"file": out.name}, tmp_path) == A.HOLE_NOTE
+    side = Image.new("L", (120, 200), 255)
+    ok = A.cutout(src, tmp_path / "mordido.png", minus=[(side, (0, 300, 120, 500))], force=True)
+    assert ok is not None and A.holes_of(ok) == [] and A.cutout_defect({"file": ok.name}, tmp_path) is None
+
+
 def test_buraco_tira_o_recorte_da_escolha_e_tem_motivo(tmp_path):
     kit, items = _kit(tmp_path, {"jason-buraco": (_holed(), ["bottom"]), "jason-bom": (_bust(), ["bottom"])})
     by_id = {i["id"]: i for i in items}
@@ -226,6 +326,36 @@ def test_troca_automatica_nao_escolhe_e_conserta_recorte_com_buraco():
     swapped = tasks._swap_figure(ThumbLayers(template="heroi-palavra",
                                              characters=[CutoutLayer(asset="jason-bom")]), GOOD, lambda v: 0.0)
     assert swapped is None  # o único outro Jason é corpo inteiro: o com buraco nem está na lista
+
+
+def test_cartao_nao_ganha_nota_de_troca_do_recorte_com_buraco():
+    """No cartão (sem figura) o recorte ruim citado só sai: nada de "usei jason-bom" para uma troca que não houve."""
+    proofs = [{"id": "p1", "file": "uploads/x/a.jpg", "kind": "captura", "desc": "a", "relevance": 2}]
+    assets = authoring.PackageAssets(cutouts=GOOD, low_cutouts=LOW, allow_editorial=True, proofs=proofs)
+    raw = [{"title": "Título bom do Jason", "thumb_text": "2027?", "template": "prova",
+            "characters_hint": ["jason-buraco"]}]
+    cand = authoring._normalize_candidates(raw, assets=assets, templates=["prova"], is_long=True)[0]
+    assert cand.layers.template == "prova" and cand.layers.characters == []
+    assert not any("jason-buraco" in n for n in cand.score.get("notes") or [])
+
+
+def test_heroi_sem_figura_no_render_troca_o_fundo_pelo_quadro_com_rosto():
+    """Sem outro recorte do personagem, o render tira a figura; o heroi-palavra sem figura nenhuma troca o quadro
+    (escolhido para ficar atrás da figura, só um lugar) pelo quadro de rosto menos usado, como o gerador faz."""
+    frames = [{"id": "praia", "tags": ["praia"]},
+              {"id": "rosto-a", "tags": ["personagem", "jason"], "face_box": [0.4, 0.1, 0.6, 0.4]},
+              {"id": "rosto-b", "tags": ["personagem", "lucia"], "face_box": [0.4, 0.1, 0.6, 0.4]}]
+    layers = ThumbLayers(template="heroi-palavra", background=BgLayer(kind="frame", ref="praia"),
+                         characters=[CutoutLayer(asset="lucia-buraco", x=0.28, h=0.95)])
+    low = {c["id"]: c for c in LOW}
+    used = {"rosto-a": 2.0}
+    fixed, notes = tasks._fix_low_figures(layers, GOOD, low, lambda v: 0.0, frames, lambda v: used.get(v, 0.0))
+    assert fixed.characters == [] and fixed.background.ref == "rosto-b"
+    assert any("a figura saiu" in n for n in notes) and any("rosto-b" in n for n in notes)
+    # com a troca pelo mesmo personagem, o fundo fica
+    kept, _ = tasks._fix_low_figures(layers.model_copy(update={"characters": [CutoutLayer(asset="jason-buraco")]}),
+                                     GOOD, low, lambda v: 0.0, frames, lambda v: 0.0)
+    assert kept.background.ref == "praia" and [c.asset for c in kept.characters] == ["jason-bom"]
 
 
 def test_variedade_nao_traz_o_recorte_com_buraco_de_volta():
