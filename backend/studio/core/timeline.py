@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from studio.core import edit_resolve
+from studio.core import edit_resolve, verdict
 from studio.core.hashing import hash_obj, seed_from
 from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
 from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, ProjectDoc, Scene, SubShot
@@ -656,6 +656,7 @@ def build_timeline(
                                      pool=pool)
             if grammar is not None:
                 drop_foreign_source(doc, scene, resolved, pool)
+            drop_false_verdict(doc, scene, resolved, pool)
             if resolved["motion"] == PARALLAX:
                 layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
                 if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
@@ -891,6 +892,41 @@ def _shot_owner(doc: ProjectDoc, scene: Scene, shot: SubShot, pool: Pool | None,
     return own
 
 
+def scene_owners(doc: ProjectDoc, scene: Scene, pool: Pool | None) -> list[tuple[str, MediaRef | PoolItem | None]]:
+    """Nível e material de tudo o que a cena mostra: o visual dela e cada subplano."""
+    own = (prov_of_scene(scene, doc), doc.shown_media(scene))
+    return [own, *(_shot_owner(doc, scene, shot, pool, own) for shot in scene.shots)]
+
+
+def _pool_desc(material: MediaRef | PoolItem | None, pool: Pool | None) -> str:
+    """Descrição do item do acervo de onde a mídia veio (a `MediaRef` não guarda a descrição)."""
+    pool_id = getattr(material, "pool_id", "") if material is not None else ""
+    item = pool.item(pool_id) if pool is not None and isinstance(pool_id, str) and pool_id else None
+    return item.desc if item is not None else ""
+
+
+def false_verdict_on_true_material(doc: ProjectDoc, scene: Scene, stamp: str | None, pool: Pool | None) -> bool:
+    """O carimbo é veredito negativo (FALSO, GOLPE) e a cena mostra, a tela cheia, material oficial ou de imprensa
+    que não é o artefato do golpe (`core.verdict`): o carimbo acusaria o trailer, a arte ou a matéria. Cartão de
+    texto (título, texto, citação, número) mostra a afirmação: o veredito vale sobre ela."""
+    if not verdict.is_negative(stamp) or scene.kind not in ("image", "video", "document"):
+        return False
+    return not all(verdict.allows_negative(prov, material, _pool_desc(material, pool))
+                   for prov, material in scene_owners(doc, scene, pool))
+
+
+def drop_false_verdict(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:
+    """Tira da tela o veredito negativo sobre material verdadeiro (`false_verdict_on_true_material`). O documento
+    não muda: a revisão do storyboard (`storyboard_check.fix_verdict_stamps`) é quem tira do documento."""
+    card = resolved.get("card")
+    if not card or not false_verdict_on_true_material(doc, scene, card.get("stamp"), pool):
+        return
+    for key in ("stamp", "stamp_at", "stamp_from"):
+        card.pop(key, None)
+    if not card:
+        resolved.pop("card")
+
+
 def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:
     """Tira da cena resolvida a fonte do cartão que ficaria solta sobre material que não é dela (camada de edição).
 
@@ -903,8 +939,7 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
     source = str((card or {}).get("source") or "").strip()
     if not source or scene.kind in DATA_KINDS or "news" in resolved:
         return
-    own = (prov_of_scene(scene, doc), doc.shown_media(scene))
-    owners = [own, *(_shot_owner(doc, scene, shot, pool, own) for shot in scene.shots)]
+    owners = scene_owners(doc, scene, pool)
     # Título que só tem a fonte para apoiar (sem faixa nem carimbo) e não diz nada dela ("2. TAMANHO QUE NÃO BATE"):
     # a fonte sai também sobre fundo do app, senão credita a uma fonte só a conclusão que junta fatos de várias. A
     # conta usa o título no idioma principal (o das fontes): a dublagem mantém o mesmo crédito.

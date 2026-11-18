@@ -272,6 +272,73 @@ def test_card_source_only_over_the_material_of_that_source():
     assert "card" not in scenes[3]
 
 
+def _verdict_doc() -> ProjectDoc:
+    """Vereditos do vídeo do GTA 6 no PC: "GOLPE" sobre o quadro do trailer, "FALSO" sobre a matéria da Dexerto e a
+    arte oficial de Jason e Lucia (QA: o espectador lê que o trailer, a imprensa ou a arte é que são falsos); "GOLPE"
+    sobre o print do site falso fica, como sobre ilustração e no cartão de texto com a afirmação."""
+    trailer = MediaRef(kind="official", source="library", asset="uploads/prj_tl/media/0123456789abcdef.jpg",
+                       credit="Rockstar Games (trailer)")
+    dexerto = MediaRef(kind="capture", source="capture", asset="uploads/prj_tl/media/fedcba9876543210.jpg",
+                       page_url="https://www.dexerto.com/gta/gta-6-cloud/", credit="dexerto.com")
+    art = MediaRef(kind="official", source="link", asset="uploads/prj_tl/media/aabbccddeeff0011.jpg",
+                   credit="Canaltech", pool_id="p245")
+    scam = MediaRef(kind="official", source="link", asset="uploads/prj_tl/media/00112233445566aa.jpg",
+                    credit="Malwarebytes", pool_id="p16")
+    golpe, falso = {"pt-BR": "GOLPE"}, {"pt-BR": "FALSO"}
+    return _doc(
+        _scene(0, visual=Visual(prompt="x", media=trailer), card=SceneCard(stamp=golpe)),
+        _scene(1, visual=Visual(prompt="x", media=dexerto), card=SceneCard(stamp=falso, headline={"pt-BR": "PC"})),
+        _scene(2, visual=Visual(prompt="x", media=art), card=SceneCard(stamp=falso)),
+        _scene(3, visual=Visual(prompt="x", media=scam), card=SceneCard(stamp=golpe)),
+        _scene(4, card=SceneCard(stamp=golpe)),  # IA
+        _scene(5, kind="text", visual=Visual(prompt="x", media=trailer), card=SceneCard(stamp=falso)),
+        _scene(6, visual=Visual(prompt="x", media=trailer), card=SceneCard(stamp={"pt-BR": "CONFIRMADO"})),
+        _scene(7, visual=Visual(prompt="x", media=scam), card=SceneCard(stamp=golpe),
+               shots=[SubShot(at="pessoal", source="pool", pool_id="p30")]),
+    )
+
+
+VERDICT_POOL = Pool(items=[
+    PoolItem(id="p245", tier="official", media="image", path="uploads/prj_tl/pool/p245.jpg",
+             desc="GTA 6 vira isca para roubar dados e dinheiro de brasileiros"),
+    PoolItem(id="p16", tier="official", media="image", path="uploads/prj_tl/pool/p16.jpg",
+             desc="Site copia o Extended Look e adiciona botão falso 'Play Now'"),
+    PoolItem(id="p30", tier="official", media="image", path="uploads/prj_tl/pool/p30.jpg",
+             desc="casal-conversivel · personagem · jason · lucia"),
+])
+
+
+def test_negative_verdict_never_over_official_or_press_material():
+    scenes = _timeline(_verdict_doc(), pool=VERDICT_POOL)["scenes"]
+    stamps = [(s.get("card") or {}).get("stamp") for s in scenes]
+    # trailer, Dexerto e arte oficial perdem o carimbo; o site falso, a IA e o cartão de texto ficam com ele;
+    # veredito positivo fica; o subplano do trailer dentro da cena do site falso também tira o "GOLPE"
+    assert stamps == [None, None, None, "GOLPE", "GOLPE", "FALSO", "CONFIRMADO", None]
+    assert "card" not in scenes[0] and scenes[1]["card"] == {"headline": "PC"}
+    assert "stamp_at" not in (scenes[2].get("card") or {})
+
+
+def test_storyboard_review_drops_negative_verdict_over_true_material():
+    from studio.workers.pipeline import storyboard_check
+
+    doc = _verdict_doc()
+    beats = [storyboard_check.Beat(key=f"seg_{i}:0", segment_id=f"seg_{i}", part=0, parts=1, index=i, role="body",
+                                   words=TEXT.split(), seconds=3.0) for i in range(len(doc.scenes))]
+    issues = storyboard_check.fix_verdict_stamps(doc, beats, VERDICT_POOL)
+    assert [(i.code, i.severity, i.scene_id) for i in issues] == [
+        ("carimbo_sobre_material_real", "corrigido", f"scn_{k}") for k in (0, 1, 2, 7)]
+    assert issues[0].message.startswith('O carimbo "GOLPE" saiu: a cena mostra material oficial ou de imprensa')
+    assert doc.scenes[0].card is None and doc.scenes[1].card.headline == {"pt-BR": "PC"}
+    assert doc.scenes[3].card.stamp == {"pt-BR": "GOLPE"} and doc.scenes[5].card.stamp == {"pt-BR": "FALSO"}
+    # Cena travada pelo usuário não muda; a revisão inteira roda a correção.
+    doc = _verdict_doc()
+    doc.scenes[0].locked = True
+    assert all(i.scene_id != "scn_0" for i in storyboard_check.fix_verdict_stamps(doc, beats, VERDICT_POOL))
+    import inspect
+
+    assert "fix_verdict_stamps(doc, beats, pool)" in inspect.getsource(storyboard_check.check)
+
+
 def test_card_source_stays_in_old_projects_without_the_edit_layer():
     scenes = _timeline(_source_doc(edited=False))["scenes"]
     assert [(s.get("card") or {}).get("source") for s in scenes][:2] == ["WeLiveSecurity (ESET)", "Canaltech"]

@@ -44,6 +44,7 @@ from studio.core.styles.visual import (
 )
 from studio.core.text import estimate_seconds, normalize_token, span_ranges
 from studio.core.text import words as split_words
+from studio.core.timeline import false_verdict_on_true_material
 from studio.workers.pipeline import lighting
 from studio.workers.pipeline.build import lean_prompts, media_pending, scene_needs_image, wants_world
 
@@ -634,6 +635,29 @@ def fix_label_stamps(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         issues.append(Issue("carimbo_rotulo", CORRIGIDO,
                             f'O carimbo "{stamp}" saiu: é {why}, não veredito (carimbo é para CONFIRMADO, BOATO, '
                             "FALSO).", beat.key, scene.id))
+    return issues
+
+
+def fix_verdict_stamps(doc: ProjectDoc, beats: list[Beat], pool: Pool | None = None) -> list[Issue]:
+    """Veredito negativo (FALSO, GOLPE, FAKE) sobre material oficial ou de imprensa sai: sobre o quadro do trailer, a
+    arte oficial ou a matéria, ele diz que o trailer, a arte ou a imprensa é que são falsos. Fica sobre o artefato do
+    golpe (site falso, instalador, post de acesso pago), sobre ilustração e sobre o cartão de texto com a afirmação
+    (`core.verdict`)."""
+    lang = doc.primary_language
+    issues: list[Issue] = []
+    for beat in beats:
+        scene = scene_for(doc, beat)
+        if scene is None or scene.locked or scene.card is None:
+            continue
+        stamp = (scene.card.stamp.get(lang) or "").strip()
+        if not stamp or not false_verdict_on_true_material(doc, scene, stamp, pool):
+            continue
+        scene.card.stamp = {}
+        scene.card = scene.card if scene.card.resolved(lang) else None
+        issues.append(Issue("carimbo_sobre_material_real", CORRIGIDO,
+                            f'O carimbo "{stamp}" saiu: a cena mostra material oficial ou de imprensa, e o carimbo '
+                            "diria que ele é que é falso. Veredito negativo só sobre o material do golpe ou sobre o "
+                            "cartão com a afirmação.", beat.key, scene.id))
     return issues
 
 
@@ -1690,6 +1714,7 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     issues += fix_stamps(doc, beats)
     issues += fix_echo_stamps(doc, beats)
     issues += fix_label_stamps(doc, beats)
+    issues += fix_verdict_stamps(doc, beats, pool)
     issues += fix_repeated_headlines(doc, beats)
     issues += _check_sources(doc, beats)
     issues += fix_fact_sources(doc, beats)
