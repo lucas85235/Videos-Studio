@@ -173,7 +173,8 @@ def test_captura_do_proprio_video_vira_prova(monkeypatch):
     prova = cands[0].layers
     assert prova.template == "prova" and prova.background.kind == "media"
     assert prova.background.ref == f"media:{rel}/cap.jpg" and prova.mark == "x"
-    assert prova.presenter is not None and prova.presenter.crop == "meio"
+    # avatar grande em busto à direita (o print é o apoio embaixo da palavra)
+    assert prova.presenter is not None and prova.presenter.crop == "busto" and prova.presenter.side == "right"
     assert "p2 (captura · canaltech.com.br" in seen[0]
     # sem o canal liberar material de terceiros, a captura (editorial) não entra
     assert authoring.project_proofs(doc, allow_editorial=False) == []
@@ -215,8 +216,9 @@ def test_molde_espelhado_e_cartao_da_prova(tmp_path):
     out = C.render(prova, T.CANVAS, r)
     lay = out.info["layout"]
     card = next(f for f in lay["figures"] if f["kind"] == "card")
-    assert card["bbox"][0] > T.CANVAS[0] * 0.35 and lay["objects"] >= 1
-    assert lay["text_bbox"][2] < card["bbox"][0]  # texto e prova não se cobrem
+    # o print é o apoio: menor, embaixo da palavra, na metade esquerda (a direita é do avatar)
+    assert card["bbox"][2] < T.CANVAS[0] * 0.55 and lay["objects"] >= 1
+    assert lay["text_bbox"][3] <= card["bbox"][1] + 2  # texto e prova não se cobrem
     # a manchete (as 2 linhas de "letras") foi achada e o X fica fora dela, no pedaço livre de baixo do cartão
     hx0, hy0, hx1, hy1 = card["headline"]
     assert hx0 < card["bbox"][0] + 80 and hx1 > card["bbox"][2] - 80  # a janela tem a manchete inteira
@@ -602,7 +604,7 @@ def test_direita_fora_dos_templates_que_espelham_nao_espelha(tmp_path):
                                         "text": {"words": "FALSO", "fill": "red", "pos": "right"}})
     assert not C._mirrored(prova)
     card = next(f for f in C.render(prova, T.CANVAS, r).info["layout"]["figures"] if f["kind"] == "card")
-    assert card["bbox"][0] > T.CANVAS[0] * 0.35  # o cartão continua à direita
+    assert card["bbox"][2] < T.CANVAS[0] * 0.55  # o cartão continua à esquerda, embaixo da palavra
 
 
 def test_prova_ja_gerada_some_quando_o_canal_deixa_de_liberar():

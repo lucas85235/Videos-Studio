@@ -2474,7 +2474,8 @@ THUMB_RULES = """Regras de thumb (vêm dos vídeos que estouram no nicho: metade
 - Cada candidato é uma variante real: template, fundo, pose ou palavra diferentes. Nunca dois iguais.
 - Fuja das thumbs recentes do canal (a lista vem no pedido): outro fundo, outra figura, outra pose, outro template.
 - Vídeo com prova no acervo (captura de matéria, site falso, print): pelo menos 1 candidato usa o template prova com
-  o id da captura em background_hint (o print grande com X ou círculo vermelho vende a denúncia melhor que um quadro).
+  o id da captura em background_hint (o avatar grande com emoção forte e o print de apoio com X ou círculo vermelho
+  vendem a denúncia melhor que um quadro; o print sozinho e grande vira ruído branco na miniatura).
 - Personagens oficiais (de jogo, filme ou série) nunca são desenhados por IA: só aparecem em quadros oficiais da lista."""
 
 TITLE_RULES = f"""Regras de título (medidas no nicho: os vídeos que estouram têm títulos de ~38 caracteres; os medianos, ~54):
@@ -2501,8 +2502,8 @@ tem de ser cumprível com o tema.
 Templates de thumb: heroi-palavra (quadro com personagem/rosto grande + 1 palavra), avatar-reage (avatar do
 apresentador grande reagindo + objeto do tema, 0 a 2 palavras), lugar-mapa (quadro aéreo de um lugar + 1-2 palavras),
 numero-lista (número gigante + 1 palavra, sem cartões), versus (dois lados comparados), livre (Short vertical: 2-3
-palavras no centro), prova (captura/print do próprio vídeo grande com marcação vermelha + 1 palavra + avatar pequeno;
-background_hint = id do acervo), objeto (o item-chave em close + 1 palavra).
+palavras no centro), prova (avatar grande reagindo com emoção forte + 1 palavra grande + a captura/print do próprio
+vídeo menor, de apoio, com marcação vermelha; background_hint = id do acervo), objeto (o item-chave em close + 1 palavra).
 Use só os templates e ativos (ids) que o pedido lista; para o que não existir, use null.
 
 """ + TITLE_RULES + "\n\n" + THUMB_RULES
@@ -3134,8 +3135,8 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
     Variedade (`history`: `thumb_variety.Usage` das thumbs recentes do canal; `batch`: o que este pacote já usou):
     fundo, figura e pose que o canal acabou de usar dão lugar a outros do mesmo assunto; a cor do texto sai da
     paleta de alto contraste (contraste com o fundo + novidade, não só amarelo) e o lado do texto alterna (o molde
-    espelha). Captura do próprio vídeo citada em `background_hint` vira o template `prova` (print grande com X ou
-    círculo vermelho)."""
+    espelha). Captura do próprio vídeo citada em `background_hint` vira o template `prova` (avatar grande e o print
+    de apoio com X ou círculo vermelho)."""
     allowed = [t for t in templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses] or ["heroi-palavra"]
     if not is_long:
         allowed = ["livre"]
@@ -3295,7 +3296,7 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             "big_vi": bool(chars) and template in ("heroi-palavra", "lugar-mapa") and assets.allow_editorial,
             "characters": figures,
             "text": ({"words": thumb_text, "fill": fill, "pos": side,
-                      "size": 0.6 if template == "numero-lista" else 0.26 if template == "prova" else 0.3}
+                      "size": 0.6 if template == "numero-lista" else 0.3}
                      if thumb_text else None),
             "pill": pill,
             "cards": cards,
@@ -3308,8 +3309,12 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         if pose_id:
             facing = next((str(p.get("facing") or "center") for p in assets.poses if p["id"] == pose_id), "center")
             if template == "prova":
-                # avatar grande de corpo embaixo da palavra, do lado de fora do print
-                side_p, crop, h = "left", "meio", 0.64
+                # avatar grande em busto à direita (o molde manda: `presenter.lock`); o print é o apoio embaixo da
+                # palavra, à esquerda
+                from studio.media import thumb_templates as T
+
+                pt = T.spec("prova")["presenter"]
+                side_p, crop, h = pt["side"], pt["crop"], float(pt["h"])
             else:
                 # Busto do lado oposto ao texto em todos, menos no heroi-palavra (avatar pequeno de corpo embaixo do
                 # texto): do lado do texto, o busto ficaria embaixo da coluna.

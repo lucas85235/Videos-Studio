@@ -39,7 +39,7 @@ from studio.media.thumbnail import load_font
 
 log = logging.getLogger(__name__)
 
-VERSION = 3
+VERSION = 4
 """Versão do desenho: muda quando o compositor passa a desenhar diferente (entra na chave do cache da capa)."""
 BASE_H = 720
 """Altura de referência: todos os px fixos (contornos, sombras) são a 720p e escalam com o canvas."""
@@ -486,8 +486,14 @@ def _presenter(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver
         return
     src = _trim(open_rgba(asset.path))
     pt = tpl.get("presenter", {})
+    if pt.get("lock"):
+        # o molde manda no avatar (prova): o candidato gravado com outro lugar/tamanho sai no desenho do molde; trocou
+        # de lado, troca o espelho (a pose que olhava para dentro da thumb continua olhando para dentro)
+        side = pt.get("side", p.side)
+        p = p.model_copy(update={"side": side, "crop": pt.get("crop", p.crop), "h": float(pt.get("h", p.h)),
+                                 "flip": p.flip if side == p.side else not p.flip})
     h = p.h
-    if "h_max" in pt:  # heroi-palavra e prova: avatar pequeno, o foco é outro
+    if "h_max" in pt:  # heroi-palavra: avatar pequeno, o foco é outro
         h = min(h, pt["h_max"])
     crop = p.crop
     target = pt.get("head_x", 0.77) if p.side == "right" else 1 - pt.get("head_x", 0.77)
@@ -1511,6 +1517,8 @@ def _ink(im: Image.Image, width: int = 480, *, color: bool = True) -> Any:
 
 # Menor altura (fração da pedida) da janela da página quando ela começa na manchete e a captura acaba antes.
 PAGE_WINDOW_MIN_HEIGHT = 0.5
+# Largura máxima da janela da página (em larguras da manchete) quando ela cresce para a manchete alta caber.
+PAGE_WINDOW_MAX_WIDEN = 1.1
 # Linha de texto numa página: de 1,5% a 22% da altura da imagem (mais baixo é ruído; mais alto, pedaço de foto).
 LINE_MIN, LINE_MAX = 0.015, 0.22
 
@@ -1543,9 +1551,15 @@ def _page_window(im: Image.Image, aspect: float,
             room = h - max(0.0, by0 - bh * 0.05)
             g = min(bh / (hh * HEADLINE_MAX_SHARE), w / ww, room / hh)
             if g > 1:
-                ww, hh = ww * g, hh * g
+                # cresce a altura toda, mas a largura só até a coluna da manchete com folga: mais larga, a janela
+                # pegava a barra lateral do site (anúncio, menu) num cartão largo; fica mais estreita que a
+                # proporção pedida e o cartão estreita junto (`_card_scene`)
+                cap = min(float(w), (bx1 - bx0) * PAGE_WINDOW_MAX_WIDEN)
+                ww, hh = min(ww * g, max(ww, cap)), hh * g
         x0 = min(max(0.0, (bx0 + bx1) / 2 - ww / 2), w - ww)
-        top = max(0.0, by0 - max(0.0, hh - bh) * 0.08)
+        # folga em cima da manchete (também em proporção dela: no cartão inclinado, o canto da 1ª linha não encosta na
+        # borda branca)
+        top = max(0.0, by0 - max(max(0.0, hh - bh) * 0.08, bh * 0.1))
         if top + hh > h and (h - top >= hh * PAGE_WINDOW_MIN_HEIGHT or hh > h):
             # manchete perto do fim da captura (ou larga demais para a proporção): a janela começa nela e sai mais
             # baixa (o cartão encolhe na altura) em vez de subir e mostrar o que vem antes (anúncio, menu, faixa
@@ -1850,6 +1864,12 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
         by += (inner[1] - new_inner_h) / 2 / H
         inner = (inner[0], new_inner_h)
         ch = new_inner_h + 2 * border
+    win_w = (win[2] - win[0]) * inner[1] / max(1, win[3] - win[1])
+    if page and win_w < inner[0] * 0.97:  # janela mais estreita (manchete alta numa coluna): o cartão estreita
+        new_inner_w = max(8, round(win_w))
+        bx += (inner[0] - new_inner_w) / 2 / W
+        inner = (new_inner_w, inner[1])
+        cw = new_inner_w + 2 * border
     photo = src.resize(inner, Image.Resampling.LANCZOS, box=win)
     band = _band_in_window(src_band, src.size, win) if src_band is not None else None
     if page and band is None:
