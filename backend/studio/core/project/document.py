@@ -266,6 +266,9 @@ class Visual(BaseModel):
     media: MediaRef | None = None
     """Mídia real anexada: vale mais que a imagem de IA, o `asset` e o `reuse_of` (que ficam de reserva). None: como
     antes."""
+    ai_reason: str | None = None
+    """Por que esta imagem é de IA (hipótese, futuro, conceito), dito pelo storyboard (ADR 0004). None: cena antiga
+    ou IA sem motivo declarado (a revisão acusa `faltou_real`)."""
 
 
 def _pick_text(texts: dict[str, str], lang: str, fallback: str | None) -> str:

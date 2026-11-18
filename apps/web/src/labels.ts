@@ -99,6 +99,11 @@ export const VISUAL_LANGUAGE_LABELS: LabelMap = {
   collage: 'Colagem',
   line_art: 'Traço de lousa',
   photo: 'Foto realista',
+  collage_cutout: 'Recorte de colagem',
+  ink_sketch: 'Esboço a nanquim',
+  halftone_print: 'Impressão em retícula',
+  diagram: 'Diagrama',
+  paper_cut: 'Papel recortado',
 };
 
 export const SHOT_LABELS: LabelMap = {

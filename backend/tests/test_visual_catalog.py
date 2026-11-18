@@ -74,7 +74,10 @@ def test_catalog_constants():
     assert set(visual.VISUAL_LANGUAGES) == {
         "key_art", "editorial", "render_3d", "flat_vector", "isometric", "ui_mockup", "painting", "archival",
         "collage", "photo", "line_art",
+        # ADR 0004: linguagens assumidamente não fotográficas para a IA que sobra
+        "collage_cutout", "ink_sketch", "halftone_print", "diagram", "paper_cut",
     }  # fmt: skip
+    assert set(visual.NON_PHOTO_LANGUAGES) <= set(visual.VISUAL_LANGUAGES)
     assert [k for k, v in visual.VISUAL_LANGUAGES.items() if v.photoreal] == ["photo"]
     assert "photo" not in visual.allowed_languages(False) and "photo" in visual.allowed_languages(True)
     assert set(visual.SHOTS) == set(visual.SHOT_ROTATION)

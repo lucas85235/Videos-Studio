@@ -96,7 +96,12 @@ def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
     mapa.
     Vídeo IA: o gancho sugere um movimento.
     Mídia real: a primeira imagem nova depois do gancho sugere uma foto do tema e, com fonte de link no roteiro, a
-    seguinte sugere o cartão de notícia dessa fonte."""
+    seguinte sugere o cartão de notícia dessa fonte.
+    Com acervo (`ctx["pool"]`, ADR 0004): o gancho é o item do nível do gancho que mais fala da batida, as imagens citam
+    o `pool_id` do item do assunto (ou o menos usado), uma imagem fica `new` com `ai_reason` e os cartões usam de fundo
+    o item real anterior. Marcas: papel da batida e ênfase no número ou na palavra mais longa."""
+    if ctx.get("pool"):
+        return _mock_pool_storyboard(ctx)
     beats: list[dict[str, Any]] = ctx.get("scenes", [])
     topic = ctx.get("topic") or "o tema"
     data_geo = bool(ctx.get("data_geo"))
@@ -162,6 +167,94 @@ def mock_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
             last_new = key
             alternate = True
             shots += 1
+    return {"direction": direction, "scenes": scenes}
+
+
+def _mock_words(text: str) -> list[str]:
+    return [w.strip(".,;:!?…\"'()") for w in text.split() if w.strip(".,;:!?…\"'()")]
+
+
+def _mock_overlap(text: str, item: dict[str, Any]) -> int:
+    def toks(value: str) -> set[str]:
+        clean = (_norm(w).strip(".,;:!?…\"'()") for w in value.replace("_", " ").replace("-", " ").split())
+        return {w for w in clean if len(w) >= 4}
+
+    words = toks(text)
+    return len(words & toks(" ".join([item.get("desc") or "", *(item.get("tags") or []), *(item.get("entities") or [])])))
+
+
+def _mock_marks(index: int, item: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Papel e ênfase da batida: o número falado (quando há) ou a palavra mais longa."""
+    words = _mock_words(item.get("text", ""))
+    numbers = [w for w in words if any(ch.isdigit() for ch in w)]
+    emphasis = numbers[:1] or sorted(words, key=lambda w: (-len(w), words.index(w)))[:1]
+    role = "hook" if index == 0 else "cta" if item.get("role") == "cta" else (
+        "number" if kind in ("stat", "compare", "chart") else "breath")
+    return {"role": role, "emphasis": emphasis, "serious": False}
+
+
+def _mock_pool_storyboard(ctx: dict[str, Any]) -> dict[str, Any]:
+    beats: list[dict[str, Any]] = ctx.get("scenes", [])
+    topic = ctx.get("topic") or "o tema"
+    pool = [i for i in ctx.get("pool") or [] if i.get("tier") not in ("ai", "graphic", "meme")]
+    hook_tiers = ctx.get("hook_tiers") or ["own", "official", "capture", "free"]
+    direction = {
+        "genre": "curiosidades", "approach": "literal", "world": f"everyday places and objects related to {topic}",
+        "treatment": "clean contrast, soft texture", "palette": ["teal", "warm orange", "off white"],
+        "languages": ["collage_cutout", "ink_sketch"], "grade": None, "entities": [], "avoid": [], "style_fit": "ok",
+        "style_note": "", "suggested_style": None,
+        "hook": " ".join((beats[0].get("text", "") if beats else topic).split()[:12]),
+    }  # fmt: skip
+    used: dict[str, int] = {}
+
+    def best_item(text: str, tiers: list[str] | None = None) -> dict[str, Any] | None:
+        candidates = [i for i in pool if tiers is None or i.get("tier") in tiers] or pool
+        if not candidates:
+            return None
+        return min(enumerate(candidates), key=lambda c: (-_mock_overlap(text, c[1]), used.get(c[1]["id"], 0),
+                                                         c[0]))[1]
+
+    scenes: list[dict[str, Any]] = []
+    last_real: str | None = None
+    ai_done = False
+    images = 0
+    for index, item in enumerate(beats):
+        key, text = item["key"], item.get("text", "")
+        hint = item.get("kind_hint") or "image"
+        if index == 0 or hint not in ("title", "count") and not item.get("has_number") and item.get("role") != "cta":
+            images += index > 0
+            if index > 0 and images == 2 and not ai_done:
+                # Uma batida de conceito fica com a IA declarada (o motivo vai junto).
+                scenes.append(_mock_scene(key, prompt=f"Concept of {topic}: {' '.join(text.split()[:10])}",
+                                          language="collage_cutout", shot=_MOCK_SHOTS[images % len(_MOCK_SHOTS)],
+                                          ai_reason="conceito abstrato, sem material real do assunto",
+                                          **_mock_marks(index, item, "image")))
+                ai_done = True
+                continue
+            chosen = best_item(text, hook_tiers if index == 0 else None)
+            if chosen is None:
+                scenes.append(_mock_scene(key, prompt=f"Cena: {' '.join(text.split()[:12])}", language="ink_sketch",
+                                          **_mock_marks(index, item, "image")))
+                continue
+            used[chosen["id"]] = used.get(chosen["id"], 0) + 1
+            extra: dict[str, Any] = {"motion": "punch_zoom"} if index == 0 else {}
+            if index == 0:
+                headline = item.get("value") if item.get("has_number") else " ".join(text.split()[:3]).upper()
+                extra["headline"] = headline.strip(" ?!.,") or None
+            scenes.append(_mock_scene(key, "image", "pool", pool_id=chosen["id"], **extra,
+                                      **_mock_marks(index, item, "image")))
+            last_real = key
+        elif hint in ("title", "count"):
+            overlay = item.get("overlay_hint") or " ".join(text.split()[:12])
+            scenes.append(_mock_scene(key, hint, "reuse" if last_real else "none", reuse_key=last_real,
+                                      overlay_text=overlay, **_mock_marks(index, item, hint)))
+        elif item.get("has_number") and item.get("value"):
+            scenes.append(_mock_scene(key, "stat", "reuse" if last_real else "none", reuse_key=last_real,
+                                      value=item["value"], label=" ".join(text.split()[:4]),
+                                      **_mock_marks(index, item, "stat")))
+        else:  # chamada final: volta ao gancho
+            scenes.append(_mock_scene(key, "image", "reuse", reuse_key=beats[0]["key"], focus="center",
+                                      **_mock_marks(index, item, "image")))
     return {"direction": direction, "scenes": scenes}
 
 
