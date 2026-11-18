@@ -265,6 +265,23 @@ Encaixes vazios:
 
 **Contrato com os outros itens:** tudo acima. Ninguém mais edita esses arquivos; se precisar, abre um PR pequeno na fundação.
 
+**Emenda "Ritmo" (revisão do `ref-perfil`, 18/11/2026).** O `PaceBlock` dizia "incluindo os micro-planos", o
+`ref-perfil` mediu sem eles e o `metricas-cara-ia` com eles: a timeline e a referência mediam coisas diferentes. Fica:
+- **regulares + micro à parte**: mediana, quartis, CV, maior plano e cortes/min são dos planos >= 0,4 s; os micro
+  contam em `micro_*` e como evento visual. É a semântica da gramática (`shot_median_s`/`shot_cv` sorteiam os
+  regulares, `micro_per_min` põe os micro) e a dos alvos medidos na GTA;
+- **pontas sem cortes fora**: janelas de 30 s do início e do fim com taxa < 25% da mediana das janelas saem do ritmo
+  (e de `max_still_s`/`events_per_min`); `cuts_per_min_windows` continua do vídeo inteiro, sem a última janela com
+  menos de 5 s; o gancho é sempre dos 30 s iniciais;
+- **CV robusto**: `sqrt(exp(σ²) - 1)`, σ = desvio do log das durações;
+- **um extrator só**: `media/refprofile/cuts.pace(shots, dur)`. A timeline chama
+  `cuts.pace(cuts.shots_from_durations([...durações dos planos...]), duração)`; o teste cruzado
+  `test_pace_matches_the_timeline_metric` (em `test_refprofile_units.py`) compara os dois;
+- `sfx_per_min` sem os da transição (na referência: o whoosh colado no corte) e `kb_share` só sobre o tempo de imagem
+  parada, nos dois lados.
+Ordem: esta emenda, depois `ref-perfil`, depois `metricas-cara-ia`, que passa a usar `cuts.pace` em `measure_timeline`
+(até lá o teste cruzado pula, porque a métrica da timeline é o encaixe vazio).
+
 **Testes:** `backend/tests/test_contracts_compat.py`:
 - todos os `presets/styles/*.yaml` e o estilo `refstyle.json` validam;
 - o legado `{"ai_image":1}` vira a política padrão;

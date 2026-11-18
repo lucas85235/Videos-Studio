@@ -72,22 +72,34 @@ class FieldMeta(BaseModel):
 
 
 class PaceBlock(BaseModel):
-    """Ritmo de cortes. Mediana, quartis, CV e cortes por minuto são dos planos regulares (≥ 0,4 s), como as medidas
-    antigas da referência; os micro-planos (< 0,4 s: stinger, flash, corte de meme) contam à parte (`micro_*`) e como
-    evento visual (`events_per_min`, `max_still_s`). Ver `media/refprofile/cuts.pace`."""
+    """Ritmo de cortes (emenda da fundação, ADR 0004 §3.0 "Ritmo"). Extrator único: `media/refprofile/cuts.pace`
+    (função pura), usado na referência, no MP4 final e na timeline (sobre os planos dela).
+
+    - `shots`, `median_s`, `mean_s`, `p10_s`, `p90_s`, `cv`, `max_shot_s` e `cuts_per_min` são dos planos REGULARES
+      (>= 0,4 s). Os micro-planos (< 0,4 s: stinger, flash, corte de meme) contam à parte (`micro_count`,
+      `micro_per_min`) e como evento visual (`events_per_min`, `max_still_s`). É a semântica da gramática: o
+      editor-planejador sorteia os planos regulares pela mediana e pelo CV e põe os micro pela densidade própria.
+    - Pontas sem cortes: as janelas de 30 s do início e do fim com taxa abaixo de 25% da mediana das janelas (abertura
+      longa, outro, tela final) saem do ritmo. Planos contam pelo meio; `cuts_per_min`, `micro_per_min`,
+      `events_per_min` e `max_still_s` são do trecho que sobra.
+    - `cuts_per_min_windows` é do vídeo inteiro; a última janela com menos de 5 s fica de fora. `hook_cuts_per_min` é
+      sempre dos 30 s iniciais.
+    """
 
     shots: int = Field(default=0, ge=0)
-    """Planos regulares (sem os micro)."""
+    """Planos regulares (sem os micro), no trecho com cortes."""
     median_s: float = Field(default=0.0, ge=0)
     mean_s: float = Field(default=0.0, ge=0)
     p10_s: float = Field(default=0.0, ge=0)
     p90_s: float = Field(default=0.0, ge=0)
     cv: float = Field(default=0.0, ge=0)
-    """Coeficiente de variação das durações dos planos (desvio ÷ média)."""
+    """Coeficiente de variação ROBUSTO das durações dos planos regulares: o da lognormal com o mesmo desvio do log,
+    `sqrt(exp(σ²) - 1)`. É o parâmetro com que o editor-planejador sorteia os planos, e um plano atípico (outro de
+    55 s) quase não mexe nele."""
     max_shot_s: float = Field(default=0.0, ge=0)
     cuts_per_min: float = Field(default=0.0, ge=0)
     cuts_per_min_windows: list[float] = []
-    """Cortes por minuto em janelas de 30 s, na ordem."""
+    """Cortes por minuto em janelas de 30 s, na ordem, do vídeo inteiro (a última, com menos de 5 s, fica de fora)."""
     hook_cuts_per_min: float = Field(default=0.0, ge=0)
     """Cortes por minuto nos primeiros 30 s."""
     micro_count: int = Field(default=0, ge=0)
@@ -109,7 +121,8 @@ class CameraBlock(BaseModel):
     """Fração do tempo com zoom lento (rampa)."""
     zoom_rate_pct_s: float = Field(default=0.0, ge=0)
     kb_share: float = Field(default=0.0, ge=0, le=1)
-    """Fração do tempo de imagem com Ken Burns ou pan (a assinatura de slideshow)."""
+    """Fração do tempo de imagem com Ken Burns ou pan (a assinatura de slideshow). Na referência e no MP4, "imagem" é
+    o plano de imagem parada (a mesma imagem movida par a par); a câmera que anda na filmagem não conta."""
     static_share: float = Field(default=0.0, ge=0, le=1)
     freeze_per_min: float = Field(default=0.0, ge=0)
 
@@ -170,7 +183,8 @@ class AudioBlock(BaseModel):
     """Efeitos sonoros e trilha."""
 
     sfx_per_min: float = Field(default=0.0, ge=0)
-    """SFX por minuto, sem contar os da transição."""
+    """SFX por minuto, sem contar os da transição (na timeline, o som da transição da cena; na referência e no MP4, o
+    whoosh colado no corte). `sfx_classes` também é sem eles."""
     sfx_on_cut_share: float = Field(default=0.0, ge=0, le=1)
     sfx_classes: dict[str, float] = {}
     """Fração dos SFX por classe (`SfxClass`)."""
