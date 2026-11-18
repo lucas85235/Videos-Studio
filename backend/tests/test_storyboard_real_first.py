@@ -194,7 +194,7 @@ def test_ai_without_reason_uses_the_item_of_the_same_topic(monkeypatch):
     assert "p3" not in found[0] and "(official)" not in found[0]
 
 
-def test_ai_with_reason_stays_and_varies_its_language(monkeypatch):
+def test_ai_with_reason_stays_in_the_one_house_language(monkeypatch):
     doc = base_doc()
     beats = authoring.plan_beats(doc, STYLE)
     what_if = next(i for i, b in enumerate(beats) if "mapa" in b.text)
@@ -205,8 +205,9 @@ def test_ai_with_reason_stays_and_varies_its_language(monkeypatch):
     assert scene.visual.media is None and storyboard_check.has_own_image(scene)
     assert scene.visual.ai_reason == "hipótese sobre o tamanho do mapa"
     assert not VISUAL_LANGUAGES[scene.visual.language].photoreal  # a IA não imita foto
-    ai_languages = [s.visual.language for s in new_doc.ordered_scenes() if storyboard_check.has_own_image(s)]
-    assert all(a != b for a, b in zip(ai_languages, ai_languages[1:], strict=False))  # varia de uma imagem de IA para a outra
+    # um estilo só para todas as imagens de IA (a dominante da direção): trocar de técnica denuncia o gerador
+    ai_languages = {s.visual.language for s in new_doc.ordered_scenes() if storyboard_check.has_own_image(s)}
+    assert ai_languages == {"painting"}
     assert ai_share(new_doc) <= sources_for(STYLE).ai_max_share + 1e-9
     faltou = [i for i in review["issues"] if i["code"] == "faltou_real"]
     assert all(i["scene_id"] != scene.id for i in faltou)  # com motivo, não falta real
@@ -247,10 +248,11 @@ def test_invalid_pool_id_follows_the_fallback_in_the_same_topic(monkeypatch):
     fallback = [i for i in review["issues"] if i["code"] == "acervo_reserva"]
     assert fallback and fallback[0]["scene_id"] == scene.id
     assert "não está no acervo" in fallback[0]["message"] and "Rockstar Newswire" in fallback[0]["message"]
-    # válido: fica o escolhido
-    extra = {news: {"source": "pool", "pool_id": "p4"}}
+    # válido (a foto de banco do celular na batida do celular): fica o escolhido
+    phone = next(i for i, b in enumerate(beats) if b.text.startswith("Muita gente"))
+    extra = {phone: {"source": "pool", "pool_id": "p5"}}
     new_doc, _, beats, _ = run(monkeypatch, doc, extra, pool=make_pool())
-    assert by_key(new_doc, beats)[news].visual.media.pool_id == "p4"
+    assert by_key(new_doc, beats)[phone].visual.media.pool_id == "p5"
 
 
 def test_pool_without_real_items_keeps_the_old_storyboard(monkeypatch):
@@ -305,9 +307,12 @@ def test_official_cap_is_enforced_like_the_ai_cap(monkeypatch):
 def test_review_flags_same_tier_run_with_readable_labels(monkeypatch):
     doc = base_doc()
     beats = authoring.plan_beats(doc, STYLE)
-    # tudo na mesma foto livre: o mesmo tipo de material muito tempo seguido (a foto livre não tem teto próprio)
+    # tudo na mesma foto livre: o mesmo tipo de material muito tempo seguido (a foto livre não tem teto próprio); as
+    # etiquetas dela cobrem a fala de todas as batidas (foto de banco que não tem a ver com a fala não entra)
+    pool = make_pool()
+    pool.item("p4").tags = ["trailer", "rockstar", "views", "lucia", "mapa", "celular", "games"]
     extra = {i: {"source": "pool", "pool_id": "p4"} for i in range(len(beats))}
-    _, review, _, _ = run(monkeypatch, doc, extra, pool=make_pool())
+    _, review, _, _ = run(monkeypatch, doc, extra, pool=pool)
     found = {i["code"]: i for i in review["issues"]}
     assert found["same_tier_run"]["severity"] == "aviso"
     message = found["same_tier_run"]["message"]
@@ -574,7 +579,9 @@ def test_redoing_the_storyboard_keeps_the_new_pool_choice_and_only_hand_attached
     beats = authoring.plan_beats(doc, STYLE)
     news = next(i for i, b in enumerate(beats) if b.text.startswith("A Rockstar"))
     phone = next(i for i, b in enumerate(beats) if b.text.startswith("Muita gente"))
-    first, _, beats, _ = run(monkeypatch, doc, {news: {"source": "pool", "pool_id": "p4"}}, pool=make_pool())
+    pool = make_pool()
+    pool.item("p4").tags.append("rockstar")  # a foto livre tem a ver com a batida (senão ela não entra)
+    first, _, beats, _ = run(monkeypatch, doc, {news: {"source": "pool", "pool_id": "p4"}}, pool=pool)
     assert by_key(first, beats)[news].visual.media.pool_id == "p4"
     # o usuário anexa à mão uma foto numa cena (sem `pool_id`)
     hand = MediaRef(kind="photo", source="upload", asset=f"uploads/{PID}/media/0123456789abcdef.jpg")
@@ -616,16 +623,75 @@ def test_pool_without_real_items_is_not_in_the_request(monkeypatch):
     assert "Acervo de material real" not in fake.calls[0]["prompt"] and "pool" not in fake.calls[0]["context"]
 
 
-def test_without_pool_the_ai_language_follows_the_policy(monkeypatch):
+def test_without_pool_every_ai_image_uses_the_dominant_language(monkeypatch):
     doc = base_doc()
     beats = authoring.plan_beats(doc, STYLE)
-    extra = {1: {"language": "ink_sketch"}, 2: {"language": "photo"}, 3: {"language": "line_art"}}
+    extra = {1: {"language": "ink_sketch"}, 2: {"language": "photo"}, 3: {"language": "halftone_print"}}
     new_doc, _, beats, _ = run(monkeypatch, doc, extra)
+    # a linguagem pedida por imagem não vale: todas na dominante da direção (vetor, retícula e papel recortado no
+    # mesmo vídeo denunciam o gerador)
+    assert {s.visual.language for s in new_doc.scenes if storyboard_check.has_own_image(s)} == {"painting"}
+
+
+@pytest.mark.parametrize("pool", [None, "real"])
+def test_interface_mockup_is_never_the_house_language(monkeypatch, pool):
+    doc = base_doc()
+    beats = authoring.plan_beats(doc, STYLE)
+    data = response(beats, {1: {"language": "ui_mockup"}})
+    data["direction"]["languages"] = ["ui_mockup", "key_art"]
+    monkeypatch.setattr(authoring, "_llm", FakeLLM(data))
+    new_doc, _, _ = authoring.storyboard(doc, STYLE, styles={}, pool=make_pool() if pool else None)
+    languages = {s.visual.language for s in new_doc.scenes if storyboard_check.has_own_image(s)}
+    # janela de navegador ou tela de app falsa sobre ilustração parece captura forjada: a casa é a ilustração
+    assert languages == {"key_art"}
+    reserve = {s.visual.language for s in new_doc.scenes if s.visual.media is not None and s.visual.prompt}
+    assert reserve <= {"key_art"}
+
+
+def test_direction_avoids_fake_interface_and_national_cliches(monkeypatch):
+    new_doc, _, _, fake = run(monkeypatch, base_doc())
+    avoid = new_doc.art.avoid
+    assert {"fake browser window or app frame", "mouse cursor", "national flags", "postcard landmarks"} <= set(avoid)
+    system = fake.calls[0]["system"]
+    assert "Brazilian" not in system and "bandeira" in system and "nunca ui_mockup" in system
+    # direção com lugar ou figura real: o roteiro é sobre o lugar, a bandeira e o monumento podem ser o assunto
+    doc = base_doc()
+    beats = authoring.plan_beats(doc, STYLE)
+    data = response(beats)
+    data["direction"]["entities"] = [{"id": "farol", "name": "Farol da Barra", "look": "old lighthouse", "real": True}]
+    monkeypatch.setattr(authoring, "_llm", FakeLLM(data))
+    real, _, _ = authoring.storyboard(doc, STYLE, styles={})
+    assert "national flags" not in real.art.avoid and "mouse cursor" in real.art.avoid
+
+
+def test_stock_photo_that_does_not_match_the_beat_is_refused(monkeypatch):
+    """QA de vídeo real: a busca por "ESET" trouxe robôs e a por "ISO" um rolo de filme, e o storyboard pôs essas fotos
+    em "golpe" e em "Bitcoin". Foto de banco sem palavra em comum com a fala sai: entra o real do assunto ou o cartão,
+    nunca outra foto de banco qualquer."""
+    pool = Pool(items=[*pool_items(),
+                       PoolItem(id="p6", tier="stock", media="image", desc="Close-up of a humanoid robot with LED eyes",
+                                topic="ESET", path=f"uploads/{PID}/pool/p6.jpg", score=0.6),
+                       PoolItem(id="p7", tier="stock", media="image", desc="Fujicolor Superia film roll on a table",
+                                topic="ISO", path=f"uploads/{PID}/pool/p7.jpg", score=0.6)])
+    doc = base_doc()
+    beats = authoring.plan_beats(doc, STYLE)
+    news = next(i for i, b in enumerate(beats) if b.text.startswith("A Rockstar"))
+    whatif = next(i for i, b in enumerate(beats) if "mapa" in b.text)
+    extra = {news: {"source": "pool", "pool_id": "p6"}, whatif: {"source": "pool", "pool_id": "p7"}}
+    new_doc, review, beats, _ = run(monkeypatch, doc, extra, pool=pool)
     scenes = by_key(new_doc, beats)
-    assert scenes[1].visual.language == "ink_sketch"  # não fotográfica, pedida pela regra 8: fica
-    assert scenes[2].visual.language == "painting"  # foto com `ai_photo` desligado: a dominante da direção
-    assert scenes[3].visual.language == "painting"  # fora da direção e das não fotográficas: a dominante
-    assert scenes[0].visual.language == "painting"
+    used = {s.visual.media.pool_id for s in new_doc.scenes if s.visual.media is not None}
+    assert not used & {"p6", "p7"}
+    assert scenes[news].visual.media.pool_id == "p2"  # a captura da notícia da Rockstar, do mesmo assunto
+    # nada do acervo fala do mapa: em vez de uma foto de banco aleatória, cartão (ou outro material real)
+    other = scenes[whatif].visual.media
+    assert other is None or other.tier not in ("stock", "free")
+    refused = [i["message"] for i in review["issues"] if i["code"] == "acervo_reserva"]
+    assert any("humanoid robot" in m and "não tem a ver com a fala" in m for m in refused)
+    # a foto de banco que tem a ver com a fala continua valendo
+    phone = next(i for i, b in enumerate(beats) if b.text.startswith("Muita gente"))
+    kept, _, beats, _ = run(monkeypatch, doc, {phone: {"source": "pool", "pool_id": "p5"}}, pool=pool)
+    assert by_key(kept, beats)[phone].visual.media.pool_id == "p5"
 
 
 def test_set_ai_reason_op_edits_the_reason_without_touching_the_image():

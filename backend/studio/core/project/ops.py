@@ -26,7 +26,7 @@ from studio.core.project.document import (
 )
 from studio.core.styles.library import StyleNotFound, get_style, set_style_override
 from studio.core.styles.schema import CAMERA_MOVES, SCENE_KINDS, TRANSITIONS, StyleSpec
-from studio.core.styles.visual import FOCUS_ROTATION, rotate_variant
+from studio.core.styles.visual import FOCUS_ROTATION, house_language, rotate_variant
 from studio.core.text import span_ranges, split_word_indices, words
 
 
@@ -333,7 +333,7 @@ def _own_visual(doc: ProjectDoc, scene: Scene) -> Visual:
                                                      "seed": seed_from(root.visual.seed, scene.id)})
 
 
-def _scene_text(doc: ProjectDoc, scene: Scene) -> str:
+def scene_text(doc: ProjectDoc, scene: Scene) -> str:
     """As palavras da narração que a cena cobre (idioma principal), pelos spans ou pela divisão antiga."""
     try:
         text = doc.segment(scene.segment_id).text_for(doc.primary_language)
@@ -354,8 +354,8 @@ def _image_from_card(doc: ProjectDoc, scene: Scene) -> Visual:
     """Visual de imagem nova para um cartão sem fundo (`type="none"`) que virou imagem: o prompt começa pela fala
     da cena e, com direção de arte, a cena fica dirigida."""
     art = doc.art
-    return Visual(prompt=scene.visual.prompt or _scene_text(doc, scene), seed=seed_from(doc.seed, scene.id),
-                  language=art.languages[0] if art and art.languages else None)
+    return Visual(prompt=scene.visual.prompt or scene_text(doc, scene), seed=seed_from(doc.seed, scene.id),
+                  language=house_language(art.languages) if art and art.languages else None)
 
 
 def _split_visual(doc: ProjectDoc, scene: Scene, prompt: str) -> Visual:

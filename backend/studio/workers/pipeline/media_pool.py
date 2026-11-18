@@ -233,6 +233,96 @@ def topics_of(doc: ProjectDoc, max_topics: int = MAX_TOPICS) -> list[Topic]:
     return [Topic(id=f"t{i}", label=label, query=label) for i, label in enumerate(labels, 1)]
 
 
+# --------------------------------------------------------------------------------------------
+# Banco de imagens: a foto tem a ver com a cena?
+# --------------------------------------------------------------------------------------------
+
+KEYWORD_TIERS = ("stock", "free")
+"""Níveis que chegam por busca de palavra-chave (Pexels, Commons, Openverse). O resultado pode não ter nada a ver com a
+cena: "ESET" devolve robôs, "ISO" devolve rolo de filme. Os outros níveis são a própria fonte (oficial, captura) ou a
+escolha do usuário (próprio)."""
+
+_TERM_MIN_LEN = 4
+# Palavras que não dizem o assunto: ligação (pt/en) e o vocabulário de legenda de banco ("Close-up of a sleek ...").
+_TERM_STOP = frozenset(
+    "para pela pelo como mais muito isso esse essa este esta aqui onde quando ainda depois antes sobre entre todo toda "
+    "todos todas agora cada porque the with from that this into over their there what when where which and for its "
+    "close closeup photo image picture shot view background featuring showcasing detailed sleek modern vibrant "
+    "white black dark light blue green".split()
+)
+# Palavra logo depois da marca que diz o modelo ("Xbox One", "Xbox Series", "iPhone Pro").
+_MODEL_WORDS = frozenset("one series pro max mini lite slim plus ultra".split())
+# Palavras curtas de ligação que não são marca ("pacote de 3", "pack of 3").
+_HEAD_STOP = frozenset("de da do em no na of in on at to by and the com por".split())
+_ROMAN = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9"}
+_YEAR = re.compile(r"(?:19|20)\d\d")
+
+
+def content_terms(*texts: object) -> set[str]:
+    """Palavras de conteúdo dos textos, sem acento nem caixa (com o singular de quem termina em "s"). A sigla curta
+    vale quando vem em maiúscula ou com número ("PC", "ISO", "PS5"): é o nome do assunto."""
+    out: set[str] = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for word in re.findall(r"[^\W_]+", text):
+            token = fold(word).replace(" ", "")
+            if not token or token in _TERM_STOP:
+                continue
+            if len(token) >= _TERM_MIN_LEN:
+                out.add(token)
+                if token.endswith("s") and len(token) > _TERM_MIN_LEN:
+                    out.add(token[:-1])
+            elif len(token) >= 2 and (word.isupper() or any(ch.isdigit() for ch in word)):
+                out.add(token)
+    return out
+
+
+def _model_words(text: str) -> list[str]:
+    """Palavras do texto com a sigla separada do número ("PS5" → "ps", "5"), para achar o modelo depois da marca."""
+    out: list[str] = []
+    for word in fold(text.replace("'", "").replace("’", "")).split():
+        out += re.findall(r"[a-z]+|\d+", word)
+    return out
+
+
+def _is_model(token: str) -> bool:
+    if token.isdigit():
+        return not _YEAR.fullmatch(token)  # ano não é modelo ("consoles em 2013")
+    return token in _MODEL_WORDS or token in _ROMAN or (len(token) == 1 and token not in "aeiouy")
+
+
+def model_marks(*texts: object) -> dict[str, set[str]]:
+    """Marca → modelos citados logo depois dela ("Xbox Series S" → {"xbox": {"series"}, "series": {"s"}}; "GTA V" e
+    "GTA 5" dão o mesmo modelo)."""
+    out: dict[str, set[str]] = {}
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        words = _model_words(text)
+        for head, nxt in zip(words, words[1:], strict=False):
+            if head.isdigit() or head in _TERM_STOP or head in _HEAD_STOP or len(head) < 2 or not _is_model(nxt):
+                continue
+            out.setdefault(head, set()).add(_ROMAN.get(nxt, nxt))
+    return out
+
+
+def fits_scene(item: PoolItem, *texts: object) -> bool:
+    """O item do acervo pode ilustrar a cena de `texts` (a fala, a faixa, o prompt de reserva)? Material de busca por
+    palavra-chave (`KEYWORD_TIERS`) só quando a descrição (ou as etiquetas) divide pelo menos uma palavra de conteúdo
+    com a cena e, se a descrição traz o modelo do produto, ele não contradiz o modelo que a cena cita (foto de "Xbox
+    Series S" não ilustra "Xbox One"). Os outros níveis sempre podem: são a própria fonte ou a escolha do usuário."""
+    if item.tier not in KEYWORD_TIERS:
+        return True
+    if not content_terms(item.desc, *item.tags, *item.entities) & content_terms(*texts):
+        return False
+    cited = model_marks(*texts)
+    for head, models in model_marks(item.desc, *item.tags).items():
+        if cited.get(head) and not models & cited[head]:
+            return False
+    return True
+
+
 def _topic_for(texts: Iterable[str], topics: list[Topic], default: str) -> str:
     """O tópico que aparece no texto (tags, título); senão `default`."""
     blob = " " + " ".join(fold(t) for t in texts if t) + " "
@@ -1205,6 +1295,16 @@ def faltou_real_warning(doc: ProjectDoc, style: StyleSpec | None = None) -> str 
             "real ou diga o motivo.")
 
 
+def _scene_texts(doc: ProjectDoc, scene: Scene) -> tuple[str, ...]:
+    """O que a cena diz (a fala que ela cobre, o prompt de reserva, a faixa e o texto na tela), para `fits_scene`."""
+    from studio.core.project.ops import scene_text
+
+    lang = doc.primary_language
+    headline = scene.card.headline.get(lang, "") if scene.card is not None else ""
+    return tuple(t for t in (scene_text(doc, scene), scene.visual.prompt, headline, scene.overlay_text.get(lang, ""))
+                 if t)
+
+
 def _has_real(scene: Scene, project_id: str) -> bool:
     media = scene.visual.media
     return media is not None and bool(media.asset or media.video) and not needs_attach(media, project_id)
@@ -1274,14 +1374,16 @@ class _Around:
         return reuse_problem(spans, self.mine, max_run_s=self.max_run_s)
 
 
-def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around) -> list[PoolItem]:
-    """A reserva do item que fere a distribuição: os da `fallbacks` que são material real (nem meme), que cabem onde a
-    cena está e, se o item não é oficial, que também não são (o teto de material oficial já foi feito no storyboard).
+def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around,
+                    texts: tuple[str, ...]) -> list[PoolItem]:
+    """A reserva do item que fere a distribuição: os da `fallbacks` que são material real (nem meme), que têm a ver
+    com a cena (`fits_scene` com os `texts` dela), que cabem onde a cena está e, se o item não é oficial, que também
+    não são (o teto de material oficial já foi feito no storyboard).
     O que já entrou noutra cena (neste anexo ou citado por uma cena que ainda vai ser anexada) vale se couber (a
     distribuição é que decide), depois dos inéditos: pegar o item de uma cena adiante empurra a troca para ela."""
     fits = [c for c in fallbacks(pool, item, set())
             if c.tier in REAL_TIERS and c.media != "meme" and (c.tier != "official" or item.tier == "official")
-            and around.problem(item_tokens(c)) is None]
+            and fits_scene(c, *texts) and around.problem(item_tokens(c)) is None]
     return sorted(fits, key=lambda c: c.id in taken)
 
 
@@ -1325,15 +1427,18 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         chosen: MediaRef | None = None
         source: PoolItem | None = None
         reason = refused.get(item.id, "não baixou")
+        # A reserva de banco só quando tem a ver com a cena (a fala, o prompt, a faixa): foto aleatória não entra.
+        texts = _scene_texts(doc, scene)
         # Distribuição: o que já se sabe antes de baixar (o item, o endereço) decide; o item que fere vai por último,
         # depois da reserva que cabe. Sem problema, a ordem de sempre (o item e a reserva de download).
         around = spread.around(scene) if spread is not None else None
         pre = around.problem(item_tokens(item)) if around is not None else None
         if pre is None:
-            order = [item, *fallbacks(pool, item, used)[:MAX_FALLBACK_TRIES]]
+            reserve = [c for c in fallbacks(pool, item, used) if fits_scene(c, *texts)]
+            order = [item, *reserve[:MAX_FALLBACK_TRIES]]
         else:
             assert around is not None
-            order = [*_spread_reserve(pool, item, used | cited, around)[:MAX_FALLBACK_TRIES], item]
+            order = [*_spread_reserve(pool, item, used | cited, around, texts)[:MAX_FALLBACK_TRIES], item]
         spread_why = pre
         held: MediaRef | None = None  # o item baixado que só fere a distribuição pelo arquivo: fica sem reserva
         k = 0
@@ -1362,7 +1467,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
                 # da reserva de download, a reserva que cabe; o item só se ela não vier.
                 assert around is not None
                 held, spread_why = got, late
-                order = [*order[:k], *(c for c in _spread_reserve(pool, item, used | cited, around)
+                order = [*order[:k], *(c for c in _spread_reserve(pool, item, used | cited, around, texts)
                                        [:MAX_FALLBACK_TRIES] if c is not item)]
                 continue
             if late is not None and spread_why is not None and candidate is not item:

@@ -573,6 +573,11 @@ Outros arquivos:
 
 **Contrato:** consome `pool.json` e `prompt_block`; produz `Scene.mark` e `Visual.media` com `tier`.
 
+**Emenda "Coerência" (QA do `prj_gq4krrs11w`, 18/11/2026).** Variar a linguagem por cena deixou cada imagem de IA num estilo (vetor, retícula, clay 3D, papel recortado, aquarela), e isso denuncia o gerador mais que a pintura limpa. Fica:
+- **um estilo só**: toda imagem de IA do storyboard usa `house_language` (`core/styles/visual.py`), a dominante da direção sem foto (sem `ai_photo`) e nunca `ui_mockup`; a linguagem pedida por cena é ignorada. As outras da direção só valem no "Outra imagem";
+- **sem clichê de país nem interface falsa**: o pedido não dá país de exemplo no `world` e proíbe bandeira e cartão-postal sem pedido do roteiro; a direção nova leva no `avoid` "fake browser window or app frame" e "mouse cursor" e, sem entidade real, "national flags" e "postcard landmarks";
+- **banco só com assunto em comum**: item `stock`/`free` (busca por palavra-chave) só ilustra a batida quando a descrição divide uma palavra de conteúdo com a fala e não contradiz o modelo de produto citado (`media_pool.fits_scene`); sem item que sirva, a reserva é o real do assunto ou o cartão, nunca banco aleatório (também na reserva do anexo).
+
 **Testes:**
 - `backend/tests/test_storyboard_real_first.py`:
   - com acervo-fixture, o gancho não é IA;

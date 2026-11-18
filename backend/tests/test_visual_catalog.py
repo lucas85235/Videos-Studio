@@ -223,3 +223,15 @@ def test_styles_with_languages_survive_overrides():
     assert style.art.languages == ["photo", "editorial"]
     base["art"]["photoreal"] = False
     assert StyleSpec.model_validate(base).art.languages == ["editorial"]
+
+
+def test_house_language_is_one_illustration_for_every_ai_image():
+    assert visual.house_language(["key_art", "editorial", "ui_mockup"]) == "key_art"
+    # maquete de interface nunca é o estilo da casa (a IA não finge captura de tela)
+    assert visual.house_language(["ui_mockup", "editorial"]) == "editorial"
+    # foto só com fotorrealismo ligado
+    assert visual.house_language(["photo", "painting"], photoreal=False) == "painting"
+    assert visual.house_language(["photo", "painting"]) == "photo"
+    # nada que sirva: a primeira não fotográfica
+    assert visual.house_language(["ui_mockup", "aquarela"]) == visual.NON_PHOTO_LANGUAGES[0]
+    assert visual.house_language([]) == visual.NON_PHOTO_LANGUAGES[0]

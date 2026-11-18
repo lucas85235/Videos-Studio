@@ -66,15 +66,14 @@ from studio.core.styles.visual import (
     FOCUS_POINTS,
     FOCUS_ROTATION,
     GENRES,
-    NON_PHOTO_LANGUAGES,
     SHOT_ROTATION,
     SHOTS,
     STYLE_FITS,
-    VISUAL_LANGUAGES,
     catalog_text,
     clean_id,
     clean_languages,
     compositions_for_caption,
+    house_language,
     pick,
 )
 from studio.core.text import estimate_seconds, normalize_token, split_beats
@@ -255,12 +254,15 @@ imagem de IA é apoio declarado, com motivo, e o teto dela é medido em tempo de
 1) Direção de arte ("direction"), decidida pelo assunto e pelo roteiro, não pelo nome do estilo:
 - genre: o tipo de vídeo (notícia de games não é mistério, mesmo com estilo de mistério).
 - approach: literal (mostra o assunto), misto ou alegorico (metáforas).
-- world: só o cenário, lugar e época, em até 20 palavras em inglês ("big Brazilian city, 1990s"), sem hora do dia,
+- world: só o cenário, lugar e época, em até 20 palavras em inglês ("busy port city, 1920s"), sem hora do dia,
   clima nem céu (cada imagem diz os seus). O app junta o world às imagens de IA que citam entidades: nada de pessoas,
-  objetos ou ações nele. Personagem, lugar ou objeto que volta em várias batidas vira entidade (só entra nas imagens
-  que a citam); o que é de uma batida só vai no prompt dela.
-- languages: 1 a 3 ids do catálogo, o primeiro dominante. Prefira os do estilo; se não combinarem com o
-  assunto, escolha os que combinam e diga em style_fit/style_note.
+  objetos ou ações nele. Lugar só quando o roteiro se passa num lugar específico: o país do canal ou do público não é
+  o lugar do assunto. Sem pedido do roteiro, nada de país, nacionalidade, bandeira ou cartão-postal (monumento,
+  paisagem-símbolo) no world, nos looks, no hook nem nos prompts. Personagem, lugar ou objeto que volta em várias
+  batidas vira entidade (só entra nas imagens que a citam); o que é de uma batida só vai no prompt dela.
+- languages: 1 a 3 ids do catálogo. O primeiro é o estilo de ilustração de TODAS as imagens de IA do vídeo (o app
+  aplica o mesmo em todas; nunca ui_mockup); os outros só servem quando o usuário pede outra imagem. Prefira os do
+  estilo; se não combinarem com o assunto, escolha os que combinam e diga em style_fit/style_note.
 - treatment: contraste, saturação e textura em até 12 palavras, em inglês, SEM hora do dia, clima, céu, luz ou
   objetos. Use o tratamento do estilo como referência e adapte ao assunto.
 - palette: 3 cores do mundo do assunto (entram como cores de destaque, não pintam a imagem toda). grade: um id de
@@ -368,12 +370,12 @@ Regras:
    personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer;
    nome de personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no world, no hook nem no
    look: descreva o que se vê (figura histórica, cidade e país reais podem); personagem oficial de ficção aparece de
-   costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha também language, shot,
-   composition e entities (ids da direção que aparecem nela).
+   costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha também language (a primeira da
+   direção), shot, composition e entities (ids da direção que aparecem nela).
 7. composition: deixe livre a faixa da legenda informada no pedido.
-8. A imagem de IA não se passa por foto: use linguagem assumidamente não fotográfica (collage_cutout, ink_sketch,
-   halftone_print, diagram, paper_cut ou as da direção). Com acervo, troque de linguagem de uma imagem de IA para a
-   outra; sem acervo, a primeira da direção domina e as outras variam."""
+8. A imagem de IA não se passa por foto nem por captura, e não troca de estilo: todas usam a primeira linguagem da
+   direção (o app aplica; o language da cena é ignorado). Nada de janela de navegador, tela de app, cursor de mouse
+   ou moldura de aparelho falsos na imagem de IA: interface de verdade é captura do acervo ou cartão."""
 
 # Regras dos cartões de gráfico e mapa, só no pedido de estilo da família de dados e geografia.
 STORYBOARD_DATA_RULES = """Estilo de dados e geografia: além de stat e compare, o app desenha gráficos e mapas animados.
@@ -733,8 +735,16 @@ def _entity_id(value: object) -> str:
     return normalize_token(clean_id(value) or "")[:40]
 
 
+# Clichês que o gerador de imagem põe sozinho e denunciam a IA (QA de vídeo real): entram no "Avoid" de toda direção
+# nova. Interface falsa sempre (interface de verdade é captura); marca de país só quando a direção não tem lugar,
+# monumento ou figura real (aí o roteiro é sobre o lugar e a bandeira ou o monumento podem ser o assunto).
+_AVOID_UI = ("fake browser window or app frame", "mouse cursor")
+_AVOID_NATIONAL = ("national flags", "postcard landmarks")
+
+
 def _direction_from(raw: object, style: StyleSpec, *, current_style_id: str, style_ids: set[str]) -> ArtDirection:
-    """Direção de arte da resposta, com cada valor fora do catálogo trocado pelo padrão."""
+    """Direção de arte da resposta, com cada valor fora do catálogo trocado pelo padrão (e os clichês da IA no
+    `avoid`)."""
     data = raw if isinstance(raw, dict) else {}
     languages = clean_languages(_list(data.get("languages")), photoreal=style.art.photoreal)
     languages = languages or list(style.art.languages[:3]) or ["editorial"]
@@ -759,7 +769,8 @@ def _direction_from(raw: object, style: StyleSpec, *, current_style_id: str, sty
         palette=[c for c in (_text(x, 40) for x in _list(data.get("palette"))) if c][:3],
         languages=languages,
         entities=entities,
-        avoid=[t for t in (_text(x, 60) for x in _list(data.get("avoid"))) if t][:16],
+        avoid=list(dict.fromkeys([*[t for t in (_text(x, 60) for x in _list(data.get("avoid"))) if t][:16], *_AVOID_UI,
+                                  *(() if any(e.real for e in entities) else _AVOID_NATIONAL)])),
         grade=grade if grade in GRADE_PRESETS else None,
         style_fit=pick(data.get("style_fit"), STYLE_FITS, "ok"),  # type: ignore[arg-type]
         style_note=_text(data.get("style_note")),
@@ -785,6 +796,9 @@ class _Pick:
     """Por que a cena é imagem de IA (source "new"); vazio: sem motivo declarado."""
     topic: set[str] = field(default_factory=set)
     """Palavras da batida (fala, prompt, busca) para achar o item do acervo do mesmo tópico."""
+    texts: tuple[str, ...] = ()
+    """Os textos da batida (fala, faixa, prompt, busca) para conferir se a foto de banco tem a ver com ela
+    (`media_pool.fits_scene`)."""
     plain: bool = False
     """Cartão com o fundo liso pedido pela resposta (com acervo, fica liso)."""
     mark: BeatMark | None = None
@@ -1067,25 +1081,12 @@ def media_from_pool(item: PoolItem) -> MediaRef:
     )
 
 
-def _ai_languages(art: ArtDirection, style: StyleSpec, policy: SourcePolicy) -> list[str]:
-    """As linguagens que a imagem de IA pode usar: as da direção (sem a foto, se a política não deixa a IA imitar
-    foto) e as assumidamente não fotográficas (regra 8 do pedido). Com acervo o storyboard alterna entre elas; sem
-    acervo, aceita a pedida e cai na primeira (a dominante da direção)."""
+def _ai_language(art: ArtDirection, style: StyleSpec, policy: SourcePolicy) -> str:
+    """A linguagem de TODAS as imagens de IA do storyboard (regra 8 do pedido): a dominante da direção (sem a foto, se
+    a política não deixa a IA imitar foto, e sem maquete de interface), com ou sem acervo. A linguagem que a resposta
+    pede por imagem não vale: cada imagem num estilo (vetor, retícula, papel recortado) denuncia o gerador."""
     base = list(art.languages) or list(style.art.languages[:3]) or ["editorial"]
-    allowed = [x for x in base if x in VISUAL_LANGUAGES and (policy.ai_photo or not VISUAL_LANGUAGES[x].photoreal)]
-    return list(dict.fromkeys([*allowed, *NON_PHOTO_LANGUAGES]))
-
-
-def _next_language(pool: list[str], chosen: str | None, previous: str | None) -> str:
-    """A linguagem pedida (se vale e não repete a da imagem de IA anterior); senão a seguinte da lista."""
-    if chosen in pool and chosen != previous:
-        return chosen  # type: ignore[return-value]
-    base = pool.index(previous) + 1 if previous in pool else 0
-    for step in range(len(pool)):
-        candidate = pool[(base + step) % len(pool)]
-        if candidate != previous:
-            return candidate
-    return pool[0]
+    return house_language(base, photoreal=policy.ai_photo)
 
 
 def _uses(picks: list[_Pick]) -> dict[str, int]:
@@ -1139,9 +1140,10 @@ def _official_room(picks: list[_Pick], policy: SourcePolicy, seconds: float) -> 
 
 
 def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy,
-                   seconds: float = 0.0, *, official: bool = True) -> PoolItem | None:
+                   seconds: float = 0.0, *, official: bool = True, texts: tuple[str, ...] = ()) -> PoolItem | None:
     """O item real do acervo que fala do mesmo assunto da batida (pelo menos uma palavra em comum), o menos usado e o
-    mais parecido; oficial só enquanto cabe no teto de material oficial (e nunca com `official=False`)."""
+    mais parecido; oficial só enquanto cabe no teto de material oficial (e nunca com `official=False`); foto de banco
+    só quando tem a ver com a fala (`media_pool.fits_scene` com `texts`)."""
     uses = _uses(picks)
     order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
     best: tuple[Any, ...] | None = None
@@ -1154,16 +1156,20 @@ def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: Sour
             continue
         if item.tier == "official" and not (official and _official_room(picks, policy, seconds)):
             continue
+        if not media_pool.fits_scene(item, *texts):
+            continue
         key = (-overlap, uses.get(item.id, 0), order.get(item.tier, 99), -item.score, index)
         if best is None or key < best:
             best, chosen = key, item
     return chosen
 
 
-def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy) -> PoolItem | None:
+def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy,
+                   texts: tuple[str, ...] = ()) -> PoolItem | None:
     """Reserva do `pool_id` inválido (ou de item que não serve de imagem): no mesmo tópico, o primeiro nível de
-    `sources.FALLBACK` que o acervo tem; sem nada do tópico, o item real genérico menos usado. None: nenhum item real
-    (vira cartão). Oficial só enquanto cabe no teto de material oficial."""
+    `sources.FALLBACK` que o acervo tem; sem nada do tópico, o item real genérico menos usado, nunca foto de banco
+    (banco aleatório é pior que o cartão). None: nenhum item real (vira cartão). Oficial só enquanto cabe no teto de
+    material oficial; foto de banco só quando tem a ver com a fala (`media_pool.fits_scene` com `texts`)."""
     uses = _uses(picks)
     order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
     room = _official_room(picks, policy, 0.0)
@@ -1171,11 +1177,15 @@ def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: Sour
                   if item.tier in order and usable_item(item) and (room or item.tier != "official")]
     if not candidates:
         return None
-    same = [(index, item) for index, item in candidates if topic & _item_tokens(item)]
+    same = [(index, item) for index, item in candidates
+            if topic & _item_tokens(item) and media_pool.fits_scene(item, *texts)]
     if same:
         return min(same, key=lambda c: (order[c[1].tier], -len(topic & _item_tokens(c[1])), uses.get(c[1].id, 0),
                                         -c[1].score, c[0]))[1]
-    return min(candidates, key=lambda c: (uses.get(c[1].id, 0), order[c[1].tier], -c[1].score, c[0]))[1]
+    generic = [c for c in candidates if c[1].tier not in media_pool.KEYWORD_TIERS]
+    if not generic:
+        return None
+    return min(generic, key=lambda c: (uses.get(c[1].id, 0), order[c[1].tier], -c[1].score, c[0]))[1]
 
 
 def _clear_ai(p: _Pick) -> None:
@@ -1217,8 +1227,9 @@ def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int |
     p = picks[hook]
     if p.source == "pool" and p.item is not None and p.item.tier in policy.hook:
         return []
-    candidates = [it for it in pool.items if it.tier in policy.hook and usable_item(it)] or [
-        it for it in pool.items if usable_item(it)]
+    candidates = [it for it in pool.items if it.tier in policy.hook and usable_item(it)
+                  and media_pool.fits_scene(it, *p.texts)] or [
+        it for it in pool.items if usable_item(it) and media_pool.fits_scene(it, *p.texts)]
     if not candidates:
         return []
     rank = {t: k for k, t in enumerate(policy.hook)}
@@ -1250,7 +1261,7 @@ def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: 
     for i, p in enumerate(picks):
         if p.source != "new" or p.ai_reason or i == hook or p.kind == "count":
             continue
-        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds)
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts)
         if item is None:
             continue
         _to_pool(p, item)
@@ -1343,7 +1354,7 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
         i = todo[0]
         tried.add(i)
         p = picks[i]
-        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds)
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts)
         if item is not None:
             _to_pool(p, item)
             what = f"mostra o item do acervo {_item_text(item)}"
@@ -1380,7 +1391,7 @@ def _enforce_official(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook
         i = todo[0]
         tried.add(i)
         p = picks[i]
-        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, official=False)
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, official=False, texts=p.texts)
         if p.kind in CARD_KINDS:
             # Cartão sobre o oficial: o fundo passa a ser outro real (ou liso).
             if item is not None:
@@ -1431,7 +1442,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     real_first = has_real(pool)
     policy = sources_for(style)
     grammar = grammar_for(style)
-    ai_languages = _ai_languages(art, style, policy)
+    ai_language = _ai_language(art, style, policy)
     by_key: dict[str, dict[str, Any]] = {}
     for item in _list(raw_scenes):
         if isinstance(item, dict) and isinstance(item.get("key"), str):
@@ -1478,18 +1489,23 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         ahead = None
         topic = _match_tokens(beat.text, data.get("prompt"), data.get("real_query"), data.get("real_note"),
                               data.get("headline"), data.get("overlay_text"))
+        texts = tuple(t for t in (beat.text, data.get("headline"), data.get("overlay_text"), data.get("prompt"),
+                                  data.get("real_query")) if isinstance(t, str) and t.strip())
         chosen_item: PoolItem | None = None
         plain = False
         if real_first and kind not in ("count", "map"):
             assert pool is not None
             if source == "pool":
                 cited = pool.item(_text(data.get("pool_id"), 12))
-                chosen_item = cited if cited is not None and usable_item(cited) else None
+                fits = cited is not None and media_pool.fits_scene(cited, *texts)
+                chosen_item = cited if cited is not None and usable_item(cited) and fits else None
                 if chosen_item is None:
-                    # id inválido (ou ausente), ou item que não serve de imagem da batida (meme é reação, nunca
-                    # decoração; imagem de IA e gráfico do acervo não são material real): a reserva no mesmo tópico.
-                    chosen_item = _fallback_item(pool, topic, picks, policy)
+                    # id inválido (ou ausente), item que não serve de imagem da batida (meme é reação, nunca
+                    # decoração; imagem de IA e gráfico do acervo não são material real) ou foto de banco que não tem
+                    # a ver com a fala (robô para "golpe", rolo de filme para "ISO"): a reserva no mesmo tópico.
+                    chosen_item = _fallback_item(pool, topic, picks, policy, texts)
                     why = ("A cena citava um item que não está no acervo" if cited is None else
+                           f"A cena citava {_item_text(cited)}, que não tem a ver com a fala" if not fits else
                            f"A cena citava {_item_text(cited)}, que não serve de imagem da batida")
                     early.append(Issue("acervo_reserva", CORRIGIDO, f"{why}: " + (
                         f"usa {_item_text(chosen_item)}." if chosen_item else "virou cartão."), beat.key))
@@ -1532,19 +1548,13 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
 
         p = _Pick(beat, kind, source or "none", root, overlay=overlay, number=number, card=card, ahead=ahead,
                   real=_real_from(data, kind, doc.sources) if chosen_item is None else None, item=chosen_item,
-                  topic=topic, plain=plain, mark=_mark_from(data, beat, kind, i == hook, grammar.humor))
+                  topic=topic, texts=texts, plain=plain, mark=_mark_from(data, beat, kind, i == hook, grammar.humor))
         if p.source == "pool":
             p.prompt = _text(data.get("prompt"), 700)  # reserva de IA, quando a resposta trouxe
         if p.source == "new":
             p.prompt = _text(data.get("prompt"), 700) or beat.text
             p.ai_reason = _text(data.get("ai_reason"), 200)
-            chosen = pick(data.get("language"), VISUAL_LANGUAGES)
-            if real_first:
-                p.language = chosen  # a linguagem da IA que sobrar sai depois do teto (o laço depois de `_real_first`)
-            else:
-                # Sem acervo: a pedida, se vale (as da direção sem a foto quando a política não deixa a IA imitar foto,
-                # e as não fotográficas da regra 8); senão a dominante da direção.
-                p.language = chosen if chosen in ai_languages else ai_languages[0]
+            p.language = ai_language  # um estilo só para todas as imagens de IA (regra 8), com ou sem acervo
             p.shot = pick(data.get("shot"), SHOTS) or _next_shot(last_shot)
             composition = pick(data.get("composition"), COMPOSITIONS)
             p.composition = composition if composition in safe else safe[new_count % len(safe)]
@@ -1564,11 +1574,6 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     if real_first:
         assert pool is not None
         issues = early + _real_first(picks, pool, policy, hook, budget, positions, lang)
-        # A IA que sobra varia de linguagem (assumidamente não fotográfica) de uma imagem para a outra.
-        previous: str | None = None
-        for p in picks:
-            if p.source == "new":
-                p.language = previous = _next_language(ai_languages, p.language, previous)
     else:
         issues = _enforce_budget(picks, budget, hook, positions)
     _resolve_ahead(picks)
@@ -1601,7 +1606,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             # quando a mídia sai ou não é anexada (o build avisa), e a cena nunca fica vazia.
             reserve = (p.prompt or beat.text) if p.kind == "image" else p.prompt
             visual = Visual(prompt=reserve, seed=seed_from(doc.seed, beat.segment_id, beat.part),
-                            language=ai_languages[0] if reserve else None, media=media_from_pool(p.item))
+                            language=ai_language if reserve else None, media=media_from_pool(p.item))
         elif p.source == "reuse":
             visual = Visual()
         else:

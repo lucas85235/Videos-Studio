@@ -32,6 +32,7 @@ from studio.core.styles.visual import (
     SHOT_ROTATION,
     SHOTS,
     compositions_for_caption,
+    house_language,
 )
 from studio.core.text import estimate_seconds, normalize_token, span_ranges
 from studio.core.text import words as split_words
@@ -455,7 +456,7 @@ def fix_hook(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool: Pool | 
     scene.visual.reuse_of = None
     scene.visual.asset = None
     scene.visual.prompt = ((art.hook if art else "") or beat.text).strip()
-    scene.visual.language = languages[0]
+    scene.visual.language = house_language(languages)  # o mesmo estilo das outras imagens de IA
     scene.visual.shot = scene.visual.shot or "wide"
     safe = compositions_for_caption(style.edit.captions.position)
     if scene.visual.composition not in safe:

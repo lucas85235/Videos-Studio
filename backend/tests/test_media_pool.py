@@ -744,7 +744,7 @@ def test_failed_clip_falls_back_to_a_real_image_then_to_a_real_neighbour(isolate
 def test_attach_limits_retries_per_scene(isolated_settings, monkeypatch):
     doc = _project()
     items = [PoolItem(id=f"p{n}", tier="free", media="image", url=f"https://x.example/{n}.jpg", topic="Farol",
-                      source_id=f"commons:File:{n}.jpg") for n in range(1, 10)]
+                      desc="Farol da Ilha Rasa", source_id=f"commons:File:{n}.jpg") for n in range(1, 10)]
     tried: list[str] = []
 
     def fail(item, *a, **k):
@@ -793,8 +793,9 @@ def test_attach_skips_stock_photos_with_an_empty_screen(isolated_settings, monke
     from studio.media import real_media
 
     doc = _project()
+    # A descrição fala do farol: a reserva de banco tem a ver com a cena (`fits_scene`), só a tela é que não serve.
     items = [PoolItem(id=f"p{n}", tier="stock", media="image", url=f"https://x.example/{n}.jpg", topic="Farol",
-                      source_id=f"pexels:{n}") for n in (1, 2, 3, 4)]
+                      desc="farol na ilha", source_id=f"pexels:{n}") for n in (1, 2, 3, 4)]
     with Image.open(ACERVO / "farol.jpg") as im, Image.open(ACERVO / "ilha.jpg") as other:
         pictures = {"pexels:1": chroma_monitor(), "pexels:2": blank_crt(), "pexels:3": im.convert("RGB"),
                     "pexels:4": other.convert("RGB")}
@@ -938,6 +939,21 @@ def test_attach_spreads_the_same_item_over_time(isolated_settings, no_network):
     assert first.visual.media is not None and last.visual.media is not None
     assert first.visual.media.pool_id == last.visual.media.pool_id == "p1"
     assert any(w.startswith("Cena 3 repete material do acervo cedo demais") for w in warnings), warnings
+
+
+def test_spread_reserve_only_takes_stock_that_fits_the_scene():
+    """A reserva da distribuição também passa por `fits_scene`: trocar o item repetido por foto de banco fora do
+    assunto (o robô do "ESET") seria trocar um defeito por outro."""
+    pool = Pool(items=[
+        PoolItem(id="p1", tier="own", media="image", path="uploads/x/a.jpg", topic="Farol", source_id="acervo:a"),
+        PoolItem(id="p2", tier="stock", media="image", url="https://x.example/2.jpg", topic="Farol",
+                 desc="robot statue in a lab", source_id="pexels:2"),
+        PoolItem(id="p3", tier="stock", media="image", url="https://x.example/3.jpg", topic="Farol",
+                 desc="old lighthouse farol on an island", source_id="pexels:3"),
+    ])
+    around = media_pool._Around(mine=[(30.0, 40.0)], others=[], max_run_s=20.0)
+    reserve = media_pool._spread_reserve(pool, pool.items[0], set(), around, ("O farol da ilha voltou a acender.",))
+    assert [c.id for c in reserve] == ["p3"]
 
 
 def test_attach_sees_two_items_that_download_the_same_image(isolated_settings, no_network):
@@ -1228,3 +1244,50 @@ def test_storyboard_job_gathers_before_and_writes_the_pool(isolated_settings):
     assert real and all(s.visual.media.asset for s in real)
     assert not media_pool.missing_real(shown)
     assert not any("faltou_real" in w for w in final["result"].get("warnings", []))
+
+
+def test_attach_reserve_skips_stock_that_does_not_match_the_scene(isolated_settings, monkeypatch):
+    """O item escolhido não baixou: a reserva de banco só entra quando tem a ver com a fala da cena (nada de robô
+    para "farol" só porque veio da mesma busca)."""
+    doc = _project()
+    items = [
+        PoolItem(id="p1", tier="official", media="image", url="https://x.example/1.jpg", topic="Farol",
+                 source_id="kit:sumiu"),
+        PoolItem(id="p2", tier="stock", media="image", url="https://x.example/2.jpg", topic="Farol",
+                 desc="Close-up of a humanoid robot", source_id="pexels:2"),
+        PoolItem(id="p3", tier="stock", media="image", url="https://x.example/3.jpg", topic="Farol",
+                 desc="Old lighthouse (farol) on a rocky island", source_id="pexels:3"),
+    ]
+    tried: list[str] = []
+
+    def fake(item, *a, **k):
+        tried.append(item.id)
+        if item.id == "p1":
+            raise FileNotFoundError(item.id)
+        return MediaRef(kind="photo", source="pexels", asset=f"uploads/{doc.id}/media/{item.id}.jpg", pool_id=item.id,
+                        tier="stock")
+
+    monkeypatch.setattr(media_pool, "materialize", fake)
+    scene = doc.ordered_scenes()[0]
+    scene.visual.media = media_pool.pending_ref(items[0])
+    media_pool.attach_chosen(doc, Pool(items=items))
+    assert tried == ["p1", "p3"] and scene.visual.media.pool_id == "p3"
+
+
+@pytest.mark.parametrize(("desc", "spoken", "fits"), [
+    ("Close-up of a humanoid robot with LED eyes", "Terceiro: o acesso antecipado pago.", False),
+    ("Fujicolor Superia film roll on a wooden table", "em Bitcoin, USDT ou Ethereum pra entrar antes.", False),
+    ("Sleek gaming desk with a gaming PC and glowing fans", "se alguém te oferece uma versão de PC", True),
+    ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S e no velho Xbox One", True),
+    ("White Xbox Series S console on a desk", "e até no velho Xbox One, sem nuvem", False),
+    ("White Xbox Series S console on a desk", "O Series X tem mais potência", False),
+    ("White Xbox Series S console on a desk", "Funciona no Xbox Series S", True),
+    ("Black PS4 controller on a couch", "Só no PS5 e no Xbox", False),
+    ("GTA V game case on a shelf", "o GTA 5 saiu em 2013", True),
+    ("White gaming console with a black controller", "o GTA 5 saiu nos consoles em 2013", True),
+])
+def test_stock_fits_only_the_scene_it_talks_about(desc, spoken, fits):
+    item = PoolItem(id="p1", tier="stock", media="image", desc=desc)
+    assert media_pool.fits_scene(item, spoken) is fits
+    # material que não vem de busca por palavra-chave (oficial, captura, próprio) não passa por esse filtro
+    assert media_pool.fits_scene(item.model_copy(update={"tier": "capture"}), spoken)

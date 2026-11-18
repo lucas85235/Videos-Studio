@@ -66,8 +66,11 @@ VISUAL_LANGUAGES: dict[str, VisualLanguage] = {
     "diagram": VisualLanguage("Diagrama", "explanatory schematic illustration, simple shapes, arrows and outlines on a flat background, no labels"),
     "paper_cut": VisualLanguage("Papel recortado", "layered paper-cut diorama, stacked colored card stock, soft drop shadows between layers, handmade look"),
 }
-# Linguagens da IA "declarada" (não fotográficas): o storyboard com acervo de material real alterna entre elas.
+# Linguagens da IA "declarada" (não fotográficas): a reserva quando a direção só tem foto ou maquete de interface.
 NON_PHOTO_LANGUAGES: tuple[str, ...] = ("collage_cutout", "ink_sketch", "halftone_print", "diagram", "paper_cut")
+# Linguagens que fingem interface (janela de navegador, tela de app, cursor): a imagem de IA não se passa por captura
+# (interface de verdade é captura do acervo), então elas nunca são o estilo das imagens de IA do vídeo.
+INTERFACE_LANGUAGES: tuple[str, ...] = ("ui_mockup",)
 
 SHOTS: dict[str, CatalogItem] = {
     "wide": CatalogItem("Plano aberto", "wide establishing shot"),
@@ -184,6 +187,19 @@ def clean_languages(ids: Iterable[object], *, photoreal: bool, limit: int = 3) -
         if len(out) >= limit:
             break
     return out
+
+
+def house_language(ids: Iterable[object], *, photoreal: bool = True) -> str:
+    """O estilo de ilustração único de todas as imagens de IA do vídeo: a primeira linguagem da lista (a dominante da
+    direção ou do estilo) que é ilustração, sem maquete de interface nem foto (esta só com `photoreal`); sem nenhuma,
+    a primeira não fotográfica. Trocar de técnica de uma imagem para a outra (vetor, retícula, papel recortado, 3D)
+    denuncia o gerador mais que qualquer outra coisa."""
+    for raw in ids:
+        key = clean_id(raw)
+        lang = VISUAL_LANGUAGES.get(key or "")
+        if lang is not None and key not in INTERFACE_LANGUAGES and (photoreal or not lang.photoreal):
+            return key  # type: ignore[return-value]
+    return NON_PHOTO_LANGUAGES[0]
 
 
 def language_prefix(language_id: str | None) -> str:
