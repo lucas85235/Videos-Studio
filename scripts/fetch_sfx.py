@@ -12,7 +12,8 @@ Nada vai para o repositório: os arquivos ficam em `<dados>/library/sfx/` com a 
 - `mixkit`: a Mixkit Free License permite YouTube monetizado sem crédito, mas não a redistribuição do arquivo, e alguns
   itens são "Restricted" (só não comercial). Confira a página do efeito; com `--licenca-conferida` ele entra como
   `mixkit-free`, sem isso como "desconhecida" (fora do automático).
-- `canais`: importa os .wav do projeto `canais` (só leitura lá).
+- `canais`: importa os .wav do projeto `canais` (só leitura lá). Os rastreados do Mixkit entram como "desconhecida"
+  (com o link do arquivo para conferir); com `--licenca-conferida`, como `mixkit-free`.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from studio.config import get_settings  # noqa: E402
 from studio.media import sfx_library  # noqa: E402
 
 MIXKIT_PREVIEW = "https://assets.mixkit.co/active_storage/sfx/{id}/{id}-preview.mp3"
-MIXKIT_PAGE = "https://mixkit.co/free-sound-effects/"
 
 
 def _tags(raw: str) -> list[str]:
@@ -47,7 +47,7 @@ def fetch_mixkit(sound_id: int, kind: str, tags: list[str], checked: bool) -> sf
         path.write_bytes(resp.content)
         return sfx_library.import_file(
             path, kind=kind, tags=tags, license="mixkit-free" if checked else sfx_library.UNKNOWN_LICENSE,
-            author="Mixkit", source_url=f"{MIXKIT_PAGE}#{sound_id}", lib_id=f"mixkit-{sound_id}", replace=True,
+            author="Mixkit", source_url=url, lib_id=f"mixkit-{sound_id}", replace=True,
             imported_from=f"mixkit:{sound_id}",
             note="licença conferida pelo usuário" if checked else "confira se não é Restricted e declare a licença")
 
@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     cn.add_argument("--pasta", default=None)
     cn.add_argument("--simular", action="store_true")
     cn.add_argument("--substituir", action="store_true")
+    cn.add_argument("--licenca-conferida", action="store_true",
+                    help="você conferiu no Mixkit que os efeitos rastreados não são Restricted (entram como mixkit-free)")
     args = parser.parse_args(argv)
 
     if get_settings().offline and args.source != "canais":
@@ -83,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             from studio.workers.canais_import import sfx as canais_sfx
 
             report = canais_sfx.import_sfx(Path(args.pasta) if args.pasta else None, dry_run=args.simular,
-                                           replace=args.substituir)
+                                           replace=args.substituir, license_checked=args.licenca_conferida)
             for row in report.imported:
                 print(f"  + {row['id']:24s} {row['kind']:12s} {row['license']}")
             for row in report.skipped:

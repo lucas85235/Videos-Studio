@@ -116,3 +116,110 @@ export const audioApi = {
     api.get<AudioCheckState>(`/api/projects/${projectId}/audio-check?lang=${encodeURIComponent(lang)}`),
   runAudioCheck: (projectId: string, body: AudioCheckInput = {}) => api.post<Job>(`/api/projects/${projectId}/audio-check`, body),
 };
+
+/* ------------------------------------------------------------------ */
+/* Biblioteca de efeitos e memes (ADR 0004 §3.8, backend/studio/api/routes_library.py) */
+/* ------------------------------------------------------------------ */
+
+export type LibraryLicense = { id: string; label: string };
+
+/** Um efeito da biblioteca (`SfxItem.public`): embutido (procedural) ou do usuário. */
+export type SfxItem = {
+  id: string;
+  file: string | null;
+  kind: string;
+  tags: string[];
+  license: 'own' | 'cc0' | 'mixkit-free' | 'cc_by' | 'desconhecida';
+  license_label: string;
+  source_url: string;
+  author: string;
+  /** Ponto forte (s desde o início do efeito preparado): a palavra do evento cai nele. */
+  hit_s: number;
+  dur: number;
+  lufs: number | null;
+  tonal: boolean;
+  tonal_share: number;
+  apito: boolean;
+  origin: 'builtin' | 'user';
+  imported_from: string;
+  note: string;
+  procedural: boolean;
+  /** Entra no automático (planejador e escolha por tipo). */
+  auto: boolean;
+  /** O arquivo sumiu da pasta (toca o efeito do tipo no lugar). */
+  missing: boolean;
+  warning: string | null;
+};
+
+export type SfxLibrary = {
+  dir: string;
+  items: SfxItem[];
+  warnings: string[];
+  /** Arquivos soltos na pasta ainda não importados (entram pelo "Procurar arquivos soltos"). */
+  loose: string[];
+  licenses: LibraryLicense[];
+  procedural: string[];
+  freesound: { fields: Record<string, string>; from_env: string | null; configured: boolean };
+  offline: boolean;
+};
+
+export type SfxPatch = Partial<Pick<SfxItem, 'license' | 'kind' | 'tags' | 'author' | 'source_url' | 'note' | 'hit_s'>>;
+
+export type MemeItem = {
+  id: string;
+  file: string;
+  url: string;
+  media: 'png' | 'webm';
+  tags: string[];
+  license: 'own' | 'cc0' | 'cc_by' | 'fair_comment';
+  license_label: string;
+  risk: 'low' | 'medium' | 'high';
+  max_ms: number;
+  sfx_id: string | null;
+  author: string;
+  source_url: string;
+  origin: 'user' | 'presenter';
+  auto: boolean;
+  warning: string | null;
+};
+
+export type MemeLibrary = {
+  dir: string;
+  items: MemeItem[];
+  warnings: string[];
+  templates: { id: string; label: string; tags: string[] }[];
+  licenses: LibraryLicense[];
+  risks: MemeItem['risk'][];
+};
+
+export type CanaisSfxReport = {
+  source: string;
+  imported: { file: string; id: string; kind: string; license: string; auto?: boolean }[];
+  skipped: { file: string; reason: string }[];
+  warnings: string[];
+};
+
+export const libraryApi = {
+  sfx: () => api.get<SfxLibrary>('/api/library/sfx'),
+  /** Upload multipart: `file`, `kind`, `license`, `tags`, `author`, `source_url`. */
+  uploadSfx: (form: FormData) => api.upload<SfxItem>('/api/library/sfx', form),
+  patchSfx: (id: string, body: SfxPatch) => api.patch<SfxItem>(`/api/library/sfx/${encodeURIComponent(id)}`, body),
+  deleteSfx: (id: string) => api.del<{ deleted: string }>(`/api/library/sfx/${encodeURIComponent(id)}`),
+  /** O efeito como entra no mix (WAV): use como `src` de um <audio>. */
+  sfxAudioUrl: (id: string) => `/api/library/sfx/${encodeURIComponent(id)}/audio`,
+  /** Job `sfx_scan`: os arquivos soltos na pasta entram como licença desconhecida. */
+  scanSfx: () => api.post<Job>('/api/library/sfx/scan'),
+  fetchFreesound: (body: { sound: string; kind: string; tags?: string[] }) => api.post<SfxItem>('/api/library/sfx/fetch-freesound', body),
+  setFreesoundKey: (apiKey: string) => api.put<SfxLibrary['freesound']>('/api/library/freesound-key', { api_key: apiKey }),
+  deleteFreesoundKey: () => api.del<SfxLibrary['freesound']>('/api/library/freesound-key'),
+  /** Job `sfx_voice`: "ué", "pera"... com a voz final do canal (422 na hora sem a voz final). */
+  voiceSfx: (body: { channel_id?: string | null; style_id?: string | null; lang?: string }) => api.post<Job>('/api/library/sfx/voice', body),
+  canaisPreview: (licenseChecked: boolean) =>
+    api.post<CanaisSfxReport>('/api/library/sfx/import-canais', { dry_run: true, license_checked: licenseChecked }),
+  /** Job `sfx_import_canais`. */
+  importCanais: (body: { replace?: boolean; license_checked?: boolean }) => api.post<Job>('/api/library/sfx/import-canais', body),
+  memes: (channelId?: string | null) => api.get<MemeLibrary>(`/api/library/memes${channelId ? `?channel_id=${encodeURIComponent(channelId)}` : ''}`),
+  /** Upload multipart: `file` (PNG ou WebM), `license` (obrigatória), `tags`, `risk`, `max_ms`, `author`, `source_url`. */
+  uploadMeme: (form: FormData) => api.upload<MemeItem>('/api/library/memes', form),
+  deleteMeme: (id: string) => api.del<{ deleted: string }>(`/api/library/memes/${encodeURIComponent(id)}`),
+};

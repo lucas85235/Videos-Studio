@@ -51,6 +51,7 @@ import { VoicePicker } from '../voices';
 import { YouTubeQuotaSettings } from '../youtube';
 import { AnchorLink, jumpTo, useCopy } from './ops/common';
 import { ImportCanaisSection } from './ops/ImportCanais';
+import { SfxMemeLibrarySection } from './SfxMemeLibrary';
 
 type Status = { data_dir: string; offline: boolean; renderer_version: string; video_encoder: string; nvenc: boolean; providers_available: Record<string, string[]> };
 type Costs = { by_provider: { provider: string; kind: string; units: number; cost_usd: number; calls: number }[]; total_usd: number };
@@ -81,6 +82,7 @@ const SECTIONS: { id: string; label: string }[] = [
     ...(k === 'tts' ? [{ id: 'ouvir-vozes', label: 'Ouvir vozes' }] : []),
   ]),
   { id: 'musicas', label: 'Músicas' },
+  { id: 'efeitos-memes', label: 'Efeitos e memes' },
   { id: 'armazenamento', label: 'Armazenamento' },
   { id: 'importar-canais', label: 'Importar do canais' },
   { id: 'sistema', label: 'Sistema e custos' },
@@ -1174,7 +1176,7 @@ const SectionNav: React.FC<{ layoutKey: string }> = ({ layoutKey }) => {
 };
 
 // Consultas das seções abaixo: o salto por #hash espera todas assentarem para o alvo não sair do lugar.
-const JUMP_KEYS = ['providers', 'library-music', 'cache-report', 'status'];
+const JUMP_KEYS = ['providers', 'library-music', 'library-sfx', 'cache-report', 'status'];
 
 export const SettingsPage: React.FC = () => {
   const providers = useProviders();
@@ -1248,6 +1250,7 @@ export const SettingsPage: React.FC = () => {
           <VoiceSamplesSection />
         ) : null}
         <MusicLibrarySection />
+        <SfxMemeLibrarySection />
         <StorageSection />
         <ImportCanaisSection />
         <SystemSection providers={providers.data} />

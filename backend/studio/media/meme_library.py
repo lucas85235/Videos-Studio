@@ -37,6 +37,12 @@ LICENSE_LABELS = {
 }
 Risk = Literal["low", "medium", "high"]
 RISKS: tuple[str, ...] = ("low", "medium", "high")
+AUTO_LICENSES = frozenset({"own", "cc0"})
+"""Licenças que deixam o meme entrar no automático (`pick`). `cc_by` fica de fora até a descrição creditar memes
+(`publish/credits.py` só junta a mídia das cenas); `fair_comment` é material de terceiros ("copiar a fórmula, nunca o
+material"): só por escolha do usuário no evento, ou com `allow_fair_comment` explícito."""
+DEFAULT_RISK = {"fair_comment": "medium"}
+"""Risco quando o upload não declara: material de terceiros nunca entra como `low` sem o usuário dizer."""
 MEDIA_EXTS = {".png": "png", ".webm": "webm"}
 MAX_UPLOAD_BYTES = 40_000_000
 _ID_RE = r"^[a-z0-9][a-z0-9_\-]{0,63}$"
@@ -74,9 +80,29 @@ class MemeItem(BaseModel):
     def path(self) -> Path:
         return get_settings().data_dir / self.file
 
+    def auto(self, allow_fair_comment: bool = False) -> bool:
+        """Pode entrar no automático (`pick`)."""
+        if self.risk == "high":
+            return False
+        return self.license in AUTO_LICENSES or (allow_fair_comment and self.license == "fair_comment")
+
+    def warning(self) -> str | None:
+        if self.license == "cc_by":
+            return (f"'{self.id}': CC BY, fica fora do automático (o crédito ainda não sai sozinho na descrição); "
+                    "escolhido num evento, credite o autor.")
+        if self.license == "fair_comment":
+            return (f"'{self.id}': material de terceiros (risco {self.risk}), fica fora do automático; pode gerar "
+                    "reivindicação.")
+        if self.risk == "high":
+            return f"'{self.id}': risco alto de reivindicação, fica fora do automático."
+        return None
+
+    def credit(self) -> str:
+        return " — ".join(p for p in (self.id, self.author, "CC BY", self.source_url) if p)
+
     def public(self) -> dict[str, Any]:
         return {**self.model_dump(mode="json"), "license_label": LICENSE_LABELS.get(self.license, self.license),
-                "auto": self.risk != "high"}
+                "auto": self.auto(), "warning": self.warning()}
 
 
 class MemeTemplate(BaseModel):
@@ -158,17 +184,54 @@ def memes_root() -> Path:
     return root
 
 
-def user_items() -> list[MemeItem]:
+def _load() -> tuple[list[MemeItem], list[Any], list[str]]:
+    """Itens válidos, entradas inválidas (guardadas como estão) e avisos: um manifesto editado à mão não derruba o
+    planejador nem a lista."""
     path = memes_root() / MANIFEST
     if not path.is_file():
-        return []
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return [MemeItem.model_validate(entry) for entry in raw.get("items", [])]
+        return [], [], []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [], [], [f"manifesto de memes ilegível ({path}): {exc}. Os memes dele ficaram de fora."]
+    entries = raw.get("items", []) if isinstance(raw, dict) else []
+    items: list[MemeItem] = []
+    invalid: list[Any] = []
+    issues: list[str] = []
+    for entry in entries if isinstance(entries, list) else []:
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("a entrada não é um objeto")
+            items.append(MemeItem.model_validate(entry))
+        except ValueError:  # inclui o ValidationError do pydantic
+            invalid.append(entry)
+            name = entry.get("id") if isinstance(entry, dict) else None
+            issues.append(f"meme '{name or '?'}' com entrada inválida no manifesto: ficou de fora até ser corrigido.")
+    return items, invalid, issues
+
+
+def user_items() -> list[MemeItem]:
+    return _load()[0]
+
+
+def get(lib_id: str | None) -> MemeItem | None:
+    return next((i for i in user_items() if i.id == lib_id), None) if lib_id else None
+
+
+def warnings() -> list[str]:
+    items, _invalid, issues = _load()
+    return [*issues, *(w for w in (i.warning() for i in items) if w)]
 
 
 def _save(items: list[MemeItem]) -> None:
     root = memes_root()
-    payload = {"version": 1, "items": [i.model_dump(mode="json") for i in sorted(items, key=lambda i: i.id)]}
+    keep = {i.id for i in items}
+    _valid, bad, issues = _load()
+    invalid = [e for e in bad if not (isinstance(e, dict) and e.get("id") in keep)]
+    if any("ilegível" in w for w in issues):  # guarda o manifesto ilegível ao lado antes de trocar
+        shutil.copyfile(root / MANIFEST, root / f"{MANIFEST}.ilegivel")
+    payload = {"version": 1,
+               "items": [*(i.model_dump(mode="json") for i in sorted(items, key=lambda i: i.id)), *invalid]}
     tmp = root / f".{MANIFEST}.tmp"
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(root / MANIFEST)
@@ -188,7 +251,7 @@ def add(
     *,
     license: str,
     tags: list[str] | None = None,
-    risk: str = "low",
+    risk: str | None = None,
     max_ms: int = 1200,
     sfx_id: str | None = None,
     author: str = "",
@@ -196,9 +259,11 @@ def add(
     lib_id: str | None = None,
     note: str = "",
 ) -> MemeItem:
-    """Copia o PNG/WebM para a biblioteca com a licença declarada (obrigatória)."""
+    """Copia o PNG/WebM para a biblioteca com a licença declarada (obrigatória). Sem `risk`: `low`, ou `medium` para
+    `fair_comment` (material de terceiros nunca entra como risco baixo sem o usuário dizer)."""
     src = Path(src)
     license = check_license(license, author)
+    risk = (risk or "").strip().lower() or DEFAULT_RISK.get(license, "low")
     media = MEDIA_EXTS.get(src.suffix.lower())
     if media is None:
         raise MemeLibraryError("formato não aceito: use PNG ou WebM (com fundo transparente)")
@@ -260,9 +325,10 @@ def list_items(presenter: Presenter | None = None) -> list[MemeItem]:
 
 
 def pick(tag: str, seed: int, exclude: list[str] | tuple[str, ...] | set[str] = (), *,
-         presenter: Presenter | None = None) -> MemeItem | None:
+         presenter: Presenter | None = None, allow_fair_comment: bool = False) -> MemeItem | None:
     """Um meme ou reação com a tag, determinístico pela semente, fora dos `exclude` (usados nos últimos vídeos do
-    canal) e sem risco alto. Os da biblioteca vêm antes das poses do avatar. None: nenhum (o planejador usa um
+    canal) e só do automático (`MemeItem.auto`: licença própria ou CC0, sem risco alto; `fair_comment` só com
+    `allow_fair_comment`). Os da biblioteca vêm antes das poses do avatar. None: nenhum (o planejador usa um
     template de "meme sem meme")."""
     key = slug(tag)
     if not key:
@@ -270,7 +336,7 @@ def pick(tag: str, seed: int, exclude: list[str] | tuple[str, ...] | set[str] = 
     skip = set(exclude)
     rnd = random.Random(f"{seed}:{key}")
     for pool in (user_items(), presenter_reactions(presenter)):
-        options = [i for i in pool if key in i.tags and i.risk != "high" and i.id not in skip]
+        options = [i for i in pool if key in i.tags and i.auto(allow_fair_comment) and i.id not in skip]
         if options:
             return rnd.choice(sorted(options, key=lambda i: i.id))
     return None

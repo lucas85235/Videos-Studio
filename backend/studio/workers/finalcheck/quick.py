@@ -33,7 +33,7 @@ LEVELS = {"ok": 0, "aviso": 1, "erro": 2}
 QUICK_CODES = frozenset({
     "final_video", "final_version", "preview_only", "editorial", "short_duration", "short_editorial",
     "factcheck_open", "factcheck_rumor", "factcheck_outdated", "factcheck_missing", "audio_check", "thumbnail",
-    "captions", "ai_label", "final_timeline",
+    "captions", "ai_label", "final_timeline", "library_license",
 })
 # Folga entre o MP4 final e o timeline.json do mesmo render (o timeline é gravado antes do vídeo).
 MTIME_SLACK_S = 1.0
@@ -152,6 +152,57 @@ def _factcheck_items(ctx: FinalContext) -> list[dict[str, Any]]:
     return out
 
 
+def library_items(doc: ProjectDoc) -> list[dict[str, Any]]:
+    """Licença do que veio da biblioteca de efeitos e de memes (ADR 0004 §3.8), pelos eventos das cenas (`Scene.fx`):
+
+    - SFX de licença desconhecida escolhido pelo planejador ou pelo LLM: `erro` (ninguém declarou a licença); pelo
+      usuário: `aviso`;
+    - SFX ou meme CC BY: `aviso` com a linha de crédito a pôr na descrição (o crédito ainda não sai sozinho);
+    - meme `fair_comment` (material de terceiros): `aviso` de reivindicação.
+    Um item sem os campos (projeto antigo) não gera nada."""
+    from studio.media import meme_library, sfx_library
+
+    unknown_auto: list[str] = []
+    unknown_user: list[str] = []
+    credits: dict[str, str] = {}
+    claims: list[str] = []
+    try:
+        for scene in doc.ordered_scenes():
+            for event in scene.fx:
+                params = event.params or {}
+                sfx_id = params.get("lib_id") if event.type == "sfx" else params.get("sfx_id")
+                if isinstance(sfx_id, str) and sfx_id:
+                    sfx = sfx_library.get(sfx_id)
+                    if sfx is not None and sfx.license == sfx_library.UNKNOWN_LICENSE:
+                        (unknown_user if event.origin == "user" else unknown_auto).append(sfx.id)
+                    elif sfx is not None and sfx.license == "cc_by":
+                        credits[f"sfx:{sfx.id}"] = f"Efeitos sonoros: {sfx.credit()}"
+                meme_id = params.get("lib_id") if event.type == "meme" else None
+                meme = meme_library.get(meme_id) if isinstance(meme_id, str) else None
+                if meme is not None and meme.license == "cc_by":
+                    credits[f"meme:{meme.id}"] = f"Meme: {meme.credit()}"
+                elif meme is not None and meme.license == "fair_comment":
+                    claims.append(meme.id)
+    except Exception:  # noqa: BLE001 - a biblioteca ilegível não derruba a conferência
+        return []
+    out: list[dict[str, Any]] = []
+    names = lambda ids: ", ".join(f"'{i}'" for i in dict.fromkeys(ids))  # noqa: E731
+    if unknown_auto:
+        out.append(item("library_license", "erro", "Efeito de licença desconhecida escolhido automaticamente",
+                        f"{names(unknown_auto)} entrou pelo planejador ou pelo LLM sem licença declarada: declare a "
+                        "licença na biblioteca de efeitos (Configurações) ou troque o efeito."))
+    if unknown_user:
+        out.append(item("library_license", "aviso", "Efeito de licença desconhecida no vídeo",
+                        f"{names(unknown_user)}: você escolheu, mas a licença não está declarada na biblioteca."))
+    if credits:
+        out.append(item("library_license", "aviso", "Crédito CC BY a pôr na descrição",
+                        "\n".join(credits.values())))
+    if claims:
+        out.append(item("library_license", "aviso", "Meme de terceiros no vídeo",
+                        f"{names(claims)}: citação/comentário pode gerar reivindicação de direitos."))
+    return out
+
+
 def _audio_items(ctx: FinalContext) -> list[dict[str, Any]]:
     with session_scope() as s:
         report = (s.query(QualityReport).filter_by(project_id=ctx.project_id, kind="audio", lang=ctx.lang)
@@ -232,6 +283,7 @@ def quick_items(ctx: FinalContext) -> list[dict[str, Any]]:
     out.extend(duration_items(ctx.is_short, ctx.duration, editorial))
     out.extend(_factcheck_items(ctx))
     out.extend(_audio_items(ctx))
+    out.extend(library_items(ctx.doc))
     if not _thumbnail_ok(ctx):
         out.append(item("thumbnail", "aviso", "Sem miniatura", "o vídeo sobe com a imagem que o YouTube escolher."))
     srt = ctx.entry.get("srt")

@@ -1,5 +1,6 @@
 """Jobs do bloco G (ADR 0003): `audio_check` (conferência de áudio sem renderizar) e `music_curate` (curadoria das
-trilhas da biblioteca). Importado por `studio.workers.jobs`."""
+trilhas da biblioteca), mais os da biblioteca de efeitos (ADR 0004 §3.8): `sfx_import_canais`, `sfx_voice` e
+`sfx_scan`. Importado por `studio.workers.jobs`."""
 
 from __future__ import annotations
 
@@ -37,3 +38,36 @@ def run_music_curate(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]
         done[rel] = {k: result.get(k) for k in ("ok", "reason", "bpm", "loop_start_s", "loop_s", "loop_bars")}
     ok = sum(1 for r in done.values() if r.get("ok"))
     return {"tracks": len(done), "ok": ok, "results": done}
+
+
+# --- biblioteca de efeitos (ADR 0004 §3.8): o trabalho longo sai da requisição ---------------------------------------
+
+
+@job("sfx_import_canais")
+def run_sfx_import_canais(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """`{replace?, license_checked?}`: importa os .wav do canais (decodifica e mede cada um; só leitura lá)."""
+    from studio.workers.canais_import import sfx as canais_sfx
+
+    report = canais_sfx.import_sfx(replace=bool(payload.get("replace")),
+                                   license_checked=bool(payload.get("license_checked")), progress=ctx.progress)
+    return report.to_dict()
+
+
+@job("sfx_voice")
+def run_sfx_voice(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """`{channel_id?, style_id?, lang?}`: grava as interjeições ("ué", "pera"...) com a voz final do canal."""
+    from studio.media import sfx_library
+
+    items = sfx_library.ensure_voice_sfx(payload.get("channel_id"), payload.get("lang") or "pt-BR",
+                                         style_id=payload.get("style_id"), progress=ctx.progress)
+    return {"items": [i.id for i in items]}
+
+
+@job("sfx_scan")
+def run_sfx_scan(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """Importa os arquivos soltos na pasta da biblioteca de efeitos (licença desconhecida) e lista os órfãos."""
+    from studio.media import sfx_library
+
+    ctx.progress(0.05, "Procurando arquivos soltos")
+    result = sfx_library.scan()
+    return {"new": [i.id for i in result["new"]], "failed": result["failed"], "orphans": result["orphans"]}

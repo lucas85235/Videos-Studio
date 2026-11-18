@@ -4,8 +4,12 @@ Lê `<canais>/plantao-vice/video/public/sfx/*.wav` **só para leitura** (cada ar
 escrito na pasta do canais) e importa em `<dados>/library/sfx/` com o id `canais-<nome>`. Nada vai para o repositório.
 
 Licença:
-- `mixkit-free` para os nomes rastreados no `motor/passos/get_audio.py` (o dicionário `SFX`, id do Mixkit → arquivo):
-  baixados de assets.mixkit.co sob a Mixkit Free License (YouTube monetizado, sem crédito; não redistribuir);
+- os nomes rastreados no `motor/passos/get_audio.py` (o dicionário `SFX`, id do Mixkit → arquivo) foram baixados de
+  assets.mixkit.co. A Mixkit Free License cobre YouTube monetizado sem crédito, mas alguns itens são "Restricted"
+  (só não comercial) e o ADR §4 pede a conferência item a item: sem ela (`license_checked=False`, o padrão) entram
+  como "desconhecida", com o link do arquivo no Mixkit para conferir e declarar `mixkit-free` na biblioteca; com
+  `license_checked=True` (o usuário conferiu os 17, como o `--licenca-conferida` do `scripts/fetch_sfx.py`) entram
+  como `mixkit-free`. O `source_url` é o arquivo do item (`MIXKIT_ASSET`, o mesmo que o canais baixou);
 - "desconhecida" para o resto (click, pop, stamp, type, whoosh, static, bleep, corte...): ficam fora do automático.
 
 Os tipos banidos no padrão do estúdio (whip, whip2, ding, trombone) entram, mas nunca no automático (`SfxItem.auto`).
@@ -28,7 +32,8 @@ MIXKIT_IDS: dict[str, int] = {
     "typeclick": 1119, "rimshot": 579, "trombone": 744,
 }
 """Nome do arquivo → id do Mixkit (cópia de `canais/motor/passos/get_audio.py:48-52`, o dicionário `SFX`)."""
-MIXKIT_PAGE = "https://mixkit.co/free-sound-effects/"
+MIXKIT_ASSET = "https://assets.mixkit.co/active_storage/sfx/{id}/{id}-preview.mp3"
+"""O arquivo do item no Mixkit (o mesmo que o `get_audio.py` do canais baixa): identifica o efeito para conferir."""
 MIXKIT_LICENSE_URL = "https://mixkit.co/license/#sfxFree"
 KIND_OF: dict[str, str] = {
     "scratch2": "scratch", "whip2": "whip", "bass": "bass_drop", "moneybag": "coins", "page": "paper",
@@ -61,7 +66,7 @@ def sfx_dir(root: Path | None = None) -> Path:
     return (root or default_root()) / SFX_RELATIVE
 
 
-def plan(folder: Path) -> list[dict[str, Any]]:
+def plan(folder: Path, *, license_checked: bool = False) -> list[dict[str, Any]]:
     """O que seria importado de `folder` (sem tocar em nada): nome, tipo, licença e origem de cada .wav."""
     out = []
     for path in sorted(folder.glob("*.wav")):
@@ -74,39 +79,51 @@ def plan(folder: Path) -> list[dict[str, Any]]:
             "file": path.name,
             "id": f"canais-{sfx_library.slug(stem)}",
             "kind": KIND_OF.get(stem, sfx_library.slug(stem)),
-            "license": "mixkit-free" if mixkit else sfx_library.UNKNOWN_LICENSE,
-            "source_url": f"{MIXKIT_PAGE}#{mixkit}" if mixkit else "",
+            "license": "mixkit-free" if mixkit and license_checked else sfx_library.UNKNOWN_LICENSE,
+            "source_url": MIXKIT_ASSET.format(id=mixkit) if mixkit else "",
             "author": "Mixkit" if mixkit else "",
             "tags": ["canais", *TAGS.get(stem, [])],
-            "note": (f"Mixkit {mixkit} ({MIXKIT_LICENSE_URL}); baixado pelo canais/get_audio.py"
+            "note": ((f"Mixkit {mixkit} ({MIXKIT_LICENSE_URL}); baixado pelo canais/get_audio.py"
+                      + ("; licença conferida pelo usuário" if license_checked
+                         else "; confira se não é Restricted e declare mixkit-free"))
                      if mixkit else "efeito do canais sem origem registrada"),
         })
     return out
 
 
-def import_sfx(folder: Path | None = None, *, dry_run: bool = False, replace: bool = False) -> SfxImportReport:
+def import_sfx(folder: Path | None = None, *, dry_run: bool = False, replace: bool = False,
+               license_checked: bool = False, progress: Any = None) -> SfxImportReport:
     """Importa os .wav do canais para a biblioteca do usuário. `dry_run`: só o relatório. Itens que já existem ficam
-    (com `replace`, são medidos e copiados de novo)."""
+    (com `replace`, são medidos e copiados de novo). `license_checked`: o usuário conferiu no Mixkit que os itens
+    rastreados não são "Restricted" (entram como `mixkit-free`; sem isso, "desconhecida")."""
     folder = folder or sfx_dir()
     report = SfxImportReport(source=str(folder))
     if not folder.is_dir():
         report.warnings.append(f"pasta de efeitos do canais não encontrada: {folder}")
         return report
-    existing = {i.id for i in sfx_library.user_items()}
-    for entry in plan(folder):
+    existing = {i.id: i for i in sfx_library.user_items()}
+    entries = plan(folder, license_checked=license_checked)
+    for index, entry in enumerate(entries):
+        if progress is not None:
+            progress(index / max(1, len(entries)), f"Importando {entry['file']}")
         if entry.get("skip"):
             report.skipped.append({"file": entry["file"], "reason": entry["skip"]})
             continue
         if entry["id"] in existing and not replace:
             report.skipped.append({"file": entry["file"], "reason": f"já importado como '{entry['id']}'"})
             continue
+        # Refazer não desfaz a licença que o usuário já declarou na biblioteca.
+        before = existing.get(entry["id"])
+        license, author = entry["license"], entry["author"]
+        if before is not None and license == sfx_library.UNKNOWN_LICENSE and before.license != license:
+            license, author = before.license, before.author or author
         if dry_run:
-            report.imported.append({k: entry[k] for k in ("file", "id", "kind", "license")})
+            report.imported.append({**{k: entry[k] for k in ("file", "id", "kind")}, "license": license})
             continue
         try:
             item = sfx_library.import_file(
-                folder / entry["file"], kind=entry["kind"], license=entry["license"], tags=entry["tags"],
-                source_url=entry["source_url"], author=entry["author"], lib_id=entry["id"], replace=replace,
+                folder / entry["file"], kind=entry["kind"], license=license, tags=entry["tags"],
+                source_url=entry["source_url"], author=author, lib_id=entry["id"], replace=replace,
                 imported_from="canais:plantao-vice", note=entry["note"])
         except sfx_library.SfxLibraryError as exc:
             report.skipped.append({"file": entry["file"], "reason": str(exc)})

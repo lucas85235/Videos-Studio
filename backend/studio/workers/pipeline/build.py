@@ -1269,24 +1269,19 @@ class Builder:
         return sfx_library.resolve(ref, store=self.store, tonal_ok=self.sfx_tonal_ok, explicit=explicit)
 
     def sfx_plan(self, timeline: dict[str, Any]) -> list[dict[str, Any]]:
-        """Os efeitos da timeline como entram no mix (`type, start, ref, explicit, gain_db, lib_id, extra`), sem os
-        bloqueados pela guarda de apito (regra 13 do padrão do estúdio), com aviso.
+        """Os efeitos da timeline como entram no mix (`type, start, ref, explicit, played, gain_db, lib_id, extra`), sem
+        os bloqueados pela guarda de apito (regra 13 do padrão do estúdio), com aviso.
 
         - Evento de antes (`start`, sem `lib_id`): igual ao que era (o procedural do tipo).
-        - Evento do ADR 0004 (`at`, `lib_id?`, `gain_db?`): o `lib_id` da biblioteca (ou o tipo, se o id sumiu), posto
-          em `at - hit_s` para o ponto forte cair na palavra (`sfx_library.event_start`).
-        - Efeito da biblioteca com licença desconhecida toca se foi pedido pelo `lib_id` (alguém o escolheu), com aviso.
+        - Evento do ADR 0004 (`at`, `lib_id?`, `gain_db?`): o `lib_id` da biblioteca (ou o tipo, se o id ou o arquivo
+          sumiu), posto em `at - hit_s` para o ponto forte cair na palavra (`sfx_library.event_start`), mesmo que o
+          evento traga também o `start` do timeline-fx.
+        - Efeito da biblioteca com licença desconhecida toca se foi pedido pelo `lib_id` por alguém: com `origin` no
+          evento, só o do usuário (o do planejador ou do LLM toca o tipo); sem `origin`, toca com aviso (e a
+          conferência final acusa erro). CC BY toca com o aviso do crédito a pôr na descrição.
         """
         tonal_ok = self.sfx_tonal_ok
-        planned: list[dict[str, Any]] = []
-        for e in timeline.get("sfx", []):
-            ref, explicit = sfx_library.event_ref(e)
-            lib_id = e.get("lib_id")
-            if lib_id and not explicit:
-                self.warnings.append(f"efeito '{lib_id}' não está na biblioteca: tocou o '{e['type']}' no lugar")
-            planned.append({"type": e["type"], "start": sfx_library.event_start(e, tonal_ok=tonal_ok), "ref": ref,
-                            "explicit": explicit, "gain_db": float(e.get("gain_db") or 0.0), "lib_id": lib_id,
-                            "extra": "lib_id" in e or "gain_db" in e})
+        planned = self.sfx_events(timeline)
         blocked: set[tuple[str, bool]] = set()
         for ref, explicit in sorted({(p["ref"], p["explicit"]) for p in planned}):
             item = sfx_library.lookup(ref, tonal_ok=tonal_ok, explicit=explicit)
@@ -1295,11 +1290,14 @@ class Builder:
                 gh = hash_obj({"sfx_guard": kind, "sfx_v": audio_mod.SFX_VERSION, "v": 1})
                 banned = kind in audio_check.SFX_BANNED
             else:
-                gh = hash_obj({"sfx_guard": item.id, "content": sfx_library.content_key(item), "v": 1})
+                gh = hash_obj({"sfx_guard": item.id, "content": sfx_library.prep_key(item), "v": 2})
                 banned = item.banned
                 if item.license == sfx_library.UNKNOWN_LICENSE:
                     self.warnings.append(f"efeito '{item.id}' com licença desconhecida no vídeo: declare a licença na "
                                          "biblioteca de efeitos")
+                elif item.license == "cc_by":
+                    self.warnings.append(f"efeito '{item.id}' é CC BY: ponha o crédito na descrição do vídeo "
+                                         f"(\"Efeitos sonoros: {item.credit()}\")")
             guard = self.store.lookup("sfx_guard", gh)
             if guard:
                 report = guard["report"]
@@ -1311,6 +1309,32 @@ class Builder:
                 blocked.add((ref, explicit))
                 self.warnings.append(f"efeito sonoro '{ref}' tem apito: ficou fora do mix (padrão do estúdio: sem apito)")
         return [p for p in planned if (p["ref"], p["explicit"]) not in blocked]
+
+    def sfx_events(self, timeline: dict[str, Any]) -> list[dict[str, Any]]:
+        """Os efeitos da timeline resolvidos (o que toca e onde começa), antes da guarda de apito: o mesmo para o mix
+        (`sfx_plan`) e para a conferência de áudio."""
+        tonal_ok = self.sfx_tonal_ok
+        planned: list[dict[str, Any]] = []
+        for e in timeline.get("sfx", []):
+            ref, explicit = sfx_library.event_ref(e)
+            lib_id = e.get("lib_id")
+            if lib_id and not explicit:
+                gone = sfx_library.get(str(lib_id))
+                why = "o arquivo dele sumiu da pasta da biblioteca" if gone is not None else "não está na biblioteca"
+                self.warnings.append(f"efeito '{lib_id}': {why}; tocou o '{e['type']}' no lugar")
+            elif explicit and e.get("origin") not in (None, "user"):
+                chosen = sfx_library.get(ref)
+                if chosen is not None and chosen.license == sfx_library.UNKNOWN_LICENSE:
+                    self.warnings.append(f"efeito '{ref}' (licença desconhecida) escolhido pelo {e['origin']}, não "
+                                         f"por você: tocou o '{e['type']}' no lugar")
+                    ref, explicit = str(e.get("type") or "whoosh"), False
+            item = sfx_library.lookup(ref, tonal_ok=tonal_ok, explicit=explicit)
+            played = item.id if item is not None and item.origin == "builtin" else ref
+            start = sfx_library.event_start({**e, "lib_id": ref if explicit else None}, tonal_ok=tonal_ok)
+            planned.append({"type": e["type"], "start": start, "ref": ref, "explicit": explicit, "played": played,
+                            "gain_db": float(e.get("gain_db") or 0.0), "lib_id": lib_id,
+                            "extra": "lib_id" in e or "gain_db" in e})
+        return planned
 
     def mix(self, lang: str, timeline: dict[str, Any], tts_hashes: dict[str, str], *, wav: bool = False) -> str:
         total = timeline["duration"]
@@ -1347,8 +1371,9 @@ class Builder:
         # Efeito que mudou de som em SFX_RETUNED_VERSION (glitch e riser perderam o apito): essa versão entra na chave
         # e o mix guardado com o som antigo é refeito. Efeito de evento (tipo novo da v4): a versão atual entra (um
         # tipo novo pedido antes da v4 saía como whoosh). Sem esses tipos, a chave fica a de antes (nada é refeito).
-        refs = {e["ref"] for e in sfx_events}
-        if refs & set(audio_mod.EVENT_SFX_KINDS):
+        # (`played`: o que toca de fato; é o `ref`, salvo o riser trocado pela trava tonal pelo riser_short)
+        played = {e["played"] for e in sfx_events}
+        if played & set(audio_mod.EVENT_SFX_KINDS):
             inputs["sfx_v"] = audio_mod.SFX_VERSION
         elif any(e["type"] in audio_mod.SFX_RETUNED for e in sfx_events):
             inputs["sfx_v"] = audio_mod.SFX_RETUNED_VERSION
@@ -1391,7 +1416,7 @@ class Builder:
             short=short,
             music_highpass=music_hp or audio_mod.MUSIC_HIGHPASS_HZ,
             music_ref_s=music_ref,
-            music_drops=[{"at": a, "dur": b - a} for a, b in drops] or None,
+            music_drop_spans=drops or None,  # os trechos da chave, sem prender de novo
         )
         for tmp in (voice, sfx_track):
             if tmp is not None:

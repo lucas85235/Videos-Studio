@@ -145,13 +145,9 @@ def measure(project_id: str, lang: str | None = None, source: str = "preview",
         voice_path = audio_mod.place_clips(
             [(builder.store.abs(n["path"]), n["start"], 1.0) for n in timeline["narration"]], total, work / "voice.wav")
         # efeitos: guarda de apito por tipo ou id da biblioteca (como no mix) e a trilha dos que ficaram. Evento do
-        # ADR 0004 (`at`, `lib_id`) vira início e arquivo como no `Builder.sfx_plan`.
+        # ADR 0004 (`at`, `lib_id`) vira início e arquivo pelo mesmo `Builder.sfx_events` do mix.
         tonal_ok = builder.sfx_tonal_ok
-        events_all = []
-        for e in timeline.get("sfx", []):
-            ref, explicit = sfx_library.event_ref(e)
-            events_all.append({**e, "ref": ref, "explicit": explicit, "gain_db": float(e.get("gain_db") or 0.0),
-                               "start": sfx_library.event_start(e, tonal_ok=tonal_ok)})
+        events_all = builder.sfx_events(timeline)
         files = []
         blocked: set[tuple[str, bool]] = set()
         for ref, explicit in sorted({(e["ref"], e["explicit"]) for e in events_all}):

@@ -23,7 +23,9 @@ def _png() -> bytes:
 def test_upload_without_license_is_422(isolated_settings):
     client = TestClient(create_app())
     files = {"file": ("patrick.png", _png(), "image/png")}
-    assert client.post("/api/library/memes", files=files, data={"tags": "choque"}).status_code == 422
+    missing = client.post("/api/library/memes", files=files, data={"tags": "choque"})
+    # a mensagem é a da biblioteca, em português (não o "Field required" do FastAPI)
+    assert missing.status_code == 422 and "licença obrigatória" in missing.json()["detail"]
     assert client.post("/api/library/memes", files=files, data={"license": "achei-na-net"}).status_code == 422
     assert client.post("/api/library/memes", files=files, data={"license": "cc_by"}).status_code == 422  # sem autor
     wrong = client.post("/api/library/memes", files={"file": ("x.gif", b"GIF89a", "image/gif")}, data={"license": "own"})
@@ -58,6 +60,44 @@ def test_pick_is_deterministic_respects_exclude_and_risk(isolated_settings, tmp_
     assert meme_library.pick("filme", 3) is None  # risco alto nunca entra no automático
     assert meme_library.pick("piada", 3, exclude=["a", "b", "c"]) is None
     assert meme_library.pick("nada", 3) is None
+
+
+def test_third_party_and_cc_by_memes_stay_out_of_auto(isolated_settings, tmp_path):
+    """`fair_comment` (material de terceiros) sobe com risco médio e fica fora do automático; CC BY também (a
+    descrição ainda não credita memes)."""
+    src = tmp_path / "m.png"
+    src.write_bytes(_png())
+    third = meme_library.add(src, license="fair_comment", tags=["filme"], lib_id="cena-filme")
+    assert third.risk == "medium" and not third.auto() and "reivindicação" in (third.warning() or "")
+    assert meme_library.pick("filme", 1) is None
+    assert meme_library.pick("filme", 1, allow_fair_comment=True).id == "cena-filme"
+    by = meme_library.add(src, license="cc_by", author="Fulano", tags=["filme"], lib_id="by")
+    assert not by.auto() and meme_library.pick("filme", 2) is None
+    declared = meme_library.add(src, license="fair_comment", risk="low", tags=["outro"], lib_id="declarado")
+    assert declared.risk == "low" and not declared.auto()
+    # a rota mostra o risco e o aviso no retorno do upload
+    client = TestClient(create_app())
+    up = client.post("/api/library/memes", files={"file": ("x.png", _png(), "image/png")},
+                     data={"license": "fair_comment", "tags": "reacao"}).json()
+    assert up["risk"] == "medium" and up["auto"] is False and up["warning"]
+
+
+def test_bad_meme_manifest_is_skipped_and_kept(isolated_settings, tmp_path):
+    import json
+
+    src = tmp_path / "m.png"
+    src.write_bytes(_png())
+    meme_library.add(src, license="own", tags=["piada"], lib_id="ok")
+    path = meme_library.memes_root() / meme_library.MANIFEST
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["items"].append({"id": "ruim", "file": "x.png", "license": "roubado"})
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert [i.id for i in meme_library.user_items()] == ["ok"] and any("'ruim'" in w for w in meme_library.warnings())
+    assert meme_library.pick("piada", 1).id == "ok"
+    meme_library.add(src, license="own", lib_id="outro")
+    assert any(e.get("id") == "ruim" for e in json.loads(path.read_text(encoding="utf-8"))["items"])
+    path.write_text("{ quebrado", encoding="utf-8")
+    assert meme_library.user_items() == [] and meme_library.pick("piada", 1) is None
 
 
 def test_presenter_poses_become_reactions(isolated_settings):

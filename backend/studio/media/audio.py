@@ -782,7 +782,9 @@ MUSIC_DROP_FADE_S = 0.03
 
 def clamp_drops(drops: list[dict[str, Any]] | None, total: float) -> list[tuple[float, float]]:
     """`[{at, dur}]` da timeline → [(início, fim)] em s, com a duração presa em `MUSIC_DROP_S`, dentro do vídeo e
-    sem sobreposição (as que se tocam viram uma)."""
+    sem sobreposição. As que se tocam viram uma, e a junta também fica no teto (`MUSIC_DROP_S[1]` desde o início da
+    primeira): a regra é idempotente, então a chave do mix, o mix e a conferência (`music_stem`) medem o mesmo
+    trecho."""
     lo, hi = MUSIC_DROP_S
     spans: list[tuple[float, float]] = []
     for d in sorted(drops or [], key=lambda d: float(d.get("at", 0.0))):
@@ -795,7 +797,8 @@ def clamp_drops(drops: list[dict[str, Any]] | None, total: float) -> list[tuple[
         a = max(0.0, at)
         b = min(total, a + min(hi, max(lo, dur)))
         if spans and a <= spans[-1][1]:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+            first = spans[-1][0]
+            spans[-1] = (first, min(total, first + hi, max(spans[-1][1], b)))
         else:
             spans.append((a, b))
     return [(round(a, 3), round(b, 3)) for a, b in spans]
@@ -876,6 +879,7 @@ def mix_tracks(
     music_highpass: float = MUSIC_HIGHPASS_HZ,
     music_ref_s: float | None = None,
     music_drops: list[dict[str, Any]] | None = None,
+    music_drop_spans: list[tuple[float, float]] | None = None,
 ) -> Path:
     """Mix final: voz + música (com ducking) + SFX, em `loudness` LUFS e pico real até -1 dBTP. Sai em AAC estéreo (ou WAV, se `out_path` termina em .wav).
 
@@ -889,12 +893,18 @@ def mix_tracks(
     sobreamostrado (pega os picos entre amostras). Se o limitador comer loudness, mede de novo e compensa.
     `music_ref_s` (várias faixas): o ganho da trilha é medido só na 1ª cama (ver `_music_gain`).
     `music_drops` (`timeline.music_drops`, `[{at, dur}]` em s): a trilha some de 0,3 a 0,6 s em cada um (ver
-    `clamp_drops`), por cima do ducking. O ganho da trilha é medido sem as quedas.
+    `clamp_drops`), por cima do ducking. O ganho da trilha é medido sem as quedas. `music_drop_spans`: os trechos já
+    presos pelo `clamp_drops` (os da chave do mix), usados como estão.
     """
     total = wav_duration(voice) if total is None else total
     voice_gain = voice_gain_db(voice)
     music_gain = _music_gain(music, music_db, music_highpass, total, music_ref_s) if music is not None else 0.0
-    drops = clamp_drops(music_drops, total) if music is not None else []
+    if music is None:
+        drops: list[tuple[float, float]] = []
+    elif music_drop_spans is not None:
+        drops = [(float(a), float(b)) for a, b in music_drop_spans]
+    else:
+        drops = clamp_drops(music_drops, total)
     inputs, graph = _premix(voice, music, music_gain, ducking, sfx, total, short, music_highpass, voice_gain, drops)
     # Mede e limita já em estéreo (o mono vira dois canais a -3 dB): é o que o arquivo final tem.
     stereo = "[mx]aformat=channel_layouts=stereo"

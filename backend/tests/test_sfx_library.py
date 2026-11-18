@@ -141,6 +141,113 @@ def test_unknown_license_stays_out_of_auto(isolated_settings, tmp_path):
         sfx_library.import_file(src, kind="x", license="roubado")
 
 
+def test_cc_by_never_enters_auto(isolated_settings, tmp_path):
+    """A descrição ainda não credita SFX: CC BY só toca pelo lib_id (escolha de alguém), com o crédito no aviso."""
+    src = write_wav(tmp_path / "palmas.wav", _decaying_noise(0.6, 13))
+    item = sfx_library.import_file(src, kind="palmas", license="cc_by", author="Fulano",
+                                   source_url="https://freesound.org/s/1/")
+    assert not item.auto() and "CC BY" in (item.warning() or "")
+    assert sfx_library.candidates("palmas") == [] and sfx_library.pick("palmas", 1) is None
+    assert sfx_library.lookup(item.id, explicit=True).id == item.id
+    assert "Fulano" in item.credit() and "https://freesound.org/s/1/" in item.credit()
+
+
+def test_bad_user_manifest_never_breaks_resolution(isolated_settings, tmp_path):
+    root = sfx_library.user_root()
+    good = sfx_library.import_file(write_wav(tmp_path / "bom.wav", _decaying_noise(0.4, 30)), kind="bom",
+                                   license="own")
+    raw = json.loads((root / sfx_library.MANIFEST).read_text(encoding="utf-8"))
+    raw["items"] += [{**raw["items"][0], "id": "maiusculo", "license": "CC0"},  # editado à mão: aceito
+                     {"id": "ruim", "file": "ruim.wav", "kind": "x", "license": "roubada"},
+                     "nem-objeto"]
+    (root / sfx_library.MANIFEST).write_text(json.dumps(raw), encoding="utf-8")
+    ids = {i.id for i in sfx_library.user_items()}
+    assert ids == {good.id, "maiusculo"} and sfx_library.get("maiusculo").license == "cc0"
+    issues = sfx_library.warnings()
+    assert any("'ruim'" in w for w in issues) and any("'?'" in w for w in issues)
+    assert sfx_library.lookup("whoosh").id == "whoosh" and sfx_library.lookup("bom").id == good.id
+    # gravar de novo não apaga as entradas inválidas (o usuário corrige à mão)
+    sfx_library.update(good.id, tags=["x"])
+    saved = json.loads((root / sfx_library.MANIFEST).read_text(encoding="utf-8"))["items"]
+    assert {"id": "ruim", "file": "ruim.wav", "kind": "x", "license": "roubada"} in saved and "nem-objeto" in saved
+    # JSON corrompido: nada do usuário, aviso, e o tipo procedural resolve sem ler o manifesto
+    (root / sfx_library.MANIFEST).write_text("{ quebrado", encoding="utf-8")
+    assert sfx_library.user_items() == [] and sfx_library.event_ref({"type": "whoosh", "lib_id": "bom"}) == (
+        "whoosh", False)
+    assert sfx_library.lookup("whoosh").id == "whoosh" and sfx_library.lookup("riser").id == "riser"
+    assert any("ilegível" in w for w in sfx_library.warnings())
+    # gravar por cima guarda o ilegível ao lado
+    sfx_library.import_file(write_wav(tmp_path / "novo.wav", _decaying_noise(0.4, 31)), kind="novo", license="own")
+    assert (root / f"{sfx_library.MANIFEST}.ilegivel").read_text(encoding="utf-8") == "{ quebrado"
+
+
+def test_tonal_lock_swaps_the_tonal_riser(isolated_settings):
+    """Com `sfx_tonal_ok=False` o riser de transição (tonal) vira o riser_short, com o ponto forte no mesmo lugar."""
+    assert sfx_library.get("riser").tonal and not sfx_library.get("riser_short").tonal
+    assert sfx_library.lookup("riser").id == "riser"
+    assert sfx_library.lookup("riser", tonal_ok=False).id == "riser_short"
+    old = {"type": "riser", "start": 1.5, "scene_id": "s1"}  # timeline: palavra em 3,0 - 1,5
+    assert sfx_library.event_start(old) == 1.5
+    assert sfx_library.event_start(old, tonal_ok=False) == pytest.approx(3.0 - 0.6)
+    assert sfx_library.event_start({"type": "riser", "at": 3.0}, tonal_ok=False) == pytest.approx(2.4)
+
+
+def test_imported_short_sounds_follow_the_type_trim_and_onset(isolated_settings, tmp_path):
+    # um "click" importado soa como o click procedural (mesmo ajuste do tipo), não 13 dB acima
+    click = _decaying_noise(0.06, 14)
+    item = sfx_library.import_file(write_wav(tmp_path / "clique.wav", click), kind="click", license="own")
+    y, _ = read_wav(sfx_library.prepared_path(item))
+    assert audio.peak_momentary_lufs(y) == pytest.approx(audio.VOICE_LUFS + audio.SFX_TRIM_DB["click"], abs=0.6)
+    # curto de tipo sem ajuste: abaixo da referência
+    beep = sfx_library.import_file(write_wav(tmp_path / "tec.wav", _decaying_noise(0.08, 15)), kind="tec",
+                                   license="own")
+    z, _ = read_wav(sfx_library.prepared_path(beep))
+    assert audio.peak_momentary_lufs(z) == pytest.approx(audio.VOICE_LUFS + sfx_library.SHORT_SFX_TRIM_DB, abs=0.6)
+    # som longo (plateia): o ponto forte é o ataque, não o pico no meio
+    t = np.arange(int(3.0 * SR)) / SR
+    crowd = (_noise(3.0, 16, 0.5) * np.clip(np.minimum(t / 0.05, 1.0) * (0.45 + 0.55 * np.exp(-((t - 1.6) / 0.3) ** 2)),
+                                            0, 1)).astype(np.float32)
+    assert sfx_library.hit_point(crowd) > 1.0  # o pico
+    cheer = sfx_library.import_file(write_wav(tmp_path / "plateia.wav", crowd), kind="cheer", license="own")
+    assert cheer.hit_s < 0.1
+    # o que sobe até o golpe fica no pico
+    rise = (_noise(1.0, 17) * np.linspace(0.05, 1.0, SR)).astype(np.float32)
+    assert sfx_library.import_file(write_wav(tmp_path / "sobe.wav", rise), kind="riser", license="own").hit_s > 0.8
+
+
+def test_final_check_flags_library_licenses(isolated_settings, tmp_path):
+    """Conferência final: SFX de licença desconhecida escolhido pelo planejador é erro; pelo usuário, aviso; CC BY
+    dá a linha de crédito; meme de terceiros, aviso de reivindicação. Projeto sem eventos: nada."""
+    from types import SimpleNamespace
+
+    from studio.core.project.document import FxEvent
+    from studio.media import meme_library
+    from studio.workers.finalcheck.quick import QUICK_CODES, library_items
+
+    src = write_wav(tmp_path / "x.wav", _decaying_noise(0.4, 50))
+    sfx_library.import_file(src, kind="tapa", lib_id="tapa")
+    sfx_library.import_file(src, kind="palmas", license="cc_by", author="Fulano", lib_id="palmas",
+                            source_url="https://freesound.org/s/9/")
+    png = tmp_path / "m.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    meme_library.add(png, license="fair_comment", tags=["filme"], lib_id="filme")
+
+    def doc(*events: FxEvent) -> SimpleNamespace:
+        return SimpleNamespace(ordered_scenes=lambda: [SimpleNamespace(fx=list(events))])
+
+    assert library_items(doc()) == [] and "library_license" in QUICK_CODES
+    planner = FxEvent(type="sfx", at="palavra", params={"lib_id": "tapa"}, origin="planner")
+    items = library_items(doc(planner))
+    assert [(i["level"], i["code"]) for i in items] == [("erro", "library_license")] and "'tapa'" in items[0]["detail"]
+    user = FxEvent(type="sfx", at="palavra", params={"lib_id": "tapa"}, origin="user")
+    assert [i["level"] for i in library_items(doc(user))] == ["aviso"]
+    credit = FxEvent(type="punch", at="palavra", params={"sfx_id": "palmas"}, origin="user")
+    meme = FxEvent(type="meme", at="palavra", params={"lib_id": "filme"}, origin="user")
+    out = library_items(doc(credit, meme))
+    assert [i["title"] for i in out] == ["Crédito CC BY a pôr na descrição", "Meme de terceiros no vídeo"]
+    assert "Fulano" in out[0]["detail"] and "https://freesound.org/s/9/" in out[0]["detail"]
+
+
 def test_ids_never_shadow_procedurals_or_builtins(isolated_settings, tmp_path):
     src = write_wav(tmp_path / "impact.wav", _decaying_noise())
     item = sfx_library.import_file(src, kind="impact", license="own")
@@ -170,7 +277,7 @@ def test_resolve_prefers_library_id_then_procedural(isolated_settings, tmp_path)
     path = sfx_library.resolve(lib.id, store=store)
     y, rate = read_wav(path)
     assert rate == SR and audio.peak_momentary_lufs(y) == pytest.approx(audio.VOICE_LUFS, abs=0.6)
-    assert sfx_library.mix_key(lib.id) == sfx_library.content_key(lib) and sfx_library.mix_key("impact") is None
+    assert sfx_library.mix_key(lib.id) == sfx_library.prep_key(lib) and sfx_library.mix_key("impact") is None
     # tipo só da biblioteca (automático): o item
     sfx_library.import_file(write_wav(tmp_path / "palmas.wav", _decaying_noise(0.6, 9)), kind="palmas", license="cc0")
     assert sfx_library.lookup("palmas").id == "palmas"
@@ -180,11 +287,22 @@ def test_resolve_prefers_library_id_then_procedural(isolated_settings, tmp_path)
     assert np.array_equal(read_wav(unknown)[0], whoosh)
 
 
-def test_event_start_keeps_old_events_and_lands_hit_on_the_word(isolated_settings):
+def test_event_start_keeps_old_events_and_lands_hit_on_the_word(isolated_settings, tmp_path):
     assert sfx_library.event_start({"type": "whoosh", "start": 1.65, "scene_id": "s1"}) == 1.65
     assert sfx_library.event_start({"type": "riser_short", "at": 3.0, "scene": "s1"}) == pytest.approx(2.4)
     assert sfx_library.event_start({"type": "boom", "at": 0.1, "scene": "s1"}) == pytest.approx(0.1)
     assert sfx_library.event_start({"type": "riser", "at": 0.5, "scene": "s1"}) == 0.0
+    # formato real do timeline-fx (`edit_resolve.resolve_fx`): `start` já adiantado pelo SFX_LEAD do tipo (0,12 s
+    # para os tipos de evento) E `at`. Quem manda é o `at`: o ponto forte cai na palavra.
+    real = {"type": "riser_short", "start": 2.88, "scene_id": "s1", "at": 3.0, "scene": "s1"}
+    assert sfx_library.event_start(real) == pytest.approx(2.4)
+    assert sfx_library.event_start({**real, "type": "pop", "start": 2.88}) == pytest.approx(3.0)
+    lib = sfx_library.import_file(write_wav(tmp_path / "golpe.wav", np.concatenate(
+        [np.zeros(int(0.3 * SR), dtype=np.float32), _decaying_noise(0.4, 12)])), kind="golpe", license="own")
+    lib = sfx_library.update(lib.id, hit_s=0.3)
+    assert sfx_library.event_start({**real, "type": "impact", "start": 3.0, "lib_id": lib.id}) == pytest.approx(2.7)
+    # transição do timeline-fx com `at` (SFX_LEAD == hit_s): o mesmo início de antes
+    assert sfx_library.event_start({"type": "whoosh", "start": 2.65, "at": 3.0}) == pytest.approx(2.65)
 
 
 def test_pick_is_deterministic_and_avoids_recent(isolated_settings, tmp_path):
@@ -201,12 +319,38 @@ def test_pick_is_deterministic_and_avoids_recent(isolated_settings, tmp_path):
     assert sfx_library.pick("boom", 1).id == "boom"
 
 
-def test_scan_picks_up_loose_files_as_unknown(isolated_settings):
+def test_pick_prefers_recordings_over_procedural(isolated_settings, tmp_path):
+    """Real como padrão: com gravação automática do tipo, o procedural fica de reserva (todas as gravações usadas)."""
+    for n in range(2):
+        sfx_library.import_file(write_wav(tmp_path / f"b{n}.wav", _decaying_noise(0.5, 40 + n)), kind="boom",
+                                license="cc0", lib_id=f"boom-real-{n}")
+    picks = {sfx_library.pick("boom", seed).id for seed in range(20)}
+    assert picks == {"boom-real-0", "boom-real-1"}
+    assert sfx_library.pick("boom", 3, exclude=["boom-real-0", "boom-real-1"]).id == "boom"
+    assert sfx_library.pick("boom", 3, exclude=["boom-real-0", "boom-real-1", "boom"]).id.startswith("boom-real")
+    # a resolução por tipo (transições de projetos antigos) não muda: o procedural
+    assert sfx_library.lookup("boom").id == "boom"
+
+
+def test_scan_picks_up_loose_files_as_unknown(isolated_settings, monkeypatch):
     root = sfx_library.user_root()
     write_wav(root / "sub" / "tapa.wav", _decaying_noise())
-    found = sfx_library.scan()
+    (root / "quebrado.mp3").write_bytes(b"nao e audio")
+    assert sorted(p.name for p in sfx_library.loose_files()) == ["quebrado.mp3", "tapa.wav"]
+    result = sfx_library.scan()
+    found = result["new"]
     assert [i.id for i in found] == ["tapa"] and found[0].license == "desconhecida" and found[0].file == "sub/tapa.wav"
-    assert sfx_library.scan() == []
+    assert [f["file"] for f in result["failed"]] == ["quebrado.mp3"]
+    # o que falhou não é decodificado de novo enquanto o arquivo não muda
+    calls = []
+    monkeypatch.setattr(sfx_library, "decode", lambda path: calls.append(path) or _decaying_noise())
+    again = sfx_library.scan()
+    assert again["new"] == [] and [f["file"] for f in again["failed"]] == ["quebrado.mp3"] and calls == []
+    # o GET não importa nada (sem efeito colateral)
+    write_wav(root / "solto.wav", _decaying_noise(0.3, 8))
+    client = TestClient(create_app())
+    listed = client.get("/api/library/sfx").json()
+    assert "solto.wav" in listed["loose"] and sfx_library.get("solto") is None
 
 
 # --- importação do canais (pasta fixture; nunca a real) ---------------------------------------------------------------
@@ -239,18 +383,29 @@ def test_canais_import_from_fixture_folder(isolated_settings, tmp_path, monkeypa
     assert {r["id"] for r in dry.imported} == {"canais-scratch", "canais-click", "canais-ding", "canais-trombone"}
     assert sfx_library.user_items() == []
 
+    # sem a conferência da licença item a item, os rastreados do Mixkit entram como "desconhecida", com o link
+    # do arquivo no Mixkit para conferir
     report = canais_sfx.import_sfx()
     by_id = {r["id"]: r for r in report.imported}
-    assert by_id["canais-scratch"]["license"] == "mixkit-free" and by_id["canais-scratch"]["auto"]
+    assert by_id["canais-scratch"]["license"] == "desconhecida" and not by_id["canais-scratch"]["auto"]
     assert by_id["canais-click"]["license"] == "desconhecida" and not by_id["canais-click"]["auto"]
-    assert by_id["canais-ding"]["license"] == "mixkit-free" and not by_id["canais-ding"]["auto"]  # banido (apito)
-    assert by_id["canais-trombone"]["tonal"] and not by_id["canais-trombone"]["auto"]  # banido
     assert any(r["file"] == "static_orig.wav" for r in report.skipped)
     scratch = sfx_library.get("canais-scratch")
-    assert scratch.source_url.endswith("#704") and scratch.author == "Mixkit" and scratch.imported_from.startswith("canais")
+    assert scratch.source_url == "https://assets.mixkit.co/active_storage/sfx/704/704-preview.mp3"
+    assert scratch.author == "Mixkit" and scratch.imported_from.startswith("canais") and "Restricted" in scratch.note
     assert (sfx_library.user_root() / "canais-scratch.wav").is_file()
     assert any("canais-click" in w for w in report.warnings)
-    # 2ª vez: nada repetido; a pasta do canais não mudou (só leitura)
+    # conferida pelo usuário: mixkit-free (os banidos continuam fora do automático)
+    checked = canais_sfx.import_sfx(replace=True, license_checked=True)
+    by_id = {r["id"]: r for r in checked.imported}
+    assert by_id["canais-scratch"]["license"] == "mixkit-free" and by_id["canais-scratch"]["auto"]
+    assert by_id["canais-ding"]["license"] == "mixkit-free" and not by_id["canais-ding"]["auto"]  # banido (apito)
+    assert by_id["canais-trombone"]["tonal"] and not by_id["canais-trombone"]["auto"]  # banido
+    # refazer sem a conferência não desfaz a licença declarada
+    sfx_library.update("canais-click", license="own")
+    redo = {r["id"]: r for r in canais_sfx.import_sfx(replace=True).imported}
+    assert redo["canais-click"]["license"] == "own" and redo["canais-scratch"]["license"] == "mixkit-free"
+    # 2ª vez sem replace: nada repetido; a pasta do canais não mudou (só leitura)
     second = canais_sfx.import_sfx()
     assert second.imported == [] and len(second.skipped) == 5
     assert _snapshot(canais) == before
@@ -268,13 +423,74 @@ def test_canais_import_without_folder_only_warns(isolated_settings, tmp_path):
 # --- voz e Freesound --------------------------------------------------------------------------------------------------
 
 
-def test_voice_sfx_generated_once_with_own_license(isolated_settings):
-    items = sfx_library.ensure_voice_sfx("pm_alex")
-    assert [i.id for i in items] == ["voz-ue-pm_alex", "voz-pera-pm_alex", "voz-oxe-pm_alex", "voz-ha-pm_alex"]
+def _final_tts(provider_id: str = "fake_final"):
+    """Voz "final" falsa para os testes (a saída é a do mock, mas o provedor se declara comercial)."""
+    import dataclasses
+
+    from studio.providers.tts import MockTTS
+
+    class FakeFinal(MockTTS):
+        info = dataclasses.replace(MockTTS.info, id=provider_id, name="Voz final de teste", commercial_use=True)
+
+    return FakeFinal()
+
+
+def test_voice_sfx_uses_the_channel_final_voice_never_the_test_voice(isolated_settings):
+    from studio.providers import registry
+
+    # offline (ou sem voz final pronta): recusa, nada de seno de 180 Hz na biblioteca
+    with pytest.raises(sfx_library.SfxLibraryError, match="offline"):
+        sfx_library.ensure_voice_sfx(style_id="misterios-short")
+    target = sfx_library.VoiceTarget(provider="mock_tts", voice="pm_alex")
+    with pytest.raises(sfx_library.SfxLibraryError, match="voz de teste"):
+        sfx_library.ensure_voice_sfx(target=target, provider=registry.get("mock_tts"))
+    assert sfx_library.user_items() == []
+
+    target = sfx_library.VoiceTarget(provider="fake_final", voice="Charon", source="canal x")
+    tts = _final_tts()
+    items = sfx_library.ensure_voice_sfx(target=target, provider=tts)
+    assert [i.id for i in items] == ["voz-ue-fake_final-charon", "voz-pera-fake_final-charon",
+                                     "voz-oxe-fake_final-charon", "voz-ha-fake_final-charon"]
     assert all(i.license == "own" and i.kind == "voice" and i.auto(tonal_ok=False) for i in items)
+    assert all(i.imported_from == "voz:fake_final:Charon" for i in items)
     mtimes = [i.path().stat().st_mtime_ns for i in items]
-    again = sfx_library.ensure_voice_sfx("pm_alex")
+    again = sfx_library.ensure_voice_sfx(target=target, provider=tts)
     assert [i.path().stat().st_mtime_ns for i in again] == mtimes
+    # outra voz: outro item (o provedor e a voz estão no id)
+    other = sfx_library.ensure_voice_sfx(target=sfx_library.VoiceTarget(provider="fake_final", voice="Kore"),
+                                         provider=tts, words={"ue": "Ué?"})
+    assert other[0].id == "voz-ue-fake_final-kore"
+
+
+def test_voice_target_reads_the_channel_final_voice(isolated_settings, monkeypatch):
+    from studio.db import session_scope
+    from studio.models import Channel
+    from studio.providers import registry
+
+    monkeypatch.setattr(isolated_settings, "offline", False)
+    tts = _final_tts("gemini_tts")
+    monkeypatch.setitem(registry._PROVIDERS, "gemini_tts", tts)
+    with session_scope() as s:
+        s.add(Channel(id="canal1", name="Canal", voice_defaults={"final": {"provider": "gemini_tts", "voice": "Charon"}}))
+        s.add(Channel(id="canal2", name="Sem voz", default_style_id="misterios-short"))
+    target = sfx_library.voice_target("canal1")
+    assert target.provider == "gemini_tts" and target.voice == "Charon"
+    # sem voz no canal: a cadeia da voz final do estilo padrão dele (o 1º provedor comercial disponível)
+    assert sfx_library.voice_target("canal2").provider == "gemini_tts"
+    with pytest.raises(sfx_library.SfxLibraryError, match="canal"):
+        sfx_library.voice_target()
+    monkeypatch.setattr(tts, "availability", lambda: (False, "sem chave"))
+    with pytest.raises(sfx_library.SfxLibraryError, match="sem chave"):
+        sfx_library.voice_target("canal1")
+
+
+def test_old_mock_voice_items_stay_out_of_auto(isolated_settings, tmp_path):
+    """Interjeição gravada com a voz de teste antes da correção (o seno): fica fora do automático, com aviso."""
+    src = write_wav(tmp_path / "ue.wav", _sine(180, 0.5))
+    item = sfx_library.import_file(src, kind="voice", license="own", lib_id="voz-ue-pm_alex",
+                                   author="voz do canal (mock_tts)", imported_from="voz:pm_alex")
+    assert item.placeholder and not item.auto() and "voz de teste" in (item.warning() or "")
+    assert sfx_library.candidates("voice") == []
 
 
 class _Resp:
@@ -287,10 +503,11 @@ class _Resp:
 
 class _FakeFreesound:
     def __init__(self, license_url: str, audio: bytes) -> None:
-        self.license_url, self.audio, self.calls = license_url, audio, []
+        self.license_url, self.audio, self.calls, self.requests = license_url, audio, [], []
 
-    def get(self, url: str, params: dict | None = None) -> _Resp:
+    def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> _Resp:
         self.calls.append(url)
+        self.requests.append({"url": url, "params": params or {}, "headers": headers or {}})
         if "/apiv2/sounds/" in url:
             return _Resp(200, {"id": 42, "name": "Big Boom", "username": "autor", "license": self.license_url,
                                "url": "https://freesound.org/people/autor/sounds/42/",
@@ -319,11 +536,29 @@ def test_freesound_only_cc0(isolated_settings, monkeypatch):
                                     api_key="k")
     assert len(by.calls) == 1  # nada baixado
     cc0 = _FakeFreesound("http://creativecommons.org/publicdomain/zero/1.0/", audio_bytes)
-    item = sfx_library.fetch_freesound("42", kind="boom", tags=["meme"], client=cc0, api_key="k")
+    item = sfx_library.fetch_freesound("42", kind="boom", tags=["meme"], client=cc0, api_key="chave-secreta")
     assert item.id == "fs-42" and item.license == "cc0" and item.author == "autor" and item.auto()
     assert item.source_url.endswith("/sounds/42/")
+    # a chave vai no cabeçalho, nunca na URL (o httpx registra a URL no log); a prévia pública não a recebe
+    api_call, preview_call = cc0.requests
+    assert api_call["headers"] == {"Authorization": "Token chave-secreta"}
+    assert "chave-secreta" not in api_call["url"] and "chave-secreta" not in json.dumps(api_call["params"])
+    assert "token" not in api_call["params"] and preview_call["headers"] == {}
     with pytest.raises(sfx_library.SfxLibraryError):
         sfx_library.freesound_id("abc42")
+    # sem chave: a mensagem aponta para onde ela é configurada de verdade
+    monkeypatch.delenv("VS_FREESOUND_API_KEY", raising=False)
+    monkeypatch.delenv("FREESOUND_API_KEY", raising=False)
+    with pytest.raises(sfx_library.SfxLibraryError, match="VS_FREESOUND_API_KEY"):
+        sfx_library.fetch_freesound("42", kind="boom", client=cc0)
+    # a chave gravada pela rota de Configurações vale
+    client = TestClient(create_app())
+    assert not client.get("/api/library/sfx").json()["freesound"]["configured"]
+    put = client.put("/api/library/freesound-key", json={"api_key": "abcd1234efgh"})
+    assert put.status_code == 200 and put.json()["configured"] and "abcd1234efgh" not in put.text
+    sfx_library.fetch_freesound("42", kind="boom", client=cc0)
+    assert cc0.requests[-2]["headers"] == {"Authorization": "Token abcd1234efgh"}
+    assert client.delete("/api/library/freesound-key").json()["configured"] is False
 
 
 # --- rotas ----------------------------------------------------------------------------------------------------------
@@ -346,8 +581,14 @@ def test_sfx_routes(isolated_settings, tmp_path):
     assert bad.status_code == 422
     wrong = client.post("/api/library/sfx", data={"kind": "x"}, files={"file": ("t.txt", b"oi", "text/plain")})
     assert wrong.status_code == 422
+    # sem o tipo: 422 com a mensagem da biblioteca, em português
+    no_kind = client.post("/api/library/sfx", files={"file": ("t.wav", data, "audio/wav")})
+    assert no_kind.status_code == 422 and "tipo do efeito" in no_kind.json()["detail"]
     patched = client.patch("/api/library/sfx/tapa", json={"license": "own"}).json()
     assert patched["auto"] and patched["warning"] is None
+    # o ponto forte pode ser corrigido à mão (dentro do efeito)
+    assert client.patch("/api/library/sfx/tapa", json={"hit_s": 0.05}).json()["hit_s"] == 0.05
+    assert client.patch("/api/library/sfx/tapa", json={"hit_s": 5.0}).status_code == 422
     wav = client.get("/api/library/sfx/tapa/audio")
     assert wav.status_code == 200 and wav.content[:4] == b"RIFF"
     assert client.get("/api/library/sfx/pop/audio").status_code == 200
@@ -355,10 +596,26 @@ def test_sfx_routes(isolated_settings, tmp_path):
     assert client.delete("/api/library/sfx/tapa").status_code == 200
     assert client.delete("/api/library/sfx/tapa").status_code == 404
     assert client.post("/api/library/sfx/fetch-freesound", json={"sound": "42", "kind": "boom"}).status_code == 503
-    voice = client.post("/api/library/sfx/voice", json={"voice": "pm_alex"}).json()
-    assert len(voice["items"]) == 4
+    # offline não há voz final: 422 na hora, nenhum job e nada gravado
+    voice = client.post("/api/library/sfx/voice", json={"style_id": "misterios-short"})
+    assert voice.status_code == 422 and "offline" in voice.json()["detail"]
+    assert not any(i.kind == "voice" for i in sfx_library.user_items())
     dry = client.post("/api/library/sfx/import-canais", json={"dry_run": True}).json()
     assert "imported" in dry and "warnings" in dry
+    # o trabalho longo vira job (aqui só o pedido; o job roda inline abaixo)
+    from studio.workers.jobs import get_job, get_runner
+
+    runner = get_runner()
+    runner.submit = lambda kind, payload=None, project_id=None, **kw: {"kind": kind, "payload": payload}
+    try:
+        job = client.post("/api/library/sfx/import-canais", json={"license_checked": True}).json()
+        assert job["kind"] == "sfx_import_canais" and job["payload"]["license_checked"] is True
+        assert client.post("/api/library/sfx/scan").json()["kind"] == "sfx_scan"
+    finally:
+        del runner.submit
+    write_wav(sfx_library.user_root() / "solto.wav", _decaying_noise(0.3, 6))
+    done = get_job(runner.submit("sfx_scan", {}, run_inline=True)["id"])
+    assert done["status"] == "done" and done["result"]["new"] == ["solto"]
 
 
 # --- mixagem --------------------------------------------------------------------------------------------------------
@@ -382,6 +639,15 @@ def test_music_drop_silences_the_track(tmp_path):
         (1.0, 1.6)]
     assert audio.clamp_drops([{"at": 1.0, "dur": 0.1}, {"bad": 1}], total) == [(1.0, 1.3)]
     assert audio.clamp_drops(None, total) == []
+    # quedas sobrepostas: a junta também fica no teto, e a regra é idempotente (chave, mix e conferência iguais)
+    overlap = [{"at": 1.0, "dur": 0.6}, {"at": 1.5, "dur": 0.6}, {"at": 5.8, "dur": 0.6}]
+    spans = audio.clamp_drops(overlap, total)
+    assert spans == [(1.0, 1.6), (5.8, 6.0)]
+    assert audio.clamp_drops([{"at": a, "dur": b - a} for a, b in spans], total) == spans
+    # o stem da conferência (que prende de novo) e o mix com os trechos prontos calam o mesmo trecho
+    c, _ = audio.music_stem(voice, music, tmp_path / "c.wav", total=total, music_drops=overlap[:2])
+    c, _ = read_wav(c)
+    assert _rms_db(c[int(1.05 * SR):int(1.55 * SR)]) < -70 and _rms_db(c[int(1.75 * SR):int(2.05 * SR)]) > -45
 
 
 def test_builder_mixes_event_sfx_by_lib_id_gain_and_drop(isolated_settings, tmp_path):
@@ -436,3 +702,43 @@ def test_builder_mixes_event_sfx_by_lib_id_gain_and_drop(isolated_settings, tmp_
     gone = {**timeline, "sfx": [{"type": "boom", "at": at, "scene": scene, "lib_id": "sumiu"}]}
     assert [p["ref"] for p in builder.sfx_plan(gone)] == ["boom"]
     assert any("sumiu" in w for w in builder.warnings)
+
+    # evento no formato real do timeline-fx: `start` adiantado pelo SFX_LEAD (0,12 s) E `at`. O início vale
+    # `at - hit_s` do que toca (o item da biblioteca, o procedural de evento), não o `start`.
+    sfx_library.update(lib.id, hit_s=0.1)
+    real = [{"type": "impact", "start": round(at - 0.12, 3), "scene_id": scene, "at": at, "scene": scene,
+             "lib_id": lib.id},
+            {"type": "riser_short", "start": round(at + 0.88, 3), "scene_id": scene, "at": at + 1.0, "scene": scene},
+            {"type": "pop", "start": round(at + 1.88, 3), "scene_id": scene, "at": at + 2.0, "scene": scene}]
+    plan = {p["ref"]: p for p in builder.sfx_plan({**timeline, "sfx": real})}
+    assert plan["tapa"]["start"] == pytest.approx(at - 0.1)
+    assert plan["riser_short"]["start"] == pytest.approx(at + 1.0 - 0.6)
+    assert plan["pop"]["start"] == pytest.approx(at + 2.0)
+
+    # licença desconhecida escolhida pelo planejador (origin no evento): toca o tipo, com aviso
+    sfx_library.update(lib.id, license="desconhecida")
+    builder.warnings.clear()
+    picked = builder.sfx_plan({**timeline, "sfx": [{**real[0], "origin": "planner"}]})
+    assert [(p["ref"], p["explicit"]) for p in picked] == [("impact", False)]
+    assert any("escolhido pelo planner" in w for w in builder.warnings)
+    by_user = builder.sfx_plan({**timeline, "sfx": [{**real[0], "origin": "user"}]})
+    assert [(p["ref"], p["explicit"]) for p in by_user] == [("tapa", True)]
+    sfx_library.update(lib.id, license="own")
+
+    # o arquivo do item some da pasta (apagado à mão): o mix sai com o tipo e o aviso, sem falhar
+    lib.path().unlink()
+    builder.warnings.clear()
+    missing = {**timeline, "sfx": [{"type": "boom", "at": at, "scene": scene, "lib_id": lib.id}]}
+    assert [p["ref"] for p in builder.sfx_plan(missing)] == ["boom"]
+    assert any("sumiu da pasta" in w for w in builder.warnings)
+    assert builder.mix("pt-BR", missing, tts)
+    # o tipo resolvido por `candidates` também ignora o item sem arquivo
+    assert sfx_library.lookup("tapa") is None and sfx_library.candidates("tapa") == []
+    assert sfx_library.get(lib.id).missing and any("sumiu" in w for w in sfx_library.warnings())
+    assert sfx_library.scan()["orphans"] == [lib.id]
+
+    # manifesto do usuário corrompido: o projeto antigo mixa igual (mesma chave), sem ler o manifesto
+    (sfx_library.user_root() / sfx_library.MANIFEST).write_text("{ quebrado", encoding="utf-8")
+    assert builder.mix("pt-BR", timeline, tts) == entry["mix"]
+    assert sfx_library.lookup("whoosh").id == "whoosh"
+    assert any("ilegível" in w for w in sfx_library.warnings())
