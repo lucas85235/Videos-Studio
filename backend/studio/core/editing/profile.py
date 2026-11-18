@@ -275,6 +275,8 @@ class EditFingerprint(BaseModel):
     """Nível dominante nos 3 s iniciais (None: não medido)."""
     repeat_hits: int = Field(default=0, ge=0)
     """dHash, meme ou SFX repetidos no vídeo e nos últimos vídeos do canal."""
+    ai_window_share: float = Field(default=0.0, ge=0, le=1)
+    """A maior fração de IA num trecho de `sources.AI_WINDOW_S` (só da timeline, que sabe o nível de cada plano)."""
 
 
 def prov_mix_from_materials(mix: dict[str, float]) -> dict[str, float]:

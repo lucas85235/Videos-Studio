@@ -89,6 +89,8 @@ export type AiLookPart = {
 /** Métricas da tabela do ADR 0004 §6. */
 export type EditFlatMetrics = {
   ai_screen_share: number;
+  /** A maior fração de IA num trecho de 45 s (o teto vale também por trecho). */
+  ai_window_share?: number;
   hook_real: boolean;
   hook_prov: Prov | null;
   real_share: number;

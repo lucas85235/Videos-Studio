@@ -30,7 +30,14 @@ from studio.core.editing.profile import (
     PaceBlock,
 )
 from studio.core.project.document import CARD_KINDS, ProjectDoc
-from studio.core.sources import HOOK_DEFAULT, REAL_TIERS, prov_of_scene
+from studio.core.sources import (
+    AI_WINDOW_S,
+    HOOK_DEFAULT,
+    REAL_TIERS,
+    ai_window_cap,
+    prov_of_scene,
+    window_share,
+)
 from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
 
 # --- Constantes das medidas -------------------------------------------------------------------------------------------
@@ -92,7 +99,8 @@ SFX_BAND = {"long": (0.5, 1.25), "short": (2 / 3, 5 / 3)}
 """Faixa aceitável de SFX/min em múltiplos do alvo (longo 4 → 2 a 5; Short 6 → 4 a 10)."""
 INTENSITY_SCALE = {0: 0.5, 1: 0.75, 2: 1.0, 3: 1.4}
 INDEX_WEIGHTS: dict[str, int] = {
-    "ai_screen_share": 30,
+    "ai_screen_share": 20,
+    "ai_window_share": 10,
     "shot_cv": 15,
     "kb_share": 15,
     "events_per_min": 15,
@@ -102,6 +110,7 @@ INDEX_WEIGHTS: dict[str, int] = {
 }
 INDEX_LABELS: dict[str, str] = {
     "ai_screen_share": "Imagem de IA na tela",
+    "ai_window_share": f"Imagem de IA no pior trecho de {AI_WINDOW_S:.0f} s",
     "shot_cv": "Variação da duração dos planos",
     "kb_share": "Ken Burns, pan e zoom lento",
     "events_per_min": "Eventos por minuto",
@@ -343,6 +352,8 @@ class TimelineMeasure:
     repeats: list[tuple[float, str, str]]
     """Cada repetição: (instante, cena, o quê: "imagem", "meme", "som" ou "meme do canal")."""
     duration: float
+    ai_window_start: float = 0.0
+    """Onde começa o trecho de `AI_WINDOW_S` com mais IA (`fp.ai_window_share`)."""
 
     @property
     def ai_scene_ids(self) -> list[str]:
@@ -407,6 +418,7 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
     for s in shots:
         prov_time[s.prov] = prov_time.get(s.prov, 0.0) + s.dur
     total = sum(prov_time.values()) or 1.0
+    ai_window, ai_window_start = window_share([(s.start, s.end) for s in shots if s.prov == "ai"], duration)
     switches = sum(1 for a, b in zip(shots, shots[1:], strict=False) if a.prov != b.prov)
     run, run_s, best, best_s = 0, 0.0, 0, 0.0
     prev: str | None = None
@@ -505,8 +517,9 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
         ),
         hook_prov=hook_prov,
         repeat_hits=len(repeats),
+        ai_window_share=_share(ai_window),
     )
-    return TimelineMeasure(fp, shots, cuts, (still_start, still_len), repeats, duration)
+    return TimelineMeasure(fp, shots, cuts, (still_start, still_len), repeats, duration, _r(ai_window_start))
 
 
 def fingerprint_from_timeline(timeline: dict[str, Any], doc: ProjectDoc) -> EditFingerprint:
@@ -553,6 +566,7 @@ def flat_metrics(fp: EditFingerprint, targets: Targets | None = None) -> dict[st
     política do gancho dele)."""
     return {
         "ai_screen_share": _share(ai_screen_share(fp)),
+        "ai_window_share": _share(fp.ai_window_share),
         "hook_real": hook_ok(fp.hook_prov, targets),
         "hook_prov": fp.hook_prov,
         "real_share": _share(real_share(fp)),
@@ -580,6 +594,8 @@ class Targets(BaseModel):
 
     short: bool = False
     ai_max_share: float = 0.20
+    ai_window_max: float = 0.30
+    """Teto de IA em qualquer trecho de `AI_WINDOW_S` (`sources.ai_window_cap` do `ai_max_share`)."""
     official_max_share: float = 0.35
     hook_tiers: list[str] = []
     real_share_min: float = REAL_SHARE_MIN
@@ -665,6 +681,7 @@ def targets_for(style: StyleSpec, profile: EditProfile | None = None) -> Targets
     return Targets(
         short=short,
         ai_max_share=sources.ai_max_share,
+        ai_window_max=_r(ai_window_cap(sources.ai_max_share)),
         official_max_share=sources.official_max_share,
         hook_tiers=list(sources.hook) or list(HOOK_DEFAULT),
         shot_median_s=_r(median),
@@ -748,6 +765,9 @@ def ai_look_index(fp: EditFingerprint, style: StyleSpec, profile: EditProfile | 
     # (valor, piso, teto, unidade, penalidade)
     raw: dict[str, tuple[float, float | None, float | None, Unit, float]] = {
         "ai_screen_share": (ai, None, t.ai_max_share, "share", _over(ai, t.ai_max_share)),
+        # o mesmo teto em qualquer trecho de `AI_WINDOW_S` (a média esconde o bloco de IA)
+        "ai_window_share": (fp.ai_window_share, None, t.ai_window_max, "share",
+                            _over(fp.ai_window_share, t.ai_window_max)),
         "shot_cv": (fp.pace.cv, t.cv_min, None, "ratio", _under(fp.pace.cv, t.cv_min)),
         "kb_share": (fp.camera.kb_share, None, t.kb_max, "share", _over(fp.camera.kb_share, t.kb_max)),
         "events_per_min": (fp.pace.events_per_min, e_lo, e_hi, "per_min", _outside(fp.pace.events_per_min, e_lo, e_hi)),

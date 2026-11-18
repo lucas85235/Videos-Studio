@@ -489,6 +489,37 @@ def test_material_run_by_seconds_names_the_violating_run(longo):
     assert run[0]["scene_id"] == "scn_ia" and run[0]["at_s"] == 8.0
 
 
+def test_ai_block_is_caught_by_the_sliding_window_even_under_the_average(longo):
+    """QA do prj_gq4krrs11w: IA em 17% na média (abaixo dos 20%), mas o minuto 3 virou um slideshow de imagens geradas
+    (46% de IA num trecho de 45 s). O teto vale também por trecho (`sources.AI_WINDOW_S`)."""
+    from studio.core import sources
+
+    provs = ["official", "capture", "free", "stock", "own"]
+    scenes = [_scene(f"scn_{i:02d}", i * 6.0, 6.0, prov=provs[i % len(provs)]) for i in range(20)]
+    scenes += [_scene(f"scn_ia{i}", 120 + i * 6.0, 6.0, prov="ai") for i in range(5)]  # 30 s seguidos de IA
+    scenes += [_scene(f"scn_{i:02d}", 150 + (i - 20) * 6.0, 6.0, prov=provs[i % len(provs)]) for i in range(20, 45)]
+    m = metrics.measure_timeline(_timeline(scenes))
+    assert metrics.ai_screen_share(m.fp) == pytest.approx(0.10, abs=0.01)
+    assert m.fp.ai_window_share == pytest.approx(30 / 45, abs=0.01) and 105 <= m.ai_window_start <= 120
+    assert metrics.flat_metrics(m.fp)["ai_window_share"] == m.fp.ai_window_share
+    parts = {p.key: p for p in metrics.ai_look_index(m.fp, longo).parts}
+    assert parts["ai_screen_share"].penalty == 0
+    assert parts["ai_window_share"].penalty > 0 and parts["ai_window_share"].hi == sources.ai_window_cap(0.20) == 0.3
+    doc = ProjectDoc.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8"))["doc"])
+    ia = next(i for i in edit_items(_timeline(scenes), doc, longo) if i["code"] == "perfil.ia")
+    assert ia["level"] == "aviso" and "trecho de 1:" in ia["title"] and "por trecho de 45 s" in ia["title"]
+    assert ia["scene_id"] == "scn_ia0" and ia["at_s"] == 120.0
+    # IA espalhada (uma imagem de 6 s a cada 30 s: 20% na média) cabe no teto por trecho
+    spread = [_scene(f"scn_{i:02d}", i * 6.0, 6.0, prov="ai" if i % 5 == 2 else provs[i % len(provs)])
+              for i in range(50)]
+    fp = metrics.measure_timeline(_timeline(spread)).fp
+    assert fp.ai_window_share <= 0.3 + 1e-9
+    assert next(i for i in edit_items(_timeline(spread), doc, longo) if i["code"] == "perfil.ia")["level"] == "ok"
+    # vídeo mais curto que a janela: o trecho é o vídeo todo
+    assert sources.window_share([(0.0, 10.0)], 30.0) == (pytest.approx(1 / 3), 0.0)
+    assert sources.window_share([(0.0, 10.0), (90.0, 100.0)], 100.0)[0] == pytest.approx(10 / 45)
+
+
 def test_events_index_and_item_use_the_same_band(longo):
     fp = metrics.measure_timeline(real_first_timeline()).fp
     doc = ProjectDoc.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8"))["doc"])

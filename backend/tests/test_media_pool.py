@@ -837,7 +837,101 @@ def test_locked_scene_is_not_touched(isolated_settings, tmp_path):
     assert scene.visual.media is not None and scene.visual.media.asset is None
 
 
-# --- Pexels (vídeos) -------------------------------------------------------------------------------------------------
+# --- distribuição do material no tempo --------------------------------------------------------------------------------
+
+_TEN_SECONDS = ("O farol da ilha guiou navios por mais de um século inteiro e os moradores ainda contam histórias "
+                "sobre a última noite em que a lâmpada ficou acesa sozinha no alto da torre.")
+
+
+def _timed_project(n: int) -> ProjectDoc:
+    """`n` cenas de ~12 s cada (uma por segmento, com `span`), para a distribuição no tempo."""
+    doc = service.create_project(title="Farol", style_id=STYLE, topic="o farol da Ilha Rasa")
+    words = len(_TEN_SECONDS.split())
+    segments = [Segment(id=f"seg_{i}", text={"pt-BR": _TEN_SECONDS}) for i in range(n)]
+    scenes = [Scene(id=f"scn_{i}", segment_id=f"seg_{i}", span=words, visual=Visual(prompt=f"farol {i}", seed=i))
+              for i in range(n)]
+    doc = doc.model_copy(update={"segments": segments, "scenes": scenes})
+    service.commit(doc.id, doc, "cenas")
+    return service.get_doc(doc.id)
+
+
+def _own_photos(doc: ProjectDoc, names: dict[str, str]) -> dict[str, str]:
+    """Cópias das fotos-fixture no acervo do projeto: {nome do arquivo: foto de origem} → caminhos relativos."""
+    folder = get_settings().uploads_dir / doc.id / media_pool.OWN_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for name, source in names.items():
+        shutil.copyfile(ACERVO / source, folder / name)
+        out[name] = f"uploads/{doc.id}/{media_pool.OWN_DIR}/{name}"
+    return out
+
+
+def test_attach_spreads_the_same_item_over_time(isolated_settings, no_network):
+    """O mesmo item do acervo volta no máximo 2 vezes, a 60 s ou mais (QA do prj_gq4krrs11w: o PC de fans vermelhos
+    em 1:15, 2:12 e 6:00; a captura do gancho de novo em 4:54): o que volta cedo ou pela 3ª vez troca pela reserva."""
+    doc = _timed_project(17)
+    paths = _own_photos(doc, {"ilha.jpg": "ilha.jpg", "farol.jpg": "farol.jpg"})
+    pool = Pool(items=[
+        PoolItem(id="p1", tier="own", media="image", path=paths["ilha.jpg"], topic="Farol", source_id="acervo:a"),
+        PoolItem(id="p2", tier="own", media="image", path=paths["farol.jpg"], topic="Farol", source_id="acervo:b"),
+    ])
+    scenes = doc.ordered_scenes()
+    picked = (0, 2, 8, 16)  # o 1º uso, a volta ~25 s depois (cedo), o 2º uso ~90 s depois e o 3º uso
+    for k in picked:
+        scenes[k].visual.media = media_pool.pending_ref(pool.items[0])
+    warnings = media_pool.attach_chosen(doc, pool)
+    shown = {k: scenes[k].visual.media.pool_id for k in picked}  # type: ignore[union-attr]
+    assert shown == {0: "p1", 2: "p2", 8: "p1", 16: "p2"}, shown
+    assert any("2 cenas" in w and "trocaram de item do acervo" in w and "60 s" in w for w in warnings), warnings
+    # sem outro item que caiba, fica o escolhido (material real é melhor que IA), com aviso
+    doc2 = _timed_project(3)
+    lonely = Pool(items=[pool.items[0]])
+    first, _middle, last = doc2.ordered_scenes()
+    first.visual.media = media_pool.pending_ref(lonely.items[0])
+    last.visual.media = media_pool.pending_ref(lonely.items[0])
+    warnings = media_pool.attach_chosen(doc2, lonely)
+    assert first.visual.media is not None and last.visual.media is not None
+    assert first.visual.media.pool_id == last.visual.media.pool_id == "p1"
+    assert any(w.startswith("Cena 3 repete material do acervo cedo demais") for w in warnings), warnings
+
+
+def test_attach_sees_two_items_that_download_the_same_image(isolated_settings, no_network):
+    """Dois itens diferentes que baixam o mesmo arquivo (a capa da mesma matéria: o "VI" neon em 3:30, 3:39, 3:43 e
+    3:54) são a mesma imagem: o que vem a menos de 60 s troca, mesmo sem nada em comum antes do download."""
+    doc = _timed_project(6)
+    paths = _own_photos(doc, {"capa-1.jpg": "ilha.jpg", "capa-2.jpg": "ilha.jpg", "outra.jpg": "farol.jpg"})
+    pool = Pool(items=[
+        PoolItem(id="p1", tier="own", media="image", path=paths["capa-1.jpg"], topic="Farol", source_id="acervo:1"),
+        PoolItem(id="p2", tier="own", media="image", path=paths["capa-2.jpg"], topic="Farol", source_id="acervo:2"),
+        PoolItem(id="p3", tier="own", media="image", path=paths["outra.jpg"], topic="Farol", source_id="acervo:3"),
+    ])
+    scenes = doc.ordered_scenes()
+    scenes[0].visual.media = media_pool.pending_ref(pool.items[0])
+    scenes[2].visual.media = media_pool.pending_ref(pool.items[1])
+    media_pool.attach_chosen(doc, pool)
+    first, second = scenes[0].visual.media, scenes[2].visual.media
+    assert first is not None and second is not None
+    assert second.pool_id == "p3" and second.asset != first.asset
+
+
+def test_attach_keeps_the_photo_and_its_card_as_one_appearance(isolated_settings, no_network):
+    """A foto e o cartão logo depois dela, sobre a mesma imagem, são uma aparição só (nada troca); o cartão que
+    reaproveita a imagem (`reuse_of`) aparece junto com a dona."""
+    doc = _timed_project(5)
+    paths = _own_photos(doc, {"ilha.jpg": "ilha.jpg", "farol.jpg": "farol.jpg"})
+    pool = Pool(items=[
+        PoolItem(id="p1", tier="own", media="image", path=paths["ilha.jpg"], topic="Farol", source_id="acervo:a"),
+        PoolItem(id="p2", tier="own", media="image", path=paths["farol.jpg"], topic="Farol", source_id="acervo:b"),
+    ])
+    scenes = doc.ordered_scenes()
+    scenes[0].visual.media = media_pool.pending_ref(pool.items[0])
+    scenes[1].kind = "text"
+    scenes[1].visual = Visual(reuse_of=scenes[0].id)
+    assert media_pool.attach_chosen(doc, pool) == []
+    assert scenes[0].visual.media is not None and scenes[0].visual.media.pool_id == "p1"
+
+
+# --- Pexels (vídeos)-------------------------------------------------------------------------------------------------
 
 PEXELS_VIDEOS = {"videos": [{
     "id": 123, "width": 3840, "height": 2160, "duration": 12, "url": "https://www.pexels.com/video/farol-na-costa-123/",

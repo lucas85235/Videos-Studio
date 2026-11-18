@@ -20,7 +20,11 @@ Passos:
    afinidade (entidade em comum ou 2 etiquetas; cota de `switch` distribuída pelo vídeo, com janela própria no gancho,
    onde só entram os níveis de `sources.hook`; oficial até `sources.official_max_share` do tempo de tela) > o mesmo
    asset reenquadrado (jump cut 1,0 → 1,25 em outro ponto, no máximo 2 por asset, contando o `zoom_to` das cenas que
-   reaproveitam a imagem). Sem fonte, o plano não é cortado.
+   reaproveitam a imagem). Sem fonte, o plano não é cortado. O item do acervo segue a distribuição no tempo
+   (`sources.reuse_problem`, contando as cenas que já o mostram): no máximo 2 aparições, a 60 s ou mais uma da outra.
+   A mesma imagem que vem de cenas anteriores (a foto, o cartão sobre ela, a foto de novo) e passa do limite de mesma
+   imagem seguida (`storyboard_check.same_image_seconds`) troca para o acervo mesmo sem cota de `switch`: reenquadrar
+   não troca a imagem.
 5. **Câmera** por plano (static 35%, push 25%, drift 15%, punch seco 15%, pan 10% só em plano aberto), força ±40% e
    curva por semente; clipe sem câmera, captura parada; `slow_zoom_share` e `static_share_min` cumpridos no fim. O
    punch seco é o corte para um enquadramento mais fechado e parado (sem curva: plano parado não tem movimento).
@@ -70,7 +74,7 @@ from studio.core.project.document import (
 )
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.project.presenter import fold, trigger_index, word_key
-from studio.core.sources import prov_of_scene
+from studio.core.sources import item_tokens, media_tokens, prov_of_scene, reuse_problem
 from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
 from studio.core.text import _GOOD_CUT_BEFORE, _NO_CUT_AFTER
 from studio.core.text import words as split_words
@@ -605,6 +609,20 @@ class _Planner:
         self.total = max((b.end for b in self.beats), default=0.0)
         self.budget = _Budget(grammar, self.scale, self.total)
         self.official_cap = self.sources.official_max_share * self.total
+        from studio.workers.pipeline.storyboard_check import same_image_seconds  # import tardio: evita ciclo
+
+        self.same_image_s = same_image_seconds(style)
+        # Onde cada material real aparece (a mídia das cenas e os subplanos do acervo, os escolhidos aqui e os que o
+        # usuário fixou): a distribuição do acervo no tempo (`sources.reuse_problem`).
+        self.shown: list[tuple[frozenset[str], float, float]] = []
+        for beat in self.beats:
+            if beat.media is not None:
+                self.shown.append((media_tokens(beat.media), beat.start, beat.end))
+            if beat.keep_shots or not beat.editable:
+                for shot in beat.scene.shots:
+                    kept = self.pool.item(shot.pool_id) if shot.source == "pool" else None
+                    if kept is not None:
+                        self.shown.append((item_tokens(kept), self._time_of(beat, shot.at), beat.end))
 
     def _rng(self, beat: _Beat, *purpose: Any) -> random.Random:
         return random.Random(seed_from(self.doc.seed, beat.scene.id, "edit", *purpose))
@@ -959,6 +977,14 @@ class _Planner:
             probe = self._pool_shot(beat, shots, word, rng, avoid=avoid, dry=True)
             if probe is not None and probe.prov != avoid:
                 return self._pool_shot(beat, shots, word, rng, avoid=avoid)
+        since = self._same_image_since(beat, shots) if not beat.clip and shots[-1].source == "self" else word.start
+        if since < beat.start - 1e-6 and word.start - since > self.same_image_s + 1e-6:
+            # A mesma imagem vem de cenas anteriores (a foto, o cartão sobre ela, a foto de novo) e passou do limite
+            # seguido na tela; reenquadrar não troca a imagem: o acervo entra mesmo sem cota. Dentro de uma cena só,
+            # o reenquadramento e o punch do `max_still_s` dão conta.
+            forced = self._pool_shot(beat, shots, word, rng, avoid=avoid, force=True)
+            if forced is not None:
+                return forced
         found = (self._clip_next(beat, own, word, rng)
                  or self._pool_shot(beat, shots, word, rng, avoid=avoid)
                  or self._reframe(beat, own, word, rng))
@@ -966,6 +992,30 @@ class _Planner:
             # o trecho oficial do acervo acaba no limite: volta para a imagem da própria cena
             found = _Shot(t=word.start, word=word, prov=beat.prov, framing=own.framing)
         return found
+
+    def _same_image_since(self, beat: _Beat, shots: list[_Shot]) -> float:
+        """Desde quando a imagem do plano atual (da própria cena) está na tela sem troca: os planos seguidos da
+        própria imagem nesta cena e, se ela começou na imagem, as cenas anteriores seguidas que mostram a mesma
+        (`_Beat.asset`), até o último plano de outra fonte delas."""
+        k = len(shots) - 1
+        while k > 0 and shots[k - 1].source == "self":
+            k -= 1
+        if k > 0:
+            return shots[k].t
+        since = beat.start
+        for prev in reversed(self.beats[:beat.pos]):
+            if prev.asset != beat.asset or since - prev.end > 1.0:
+                break
+            mine = prev.shots or [_Shot(t=prev.start, word=None, prov=prev.prov)]
+            j = len(mine)
+            while j > 0 and mine[j - 1].source == "self":
+                j -= 1
+            if j == len(mine):
+                break  # a cena anterior terminou noutra fonte
+            since = mine[j].t
+            if j > 0:
+                break
+        return since
 
     def _clip_next(self, beat: _Beat, prev: _Shot, word: _W, rng: random.Random) -> _Shot | None:
         """O trecho seguinte do mesmo clipe (pula 0,4 a 1,5 s do material), dentro do `dur_s` do trecho. Sem a duração
@@ -986,13 +1036,25 @@ class _Planner:
             return False
         return not (item.tier == "official" and self.official_s >= self.official_cap)
 
+    def _spread_problem(self, item: PoolItem, beat: _Beat, word: _W) -> str | None:
+        """O item como subplano a partir de `word` fere a distribuição do acervo (`sources.reuse_problem`: no máximo
+        `ITEM_MAX_USES` aparições a `ITEM_REUSE_GAP_S` ou mais uma da outra, contando as cenas que já o mostram)? A
+        mesma imagem da cena (outro item que baixou no mesmo arquivo) não é troca nenhuma."""
+        tokens = item_tokens(item)
+        if beat.media is not None and media_tokens(beat.media) & tokens:
+            return "same"
+        others = [(a, b) for shown, a, b in self.shown if shown & tokens]
+        return reuse_problem(others, [(word.start, beat.end)])
+
     def _pool_shot(self, beat: _Beat, shots: list[_Shot], word: _W, rng: random.Random, avoid: str | None,
-                   *, dry: bool = False) -> _Shot | None:
-        """Outro item do acervo com afinidade (cota de `switch`, distribuída pelo vídeo); `dry` só consulta.
+                   *, dry: bool = False, force: bool = False) -> _Shot | None:
+        """Outro item do acervo com afinidade (cota de `switch`, distribuída pelo vídeo); `dry` só consulta; `force`
+        passa por cima da cota (a mesma imagem está na tela há tempo demais: é trava, como o punch do `max_still`).
 
         Afinidade: entidade do item na cena ou na fala, ou pelo menos 2 etiquetas em comum. As etiquetas fortes
-        (entidades da cena, etiquetas do item que ela mostra) pesam o dobro das palavras da fala."""
-        if not self.budget.has_spread("switch", word.start) or not (beat.tags or beat.spoken):
+        (entidades da cena, etiquetas do item que ela mostra) pesam o dobro das palavras da fala. O item que voltaria
+        cedo demais ou pela 3ª vez fica de fora (`_spread_problem`)."""
+        if not (force or self.budget.has_spread("switch", word.start)) or not (beat.tags or beat.spoken):
             return None
         recent_ids = {s.pool_id for b in self.beats[max(0, beat.pos - 2):beat.pos] for s in b.shots if s.pool_id}
         recent_ids |= {s.pool_id for s in shots if s.pool_id}
@@ -1008,7 +1070,7 @@ class _Planner:
                 continue
             if item.id in recent_ids or self.pool_uses[item.id] >= 2:
                 continue
-            if not self._pool_ok(item, beat, word):
+            if not self._pool_ok(item, beat, word) or self._spread_problem(item, beat, word) is not None:
                 continue
             keys = _tagset(item.tags + item.entities)
             entity_hit = bool(_tagset(item.entities) & context) or bool(_tagset(beat.scene.visual.entities) & keys)
@@ -1028,6 +1090,7 @@ class _Planner:
             return _Shot(t=word.start, word=word, prov=chosen.tier, source="pool", pool_id=chosen.id)
         self.budget.take("switch", word.start)
         self.pool_uses[chosen.id] += 1
+        self.shown.append((item_tokens(chosen), word.start, beat.end))
         clip_in = None
         if chosen.media == "clip":  # o segundo uso do mesmo clipe entra noutro ponto
             clip_in = chosen.start_s + 2.0 * (self.pool_uses[chosen.id] - 1)

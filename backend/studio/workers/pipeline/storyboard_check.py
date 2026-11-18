@@ -1393,7 +1393,8 @@ SAME_TIER_RUN_S = 20.0
 
 
 def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool: Pool | None) -> list[Issue]:
-    """Achados do material real (ADR 0004), todos avisos: IA acima do teto em tempo de tela (`ai_over_budget`),
+    """Achados do material real (ADR 0004), todos avisos: IA acima do teto em tempo de tela (`ai_over_budget`; com a
+    média no teto, num trecho de `tiers.AI_WINDOW_S`, `ai_window_over`),
     gancho sem material real (`hook_not_real`), o mesmo nível de material mais de 20 s seguidos (`same_tier_run`),
     material oficial acima do teto (`official_over_share`) e imagem de IA sem motivo (`faltou_real`: por cena com
     acervo; sem acervo, um aviso só)."""
@@ -1420,6 +1421,8 @@ def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool
         issues.append(Issue("ai_over_budget", AVISO, f"Imagem de IA em {round(ai_share * 100)}% do tempo de tela; o "
                                                      f"teto é {round(policy.ai_max_share * 100)}%.",
                             extra={"share": round(ai_share, 3)}))
+    else:
+        issues += _ai_window_issue(timed, in_beats, policy.ai_max_share)
     official = sum(seconds for _s, prov, seconds in timed if prov == "official") / total
     if official > policy.official_max_share + 0.005:
         issues.append(Issue("official_over_share", AVISO, f"Material oficial em {round(official * 100)}% do tempo; o "
@@ -1446,6 +1449,36 @@ def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool
                                                       'anexe mídia real na cena ou escreva o motivo em "Por que IA".',
                                 beat.key, scene.id))
     return issues
+
+
+def _clock(seconds: float) -> str:
+    whole = int(round(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+def _ai_window_issue(timed: list[tuple[Scene, str, float]], in_beats: dict[str, Beat],
+                     ai_max_share: float) -> list[Issue]:
+    """`ai_window_over`: a média do vídeo cabe no teto de IA, mas um trecho de `tiers.AI_WINDOW_S` passa do teto por
+    trecho (`tiers.ai_window_cap`: a IA concentrada num bloco, o slideshow de imagens geradas). Aponta a primeira cena
+    de IA do trecho."""
+    cap = tiers.ai_window_cap(ai_max_share)
+    spans: list[tuple[float, float, Scene]] = []
+    t = 0.0
+    for scene, _prov, seconds in timed:
+        spans.append((t, t + seconds, scene))
+        t += seconds
+    ai = [(a, b) for (a, b, _s), (_x, prov, _y) in zip(spans, timed, strict=True) if prov == "ai"]
+    share, start = tiers.window_share(ai, t)
+    if share <= cap + 1e-6:
+        return []
+    end = start + min(tiers.AI_WINDOW_S, t)
+    at = next((scene for (a, b, scene), (_x, prov, _y) in zip(spans, timed, strict=True)
+               if prov == "ai" and b > start and a < end), timed[0][0])
+    beat = in_beats.get(at.id)
+    return [Issue("ai_window_over", AVISO, f"Imagem de IA em {round(share * 100)}% do trecho de {_clock(start)} a "
+                                           f"{_clock(end)}; o teto é {round(cap * 100)}% em qualquer trecho de "
+                                           f"{tiers.AI_WINDOW_S:.0f} s: espalhe a IA ou troque por material real.",
+                  beat.key if beat else None, at.id, {"share": round(share, 3), "start_s": round(start, 1)})]
 
 
 PROV_LABELS: dict[str, str] = {

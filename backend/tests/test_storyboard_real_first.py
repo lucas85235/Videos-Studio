@@ -705,3 +705,67 @@ def test_storyboard_job_passes_the_gathered_pool_and_reviews_after_the_attach(mo
     assert review["counts"]["media_pending"] == len(cited) and review["counts"]["real_pct"] == 0
     pending = [i for i in review["issues"] if i["code"] == "midia_pendente"]
     assert {i["scene_id"] for i in pending} == {s.id for s in cited}
+
+
+# --- IA concentrada num trecho (janela deslizante) ----------------------------------------------------------------
+
+LONG_STYLE = get_style("curiosidades-longo")
+
+
+def _window_doc(n: int = 30) -> ProjectDoc:
+    """`n` frases de ~6 s sobre o trailer: o vídeo tem ~3 min, e 4 batidas seguidas de IA ficam abaixo dos 20% na
+    média, mas viram um bloco de IA (o Golpe 2 do prj_gq4krrs11w: 46% de IA num trecho de 45 s)."""
+    text = "Frase {i}: o trailer mostrou a praia de Vice City e os prédios da cidade vista de cima."
+    roles = ["hook", *(["body"] * (n - 1))]
+    segments = [Segment(id=f"seg_{i}", role=roles[i], text={"pt-BR": text.format(i=i)}) for i in range(n)]
+    return ProjectDoc(id=PID, title="GTA 6", topic="trailer de GTA 6", style_id="curiosidades-longo", seed=7,
+                      segments=segments)
+
+
+def _ai_window_of(doc: ProjectDoc, style) -> float:
+    spans, t = [], 0.0
+    for _scene, prov, seconds in storyboard_check.screen_seconds(doc, style):
+        if prov == "ai":
+            spans.append((t, t + seconds))
+        t += seconds
+    return tiers.window_share(spans, t)[0]
+
+
+def _pool_extra(beats: list[Beat]) -> dict[int, dict[str, Any]]:
+    return {i: {"source": "pool", "pool_id": ["p1", "p2", "p4", "p5"][i % 4]} for i in range(len(beats))}
+
+
+def test_ai_block_over_the_window_cap_turns_real_even_under_the_average(monkeypatch):
+    doc = _window_doc()
+    beats = authoring.plan_beats(doc, LONG_STYLE)
+    assert len(beats) >= 25
+    block = range(len(beats) // 2, len(beats) // 2 + 4)
+    extra = _pool_extra(beats)
+    for i in block:
+        extra[i] = {"source": "new", "ai_reason": "hipótese sobre o mapa", "prompt": f"A paper map, part {i}."}
+    total = sum(b.seconds for b in beats)
+    assert sum(beats[i].seconds for i in block) / total <= sources_for(LONG_STYLE).ai_max_share  # a média cabe
+    new_doc, review, beats, _ = run(monkeypatch, doc, extra, pool=make_pool(), style=LONG_STYLE)
+    cap = tiers.ai_window_cap(sources_for(LONG_STYLE).ai_max_share)
+    assert _ai_window_of(new_doc, LONG_STYLE) <= cap + 1e-9
+    fixed = [i["message"] for i in review["issues"] if i["code"] == "teto_de_ia"]
+    assert fixed and all("num trecho de 45 s" in m for m in fixed), fixed
+    assert "ai_window_over" not in codes(review)
+    # o teto do trecho não zera a IA com motivo: parte do bloco fica
+    assert any(storyboard_check.has_own_image(by_key(new_doc, beats)[i]) for i in block)
+
+
+def test_review_flags_the_ai_block_the_storyboard_left(monkeypatch):
+    """A revisão acusa o bloco de IA que ficou (cena travada, edição à mão): `ai_window_over`, na 1ª cena do trecho."""
+    doc = _window_doc()
+    beats = authoring.plan_beats(doc, LONG_STYLE)
+    new_doc, _review, beats, _ = run(monkeypatch, doc, _pool_extra(beats), pool=make_pool(), style=LONG_STYLE)
+    scenes = by_key(new_doc, beats)
+    block = list(range(len(beats) // 2, len(beats) // 2 + 4))
+    for i in block:  # o usuário pôs imagem de IA em 4 cenas seguidas
+        scenes[i].visual = Visual(prompt=f"A paper map, part {i}.", ai_reason="hipótese sobre o mapa")
+    issues = storyboard_check.check(new_doc, LONG_STYLE, beats, pool=make_pool())
+    found = [i for i in issues if i.code == "ai_window_over"]
+    assert len(found) == 1 and found[0].severity == storyboard_check.AVISO
+    assert found[0].scene_id == scenes[block[0]].id and "trecho de" in found[0].message
+    assert not [i for i in issues if i.code == "ai_over_budget"]  # a média está no teto

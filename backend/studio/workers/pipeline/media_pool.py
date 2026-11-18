@@ -23,7 +23,10 @@ que roda sozinho quando o usuário dá links ou envia arquivos) faz tudo, com pr
 `attach_chosen(doc, pool)` anexa sozinho o item que a cena cita em `visual.media.pool_id`, seja a `MediaRef`
 pendente (`pending_ref`) ou uma que aponte para fora da pasta do projeto (`needs_attach`): o trecho vira proxy mudo
 do plano, a imagem é normalizada e copiada. Item que não baixa cai na reserva (`fallbacks`); sem reserva, a cena
-volta à imagem de IA, repete a mídia real vizinha ou fica sem imagem, e o aviso diz qual. O achado `faltou_real` é
+volta à imagem de IA, repete a mídia real vizinha ou fica sem imagem, e o aviso diz qual. O anexo também distribui o
+material no tempo (`sources.reuse_problem`): o mesmo item (ou o mesmo arquivo baixado) aparece no máximo
+`ITEM_MAX_USES` vezes, a `ITEM_REUSE_GAP_S` ou mais uma da outra, e não fica mais que o limite de mesma imagem
+seguido; o que passa disso troca por outro item real da reserva e, sem nenhum, fica com aviso. O achado `faltou_real` é
 da conferência do storyboard (`missing_real` fica de helper). `prompt_block(pool)` dá as linhas do acervo para o
 pedido do storyboard.
 """
@@ -44,7 +47,16 @@ from PIL import Image
 from studio.config import get_settings
 from studio.core.project.document import MediaRef, ProjectDoc, Scene
 from studio.core.project.pool import POOL_ID_RE, Pool, PoolItem, load_pool
-from studio.core.sources import FALLBACK, prov_of_scene
+from studio.core.sources import (
+    FALLBACK,
+    ITEM_MAX_USES,
+    ITEM_REUSE_GAP_S,
+    REAL_TIERS,
+    item_tokens,
+    media_tokens,
+    prov_of_scene,
+    reuse_problem,
+)
 from studio.core.styles.schema import StyleSpec
 from studio.workers.jobs import JobContext, job
 
@@ -1198,12 +1210,92 @@ def _has_real(scene: Scene, project_id: str) -> bool:
     return media is not None and bool(media.asset or media.video) and not needs_attach(media, project_id)
 
 
+def _scene_list(labels: list[str]) -> str:
+    """"Cena 3", "2 cenas (Cena 3, Cena 9)" (até 8 nomes)."""
+    if len(labels) == 1:
+        return labels[0]
+    shown = ", ".join(labels[:8]) + ("…" if len(labels) > 8 else "")
+    return f"{len(labels)} cenas ({shown})"
+
+
+class _Spread:
+    """A distribuição do material no tempo durante o anexo: onde cada cena aparece (tempo estimado pela fala, como
+    na revisão do storyboard) e o que ela mostra AGORA no documento (a mídia já anexada ou a pendente). A cena que
+    reaproveita a imagem de outra (`reuse_of`, o fundo do cartão) aparece junto com a dona."""
+
+    def __init__(self, doc: ProjectDoc, style: StyleSpec) -> None:
+        from studio.workers.pipeline import storyboard_check
+
+        self.doc = doc
+        self.spans: dict[str, tuple[float, float]] = {}
+        t = 0.0
+        for scene, _prov, seconds in storyboard_check.screen_seconds(doc, style):
+            self.spans[scene.id] = (t, t + seconds)
+            t += seconds
+        self.total = t
+        self.max_run_s = storyboard_check.same_image_seconds(style)
+
+    def around(self, scene: Scene) -> _Around:
+        """O que o resto do vídeo mostra em volta de `scene` agora (uma vez por cena: o documento só muda depois)."""
+        mine: list[tuple[float, float]] = []
+        others: list[tuple[frozenset[str], tuple[float, float]]] = []
+        if self.total <= 0:
+            return _Around(mine, others, self.max_run_s)
+        for other in self.doc.scenes:
+            span = self.spans.get(other.id)
+            if span is None or span[1] <= span[0]:
+                continue
+            if other.id == scene.id:
+                mine.append(span)
+                continue
+            root = self.doc.reuse_root(other) if other.visual.media is None else other
+            if root is not None and root.id == scene.id:
+                mine.append(span)  # o cartão sobre a imagem desta cena mostra o que ela mostrar
+            elif root is not None and needs_attach(root.visual.media, self.doc.id):
+                continue  # ainda vai ser anexada (vem depois na ordem): a primeira aparição fica, a seguinte se ajusta
+            elif tokens := media_tokens(self.doc.shown_media(other)):
+                others.append((tokens, span))
+        return _Around(mine, others, self.max_run_s)
+
+
+@dataclass
+class _Around:
+    mine: list[tuple[float, float]]
+    """Onde a cena aparece: ela e as cenas que reaproveitam a imagem dela."""
+    others: list[tuple[frozenset[str], tuple[float, float]]]
+    """O que as outras cenas já mostram, e onde."""
+    max_run_s: float
+
+    def problem(self, tokens: frozenset[str]) -> str | None:
+        """Por que a cena mostrar o material `tokens` fere a distribuição (`sources.reuse_problem`); None: cabe."""
+        if not tokens or not self.mine:
+            return None
+        spans = [span for shown, span in self.others if shown & tokens]
+        return reuse_problem(spans, self.mine, max_run_s=self.max_run_s)
+
+
+def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around) -> list[PoolItem]:
+    """A reserva do item que fere a distribuição: os da `fallbacks` que são material real (nem meme), que cabem onde a
+    cena está e, se o item não é oficial, que também não são (o teto de material oficial já foi feito no storyboard).
+    O que já entrou noutra cena (neste anexo ou citado por uma cena que ainda vai ser anexada) vale se couber (a
+    distribuição é que decide), depois dos inéditos: pegar o item de uma cena adiante empurra a troca para ela."""
+    fits = [c for c in fallbacks(pool, item, set())
+            if c.tier in REAL_TIERS and c.media != "meme" and (c.tier != "official" or item.tier == "official")
+            and around.problem(item_tokens(c)) is None]
+    return sorted(fits, key=lambda c: c.id in taken)
+
+
 def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]:
     """Anexa (em `doc`, no lugar) a mídia do acervo nas cenas que citam `pool_id` e ainda não estão prontas no
     projeto (`needs_attach`). Item que não baixa cai na reserva (`fallbacks`, até `MAX_FALLBACK_TRIES`; no máximo
     `attach_download_budget` downloads por anexo). Sem reserva, a cena volta à imagem de IA quando tem prompt; sem
-    prompt, repete a mídia real da cena vizinha, ou fica sem imagem (fundo do estilo). Devolve os avisos, dizendo o
-    que de fato aconteceu."""
+    prompt, repete a mídia real da cena vizinha, ou fica sem imagem (fundo do estilo).
+
+    Distribuição (`_Spread`): o item que voltaria cedo demais, pela 3ª vez ou por tempo demais seguido na tela (o que
+    se sabe antes de baixar e, depois, pelo arquivo baixado: dois itens da mesma matéria podem baixar a mesma imagem
+    de capa) troca por um item real da reserva que caiba; sem nenhum, fica o escolhido, com aviso. A cena travada e a
+    mídia que o usuário escolheu não passam por aqui: contam como aparição e nunca trocam. Devolve os avisos, dizendo
+    o que de fato aconteceu."""
     from studio.core.styles.library import get_style
 
     warnings: list[str] = []
@@ -1211,6 +1303,10 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         style: StyleSpec | None = get_style(doc.style_id, doc.style_overrides)
     except Exception:  # noqa: BLE001 - sem estilo: só o trecho de vídeo fica de fora
         style = None
+    spread = _Spread(doc, style) if style is not None else None
+    cited = {s.visual.media.pool_id for s in doc.scenes if s.visual.media is not None and s.visual.media.pool_id}
+    swapped: list[str] = []
+    kept: list[str] = []
     used: set[str] = set()
     downloads = 0
     budget = attach_download_budget(sum(1 for s in doc.scenes if not s.locked and needs_attach(s.visual.media, doc.id)))
@@ -1229,7 +1325,21 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         chosen: MediaRef | None = None
         source: PoolItem | None = None
         reason = refused.get(item.id, "não baixou")
-        for candidate in [item, *fallbacks(pool, item, used)[:MAX_FALLBACK_TRIES]]:
+        # Distribuição: o que já se sabe antes de baixar (o item, o endereço) decide; o item que fere vai por último,
+        # depois da reserva que cabe. Sem problema, a ordem de sempre (o item e a reserva de download).
+        around = spread.around(scene) if spread is not None else None
+        pre = around.problem(item_tokens(item)) if around is not None else None
+        if pre is None:
+            order = [item, *fallbacks(pool, item, used)[:MAX_FALLBACK_TRIES]]
+        else:
+            assert around is not None
+            order = [*_spread_reserve(pool, item, used | cited, around)[:MAX_FALLBACK_TRIES], item]
+        spread_why = pre
+        held: MediaRef | None = None  # o item baixado que só fere a distribuição pelo arquivo: fica sem reserva
+        k = 0
+        while k < len(order):
+            candidate = order[k]
+            k += 1
             if candidate.id in refused:
                 continue  # tela vazia já vista em outra cena: nem baixa de novo
             remote = _needs_network(candidate)
@@ -1239,14 +1349,28 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             try:
                 got = materialize(candidate, doc, style, http=http, base=media)
                 refuse_empty_screen(candidate, got)
-                chosen, source = got, candidate
-                break
             except Exception as exc:  # noqa: BLE001 - tenta a reserva
                 log.warning("item %s do acervo não anexou: %s", candidate.id, exc)
                 if isinstance(exc, EmptyScreenError):
                     refused[candidate.id] = str(exc)
                     if candidate is item:
                         reason = str(exc)
+                continue
+            late = around.problem(media_tokens(got)) if around is not None else None
+            if late is not None and candidate is item and pre is None:
+                # O arquivo baixado já está noutra cena (dois itens da mesma matéria baixam a mesma capa): no lugar
+                # da reserva de download, a reserva que cabe; o item só se ela não vier.
+                assert around is not None
+                held, spread_why = got, late
+                order = [*order[:k], *(c for c in _spread_reserve(pool, item, used | cited, around)
+                                       [:MAX_FALLBACK_TRIES] if c is not item)]
+                continue
+            if late is not None and spread_why is not None and candidate is not item:
+                continue  # a reserva baixou numa imagem que também já está perto
+            chosen, source = got, candidate
+            break
+        if chosen is None and held is not None:
+            chosen, source = held, item
         if chosen is None or source is None:
             scene.visual.media = None
             tail = "e a reserva também não" if reason == "não baixou" else "e a reserva não anexou"
@@ -1254,9 +1378,20 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             continue
         scene.visual.media = chosen
         used.add(source.id)
-        if source.id != item.id:
+        if spread_why is not None and item.id not in refused:
+            (swapped if source.id != item.id else kept).append(_label(doc, scene))
+        elif source.id != item.id:
             warnings.append(f"{_label(doc, scene)}: o item {item.id} {reason}; entrou {source.id} ({source.tier}, "
                             f"{source.topic or 'sem tópico'}).")
+    rule = (f"o mesmo material aparece no máximo {ITEM_MAX_USES} vezes, a {ITEM_REUSE_GAP_S:.0f} s ou mais uma da "
+            "outra")
+    if swapped:
+        verb = "trocou" if len(swapped) == 1 else "trocaram"
+        warnings.append(f"{_scene_list(swapped)} {verb} de item do acervo ({rule}).")
+    if kept:
+        verb = "repete" if len(kept) == 1 else "repetem"
+        warnings.append(f"{_scene_list(kept)} {verb} material do acervo cedo demais ({rule}) e o acervo não tem outro "
+                        "item que caiba ali: troque na cena ou junte mais material.")
     ordered = doc.ordered_scenes()
     for scene, why in failed:
         label = _label(doc, scene)

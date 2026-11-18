@@ -311,6 +311,11 @@ def _n(value: float) -> str:
     return f"{value:.1f}".replace(".", ",")
 
 
+def _clock(seconds: float) -> str:
+    whole = int(round(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -501,10 +506,22 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
     ai = metrics.ai_screen_share(fp)
     summary = f"Índice \"cara de IA\": {index.score} de 100 ({index.band})."
     title = f"Imagem de IA em {_pct(ai)} da tela (teto {_pct(t.ai_max_share)})"
+    window = fp.ai_window_share
     if ai > t.ai_max_share + 1e-9:
         at, sid = longest_run("ai")
         out.append(item("perfil.ia", "aviso", title,
                         f"{summary} Troque IA por material real nas cenas marcadas (Acervo) ou reedite.", at, sid))
+    elif window > t.ai_window_max + 1e-9:
+        # A média cabe, mas a IA se concentra num trecho (o bloco de imagens geradas que vira slideshow).
+        start = measure.ai_window_start
+        end = start + min(metrics.AI_WINDOW_S, measure.duration)
+        first = next((s for s in measure.shots if s.prov == "ai" and s.end > start and s.start < end), None)
+        out.append(item("perfil.ia", "aviso",
+                        f"Imagem de IA em {_pct(window)} do trecho de {_clock(start)} a {_clock(end)} "
+                        f"(teto {_pct(t.ai_window_max)} por trecho de {metrics.AI_WINDOW_S:.0f} s)",
+                        f"{summary} Na média são {_pct(ai)} (teto {_pct(t.ai_max_share)}), mas a IA se concentra "
+                        "nesse trecho: espalhe a IA ou troque por material real nas cenas dele.",
+                        first.start if first else start, first.scene_id if first else None))
     else:
         out.append(item("perfil.ia", "ok", title, summary))
 

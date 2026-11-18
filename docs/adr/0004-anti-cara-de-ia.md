@@ -964,6 +964,7 @@ Todas saem de `fingerprint_from_timeline`. As do render saem do mesmo extrator d
 | Métrica | Definição | Alvo longo / Short |
 |---|---|---|
 | `ai_screen_share` | tempo de tela com `prov=="ai"` ÷ duração | ≤ `ai_max_share` (0,20 / 0,30) |
+| `ai_window_share` | a maior fração de IA num trecho de `sources.AI_WINDOW_S` (45 s) | ≤ `sources.ai_window_cap` (1,5 × `ai_max_share`: 0,30 / 0,45) |
 | `hook_real` | os 3 s iniciais não são IA, havendo acervo | verdadeiro |
 | `real_share` | tempo `own+official+capture+free+stock` | ≥ 0,5 |
 | `shot_median`, `p10`, `p90`, `shot_cv` | pelos subplanos | perfil, ou 3–5 s / 1,2–2,5 s; CV ≥ 0,45 |
@@ -980,7 +981,8 @@ Todas saem de `fingerprint_from_timeline`. As do render saem do mesmo extrator d
 
 | Componente | Peso |
 |---|---|
-| `ai_screen_share` | 30 |
+| `ai_screen_share` | 20 |
+| `ai_window_share` | 10 |
 | `shot_cv` | 15 |
 | `kb_share` | 15 |
 | `events_per_min` | 15 |
@@ -989,6 +991,23 @@ Todas saem de `fingerprint_from_timeline`. As do render saem do mesmo extrator d
 | `repeat_hits` | 5 |
 
 Cada componente vale de 0 a 1 conforme a distância até o alvo. Faixas: verde até 30, amarelo de 31 a 55, vermelho acima disso.
+
+**Distribuição do material no tempo (revisão pós-QA do prj_gq4krrs11w).** A média escondia o bloco: IA em 17% no
+vídeo e 46% num trecho de 45 s (o Golpe 2 virou um slideshow), e poucos itens do acervo voltavam em seções sem
+relação. Por isso:
+- o teto de IA vale também por trecho (`sources.AI_WINDOW_S` = 45 s, até `ai_window_cap` = 1,5 × `ai_max_share`; a
+  folga é uma batida: com o teto igual ao da média, duas imagens de IA de 5 s nunca caberiam em 45 s). O storyboard
+  corrige (`authoring._enforce_ai_time`, só nas batidas do trecho), a revisão avisa (`ai_window_over`), o índice tem o
+  componente `ai_window_share` (os 30 pontos de IA viraram 20 da média + 10 do trecho) e a conferência acusa em
+  `perfil.ia` com o trecho e a primeira cena de IA dele;
+- cada item do acervo aparece no máximo `ITEM_MAX_USES` = 2 vezes, a `ITEM_REUSE_GAP_S` = 60 s ou mais uma da outra
+  (cenas seguidas com a mesma imagem, como a foto e o cartão sobre ela, são uma aparição). A identidade é o item, o
+  arquivo baixado e o endereço da imagem (`sources.media_tokens`): dois itens da mesma matéria que baixam a mesma capa
+  são a mesma imagem. O anexo (`media_pool.attach_chosen`) troca o que passa disso por outro item real da reserva (sem
+  nenhum, fica com aviso) e não deixa a imagem emendar noutra aparição além do limite de mesma imagem; o planejador
+  segue a mesma regra nos subplanos do acervo e, quando a mesma imagem vem de cenas anteriores e passa do limite,
+  troca para o acervo mesmo sem cota de `switch`. A retomada de propósito é a que o usuário fixou (cena travada,
+  mídia ou subplano escolhidos à mão): conta como aparição e nunca troca.
 
 **Onde aparece na tela**
 1. **Revisão do storyboard**, na lista de achados de `storyboard_check` (contagens em `:235`):

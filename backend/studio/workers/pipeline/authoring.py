@@ -478,8 +478,12 @@ def _policy_lines(style: StyleSpec, total_s: float) -> list[str]:
     ai_pct = round(policy.ai_max_share * 100)
     lines = [
         f"Teto de imagem de IA: {ai_pct}% do tempo de tela (~{total_s * policy.ai_max_share:.0f} s de {total_s:.0f} s)"
-        + (", sempre com ai_reason." if policy.require_ai_reason else "."),
+        + (", sempre com ai_reason." if policy.require_ai_reason else ".")
+        + f" Espalhe: no máximo {round(tiers.ai_window_cap(policy.ai_max_share) * 100)}% em qualquer trecho de "
+        f"{tiers.AI_WINDOW_S:.0f} s.",
         f"Gancho: item de nível {', '.join(policy.hook)} do acervo.",
+        f"Cada item do acervo aparece no máximo {tiers.ITEM_MAX_USES} vezes, a {tiers.ITEM_REUSE_GAP_S:.0f} s ou mais "
+        "uma da outra (a foto e o cartão logo depois dela contam como uma vez só).",
         f"Material oficial (trailer, gameplay): até {round(policy.official_max_share * 100)}% do tempo, trechos de até "
         f"{_seconds_text(policy.official_max_clip_s)} s.",
     ]
@@ -1117,6 +1121,18 @@ def _seconds_by_prov(picks: list[_Pick]) -> dict[str, float]:
     return out
 
 
+def _ai_window(picks: list[_Pick]) -> tuple[float, float, float]:
+    """O trecho de `tiers.AI_WINDOW_S` com mais IA, pela duração estimada das batidas: `(fração, início, fim)`."""
+    spans: list[tuple[float, float]] = []
+    t = 0.0
+    for i, p in enumerate(picks):
+        if _pick_prov(picks, i) == "ai":
+            spans.append((t, t + p.beat.seconds))
+        t += p.beat.seconds
+    share, start = tiers.window_share(spans, t)
+    return share, start, start + min(tiers.AI_WINDOW_S, t)
+
+
 def _official_room(picks: list[_Pick], policy: SourcePolicy, seconds: float) -> bool:
     total = sum(p.beat.seconds for p in picks) or 1.0
     return _seconds_by_prov(picks).get("official", 0.0) + seconds <= policy.official_max_share * total + 1e-6
@@ -1283,17 +1299,23 @@ def _flatten_roots(picks: list[_Pick]) -> None:
 
 def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, budget: int,
                      positions: list[int]) -> list[Issue]:
-    """Teto de IA em TEMPO de tela (`ai_max_share` da duração estimada das batidas) e em número de imagens novas
-    (`budget`). O excesso vira o item real do mesmo assunto ou, sem ele, cartão sobre o real vizinho; nunca o
-    reaproveitamento da mesma imagem de IA. Sai primeiro o reaproveitamento de IA, depois a IA sem motivo e por último
-    a IA com motivo (das últimas batidas para as primeiras)."""
+    """Teto de IA em TEMPO de tela (`ai_max_share` da duração estimada das batidas na média do vídeo, e
+    `tiers.ai_window_cap` em qualquer trecho de `tiers.AI_WINDOW_S`) e em número de imagens novas (`budget`). O
+    excesso vira o item real do mesmo assunto ou, sem ele, cartão sobre o real vizinho; nunca o reaproveitamento da
+    mesma imagem de IA. Sai primeiro o reaproveitamento de IA, depois a IA sem motivo e por último a IA com motivo
+    (das últimas batidas para as primeiras; quando só o trecho passa do teto, só as batidas dele)."""
     total = sum(p.beat.seconds for p in picks)
     cap = policy.ai_max_share * total
 
-    def over() -> bool:
+    def over_total() -> bool:
         ai = _seconds_by_prov(picks).get("ai", 0.0)
         news = sum(1 for p in picks if p.source == "new")
         return ai > cap + 1e-6 or news > budget
+
+    window_cap = tiers.ai_window_cap(policy.ai_max_share)
+
+    def over() -> bool:
+        return over_total() or _ai_window(picks)[0] > window_cap + 1e-6
 
     def candidates() -> list[int]:
         reused = [i for i, p in enumerate(picks) if p.source == "reuse" and p.kind == "image"
@@ -1303,7 +1325,13 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
         news = sum(1 for p in picks if p.source == "new")
         # Acima do número de imagens novas, o reaproveitamento não resolve: começa pelas imagens novas.
         first = [] if news > budget else reused[::-1]
-        return [*first, *bare[::-1], *reasoned[::-1], *([] if first else reused[::-1])]
+        order = [*first, *bare[::-1], *reasoned[::-1], *([] if first else reused[::-1])]
+        if over_total():
+            return order
+        # Só o trecho passa do teto: saem as batidas de IA que caem nele.
+        _share, lo, hi = _ai_window(picks)
+        starts = [sum(q.beat.seconds for q in picks[:k]) for k in range(len(picks))]
+        return [i for i in order if starts[i] < hi - 1e-6 and starts[i] + picks[i].beat.seconds > lo + 1e-6]
 
     issues: list[Issue] = []
     tried: set[int] = set()
@@ -1311,6 +1339,7 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
         todo = [i for i in candidates() if i not in tried]
         if not todo:
             break
+        windowed = not over_total()
         i = todo[0]
         tried.add(i)
         p = picks[i]
@@ -1321,8 +1350,10 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
         else:
             _to_graphic(p)
             what = "virou cartão sobre o material real vizinho"
-        issues.append(Issue("teto_de_ia", CORRIGIDO, f"Passou do teto de IA ({round(policy.ai_max_share * 100)}% do "
-                                                     f"tempo): a cena {positions[i]} {what}.", p.beat.key))
+        where = (f"{round(window_cap * 100)}% num trecho de {tiers.AI_WINDOW_S:.0f} s" if windowed else
+                 f"{round(policy.ai_max_share * 100)}% do tempo")
+        issues.append(Issue("teto_de_ia", CORRIGIDO, f"Passou do teto de IA ({where}): a cena {positions[i]} {what}.",
+                            p.beat.key))
         _real_backgrounds(picks, policy)
         _flatten_roots(picks)
     return issues

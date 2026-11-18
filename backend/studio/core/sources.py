@@ -8,12 +8,14 @@ verdade do nível de cada cena: a timeline (`clean`, efeitos por nível) e as m�
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from studio.core.project.document import CARD_KINDS, DATA_KINDS, PROVS, MediaRef, Prov, Visual
 
 if TYPE_CHECKING:
     from studio.core.project.document import ProjectDoc, Scene
+    from studio.core.project.pool import PoolItem
 
 TIERS: tuple[str, ...] = PROVS
 """Os níveis, do mais real ao gerado (T0 a T7)."""
@@ -104,3 +106,114 @@ def _bare_card(scene: Scene) -> bool:
 
 def is_real(prov: str) -> bool:
     return prov in REAL_TIERS
+
+
+# --- Distribuição do material no tempo --------------------------------------------------------------------------------
+
+AI_WINDOW_S = 45.0
+"""Janela deslizante do teto de IA: além da média do vídeo (`ai_max_share`), nenhum trecho desta duração passa de
+`ai_window_cap`. A média de 20% num vídeo de 7 min esconde um minuto inteiro de IA (o QA do prj_gq4krrs11w achou 46%
+de IA num trecho de 45 s com a média em 17%). Vídeo mais curto que a janela: a janela é o vídeo todo."""
+AI_WINDOW_SLACK = 1.5
+"""Folga do teto por trecho sobre o da média: a batida é a unidade (4 a 7 s no longo), e com o teto do trecho igual
+ao da média duas imagens de IA de 5 s nunca caberiam em 45 s (22%), o que baixaria a média possível para ~11%. Com
+1,5× (30% no longo: duas batidas de IA por trecho) a IA espalhada passa e o bloco de IA não."""
+
+
+def ai_window_cap(ai_max_share: float) -> float:
+    """O teto de IA em qualquer trecho de `AI_WINDOW_S`, a partir do teto da média."""
+    return round(min(1.0, ai_max_share * AI_WINDOW_SLACK), 4)
+
+
+ITEM_MAX_USES = 2
+"""Quantas vezes o mesmo material do acervo aparece no vídeo. Cenas seguidas com a mesma imagem (a foto e o cartão
+sobre ela) são uma aparição só."""
+ITEM_REUSE_GAP_S = 60.0
+"""Distância mínima entre duas aparições do mesmo material: voltar antes disso parece slideshow de poucas imagens. A
+retomada de propósito é a que o usuário fixou (cena travada, mídia ou subplano escolhidos à mão), que o anexo e o
+planejador contam mas nunca trocam."""
+TOUCH_S = 1.0
+"""Aparições a menos disto uma da outra são a mesma (cenas seguidas: a pausa da fala entre elas não separa)."""
+
+
+def window_share(spans: Iterable[tuple[float, float]], total: float,
+                 window_s: float = AI_WINDOW_S) -> tuple[float, float]:
+    """O trecho de `window_s` segundos mais coberto por `spans` (`(início, fim)` em segundos, sem sobreposição entre
+    eles): `(fração coberta, início do trecho)`. Vídeo mais curto que a janela: o vídeo todo."""
+    if total <= 0:
+        return 0.0, 0.0
+    width = min(window_s, total)
+    clipped = [(max(0.0, a), min(total, b)) for a, b in spans if min(total, b) > max(0.0, a)]
+    if not clipped:
+        return 0.0, 0.0
+    # O máximo cai numa janela que começa no início de um trecho ou termina no fim de um.
+    starts = sorted({min(max(0.0, t), total - width) for a, b in clipped for t in (a, b - width)})
+    best, at = -1.0, 0.0
+    for t in starts:
+        covered = sum(max(0.0, min(b, t + width) - max(a, t)) for a, b in clipped)
+        if covered > best + 1e-9:
+            best, at = covered, t
+    return min(1.0, best / width), at
+
+
+def media_tokens(media: MediaRef | None) -> frozenset[str]:
+    """O que identifica a mídia na tela, para contar as aparições do mesmo material: o item do acervo, o arquivo
+    anexado e o endereço da imagem. Dois itens do acervo que o anexo baixa no mesmo arquivo (a imagem de capa da mesma
+    matéria) são a mesma imagem. O endereço de vídeo não entra: trechos do mesmo trailer são planos diferentes."""
+    if media is None:
+        return frozenset()
+    out = {f"pool:{media.pool_id}"} if media.pool_id else set()
+    if media.video:
+        out.add(f"video:{media.video}#{media.start_s:g}")
+    else:
+        if media.asset:
+            out.add(f"file:{media.asset}")
+        if media.url and media.kind != "clip":
+            out.add(f"url:{media.url}")
+    return frozenset(out)
+
+
+def item_tokens(item: PoolItem) -> frozenset[str]:
+    """Como `media_tokens`, para o item do acervo (antes do anexo, ou no subplano do planejador)."""
+    out = {f"pool:{item.id}"}
+    if item.media != "clip":
+        if item.url:
+            out.add(f"url:{item.url}")
+        if item.path:
+            out.add(f"file:{item.path}")
+    return frozenset(out)
+
+
+def reuse_problem(others: Iterable[tuple[float, float]], mine: Iterable[tuple[float, float]], *,
+                  max_uses: int = ITEM_MAX_USES, gap_s: float = ITEM_REUSE_GAP_S,
+                  max_run_s: float | None = None) -> str | None:
+    """Por que pôr o material nos trechos `mine` (a cena e as que reaproveitam a imagem dela) fere a distribuição,
+    dadas as aparições dele no resto do vídeo (`others`, `(início, fim)` em segundos); None: cabe. Motivos:
+
+    - `"uses"`: a nova é uma aparição a mais (não a continuação de outra) e passa de `max_uses`;
+    - `"gap"`: a aparição da nova fica a menos de `gap_s` de outra (antes ou depois);
+    - `"run"`: com `max_run_s`, a nova emenda numa aparição de outra cena e o conjunto passa desse tempo seguido na
+      tela (a duração das cenas que só ela ocupa é escolha do storyboard: trocar o item não muda nada).
+
+    O que já estava errado só entre as outras não é culpa da nova."""
+    spans = sorted([(a, b, False) for a, b in others] + [(a, b, True) for a, b in mine])
+    runs: list[tuple[float, float, bool, bool]] = []  # (início, fim, tem a nova, tem outra)
+    for a, b, new in spans:
+        if runs and a - runs[-1][1] < TOUCH_S:
+            a0, b0, m0, o0 = runs[-1]
+            runs[-1] = (a0, max(b0, b), m0 or new, o0 or not new)
+        else:
+            runs.append((a, b, new, not new))
+    if len(runs) > max_uses and any(m and not o for _a, _b, m, o in runs):
+        return "uses"
+    for a, b, m, o in runs:
+        if not m:
+            continue
+        if max_run_s is not None and o and b - a > max_run_s + 1e-6:
+            return "run"  # emenda numa aparição de outra cena e passa do tempo seguido (só a dela não é escolha daqui)
+        for c, d, _m2, o2 in runs:
+            if (c, d) == (a, b) or not o2:
+                continue  # a cena e a que reaproveita a imagem dela longe: é a escolha do storyboard
+            if (c - b if c >= b else a - d) < gap_s - 1e-6:
+                return "gap"
+    return None

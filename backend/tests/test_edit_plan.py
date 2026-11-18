@@ -123,7 +123,10 @@ def test_mock_project_comes_out_with_shots_and_fx_within_quotas(isolated_setting
     summary = edit_plan.summary(doc)
     assert summary["scenes_with_shots"] >= 5 and summary["fx_total"] > 20
     pooled = [sh for s in doc.scenes for sh in s.shots if sh.source == "pool"]
-    assert pooled and len(pooled) <= grammar.switch_per_min * _duration(doc, style) / 60
+    # O storyboard simulado põe os 6 itens do acervo-fixture em todas as cenas (cada um a cada ~30 s): a distribuição
+    # do acervo (2 aparições, 60 s entre elas) não deixa nenhum virar subplano também. O subplano do acervo é
+    # conferido nos testes de acervo largo (`_wide_pool`).
+    assert len(pooled) <= grammar.switch_per_min * _duration(doc, style) / 60
     minutes = _duration(doc, style) / 60
     for fx_type, rate in (("punch", grammar.punch_per_min), ("text_pop", grammar.text_pop_per_min),
                           ("sfx", grammar.sfx_per_min)):
@@ -653,6 +656,56 @@ def test_pool_needs_real_affinity(isolated_settings):
                                      path=f"uploads/x/{i}.jpg") for i in range(10)])
     edit_plan.plan(doc, style, by_entity, recent=set())
     assert [sh for s in doc.scenes for sh in s.shots if sh.source == "pool"]  # a entidade dita na fala basta
+
+
+SHORT_TEXT = "O farol da ilha guiou navios por mais de um século, e os moradores ainda contam essa história."
+
+
+def _shown(item: PoolItem) -> MediaRef:
+    """A mídia anexada de um item do acervo (o arquivo no projeto e o `pool_id`)."""
+    return MediaRef(kind="photo", source="upload", asset=f"uploads/prj_teste/media/{item.id}.jpg", tier=item.tier,
+                    pool_id=item.id)
+
+
+def test_pool_subshot_follows_the_distribution_over_time(isolated_settings):
+    """O item que a cena vizinha já mostra não volta como subplano a menos de 60 s (antes só contavam os subplanos:
+    a captura do gancho voltava como corte logo depois), e nenhum item passa de 2 aparições."""
+    style = get_style(LONG, {"edit": {"grammar": {"switch_per_min": 30}}})
+    shown, other = (PoolItem(id=f"p{i}", tier="free", tags=["farol", "ilha"], path=f"uploads/x/{i}.jpg")
+                    for i in range(2))
+    doc = _doc([SHORT_TEXT] * 6)
+    doc.scenes[0].visual = Visual(type="upload", media=_shown(shown))
+    pool = Pool(items=[shown, other])
+    edit_plan.plan(doc, style, pool, recent=set())
+    pooled = [(s.id, sh.pool_id) for s in doc.ordered_scenes() for sh in s.shots if sh.source == "pool"]
+    assert pooled and all(pid == other.id for _sid, pid in pooled), pooled
+    assert len({sid for sid, _pid in pooled}) <= 2  # 2 aparições do item (as cenas são seguidas e curtas)
+
+
+def test_same_image_across_scenes_is_broken_by_the_pool_even_without_quota(isolated_settings):
+    """A mesma imagem em cenas seguidas (a foto, o cartão sobre ela, a foto de novo: o "VI" neon de 3:30 a 3:57) passa
+    do limite de mesma imagem: o planejador troca para o acervo mesmo sem cota de troca; reenquadrar não troca a
+    imagem. Dentro do limite, nada é forçado."""
+    from studio.workers.pipeline.storyboard_check import same_image_seconds
+
+    style = get_style(LONG, {"edit": {"grammar": {"switch_per_min": 0}}})
+    neon, other = (PoolItem(id=f"p{i}", tier="free", tags=["farol", "ilha"], path=f"uploads/x/{i}.jpg")
+                   for i in range(2))
+    pool = Pool(items=[neon, other])
+    doc = _doc([SHORT_TEXT] * 4)
+    for scene in doc.scenes[:3]:
+        scene.visual = Visual(type="upload", media=_shown(neon))
+    edit_plan.plan(doc, style, pool, recent=set())
+    limit = same_image_seconds(style)
+    planner = edit_plan._Planner(doc, style, grammar_for(style), pool, set())
+    cuts = [(planner._time_of(b, sh.at), sh.pool_id) for b in planner.beats[:3] for sh in b.scene.shots
+            if sh.source == "pool"]
+    assert cuts and all(pid == other.id for _t, pid in cuts), cuts
+    assert min(t for t, _pid in cuts) > limit - 1e-6  # só depois do limite seguido na mesma imagem
+    # cada cena com a própria imagem (sem emenda entre cenas): nada é forçado sem cota
+    doc = _doc([SHORT_TEXT] * 4)
+    edit_plan.plan(doc, style, pool, recent=set())
+    assert not [sh for s in doc.scenes for sh in s.shots if sh.source == "pool"]
 
 
 def test_official_material_is_short_capped_and_out_of_the_hook(isolated_settings):
