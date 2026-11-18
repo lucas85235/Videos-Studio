@@ -98,11 +98,13 @@ def test_cliplayer_plays_any_video_with_trim_rate_hold_muted() -> None:
     assert "seconds={shotSeconds(shot)}" in shots  # `seconds` do backend, ou o teto do oficial
 
 
-def test_scene_clip_is_only_the_ai_video() -> None:
-    """O clipe real da cena vem como plano em `shots` (com entrada e teto); `scene.video` fica só para o vídeo IA."""
+def test_scene_clip_plays_the_ai_video_and_the_real_clip() -> None:
+    """`scene.video` é o vídeo IA da cena-chave ou o clipe real da cena (proxy já cortado na entrada pelo build, que o
+    manda na cena e não em `shots`): os dois tocam, também no plano `self`."""
     src = _read(COMP / "SceneView.tsx")
-    assert "const clipUrl = scene.kind === 'video' ? assetUrl(scene.video, assetBaseUrl) : null;" in src
-    assert "realClip" not in src
+    assert "const realClip = scene.prov !== undefined && scene.prov !== 'ai';" in src
+    assert "const clipUrl = scene.kind === 'video' || realClip ? assetUrl(scene.video, assetBaseUrl) : null;" in src
+    assert "selfBackground={otherBackground()}" in src
 
 
 def test_self_shots_and_anchored_overlay_use_the_right_clock() -> None:

@@ -135,10 +135,12 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const frame = useCurrentFrame();
   const url = assetUrl(scene.src, assetBaseUrl);
   const layers = (scene.parallax?.layers ?? []).map((rel) => assetUrl(rel, assetBaseUrl)).filter((u): u is string => Boolean(u));
-  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras. O clipe
-  // REAL da cena (trailer, gameplay) chega como um plano em `shots` ({from: 0, video, clipIn, seconds, hold}), que o
-  // ShotStack toca com entrada e teto; `scene.video` não tem entrada nem duração e fica só para o vídeo IA.
-  const clipUrl = scene.kind === 'video' ? assetUrl(scene.video, assetBaseUrl) : null;
+  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras. Clipe REAL
+  // da cena (timeline com `prov` de nível real): o build manda o proxy já cortado na entrada em `scene.video` (com
+  // `video_seconds`) e ele toca em qualquer tipo, também no plano `self` do ShotStack. Os subplanos de clipe chegam
+  // em `shots` com `clipIn` e `seconds`.
+  const realClip = scene.prov !== undefined && scene.prov !== 'ai';
+  const clipUrl = scene.kind === 'video' || realClip ? assetUrl(scene.video, assetBaseUrl) : null;
   const cards = style.textCards;
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
