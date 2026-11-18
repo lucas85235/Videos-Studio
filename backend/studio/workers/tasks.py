@@ -338,16 +338,19 @@ def _fix_low_figures(layers: Any, cutouts: list[dict[str, Any]], low: dict[str, 
 
 
 def _swap_pose(layers: Any, poses: list[dict[str, Any]], cost: Any) -> tuple[Any, str] | None:
-    """As camadas com outra pose do avatar: a menos usada, de preferência com a mesma emoção. None sem outra."""
+    """As camadas com outra pose do avatar: a menos usada da mesma emoção ou, sem ela, do mesmo tom
+    (`pose_tone.can_swap`: a variedade nunca troca a cara de alerta pela de festa). None sem outra compatível (a
+    pose fica e a thumb segue com o aviso de parecida)."""
+    from studio.media import pose_tone
+
     if layers.presenter is None or not poses:
         return None
     cur = layers.presenter.pose
-    emotions = {str(e).lower() for p in poses if p["id"] == cur for e in p.get("emotions") or []}
-    alts = [p for p in poses if p["id"] != cur]
+    current = next((p for p in poses if p["id"] == cur), {"id": cur})
+    alts = [p for p in poses if p["id"] != cur and pose_tone.can_swap(current, p)]
     if not alts:
         return None
-    same = [p for p in alts if emotions & {str(e).lower() for e in p.get("emotions") or []}]
-    pick = min(same or alts, key=lambda p: cost(p["id"]))
+    pick = min(alts, key=lambda p: (not pose_tone.shares_emotion(current, p), cost(p["id"])))
     out = layers.model_copy(deep=True)
     out.presenter.pose = pick["id"]
     facing = str(pick.get("facing") or "center")
@@ -363,7 +366,8 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
     para quem vê). Contra as thumbs recentes do canal (`thumb_history.channel_history`): candidata parecida demais
     (dHash < `RECENT_MIN_DISTANCE`, medido também contra o espelho dela) ou com o mesmo fundo e a mesma pose/palavra
     de uma recente troca, nesta ordem e enquanto continuar parecida, o fundo pelo quadro menos usado do mesmo assunto, a
-    figura por outro recorte do mesmo personagem e a pose do avatar; se nada adiantar, ganha o aviso e, com `demote`
+    figura por outro recorte do mesmo personagem e a pose do avatar (só por outra da mesma emoção ou do mesmo tom);
+    se nada adiantar, ganha o aviso e, com `demote`
     (geração do pacote), vai para o fim da lista. As correções (e a da cor do texto sem contraste) só mexem em
     candidato automático ainda não escolhido nem aprovado, com o pacote destravado: os outros só ganham o aviso.
     Grava `image` e `score` só nos candidatos cujas camadas não mudaram durante o render (a edição feita em

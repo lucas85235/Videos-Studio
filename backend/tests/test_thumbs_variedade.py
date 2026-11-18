@@ -549,14 +549,17 @@ def test_capa_nao_entra_com_recorte_da_mesma_arte():
     assert authoring._uses_keyart(usage, {f["id"]: f for f in frames}, "background")
 
 
-def test_pose_vista_troca_e_sem_outra_da_mesma_emocao_troca_a_emocao():
+def test_pose_vista_troca_pela_mesma_emocao_ou_tom_e_sem_ela_fica():
     poses = [{"id": "surpreso", "emotions": ["choque"]}, {"id": "chocado", "emotions": ["choque"]},
-             {"id": "lupa", "emotions": ["detalhe"]}]
+             {"id": "lupa", "emotions": ["detalhe escondido"]}]
     recent = V.Usage()
     recent.add({"pose": ["surpreso"]}, 0.8)
     assert authoring._pick_pose("choque", poses, set(), recent) == "chocado"
     recent.add({"pose": ["chocado"]}, 0.8)
-    assert authoring._pick_pose("choque", poses, set(), recent) == "lupa"
+    # sem outra de choque ou do mesmo tom (alerta), a citada fica: a lupa (mistério) inverteria o tom
+    assert authoring._pick_pose("choque", poses, set(), recent) == "surpreso"
+    poses.append({"id": "preocupado", "emotions": ["risco"]})
+    assert authoring._pick_pose("choque", poses, set(), recent) == "preocupado"  # outra emoção, mesmo tom
 
 
 def test_cor_do_mesmo_matiz_do_fundo_perde():
