@@ -183,8 +183,9 @@ def ab_rule(channel_id: str | None, chosen: int = 1) -> dict[str, Any]:
     else:
         picked, durations = [], {}
     shorts = _short_projects({pid for _, pid, _ in picked if pid})
+    # sem duração conhecida conta como longo (como antes de `UNKNOWN_FORMAT`): só sai o que se sabe que é Short
     values = [float(imp) for yid, pid, imp in picked
-              if pid not in shorts and video_format(None, durations.get(yid)) == "long"]
+              if pid not in shorts and video_format(None, durations.get(yid)) != "short"]
     med = round(median(values), 1) if values else None
     eligible = med is not None and med >= AB_MIN_IMPRESSIONS
     return {"eligible": eligible, "median_impressions": med, "n": len(values),

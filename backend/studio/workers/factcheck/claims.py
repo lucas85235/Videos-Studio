@@ -27,7 +27,6 @@ from studio.providers import registry
 from studio.providers.llm import web_tools_enabled
 from studio.workers.factcheck.textify import literal_span, normalize
 from studio.workers.factcheck.verify import verify
-from studio.workers.pipeline import authoring
 from studio.workers.pipeline.build import BuildCancelled
 
 log = logging.getLogger(__name__)
@@ -147,6 +146,10 @@ def build_context(doc: ProjectDoc, lang: str, segments: list[Segment]) -> dict[s
 
 
 def build_prompt(ctx: dict[str, Any], *, web: bool) -> str:
+    # Import tardio: `authoring` puxa `media_pool`, que puxa `workers.jobs`, que registra `factcheck.tasks` e volta
+    # para este módulo ainda pela metade (quem importa `finalcheck.quick` antes de `jobs`, como o CLI edit-metrics).
+    from studio.workers.pipeline import authoring
+
     lines = [
         f"Data de hoje: {ctx['today']}.",
         f"Idioma do roteiro: {authoring.lang_name(ctx['lang'])} ({ctx['lang']}).",

@@ -161,7 +161,11 @@ def test_one_cue_keeps_v3_mix_and_two_cues_switch_beds(isolated_settings):
         "short": style.format.type == "short",
         "v": 3,
     }
-    if any(e["type"] in audio.SFX_RETUNED for e in timeline["sfx"]):
+    # o storyboard novo passa pelo planejador (ADR 0004): efeito de evento (thump, swish...) leva a versão atual dos
+    # efeitos; sem eles, a de glitch/riser; sem nenhum dos dois, a chave da v3 fica como era
+    if any(e["type"] in audio.EVENT_SFX_KINDS for e in timeline["sfx"]):
+        key["sfx_v"] = audio.SFX_VERSION
+    elif any(e["type"] in audio.SFX_RETUNED for e in timeline["sfx"]):
         key["sfx_v"] = audio.SFX_RETUNED_VERSION
     expected = hash_obj(key)
     assert expected in entry["mix"]

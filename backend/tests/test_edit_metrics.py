@@ -304,6 +304,18 @@ def test_cli_reads_without_writing(isolated_settings, capsys):
         main(["edit-metrics", "prj_nada"])
 
 
+@pytest.mark.parametrize("module", ["studio.workers.finalcheck.profile_check", "studio.workers.factcheck.claims"])
+def test_cli_modules_import_in_a_fresh_interpreter(module):
+    """O `studio edit-metrics` importa `profile_check` antes de `workers.jobs`; num processo novo isso não pode cair no
+    ciclo claims → authoring → media_pool → jobs → factcheck.tasks → claims (pela metade)."""
+    import subprocess
+    import sys
+
+    done = subprocess.run([sys.executable, "-c", f"import {module}"], capture_output=True, text=True,
+                          cwd=Path(__file__).resolve().parents[1], timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]
+
+
 def test_readonly_engine_refuses_writes(isolated_settings):
     doc = _project_with_storyboard(isolated_settings)
     with readonly_engine(), pytest.raises(Exception):  # noqa: B017 - o SQLite recusa com OperationalError
