@@ -1,6 +1,7 @@
 import React from 'react';
 import { Easing, Img, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import type { CaptionWord, TimelinePresenter } from '../types';
+import { stickerFilter } from '../sticker';
 import { assetUrl } from './RealMedia';
 
 // Avatar do apresentador (porte do `Reacao.tsx` do canais/plantao-vice): só a pose, nunca balão, texto ou som.
@@ -25,13 +26,8 @@ export const speechPulse = (words: CaptionWord[] | undefined, frame: number, fps
   return 0.25 + 0.75 * Math.abs(Math.sin(((frame - w.from) / fps) * Math.PI * 2 * 4.2));
 };
 
-/** Contorno branco de adesivo (4 drop-shadows) e a sombra, com `outline` em px a 1080 de altura. */
-export const stickerFilter = (outline: number, scale: number) => {
-  const o = Math.max(0, Math.round(outline * scale * 10) / 10);
-  const shadow = `drop-shadow(0 ${Math.round(26 * scale)}px ${Math.round(30 * scale)}px rgba(0,0,0,0.45))`;
-  if (!o) return shadow;
-  return `drop-shadow(${o}px 0 0 #fff) drop-shadow(-${o}px 0 0 #fff) drop-shadow(0 ${o}px 0 #fff) drop-shadow(0 -${o}px 0 #fff) ${shadow}`;
-};
+// O contorno de adesivo mora em `sticker.ts` (os memes também usam) e continua exportado daqui.
+export { stickerFilter };
 
 type Props = {
   presenter: TimelinePresenter;

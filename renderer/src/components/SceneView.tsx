@@ -1,17 +1,21 @@
 import React from 'react';
 import { AbsoluteFill, Sequence, useVideoConfig } from 'remotion';
 import { imageFilter } from '../look';
-import type { RenderStyle, SceneKind, TimelineScene } from '../types';
+import type { RenderStyle, SceneKind, ShotEasing, TimelineScene } from '../types';
+import { CameraRig, TimeWarp } from './CameraRig';
 import { Captions, captionCenter, captionHalfHeight, captionTop } from './Captions';
 import { ChartCard, chartRows } from './ChartCard';
 import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
+import { FxAnchored, FxLayer } from './fx/FxLayer';
+import { ANCHORED_FX, cutsOf, shotSlots } from './fx/math';
 import { MapCard, mapItems } from './MapCard';
 import { PresenterLayer } from './PresenterLayer';
 import { assetUrl, NewsCard } from './RealMedia';
 import { ClipLayer } from './ClipLayer';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
+import { ShotStack } from './ShotStack';
 import { isTreatment, TreatmentLayer } from './Treatments';
 import { VisualLayer } from './VisualLayer';
 
@@ -128,8 +132,10 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const { fps, width, height } = useVideoConfig();
   const url = assetUrl(scene.src, assetBaseUrl);
   const layers = (scene.parallax?.layers ?? []).map((rel) => assetUrl(rel, assetBaseUrl)).filter((u): u is string => Boolean(u));
-  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras.
-  const clipUrl = scene.kind === 'video' ? assetUrl(scene.video, assetBaseUrl) : null;
+  // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras. Timeline
+  // nova (com `prov`) com clipe real da cena: toca em qualquer tipo.
+  const realClip = scene.prov !== undefined && scene.prov !== 'ai';
+  const clipUrl = scene.kind === 'video' || realClip ? assetUrl(scene.video, assetBaseUrl) : null;
   const cards = style.textCards;
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
@@ -180,13 +186,49 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const hideCaptions = NO_CAPTIONS.has(kind) || (kind === 'title' && titleEchoesSpeech(scene));
   const sourceChip = source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null;
 
-  return (
-    <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
-      {kind === 'document' ? (
-        <DocumentCard url={url} scene={scene} style={cards} filter={imageFilter(style.effects, scene.look)} />
-      ) : clipUrl ? (
-        <ClipLayer scene={scene} effects={style.effects} url={clipUrl} />
-      ) : treatment && url ? (
+  // Edição (ADR 0004): planos, câmera por eventos, tempo do fundo e eventos de tela. Cena sem `shots` nem `fx`
+  // desenha a mesma árvore de antes (cada peça devolve o fundo como está).
+  const fx = scene.fx;
+  const slots = shotSlots(scene.shots, scene.durationInFrames);
+  const cuts = cutsOf(slots);
+  const overlayAt = (fx ?? []).some((e) => ANCHORED_FX.has(e.type))
+    ? (offset: number) => <FxAnchored fx={fx} offset={offset} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} />
+    : undefined;
+  const dim = news ? NEWS_DIM : (DIM[kind] ?? 0);
+  const blur = news ? NEWS_BLUR : (BLUR[kind] ?? 0);
+  const image = (sub: TimelineScene, imageUrl: string | null, overlay?: React.ReactNode, easing?: ShotEasing) => (
+    <VisualLayer
+      scene={sub}
+      effects={style.effects}
+      zoomStrength={style.zoomStrength}
+      transitionFrames={style.transitionFrames}
+      url={imageUrl}
+      layers={sub === scene ? layers : []}
+      cards={cards}
+      dim={dim}
+      blur={blur}
+      solid={SOLID_WITHOUT_IMAGE.has(kind)}
+      easing={easing}
+      overlay={overlay}
+    />
+  );
+  const withOverlay = (node: React.ReactNode, overlay: React.ReactNode) =>
+    overlay ? (
+      <>
+        {node}
+        {overlay}
+      </>
+    ) : (
+      node
+    );
+  // Fundo que não é a imagem com câmera (documento, vídeo, lousa/colagem/tela), ou null quando é.
+  const otherBackground = (overlay?: React.ReactNode): React.ReactNode =>
+    kind === 'document' ? (
+      withOverlay(<DocumentCard url={url} scene={scene} style={cards} filter={imageFilter(style.effects, scene.look)} />, overlay)
+    ) : clipUrl ? (
+      <ClipLayer scene={scene} effects={style.effects} url={clipUrl} overlay={overlay} />
+    ) : treatment && url ? (
+      withOverlay(
         <TreatmentLayer
           treatment={treatment}
           scene={scene}
@@ -195,22 +237,46 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
           transitionFrames={style.transitionFrames}
           url={url}
           cards={cards}
-        />
-      ) : (
-        <VisualLayer
-          scene={scene}
-          effects={style.effects}
-          zoomStrength={style.zoomStrength}
-          transitionFrames={style.transitionFrames}
-          url={url}
-          layers={layers}
-          cards={cards}
-          dim={news ? NEWS_DIM : (DIM[kind] ?? 0)}
-          blur={news ? NEWS_BLUR : (BLUR[kind] ?? 0)}
-          solid={SOLID_WITHOUT_IMAGE.has(kind)}
-        />
-      )}
-      <EffectsLayer effects={style.effects} look={scene.look} seed={scene.seed} staticBase={staticBase} />
+        />,
+        overlay,
+      )
+    ) : null;
+  const sceneBackground = (overlay?: React.ReactNode) => otherBackground(overlay) ?? image(scene, url, overlay);
+  const background = slots.length ? (
+    <ShotStack
+      scene={scene}
+      slots={slots}
+      fx={fx}
+      cuts={cuts}
+      effects={style.effects}
+      assetBaseUrl={assetBaseUrl}
+      renderImage={image}
+      selfBackground={otherBackground()}
+      overlayAt={overlayAt}
+    />
+  ) : (
+    <TimeWarp fx={fx} frames={scene.durationInFrames} cuts={cuts}>
+      {sceneBackground(overlayAt?.(0))}
+    </TimeWarp>
+  );
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: '#000', overflow: 'hidden' }}>
+      <CameraRig fx={fx} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} id={`${scene.id}-${scene.seed}`}>
+        {background}
+      </CameraRig>
+      <EffectsLayer effects={style.effects} look={scene.look} seed={scene.seed} staticBase={staticBase} clean={scene.clean === true} />
+      <FxLayer
+        scene={scene}
+        fx={fx}
+        style={style}
+        assetBaseUrl={assetBaseUrl}
+        cuts={cuts}
+        captionMid={captionMid}
+        captionsShown={!hideCaptions && style.captions.style !== 'none'}
+        minTop={band.top}
+        lang={lang}
+      />
       {card && cardFrom > 0 ? (
         <Sequence from={cardFrom} layout="none" name="Cartão">
           {card}

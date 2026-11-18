@@ -42,7 +42,9 @@ def test_layer_ports_reacao_motion() -> None:
     assert "1.07" in src  # soco do surpreso
     assert "0.018" in src  # pulso da fala no modo explica
     assert "BLEED = 0.14" in src  # 14% para fora da borda
-    assert src.count("drop-shadow(") >= 5  # 4 de contorno + sombra
+    # O contorno de adesivo mora em sticker.ts (os memes do renderer-fx também usam): 4 de contorno + sombra.
+    assert "import { stickerFilter } from '../sticker';" in src
+    assert _read(RD / "sticker.ts").count("drop-shadow(") >= 5
 
 
 def test_sceneview_inserts_layer_between_source_and_captions() -> None:

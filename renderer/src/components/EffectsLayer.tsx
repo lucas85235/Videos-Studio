@@ -3,13 +3,17 @@ import { AbsoluteFill, Img, interpolate, random, staticFile, useCurrentFrame, us
 import { activeGrade } from '../look';
 import type { EffectSpec, SceneLook } from '../types';
 
-type Props = { effects: EffectSpec[]; look: SceneLook; seed: number; staticBase?: string | null };
+/** `clean`: cena limpa (captura, gráfico, material próprio; `scene.clean`), sem grão nem vinheta. */
+type Props = { effects: EffectSpec[]; look: SceneLook; seed: number; staticBase?: string | null; clean?: boolean };
+
+/** Texturas que a cena limpa pula (efeitos por nível, ADR 0004): o resto do estilo continua. */
+const DIRTY = new Set(['grain', 'vignette']);
 
 const grainTexture = (index: number, base: string | null | undefined) =>
   base ? `${base.replace(/\/$/, '')}/textures/grain-${index}.png` : staticFile(`textures/grain-${index}.png`);
 
 /** Camadas de textura sobre a imagem: grão, vinheta, scanlines, VHS, poeira, arranhões, vazamento de luz etc. */
-export const EffectsLayer: React.FC<Props> = ({ effects, look, seed, staticBase }) => {
+export const EffectsLayer: React.FC<Props> = ({ effects, look, seed, staticBase, clean = false }) => {
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
   const layers: React.ReactNode[] = [];
@@ -22,6 +26,7 @@ export const EffectsLayer: React.FC<Props> = ({ effects, look, seed, staticBase 
   for (const [index, effect] of effects.entries()) {
     const a = effect.amount;
     const key = `${effect.type}-${index}`;
+    if (clean && DIRTY.has(effect.type)) continue;
     switch (effect.type) {
       case 'grain': {
         // Texturas de ruído pré-geradas (assets/textures): bem mais leve que ruído SVG calculado a cada quadro.

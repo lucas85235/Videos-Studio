@@ -2,8 +2,9 @@ import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { frameLayout } from '../frame';
 import { hasEffect, imageFilter } from '../look';
-import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type TextCardStyle, type TimelineScene } from '../types';
+import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type ShotEasing, type TextCardStyle, type TimelineScene } from '../types';
 import { MotionBackground, withAlpha } from './DataCards';
+import { EASE, isEasing } from './fx/math';
 
 type Props = {
   scene: TimelineScene;
@@ -20,6 +21,13 @@ type Props = {
   blur?: number;
   /** Sem imagem, cobre o fundo animado com a cor de fundo do estilo quase opaca (contraste do texto cinético). */
   solid?: boolean;
+  /** Curva do movimento (plano com `easing`). Ausente: a de sempre (inOut quad). */
+  easing?: ShotEasing;
+  /**
+   * Camada presa à imagem (marca-texto, seta, círculo): fica dentro do mesmo transform da imagem e anda com a câmera.
+   * Ausente: a imagem sozinha, como sempre.
+   */
+  overlay?: React.ReactNode;
 };
 
 const focusOrigin = (focus: string | undefined) =>
@@ -61,11 +69,26 @@ export const parallaxLayerPath = (index: number, count: number, z: number, side:
 };
 
 /** Imagem com movimento de câmera (Ken Burns, pan, punch zoom, drift, zoom no foco, parallax) e gradação de cor. */
-export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, transitionFrames, url, layers = [], cards, dim = 0, blur = 0, solid = false }) => {
+export const VisualLayer: React.FC<Props> = ({
+  scene,
+  effects,
+  zoomStrength,
+  transitionFrames,
+  url,
+  layers = [],
+  cards,
+  dim = 0,
+  blur = 0,
+  solid = false,
+  easing,
+  overlay,
+}) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const dur = Math.max(1, scene.durationInFrames - 1);
-  const p = interpolate(frame, [0, dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.quad) });
+  const p = isEasing(easing)
+    ? EASE[easing](frame / dur)
+    : interpolate(frame, [0, dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.quad) });
   const z = zoomStrength;
   const side = (r: number) => (random(`${scene.seed}-${r}`) > 0.5 ? 1 : -1);
   const t = frame / fps;
@@ -118,6 +141,14 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
       // Zoom no detalhe: aproxima do ponto de foco (transformOrigin).
       path = { scale: lerp(1 + z * 0.2, 1 + Math.min(0.35, 2.5 * z)), dx: flat, dy: flat };
       break;
+    case 'push':
+      // Empurrão: aproxima reto no foco, sem andar de lado (o oposto do Ken Burns que desliza).
+      path = { scale: lerp(1 + z * 0.1, 1 + z * 0.75), dx: flat, dy: flat };
+      break;
+    case 'none':
+      // Câmera desligada: o quadro inteiro, parado (captura com anotação, clipe com movimento próprio).
+      path = { scale: () => 1, dx: flat, dy: flat };
+      break;
     case 'static':
     default:
       path = { scale: () => 1 + z * 0.1, dx: flat, dy: flat };
@@ -158,6 +189,7 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
           <MotionBackground style={cards} seed={scene.seed} />
         </AbsoluteFill>
         {solid ? <AbsoluteFill style={{ backgroundColor: withAlpha(cards.background, 0.85) }} /> : null}
+        {overlay}
       </AbsoluteFill>
     );
   }
@@ -208,6 +240,7 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
         <AbsoluteFill style={{ transform: jitter ? `translateX(${jitter}px)` : undefined }}>
           <AbsoluteFill style={{ filter: fullFilter || undefined }}>{stack}</AbsoluteFill>
         </AbsoluteFill>
+        {overlay}
       </AbsoluteFill>
     );
   }
@@ -257,6 +290,13 @@ export const VisualLayer: React.FC<Props> = ({ scene, effects, zoomStrength, tra
             objectFit: 'contain',
           }}
         />
+        {overlay}
+      </div>
+    ) : overlay ? (
+      // Com camada presa: o transform vai num invólucro que leva a imagem e a camada juntas.
+      <div style={{ position: 'absolute', inset: 0, transform: pictureStyle.transform, transformOrigin: pictureStyle.transformOrigin }}>
+        <Img src={url} style={{ ...pictureStyle, position: 'absolute', inset: 0, transform: undefined, transformOrigin: undefined }} />
+        {overlay}
       </div>
     ) : (
       <Img src={url} style={pictureStyle} />

@@ -19,7 +19,8 @@ const ProgressBar: React.FC<{ color: string }> = ({ color }) => {
  */
 export const VideoTimeline: React.FC<TimelineProps> = (props) => {
   const { style } = props;
-  ensureFonts([style.captions.font, style.textCards.font], props.fontBaseUrl);
+  // Noto Emoji (emoji da legenda e do texto que pula) só carrega quando estiver em assets/fonts/fonts.json.
+  ensureFonts([style.captions.font, style.textCards.font, 'Noto Emoji'], props.fontBaseUrl);
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
       {props.scenes.map((scene) => (

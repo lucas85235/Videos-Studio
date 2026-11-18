@@ -1,7 +1,7 @@
 import React from 'react';
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { fontStack } from '../fonts';
-import type { CaptionLine, CaptionStyle } from '../types';
+import type { CaptionLine, CaptionStyle, CaptionWord } from '../types';
 import { charEm, mix } from './DataCards';
 
 /** `topOverride`: altura do centro da linha em fração da tela (ex.: 0.76 abaixo dos cartões); `lang`: idioma do vídeo
@@ -74,6 +74,21 @@ const NUMBER_WORDS = new Set(
 );
 const NUMBER_JOINS = new Set(['e', 'and', 'y']);
 
+/** Fontes de emoji (Noto Emoji quando instalada em assets/fonts; senão a do sistema). */
+export const EMOJI_STACK = '"Noto Emoji", "Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+/** Escala da palavra de ênfase (`emph` pop/emoji) depois de dita. */
+export const EMPH_SCALE = 1.3;
+
+/** Ênfase que cresce (pop e emoji); `color` só muda a cor. */
+const grows = (w: CaptionWord) => w.emph === 'pop' || w.emph === 'emoji';
+const emojiOf = (w: CaptionWord) => (w.emph === 'emoji' || w.emoji ? (w.emoji ?? '').trim() : '');
+
+/**
+ * Letras a mais que a palavra ocupa na fileira: a ênfase que cresce guarda o espaço da escala (a fileira não pula
+ * quando ela cresce) e o emoji o dele. Zero em tudo: a conta de sempre.
+ */
+export const emphExtra = (w: CaptionWord) => (grows(w) ? Math.ceil(w.text.length * (EMPH_SCALE - 1)) : 0) + (emojiOf(w) ? 2 : 0);
+
 const normalizeWord = (text: string) =>
   text
     .normalize('NFD')
@@ -109,11 +124,19 @@ const MIN_ROW_SCALE = 0.65;
  */
 export const captionRows = (
   texts: string[],
-  { room, base, em, stroke, lang, pick = true }: { room: number; base: number; em: number; stroke: number; lang?: string; pick?: boolean },
+  {
+    room,
+    base,
+    em,
+    stroke,
+    lang,
+    pick = true,
+    extra,
+  }: { room: number; base: number; em: number; stroke: number; lang?: string; pick?: boolean; extra?: number[] },
 ): { size: number; split: number | null } => {
   const n = texts.length;
-  const longest = Math.max(1, ...texts.map((t) => t.length));
-  const chars = (a: number, b: number) => texts.slice(a, b).join(' ').length;
+  const longest = Math.max(1, ...texts.map((t, i) => t.length + (extra?.[i] ?? 0)));
+  const chars = (a: number, b: number) => texts.slice(a, b).join(' ').length + (extra ? extra.slice(a, b).reduce((t, x) => t + x, 0) : 0);
   // Tamanho em que as palavras [a, b) cabem numa fileira (cada uma com o contorno dos dois lados).
   const fit = (a: number, b: number) => (room - stroke * 2 * (b - a)) / (Math.max(1, chars(a, b)) * em);
   const top = Math.min(base, (room - stroke * 2) / (longest * em));
@@ -159,7 +182,10 @@ export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) =
   // de quebrar; em duas fileiras, a quebra é escolhida (ver `captionRows`).
   const em = charEm(style.font) * (style.uppercase ? 1.04 : 0.86);
   const texts = line.words.map((w) => w.text);
-  const { size: fontSize, split } = captionRows(texts, { room, base: style.size * scale, em, stroke, lang, pick: style.style !== 'word' });
+  // Palavras de ênfase (`emph`, marcadas no storyboard): guardam o espaço da escala e do emoji. Sem ênfase, nada muda.
+  const anyEmph = line.words.some((w) => w.emph || w.emoji);
+  const extra = anyEmph ? line.words.map(emphExtra) : undefined;
+  const { size: fontSize, split } = captionRows(texts, { room, base: style.size * scale, em, stroke, lang, pick: style.style !== 'word', extra });
   const top = height * captionCenter(style, width, height, topOverride);
   // Linha que emenda na anterior (mesma frase) entra com menos "pop": linhas curtas não piscam.
   const prev = index > 0 ? lines[index - 1] : undefined;
@@ -205,9 +231,13 @@ export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) =
         ? (() => {
             const w = line.words[Math.max(0, activeIndex)];
             const pop = spring({ frame: frame - w.from, fps, config: { damping: 12, stiffness: 260, mass: 0.4 } });
+            // Ênfase no modo palavra: cresce até 1,3 em vez de 1 e traz o emoji.
+            const peak = grows(w) ? EMPH_SCALE : 1;
+            const emoji = emojiOf(w);
             return (
-              <span style={{ ...baseText, color: style.highlight, transform: `scale(${interpolate(pop, [0, 1], [0.7, 1])})`, display: 'inline-block' }}>
+              <span style={{ ...baseText, color: style.highlight, transform: `scale(${interpolate(pop, [0, 1], [0.7, peak])})`, display: 'inline-block' }}>
                 {clean(w.text, style.uppercase, true)}
+                {emoji ? <Emoji emoji={emoji} from={w.from} size={fontSize} /> : null}
               </span>
             );
           })()
@@ -217,7 +247,12 @@ export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) =
             const pop = active ? spring({ frame: frame - w.from, fps, config: { damping: 14, stiffness: 300, mass: 0.4 } }) : 0;
             // Karaokê: a palavra ainda não falada fica apagada; no modo linha todas ficam acesas.
             const dimmed = style.style === 'karaoke' && activeIndex >= 0 && !spoken;
-            const word = (
+            /* Karaokê: só a pontuação do fim da linha sai; a vírgula do meio fica ("COM LUCIA, A"). */
+            const text = clean(w.text, style.uppercase, style.style === 'karaoke' && i === last);
+            const emoji = emojiOf(w);
+            const word = w.emph ? (
+              <EmphWord key={i} word={w} text={text} base={baseText} style={style} fontSize={fontSize} extra={extra?.[i] ?? 0} em={em} />
+            ) : (
               <span
                 key={i}
                 style={{
@@ -228,13 +263,76 @@ export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) =
                   transform: active ? `translateY(${-0.06 * fontSize * pop}px)` : undefined,
                 }}
               >
-                {/* Karaokê: só a pontuação do fim da linha sai; a vírgula do meio fica ("COM LUCIA, A"). */}
-                {clean(w.text, style.uppercase, style.style === 'karaoke' && i === last)}
+                {text}
+                {emoji ? <Emoji emoji={emoji} from={w.from} size={fontSize} /> : null}
               </span>
             );
             // Quebra escolhida: um item de largura inteira e altura zero fecha a 1ª fileira antes desta palavra.
             return i === split ? [<span key="row" style={{ flexBasis: '100%', height: 0 }} />, word] : [word];
           })}
     </div>
+  );
+};
+
+/** Emoji que entra com a palavra (mola), ao lado dela. */
+const Emoji: React.FC<{ emoji: string; from: number; size: number }> = ({ emoji, from, size }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const pop = frame < from ? 0 : spring({ frame: frame - from, fps, config: { damping: 10, stiffness: 240, mass: 0.5 } });
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        marginLeft: size * 0.18,
+        fontFamily: EMOJI_STACK,
+        fontSize: size * 0.9,
+        WebkitTextStroke: '0px transparent',
+        transform: `scale(${pop}) rotate(${interpolate(pop, [0, 1], [-20, 0])}deg)`,
+        transformOrigin: '50% 60%',
+      }}
+    >
+      {emoji}
+    </span>
+  );
+};
+
+/**
+ * Palavra de ênfase (`emph`) nos modos karaokê e linha: cor de destaque desde que a linha entra; `pop` e `emoji`
+ * crescem até 1,3 quando ela é dita (com sobra de mola) e ficam assim até a linha sair, no espaço que a fileira já
+ * guardou (sem empurrar as vizinhas). Substitui o realce de +6% só nessas palavras.
+ */
+const EmphWord: React.FC<{
+  word: CaptionWord;
+  text: string;
+  base: React.CSSProperties;
+  style: CaptionStyle;
+  fontSize: number;
+  extra: number;
+  em: number;
+}> = ({ word, text, base, style, fontSize, extra, em }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const pop = frame < word.from ? 0 : spring({ frame: frame - word.from, fps, config: { damping: 9, stiffness: 260, mass: 0.45 } });
+  const scale = grows(word) ? interpolate(pop, [0, 1], [1, EMPH_SCALE]) : 1;
+  const emoji = emojiOf(word);
+  // Espaço guardado pela escala (metade de cada lado); o do emoji fica no próprio emoji.
+  const room = grows(word) ? Math.max(0, extra - (emoji ? 2 : 0)) * em * fontSize : 0;
+  return (
+    <span style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>
+      <span
+        style={{
+          ...base,
+          color: style.highlight,
+          display: 'inline-block',
+          // A sobra fica em volta do próprio texto: ao crescer ele ocupa a sobra e não cobre o emoji nem a vizinha.
+          margin: room ? `0 ${room / 2}px` : undefined,
+          transform: scale !== 1 ? `scale(${scale})` : undefined,
+          transformOrigin: '50% 60%',
+        }}
+      >
+        {text}
+      </span>
+      {emoji ? <Emoji emoji={emoji} from={word.from} size={fontSize} /> : null}
+    </span>
   );
 };
