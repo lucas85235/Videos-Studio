@@ -52,6 +52,8 @@ export type ReferenceVideo = {
   status: 'novo' | 'pronto' | 'falhou';
   error: string | null;
   created_at: string | null;
+  /** Nome do estilo criado a partir dela sem nome digitado: título limpo + " (referência)". */
+  suggested_style_name?: string;
 };
 
 export type ThumbSpec = {

@@ -15,7 +15,7 @@ const STATUS: Record<ReferenceVideo['status'], { tone: 'neutral' | 'good' | 'bad
   falhou: { tone: 'bad', text: 'Falhou' },
 };
 
-/** Nome da referência editável no lugar do título: Enter salva, Esc cancela. Só controles em linha (o título é um h2). */
+/** Nome da referência editável no lugar do título (fora do h2, via `titleEditor` do Section): Enter salva, Esc cancela. */
 const RenameTitle: React.FC<{ reference: ReferenceVideo; busy: boolean; onSave: (title: string) => void; onCancel: () => void }> = ({
   reference,
   busy,
@@ -202,7 +202,8 @@ export const ReferencesPage: React.FC = () => {
           return (
             <Section
               key={ref.id}
-              title={
+              title={ref.title}
+              titleEditor={
                 renaming === ref.id ? (
                   <RenameTitle
                     reference={ref}
@@ -213,9 +214,7 @@ export const ReferencesPage: React.FC = () => {
                       rename.reset();
                     }}
                   />
-                ) : (
-                  ref.title
-                )
+                ) : undefined
               }
               icon={Film}
               description={

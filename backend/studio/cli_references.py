@@ -2,12 +2,14 @@
 
     studio fix-reference-names [--dry-run]
 
-- Referências: `reference_videos.title` passa por `clean_media_title` quando o valor muda
+- Referências: só o título que é nome de downloader (começa com o prefixo do site, "YTDown.com_…", "y2mate.com - …")
+  passa pela limpeza de nome de arquivo
   ("YTDown.com_YouTube_Media_-hT4bLj6Jdg_VOCÊ-VAI-ZERAR-GTA-6-PELO-YOUTUBE_001_1080p" → "VOCÊ VAI ZERAR GTA 6 PELO
-  YOUTUBE").
+  YOUTUBE"). Nome digitado ("Meu nome_001", "Spider-Man") e a URL provisória da referência por link ainda não baixada
+  ficam como estão (a URL precisa continuar igual a `source_url` para a análise trocar pelo título do yt-dlp).
 - Estilos criados a partir de uma referência e nunca salvos de novo (tag "referencia", versão 1, nome
-  "<título> (referência)"): troca o nome (coluna e `data.name`) e o título na descrição. Um estilo renomeado ou
-  editado pelo usuário (versão > 1, ou nome diferente do automático) fica como está.
+  "<nome de downloader> (referência)"): troca o nome (coluna e `data.name`) e o título na descrição. Um estilo
+  renomeado ou editado pelo usuário (versão > 1, ou nome que não é de downloader) fica como está.
 - **O id nunca muda**: projetos e canais apontam para ele (o endereço `/estilos/ref-ytdown-…` continua o mesmo).
 """
 
@@ -38,14 +40,16 @@ class FixReport:
 
 def _style_fix(row_id: str, name: str, version: int, data: dict[str, Any]) -> NameFix | str | None:
     """A correção de um estilo, um aviso (str) quando não dá para corrigir, ou None quando não há o que fazer."""
-    from studio.core.media_title import clean_media_title
+    from studio.core.media_title import clean_media_title, is_downloader_name
     from studio.core.styles.from_reference import REF_SUFFIX, default_style_name
     from studio.core.styles.schema import StyleSpec
 
     if version != 1 or "referencia" not in (data.get("tags") or []) or not name.endswith(REF_SUFFIX):
         return None
     old_title = name[: -len(REF_SUFFIX)]
-    new_title = clean_media_title(old_title)
+    if not is_downloader_name(old_title):  # nome digitado ou já limpo: o do usuário vale como está
+        return None
+    new_title = clean_media_title(old_title, from_filename=True)
     if not new_title or new_title == old_title:
         return None
     new_name = default_style_name(new_title)
@@ -63,15 +67,18 @@ def _style_fix(row_id: str, name: str, version: int, data: dict[str, Any]) -> Na
 
 def fix_reference_names(*, dry_run: bool = False) -> FixReport:
     """Acha (e, sem `dry_run`, grava) os nomes a limpar. Nunca troca id."""
-    from studio.core.media_title import clean_media_title
+    from studio.core.media_title import clean_media_title, is_downloader_name
     from studio.db import session_scope
     from studio.models import ReferenceVideo, Style
 
     report = FixReport(dry_run=dry_run)
     with session_scope() as s:
         for ref in s.query(ReferenceVideo).order_by(ReferenceVideo.created_at).all():
-            new = " ".join(clean_media_title(ref.title or "").split())[:300]
-            if new and new != ref.title:
+            title = ref.title or ""
+            if not is_downloader_name(title) or title == (ref.source_url or "") or "://" in title:
+                continue
+            new = " ".join(clean_media_title(title, from_filename=True).split())[:300]
+            if new and new != title:
                 report.fixes.append(NameFix("referencia", ref.id, ref.title, new))
         for row in s.query(Style).order_by(Style.created_at).all():
             out = _style_fix(row.id, row.name or "", row.version, dict(row.data or {}))

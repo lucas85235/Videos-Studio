@@ -18,7 +18,7 @@ from collections.abc import Callable
 from statistics import median
 from typing import Any
 
-from studio.core.media_title import clean_media_title
+from studio.core.media_title import display_title
 from studio.core.styles.library import load_presets, set_path
 from studio.core.styles.schema import StyleSpec
 
@@ -356,7 +356,7 @@ NAME_MAX = 120
 
 def reference_title(reference: dict[str, Any]) -> str:
     """Título limpo da referência (as antigas guardaram o nome do arquivo do downloader)."""
-    return clean_media_title(str(reference.get("title") or "")) or "Referência"
+    return display_title(str(reference.get("title") or "")) or "Referência"
 
 
 REF_SUFFIX = " (referência)"

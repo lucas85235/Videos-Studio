@@ -47,19 +47,45 @@ def client():
     ("gameplay_1080p60.mp4", "gameplay"),
 ])
 def test_clean_media_title_report_cases(raw, expected):
-    assert clean_media_title(raw) == expected
+    assert clean_media_title(raw, from_filename=True) == expected
 
 
 @pytest.mark.parametrize(("raw", "expected"), [
     ("Como o GTA 6 vai mudar tudo", "Como o GTA 6 vai mudar tudo"),  # título já legível passa igual
     ("Minha análise [Documentary]", "Minha análise [Documentary]"),  # palavra entre colchetes não é id
-    ("Mortal_Kombat_1.mp4", "Mortal Kombat 1"),  # número do título fica; só "_001" é contador
-    ("clip_001", "clip"),
+    ("Mortal_Kombat_1.mp4", "Mortal Kombat 1"),  # número do título fica
+    ("James_Bond_007", "James Bond 007"),  # "_007" sem outro marcador de downloader é do título
+    ("Aula_012.mp4", "Aula 012"),
+    ("clip_001_1080p", "clip"),  # contador junto da qualidade é do downloader
+    ("Spider-Man.mp4", "Spider-Man"),  # um hífen só é da palavra
+    ("COVID-19", "COVID-19"),
     ("1080p", "1080p"),  # a limpeza não come o nome inteiro
     ("", ""),
 ])
 def test_clean_media_title_keeps_real_titles(raw, expected):
+    assert clean_media_title(raw, from_filename=True) == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("Título [dQw4w9WgXcQ]", "Título"),
+    ("Trailer oficial (1080p)", "Trailer oficial"),
+    ("Spider-Man", "Spider-Man"),  # título do yt-dlp: hífen e sublinhado ficam
+    ("Agente_007", "Agente_007"),
+    ("Meu nome_001", "Meu nome_001"),
+    ("VOCÊ-VAI-ZERAR", "VOCÊ-VAI-ZERAR"),
+])
+def test_clean_media_title_light_mode_for_real_titles(raw, expected):
     assert clean_media_title(raw) == expected
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.youtube.com/watch?v=hT4bLj6-Jdg",
+    "https://www.youtube.com/watch?v=hT4bL-6J_dg",
+    "http://youtu.be/ab_cd-ef_gh",
+])
+def test_clean_media_title_never_touches_urls(url):
+    assert clean_media_title(url) == url
+    assert clean_media_title(url, from_filename=True) == url
 
 
 # --- envio e link -----------------------------------------------------------------------------------------------------
@@ -88,6 +114,23 @@ def test_title_from_ytdlp_is_cleaned(monkeypatch, tmp_path):
     assert done["title"] == "Como o GTA 6 vai mudar tudo"
 
 
+def test_rename_during_download_wins_over_ytdlp_title(monkeypatch):
+    monkeypatch.setattr(rv, "ytdlp_path", lambda: "yt-dlp")
+    monkeypatch.setattr(rv.safe_http, "check_url", lambda url: url)
+    ref = references.create_from_link("https://youtu.be/dQw4w9WgXcQ")
+
+    def download(url, folder, ref_id):
+        references.rename_reference(ref_id, "Nome que eu dei")  # o usuário renomeia enquanto baixa
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{ref_id}.mp4"
+        path.write_bytes(b"mp4")
+        return path, "Título do yt-dlp"
+
+    monkeypatch.setattr(rv, "download", download)
+    monkeypatch.setattr(rv, "analyze", lambda *a, **k: {"info": {}, "shots": [], "sheets": [], "stats": {}})
+    assert references.analyze_reference(ref["id"])["title"] == "Nome que eu dei"
+
+
 # --- estilo a partir da referência ------------------------------------------------------------------------------------
 def test_style_name_from_old_reference_is_clean_and_short():
     out = fr.build_style({**MEASURED, "title": YTDOWN}, use_llm=False)
@@ -102,6 +145,20 @@ def test_long_title_keeps_the_suffix_within_120():
     out = fr.build_style({**MEASURED, "title": "Palavra " * 40}, use_llm=False)
     name = out["style"]["name"]
     assert len(name) <= 120 and name.endswith(" (referência)")
+
+
+def test_style_route_without_name_uses_clean_title(client):
+    with session_scope() as s:
+        s.add(ReferenceVideo(id="ref_suja", title=YTDOWN, status="pronto", **MEASURED))
+    ref = client.get("/api/references/ref_suja").json()
+    assert ref["suggested_style_name"] == f"{CLEAN} (referência)"
+    r = client.post("/api/references/ref_suja/style", json={"use_llm": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["style"]["name"] == f"{CLEAN} (referência)"
+    # Nome digitado vale como está.
+    r = client.post("/api/references/ref_suja/style", json={"use_llm": False, "name": "Meu nome_001"})
+    assert r.status_code == 200, r.text
+    assert r.json()["style"]["name"] == "Meu nome_001"
 
 
 # --- PATCH /api/references/{id} ---------------------------------------------------------------------------------------
@@ -127,6 +184,7 @@ def test_rename_reference_errors():
 
 # --- fix-reference-names ----------------------------------------------------------------------------------------------
 OLD_STYLE_ID = "ref-ytdown-com-youtube-media-ht4blj6jdg-voce-vai-zerar"
+LINK = "https://www.youtube.com/watch?v=hT4bL-6J_dg"
 
 
 def _seed_old_data() -> None:
@@ -138,8 +196,13 @@ def _seed_old_data() -> None:
     with session_scope() as s:
         s.add(ReferenceVideo(id="ref_velha", title=YTDOWN, status="pronto", **MEASURED))
         s.add(ReferenceVideo(id="ref_limpa", title="Já está limpo", status="novo"))
+        s.add(ReferenceVideo(id="ref_link", title=LINK, source_url=LINK, status="falhou"))  # link ainda não baixado
+        s.add(ReferenceVideo(id="ref_digitada", title="Meu nome_001", status="novo"))
+        s.add(ReferenceVideo(id="ref_hifen", title="Spider-Man", status="novo"))
         s.add(Style(id=OLD_STYLE_ID, name=data["name"], data=data, version=1, parent_id="curiosidades-longo"))
         s.add(Style(id="ref-editado", name=edited["name"], data=edited, version=2))  # salvo pelo usuário
+        typed = {**data, "id": "ref-digitado", "name": "Meu nome_001 (referência)"}
+        s.add(Style(id="ref-digitado", name=typed["name"], data=typed, version=1))  # nome digitado no campo novo
 
 
 def _snapshot() -> dict:
@@ -162,7 +225,8 @@ def test_fix_reference_names_fixes_titles_and_keeps_ids():
     _seed_old_data()
     fix_reference_names()
     after = _snapshot()
-    assert after["refs"] == {"ref_velha": CLEAN, "ref_limpa": "Já está limpo"}
+    assert after["refs"] == {"ref_velha": CLEAN, "ref_limpa": "Já está limpo", "ref_link": LINK,
+                             "ref_digitada": "Meu nome_001", "ref_hifen": "Spider-Man"}
     name, version, data = after["styles"][OLD_STYLE_ID]
     assert name == data["name"] == f"{CLEAN} (referência)"
     assert data["id"] == OLD_STYLE_ID and version == 1
@@ -170,6 +234,8 @@ def test_fix_reference_names_fixes_titles_and_keeps_ids():
     StyleSpec.model_validate(data)
     # Estilo já salvo pelo usuário (versão 2) fica como está.
     assert after["styles"]["ref-editado"][0] == f"{YTDOWN} (referência)"
+    # Nome digitado no campo (versão 1, termina em " (referência)") também fica.
+    assert after["styles"]["ref-digitado"][0] == "Meu nome_001 (referência)"
     # Rodar de novo não acha mais nada.
     assert fix_reference_names().fixes == []
 

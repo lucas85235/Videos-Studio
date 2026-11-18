@@ -46,8 +46,11 @@ const FIELD_LABELS: Record<string, string> = {
 const STYLE_NAME_MAX = 120;
 const REF_SUFFIX = ' (referência)';
 
-/** Nome sugerido: "<título> (referência)", cortando o título (nunca o sufixo) para caber no limite. */
-export const defaultStyleName = (title: string) => `${title.slice(0, STYLE_NAME_MAX - REF_SUFFIX.length).trimEnd()}${REF_SUFFIX}`;
+/** Nome sugerido: "<título> (referência)", cortando o título (nunca o sufixo) para caber no limite. O corte é por
+ * caractere (code point), não por unidade UTF-16: um emoji no limite não fica partido ao meio. Só serve de reserva
+ * quando a API não manda `suggested_style_name` (que já vem do título limpo). */
+export const defaultStyleName = (title: string) =>
+  `${Array.from(title).slice(0, STYLE_NAME_MAX - REF_SUFFIX.length).join('').trimEnd()}${REF_SUFFIX}`;
 
 const isColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
 
@@ -114,11 +117,13 @@ export const ReferenceStyleButton: React.FC<{ reference: ReferenceVideo }> = ({ 
   const navigate = useNavigate();
   const { toast } = useToast();
   const [useLlm, setUseLlm] = useState(true);
-  // null = ainda não mexeu: segue o título da referência (que pode ser renomeada enquanto a tela está aberta).
+  // null = ainda não mexeu: mostra o nome que a API vai dar (do título limpo, que segue um renomear enquanto a tela
+  // está aberta) e não manda `name`, para o backend calcular o padrão a partir do título limpo.
   const [name, setName] = useState<string | null>(null);
-  const nameValue = name ?? defaultStyleName(reference.title);
+  const nameValue = name ?? reference.suggested_style_name ?? defaultStyleName(reference.title);
   const create = useMutation({
-    mutationFn: () => visualApi.styleFromReference(reference.id, { use_llm: useLlm, name: nameValue.trim() || undefined }),
+    mutationFn: () =>
+      visualApi.styleFromReference(reference.id, { use_llm: useLlm, name: name === null ? undefined : name.trim() || undefined }),
     onSuccess: (result) => {
       void client.invalidateQueries({ queryKey: ['styles'] });
       toast({ tone: 'good', title: 'Estilo criado', description: `“${result.style.name}” está em Meus estilos.` });
