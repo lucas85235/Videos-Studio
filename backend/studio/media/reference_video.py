@@ -151,13 +151,17 @@ def cuts(path: Path, thr: float = CUT_THRESHOLD) -> list[float]:
     return [float(m) for m in re.findall(r"pts_time:([0-9.]+)", proc.stderr)]
 
 
-def shots_from(cut_times: list[float], dur: float) -> list[dict[str, Any]]:
-    """Planos entre os cortes; plano com menos de 0,4 s sai (flash ou corte duplo)."""
+def shots_from(cut_times: list[float], dur: float, micro: list[dict[str, Any]] | None = None
+               ) -> list[dict[str, Any]]:
+    """Planos entre os cortes. O plano com menos de 0,4 s fica fora da folha de contato e do ritmo antigo, mas não se
+    perde: vai para `micro` quando a lista é passada (stinger, flash, corte de meme; ADR 0004 §3.2)."""
     ts = [0.0] + [t for t in cut_times if t > CUT_THRESHOLD]
     ts.append(dur)
     shots: list[dict[str, Any]] = []
     for a, b in zip(ts, ts[1:], strict=False):
         if b - a < MIN_SHOT_S:
+            if micro is not None and b - a > 0:
+                micro.append({"a": round(a, 2), "dur": round(b - a, 2)})
             continue
         shots.append({"k": len(shots) + 1, "a": round(a, 2), "b": round(b, 2), "dur": round(b - a, 2)})
     return shots
@@ -280,7 +284,8 @@ def analyze(path: Path, out_dir: Path, name: str, *, progress: Callable[[float, 
     say(0.05, "Lendo o vídeo")
     info = probe(path)
     say(0.15, "Achando os cortes")
-    shots = shots_from(cuts(path), info["dur"])
+    micro: list[dict[str, Any]] = []
+    shots = shots_from(cuts(path), info["dur"], micro)
     frames: list[Image.Image] = []
 
     def keep(i: int, frame: Image.Image) -> None:
@@ -288,4 +293,6 @@ def analyze(path: Path, out_dir: Path, name: str, *, progress: Callable[[float, 
         say(0.3 + 0.6 * (i + 1) / max(1, len(shots)), f"Folha de contato ({i + 1}/{len(shots)})")
 
     sheets = contact_sheets(path, shots, info, out_dir, name, on_frame=keep)
-    return {"info": info, "shots": shots, "sheets": sheets, "stats": stats(shots, info, frames)}
+    measured = stats(shots, info, frames)
+    measured["micro_shots"] = len(micro)  # o perfil (`media/refprofile`) mede os micro-planos com mais cuidado
+    return {"info": info, "shots": shots, "sheets": sheets, "stats": measured, "micro": micro}

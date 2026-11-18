@@ -5,7 +5,7 @@
   `GET /api/captures/{id}`, `PUT /api/captures/{id}/phrases/{i}/view`.
 - Referências: `GET|POST /api/references`, `POST /api/references/link`, `GET|PATCH|DELETE /api/references/{id}`,
   `POST /api/references/{id}/analyze` (job `reference_shots`), `POST /api/references/{id}/style` (cria um estilo do
-  usuário a partir das medidas).
+  usuário a partir das medidas), `POST|GET /api/references/{id}/profile` (perfil de edição, ADR 0004 §3.2).
 - Miniaturas: `GET /api/projects/{id}/thumbs`, `PUT .../thumbs/spec`, `POST .../thumbs` (job `thumbs_variants`),
   `PUT .../thumbs/chosen`.
 """
@@ -50,6 +50,10 @@ class RenameBody(BaseModel):
 class RefStyleBody(BaseModel):
     name: str | None = Field(default=None, max_length=120)  # = maxLength do nome no editor de estilos
     use_llm: bool = True
+
+
+class ProfileBody(BaseModel):
+    deep: bool = False
 
 
 class ThumbSpecItem(BaseModel):
@@ -202,6 +206,29 @@ def analyze_reference(ref_id: str) -> dict[str, Any]:
     if references.get_reference(ref_id) is None:
         raise HTTPException(status_code=404, detail="referência não encontrada")
     return get_runner().submit("reference_shots", {"reference_id": ref_id})
+
+
+@router.post("/references/{ref_id}/profile")
+def measure_profile(ref_id: str, body: ProfileBody | None = None) -> dict[str, Any]:
+    """Mede o perfil de edição (job `reference_profile`): rápido (cortes, movimento, áudio) ou profundo (mais fala e
+    visão)."""
+    body = body or ProfileBody()
+    ref = references.get_reference(ref_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="referência não encontrada")
+    if ref["status"] != "pronto":
+        raise HTTPException(status_code=409, detail="Analise o vídeo antes de medir o perfil.")
+    return get_runner().submit("reference_profile", {"reference_id": ref_id, "deep": body.deep})
+
+
+@router.get("/references/{ref_id}/profile")
+def get_profile(ref_id: str) -> dict[str, Any]:
+    """O perfil medido (`profile: null` enquanto não houver) e o que ficou de fora na medição (`notes`)."""
+    ref = references.get_reference(ref_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="referência não encontrada")
+    return {"reference_id": ref_id, "profile": ref["stats"].get("profile"),
+            "notes": ref["stats"].get("profile_notes") or {}}
 
 
 @router.post("/references/{ref_id}/style")

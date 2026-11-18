@@ -48,6 +48,8 @@ _AUTH_TTL_S = 300.0
 # ferramenta.
 WEB_TASKS = frozenset({"factcheck", "media_find", "video_ideas"})
 WEB_TIMEOUT_S = 1800  # a busca e a leitura das páginas levam bem mais que a escrita
+# Visão da referência (ADR 0004 §3.2): o Claude lê as tiras de quadros copiadas na pasta de trabalho, e só elas.
+VISION_TASK = "vision_classify"
 
 
 def web_tools_enabled() -> bool:
@@ -178,6 +180,11 @@ class ClaudeCodeLLM(LLMProvider):
         with tempfile.TemporaryDirectory(prefix="vs-claude-") as workdir:
             system_file = Path(workdir) / "system.txt"
             system_file.write_text(system, encoding="utf-8")
+            if task == VISION_TASK:  # as imagens vão para a pasta de trabalho, a única que o Read pode ler
+                images = (context or {}).get("images") or []
+                names = (context or {}).get("names") or [f"img{n:02d}.jpg" for n in range(len(images))]
+                for src, name in zip(images, names, strict=False):
+                    shutil.copyfile(src, Path(workdir) / Path(name).name)
             cmd = [claude, *self._command(task, schema, system_file)]
             timeout = self._timeout(task)
             try:
@@ -198,10 +205,12 @@ class ClaudeCodeLLM(LLMProvider):
     def _command(self, task: str, schema: dict[str, Any], system_file: Path) -> list[str]:
         """Argumentos do `claude` (sem o executável). Só as tarefas de `WEB_TASKS` ganham WebSearch e WebFetch,
         liberadas também em `--allowedTools` (sem isso o `-p` para pedindo permissão); o resto roda sem ferramentas."""
-        tools = (
-            ["--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch"] if self._web(task)
-            else ["--tools", ""]
-        )
+        if self._web(task):
+            tools = ["--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch"]
+        elif task == VISION_TASK:  # visão da referência: só o Read, e só dentro da pasta de trabalho (as imagens)
+            tools = ["--tools", "Read", "--allowedTools", "Read(./**)"]
+        else:
+            tools = ["--tools", ""]
         return [
             "-p", "--output-format", "json",
             "--json-schema", json.dumps(schema, ensure_ascii=False),

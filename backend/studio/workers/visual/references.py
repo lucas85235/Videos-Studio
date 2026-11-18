@@ -135,8 +135,44 @@ def analyze_reference(ref_id: str, progress: Callable[[float, str], None] | None
     except Exception as exc:
         _update(ref_id, status="falhou", error=str(exc)[:1000] or exc.__class__.__name__)
         raise
+    stats = dict(result["stats"])
+    previous = (get_reference(ref_id) or ref)["stats"]
+    for key in ("profile", "profile_notes"):  # o perfil do mesmo arquivo continua valendo (o job de perfil refaz)
+        if key in previous:
+            stats[key] = previous[key]
     return _update(ref_id, info=result["info"], shots=result["shots"],
-                   sheets=[_rel(p) for p in result["sheets"]], stats=result["stats"], status="pronto", error=None)
+                   sheets=[_rel(p) for p in result["sheets"]], stats=stats, status="pronto", error=None)
+
+
+def get_profile(ref_id: str) -> dict[str, Any] | None:
+    """O perfil de edição gravado em `stats["profile"]` (None se ainda não foi medido). LookupError sem referência."""
+    ref = get_reference(ref_id)
+    if ref is None:
+        raise LookupError(ref_id)
+    return ref["stats"].get("profile")
+
+
+def profile_reference(ref_id: str, *, deep: bool = False,
+                      progress: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+    """Mede o perfil de edição da referência (ADR 0004 §3.2) e grava em `stats["profile"]`, sem migração.
+
+    Modo rápido: cortes, movimento e áudio. Modo profundo: mais fala e visão. As miniaturas dos elementos recorrentes
+    ficam em `library/references/<id>-rec-<n>.jpg` (apagadas com a referência)."""
+    from studio.media import refprofile
+
+    say = progress or (lambda f, m: None)
+    ref = get_reference(ref_id)
+    if ref is None:
+        raise LookupError(ref_id)
+    data_dir = get_settings().data_dir
+    if not ref["path"] or not (data_dir / ref["path"]).is_file():
+        raise rv.ReferenceVideoError("O arquivo do vídeo não está na biblioteca: analise a referência antes.")
+    profile, notes = refprofile.analyze(data_dir / ref["path"], quick=not deep, progress=say,
+                                        thumbs_dir=rv.references_dir(), thumb_prefix=ref_id)
+    profile.refs = [ref_id]
+    current = get_reference(ref_id) or ref  # relê: a análise leva minutos e o título pode ter mudado
+    stats = {**current["stats"], "profile": profile.model_dump(mode="json"), "profile_notes": notes}
+    return _update(ref_id, stats=stats)
 
 
 def delete_reference(ref_id: str) -> bool:
