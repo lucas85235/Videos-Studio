@@ -3,7 +3,7 @@
 - `GET /api/visual/capabilities`: navegador (captura) e yt-dlp (download por link).
 - Provas: `POST /api/projects/{id}/scenes/{scene_id}/proof` (job `page_capture`), `GET /api/projects/{id}/captures`,
   `GET /api/captures/{id}`, `PUT /api/captures/{id}/phrases/{i}/view`.
-- Referências: `GET|POST /api/references`, `POST /api/references/link`, `GET|DELETE /api/references/{id}`,
+- Referências: `GET|POST /api/references`, `POST /api/references/link`, `GET|PATCH|DELETE /api/references/{id}`,
   `POST /api/references/{id}/analyze` (job `reference_shots`), `POST /api/references/{id}/style` (cria um estilo do
   usuário a partir das medidas).
 - Miniaturas: `GET /api/projects/{id}/thumbs`, `PUT .../thumbs/spec`, `POST .../thumbs` (job `thumbs_variants`),
@@ -43,8 +43,12 @@ class LinkBody(BaseModel):
     title: str | None = Field(default=None, max_length=300)
 
 
+class RenameBody(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+
+
 class RefStyleBody(BaseModel):
-    name: str | None = Field(default=None, max_length=200)
+    name: str | None = Field(default=None, max_length=120)  # = maxLength do nome no editor de estilos
     use_llm: bool = True
 
 
@@ -173,6 +177,17 @@ def get_reference(ref_id: str) -> dict[str, Any]:
     if out is None:
         raise HTTPException(status_code=404, detail="referência não encontrada")
     return out
+
+
+@router.patch("/references/{ref_id}")
+def rename_reference(ref_id: str, body: RenameBody) -> dict[str, Any]:
+    """Renomeia a referência (só o título)."""
+    try:
+        return references.rename_reference(ref_id, body.title)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="referência não encontrada") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.delete("/references/{ref_id}")

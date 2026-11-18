@@ -161,12 +161,15 @@ export const Card: React.FC<CardProps> = ({ className = '', interactive, ...rest
 
 export const Section: React.FC<{
   title: React.ReactNode;
+  /** Editor do título (renomear em linha): aparece no lugar do título, fora do `<h2>`, que segue com o título atual
+   * (só para leitor de tela) e continua dando nome à seção. */
+  titleEditor?: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
   icon?: LucideIcon;
   children?: React.ReactNode;
   className?: string;
-}> = ({ title, description, actions, icon: Icon, children, className = '' }) => {
+}> = ({ title, titleEditor, description, actions, icon: Icon, children, className = '' }) => {
   const headingId = useId();
   return (
     <section aria-labelledby={headingId} className={`rounded-xl border border-line bg-card ${className}`}>
@@ -176,9 +179,13 @@ export const Section: React.FC<{
           <div className="flex min-w-0 items-start gap-2.5">
             {Icon ? <Icon size={16} strokeWidth={2} aria-hidden="true" className="mt-0.5 shrink-0 text-muted" /> : null}
             <div className="min-w-0">
-              <h2 id={headingId} className="font-display text-[15px] font-semibold leading-6 text-fg">
+              <h2
+                id={headingId}
+                className={titleEditor ? 'sr-only' : 'font-display text-[15px] font-semibold leading-6 text-fg [overflow-wrap:anywhere]'}
+              >
                 {title}
               </h2>
+              {titleEditor ? <div className="min-w-0">{titleEditor}</div> : null}
               {description ? <div className="mt-0.5 text-[13px] leading-snug text-muted">{description}</div> : null}
             </div>
           </div>
@@ -246,7 +253,7 @@ export const PageHeader: React.FC<{
       ) : null}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1">
-          <h1 className="font-display text-2xl font-bold tracking-tight text-fg">{title}</h1>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-fg [overflow-wrap:anywhere]">{title}</h1>
           {description ? <div className="mt-1 max-w-prose text-sm text-muted">{description}</div> : null}
           {meta ? <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px] text-subtle">{meta}</div> : null}
         </div>

@@ -13,6 +13,7 @@ import {
   LayoutTemplate,
   Lock,
   Music,
+  Pencil,
   RectangleHorizontal,
   RectangleVertical,
   RotateCcw,
@@ -25,7 +26,7 @@ import {
   Video,
 } from 'lucide-react';
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, api, type Channel, type StyleItem, type StyleSpec } from '../api';
 import {
   CAMERA_LABELS,
@@ -109,6 +110,9 @@ const SECTIONS: EditorSection[] = [
   { id: 'audio', label: 'Áudio', icon: Music },
   { id: 'thumbnail', label: 'Thumbnail', icon: LayoutTemplate },
 ];
+
+/** Campo Nome em Formato e roteiro (o botão Renomear e o endereço #formato selecionam ele). */
+const NAME_INPUT_ID = 'estilo-nome';
 
 /** Opções de um select com o valor atual incluído (mesmo que não esteja na lista conhecida). */
 const withCurrent = (options: string[], current: string | null | undefined) => (current && !options.includes(current) ? [...options, current] : options);
@@ -519,6 +523,7 @@ export const StyleEditorPage: React.FC = () => {
 
 const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const client = useQueryClient();
   const { toast } = useToast();
   const confirm = useConfirm();
@@ -760,6 +765,18 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
     });
     return () => observer.disconnect();
   }, [formReady, topOffset]);
+
+  // "Renomear" no cartão da lista abre com #formato: vai à seção e seleciona o nome (uma vez, quando o formulário aparece).
+  const hashHandled = useRef(false);
+  // Preenchidas mais abaixo (as funções dependem do estilo carregado); o efeito só roda com o formulário na tela.
+  const goToSectionRef = useRef<(id: string) => void>(() => {});
+  const focusNameRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!formReady || hashHandled.current || location.hash !== '#formato') return;
+    hashHandled.current = true;
+    const timer = window.setTimeout(() => (preset ? goToSectionRef.current('formato') : focusNameRef.current()), 0);
+    return () => window.clearTimeout(timer);
+  }, [formReady, location.hash, preset]);
 
   // Leitor de tela: o estado do JSON é anunciado só quando a digitação para.
   const jsonStatusText = preset ? '' : jsonError ? jsonError.message : 'JSON válido.';
@@ -1071,6 +1088,27 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
     }
     setActiveSection(id);
   };
+  goToSectionRef.current = goToSection;
+
+  /** "Renomear": abre o formulário (se estiver no JSON), vai a Formato e roteiro e seleciona o campo Nome. */
+  const focusName = () => {
+    if (tab === 'json') {
+      if (jsonError) {
+        changeTab('form'); // mostra o aviso de corrigir o JSON antes
+        return;
+      }
+      setTab('form');
+    }
+    window.setTimeout(() => {
+      goToSection('formato');
+      const input = document.getElementById(NAME_INPUT_ID);
+      if (input instanceof HTMLInputElement) {
+        input.focus({ preventScroll: true });
+        input.select();
+      }
+    }, 0);
+  };
+  focusNameRef.current = focusName;
 
   /* ---------------- dados derivados ---------------- */
 
@@ -1131,6 +1169,9 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
     ) : null
   ) : (
     <>
+      <Button variant="ghost" icon={Pencil} onClick={focusName} title="Ir ao campo Nome (o nome muda ao salvar)">
+        Renomear
+      </Button>
       <Button variant="ghost" icon={Trash2} busy={remove.isPending || checkingUse} disabled={save.isPending || duplicate.isPending} onClick={onDelete} className="hover:!text-red-300">
         Apagar
       </Button>
@@ -1387,7 +1428,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                   <Fields disabled={preset}>
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <Field label="Nome">
-                        <Input value={style.name} maxLength={120} onChange={(e) => set((s) => void (s.name = e.target.value))} />
+                        <Input id={NAME_INPUT_ID} value={style.name} maxLength={120} onChange={(e) => set((s) => void (s.name = e.target.value))} />
                       </Field>
                       <Field label="Estrutura do roteiro" hint="Formatos de lista, ranking ou linha do tempo mudam como o roteiro é dividido.">
                         <Select value={style.structure} onChange={(e) => set((s) => void (s.structure = e.target.value))}>

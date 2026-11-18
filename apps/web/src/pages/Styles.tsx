@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Palette, Plus, RotateCw, Save, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
+import { Palette, Pencil, Plus, RotateCw, Save, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, DEFAULT_STYLE_ID, type StyleItem, type StyleSpec } from '../api';
@@ -102,41 +102,64 @@ const StyleCard: React.FC<{ item: StyleItem; metaLabel: (id: string) => string |
   // Mesmo critério do seletor de estilo do Novo projeto: a família principal; a mistura, quando houver, fica na dica.
   const mix = s.families_mix.filter((f) => f !== s.family);
   const familyTitle = mix.length ? `Mistura com ${mix.map((f) => familyLabel(f, metaLabel(f))).join(', ')}` : undefined;
+  const navigate = useNavigate();
+  const to = `/estilos/${s.id}`;
+  // O título é o link (teclado, leitor de tela, abrir em nova aba); o clique no resto do cartão também abre o editor.
+  // Assim o "Renomear" é outro link, sem um <a> dentro de outro, e as dicas dos selos continuam aparecendo.
+  const openFromCard = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.defaultPrevented || (e.target as HTMLElement).closest('a, button')) return;
+    if (window.getSelection()?.toString()) return; // estava selecionando texto
+    navigate(to);
+  };
   return (
-    <Link to={`/estilos/${s.id}`} className="block h-full rounded-xl">
-      <Card interactive className="flex h-full gap-3">
-        <StyleThumb style={s} />
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex items-start justify-between gap-2">
-            <span className="min-w-0 font-display text-[15px] font-semibold leading-snug text-fg">{s.name}</span>
-            {item.source === 'preset' ? null : (
-              <Badge tone="info" className="shrink-0" title={`Versão ${item.version}`}>
-                Meu · v{item.version}
-              </Badge>
-            )}
-          </div>
-          {s.description ? <p className="line-clamp-2 text-[13px] leading-snug text-muted">{s.description}</p> : null}
-          <div className="mt-auto flex flex-wrap gap-1 pt-1">
-            <Badge title={formatLong(s.format)}>{formatShort(s.format)}</Badge>
-            <Badge title="Duração alvo">{formatDuration(s.format.duration.target_s)}</Badge>
-            {s.structure && s.structure !== 'none' ? <Badge title="Estrutura do roteiro">{label(STRUCTURE_LABELS, s.structure)}</Badge> : null}
-            {item.warnings.length ? (
-              <Badge tone="warn" icon={TriangleAlert} title={item.warnings.join('\n')}>
-                {item.warnings.length === 1 ? '1 aviso' : `${item.warnings.length} avisos`}
-              </Badge>
-            ) : null}
-          </div>
-          <div className="truncate text-xs text-subtle" title={familyTitle}>
-            Visual: {familyLabel(s.family, metaLabel(s.family))}
-          </div>
-          {parentName ? (
-            <div className="text-xs text-subtle">Baseado em {parentName}</div>
-          ) : parentName === null ? (
-            <div className="text-xs text-subtle">Baseado num estilo apagado</div>
+    <Card interactive onClick={openFromCard} className="flex h-full cursor-pointer gap-3">
+      <StyleThumb style={s} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex items-start justify-between gap-2">
+          <Link
+            to={to}
+            title={s.name}
+            className="line-clamp-2 min-w-0 rounded-sm font-display text-[15px] font-semibold leading-snug text-fg [overflow-wrap:anywhere]"
+          >
+            {s.name}
+          </Link>
+          {item.source === 'preset' ? null : (
+            <Badge tone="info" className="shrink-0" title={`Versão ${item.version}`}>
+              Meu · v{item.version}
+            </Badge>
+          )}
+        </div>
+        {s.description ? <p className="line-clamp-2 text-[13px] leading-snug text-muted [overflow-wrap:anywhere]">{s.description}</p> : null}
+        <div className="mt-auto flex flex-wrap gap-1 pt-1">
+          <Badge title={formatLong(s.format)}>{formatShort(s.format)}</Badge>
+          <Badge title="Duração alvo">{formatDuration(s.format.duration.target_s)}</Badge>
+          {s.structure && s.structure !== 'none' ? <Badge title="Estrutura do roteiro">{label(STRUCTURE_LABELS, s.structure)}</Badge> : null}
+          {item.warnings.length ? (
+            <Badge tone="warn" icon={TriangleAlert} title={item.warnings.join('\n')}>
+              {item.warnings.length === 1 ? '1 aviso' : `${item.warnings.length} avisos`}
+            </Badge>
           ) : null}
         </div>
-      </Card>
-    </Link>
+        {item.source === 'preset' ? null : (
+          <Link
+            to={`/estilos/${s.id}#formato`}
+            aria-label={`Renomear “${s.name}”`}
+            className="inline-flex w-fit items-center gap-1 rounded-sm text-xs font-medium text-muted underline-offset-2 hover:text-accent hover:underline"
+          >
+            <Pencil size={12} aria-hidden="true" />
+            Renomear
+          </Link>
+        )}
+        <div className="truncate text-xs text-subtle" title={familyTitle}>
+          Visual: {familyLabel(s.family, metaLabel(s.family))}
+        </div>
+        {parentName ? (
+          <div className="text-xs text-subtle [overflow-wrap:anywhere]">Baseado em {parentName}</div>
+        ) : parentName === null ? (
+          <div className="text-xs text-subtle">Baseado num estilo apagado</div>
+        ) : null}
+      </div>
+    </Card>
   );
 };
 
@@ -175,7 +198,7 @@ const GeneratedResult: React.FC<{
       <div className="flex flex-wrap items-start gap-3">
         <StyleThumb style={result.style} />
         <div className="min-w-0 flex-1">
-          <div className="font-display text-[15px] font-semibold text-fg">{result.style.name}</div>
+          <div className="font-display text-[15px] font-semibold text-fg [overflow-wrap:anywhere]">{result.style.name}</div>
           {result.summary ? <p className="mt-1 text-sm text-muted">{result.summary}</p> : null}
           <p className="mt-1 text-xs text-subtle">
             Baseado em {baseName} · gerado por {providerName}

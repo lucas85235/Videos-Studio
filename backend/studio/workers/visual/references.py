@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import IO, Any
 
 from studio.config import get_settings
+from studio.core.media_title import clean_media_title
+from studio.core.styles.from_reference import default_style_name, reference_title
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.media import reference_video as rv
@@ -24,6 +26,8 @@ def reference_dict(row: ReferenceVideo) -> dict[str, Any]:
         "id": row.id, "title": row.title, "source_url": row.source_url, "path": row.path, "info": row.info or {},
         "shots": row.shots or [], "sheets": row.sheets or [], "stats": row.stats or {}, "status": row.status,
         "error": row.error, "created_at": row.created_at.isoformat() if row.created_at else None,
+        # O nome que o estilo criado dela recebe sem nome digitado (título limpo + " (referência)").
+        "suggested_style_name": default_style_name(reference_title({"title": row.title})),
     }
 
 
@@ -64,7 +68,8 @@ def save_upload(stream: IO[bytes], filename: str, title: str = "") -> dict[str, 
     if not written:
         target.unlink(missing_ok=True)
         raise ValueError("O arquivo está vazio.")
-    name = " ".join((title or Path(filename).stem).split())[:300] or "Referência"
+    # Sem nome digitado, o título sai do nome do arquivo, sem o lixo do downloader (site, id, _001, 1080p).
+    name = " ".join((title or clean_media_title(Path(filename).stem, from_filename=True)).split())[:300] or "Referência"
     with session_scope() as s:
         row = ReferenceVideo(id=ref_id, title=name, path=_rel(target), status="novo")
         s.add(row)
@@ -96,6 +101,15 @@ def _update(ref_id: str, **fields: Any) -> dict[str, Any]:
         return reference_dict(row)
 
 
+def rename_reference(ref_id: str, title: str) -> dict[str, Any]:
+    """Troca o nome da referência (só o título; o id e os arquivos ficam). Vazio dá ValueError; id inexistente,
+    LookupError."""
+    name = " ".join((title or "").split())[:300]
+    if not name:
+        raise ValueError("O nome não pode ficar vazio.")
+    return _update(ref_id, title=name)
+
+
 def analyze_reference(ref_id: str, progress: Callable[[float, str], None] | None = None) -> dict[str, Any]:
     """Baixa (se veio por link e ainda não baixou), corta em planos e monta as folhas e o ritmo."""
     say = progress or (lambda f, m: None)
@@ -111,8 +125,10 @@ def analyze_reference(ref_id: str, progress: Callable[[float, str], None] | None
             say(0.02, "Baixando o vídeo (yt-dlp)")
             path, title = rv.download(ref["source_url"], folder, ref_id)
             fields: dict[str, Any] = {"path": _rel(path)}
-            if title and ref["title"] in ("", ref["source_url"]):
-                fields["title"] = title[:300]
+            # Relê a linha: o usuário pode ter renomeado durante o download, e o nome dele manda.
+            current = get_reference(ref_id) or ref
+            if title and current["title"] in ("", current["source_url"]):
+                fields["title"] = clean_media_title(title)[:300]
             ref = _update(ref_id, **fields)
         result = rv.analyze(data_dir / ref["path"], folder, ref_id,
                             progress=lambda f, m: say(0.1 + 0.9 * f, m))
