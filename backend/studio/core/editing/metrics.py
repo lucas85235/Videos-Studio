@@ -30,7 +30,7 @@ from studio.core.editing.profile import (
     PaceBlock,
 )
 from studio.core.project.document import CARD_KINDS, ProjectDoc
-from studio.core.sources import REAL_TIERS, prov_of_scene
+from studio.core.sources import HOOK_DEFAULT, REAL_TIERS, prov_of_scene
 from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
 
 # --- Constantes das medidas -------------------------------------------------------------------------------------------
@@ -45,10 +45,17 @@ WINDOW_S = 30.0
 """Janelas de cortes por minuto (`cuts_per_min_windows`)."""
 ON_CUT_S = 0.12
 """SFX a até isto de um corte conta como "no corte"."""
-KB_MOTIONS = frozenset({"ken_burns_in", "ken_burns_out", "pan_left", "pan_right", "pan_up", "pan_down", "parallax"})
-"""Movimentos de slideshow: Ken Burns e pan (o parallax cai no Ken Burns sem camadas)."""
+SLOW_STILL_MOTIONS = frozenset({"ken_burns_in", "ken_burns_out", "zoom_to", "push", "drift", "parallax", "pan_left",
+                                "pan_right", "pan_up", "pan_down"})
+"""Movimento lento sobre foto parada (a assinatura do slideshow): zoom, aproximação, deriva e pan. É o conjunto do
+`kb_share`; trocar Ken Burns por `zoom_to`, `push` ou `drift` não muda o visual, então não muda a medida. O parallax
+cai no Ken Burns sem as camadas."""
+KB_MOTIONS = SLOW_STILL_MOTIONS
 SLOW_ZOOM_MOTIONS = frozenset({"ken_burns_in", "ken_burns_out", "push", "zoom_to", "parallax"})
-"""Rampas de zoom lento."""
+"""Rampas de zoom lento (o `camera.slow_zoom_share` do perfil da referência)."""
+PLANNER_SLOW_ZOOMS: tuple[str, ...] = ("ken_burns_in", "ken_burns_out", "zoom_to")
+"""Os movimentos que o sorteio de câmera do planejador limita a `grammar.slow_zoom_share` (espelho de
+`core.edit_resolve.SLOW_ZOOMS`, que vale quando existe): o teto do `kb_share` sai da mesma regra."""
 STATIC_MOTIONS = frozenset({"static", "none"})
 PUNCH_MOTIONS = frozenset({"punch_zoom"})
 AUDIO_FX = frozenset({"sfx", "music_drop"})
@@ -63,7 +70,16 @@ SFX_CLASS_OF: dict[str, str] = {
     "scratch": "scratch",
 }
 MAX_APPEARANCES = 3
-"""Aparições livres do mesmo asset (o original e até 2 reenquadramentos); cada uma a mais é uma repetição."""
+"""Cenas livres com o mesmo asset (o original e até 2 reaproveitamentos); cada cena a mais é uma repetição.
+
+Desvio declarado do alvo 0 do ADR §6: o storyboard reaproveita de propósito a imagem de uma cena em outras
+(`visual.reuse_of`, `new_image_ratio` 0,5 por padrão: metade das cenas reaproveita), com outro enquadramento. Esse
+reaproveitamento planejado não é a repetição que dá cara de IA; a mesma imagem em 4 cenas ou mais já é. Os
+reenquadramentos dentro da mesma cena (subplanos) não contam."""
+SFX_LIB_FREE = 2
+SFX_LIB_FREE_PER_MIN = 1.0
+"""O mesmo som da biblioteca (`lib_id`) pode tocar até max(2, 1 por minuto) vezes; cada vez a mais é repetição (o som
+de transição gerado pelo app não tem `lib_id` e não conta)."""
 
 # --- Alvos do índice e das conferências (ADR 0004 §6) ------------------------------------------------------------------
 
@@ -87,7 +103,7 @@ INDEX_WEIGHTS: dict[str, int] = {
 INDEX_LABELS: dict[str, str] = {
     "ai_screen_share": "Imagem de IA na tela",
     "shot_cv": "Variação da duração dos planos",
-    "kb_share": "Ken Burns e pan",
+    "kb_share": "Ken Burns, pan e zoom lento",
     "events_per_min": "Eventos por minuto",
     "sfx_per_min": "Efeitos sonoros por minuto",
     "switch_per_min": "Trocas de tipo de mídia por minuto",
@@ -250,8 +266,13 @@ class _Sfx:
 
 def _timeline_sfx(timeline: dict[str, Any], cuts: list[float]) -> list[_Sfx]:
     """Os SFX da timeline com o instante do ponto forte. Formato antigo `{type, start, scene_id}` (o `start` já vem
-    adiantado pelo `SFX_LEAD`) e o do contrato novo `{type, at, scene, lib_id?, gain_db?}`. É de transição o som da
-    transição da cena, no corte dela."""
+    adiantado pelo `SFX_LEAD`) e o do contrato novo `{type, at, scene, lib_id?, gain_db?}`.
+
+    Conta como transição (fora do `sfx_per_min`):
+    - no formato antigo (sem `at`), qualquer som no início da própria cena: o da transição, o escolhido na cena e o
+      impacto automático do cartão tocam todos no corte, que é o "SFX só na transição" do projeto antigo (ADR §1).
+      Evento é o que cai dentro da cena (o carimbo pousando, o número revelado);
+    - no contrato novo, o som da transição da cena, no corte dela. O que vem com `at` do planejador é evento."""
     from studio.core.timeline import SFX_FOR_TRANSITION, SFX_LEAD, SFX_LEAD_DEFAULT
 
     fps = _fps(timeline)
@@ -263,14 +284,20 @@ def _timeline_sfx(timeline: dict[str, Any], cuts: list[float]) -> list[_Sfx]:
         if not isinstance(event, dict) or not event.get("type"):
             continue
         kind = str(event["type"])
-        if event.get("at") is not None:
+        legacy = event.get("at") is None
+        if not legacy:
             at = float(event["at"])
         else:
             at = float(event.get("start") or 0) + SFX_LEAD.get(kind, SFX_LEAD_DEFAULT)
         sid = str(event.get("scene") or event.get("scene_id") or "")
         start, transition = scene_start.get(sid, (None, ""))
-        is_transition = (start is not None and abs(at - start) <= ON_CUT_S and kind == SFX_FOR_TRANSITION.get(transition)
-                         and start > 0)
+        at_start = start is not None and abs(at - start) <= ON_CUT_S
+        if legacy:
+            # Pelo `start` gravado (a timeline adianta o som e corta no 0: o da 1ª cena começa no 0, não antes).
+            lead = SFX_LEAD.get(kind, SFX_LEAD_DEFAULT)
+            is_transition = start is not None and abs(float(event.get("start") or 0) - max(0.0, start - lead)) <= ON_CUT_S
+        else:
+            is_transition = at_start and kind == SFX_FOR_TRANSITION.get(transition) and bool(start)
         on_cut = any(abs(at - c) <= ON_CUT_S for c in cuts)
         lib = event.get("lib_id")
         out.append(_Sfx(kind, at, sid, is_transition, on_cut, str(lib) if lib else None))
@@ -313,12 +340,36 @@ class TimelineMeasure:
     cuts: list[float]
     still: tuple[float, float]
     """Maior trecho sem evento visual: (início, duração)."""
-    repeats: list[tuple[float, str]]
-    """Cada repetição: (instante, cena)."""
+    repeats: list[tuple[float, str, str]]
+    """Cada repetição: (instante, cena, o quê: "imagem", "meme", "som" ou "meme do canal")."""
     duration: float
 
+    @property
+    def ai_scene_ids(self) -> list[str]:
+        """As cenas com algum plano de IA, em ordem e sem repetir (o "Trocar IA por real")."""
+        return ai_scene_ids(self.shots)
 
-def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None) -> TimelineMeasure:
+
+def ai_scene_ids(shots: list[Shot]) -> list[str]:
+    out: list[str] = []
+    for shot in shots:
+        if shot.prov == "ai" and shot.scene_id and shot.scene_id not in out:
+            out.append(shot.scene_id)
+    return out
+
+
+def timeline_memes(timeline: dict[str, Any]) -> set[str]:
+    """O que identifica cada meme da timeline (o `lib_id` do evento e o arquivo do plano de meme), para comparar com
+    os vídeos anteriores do canal."""
+    out: set[str] = {str(f.params["lib_id"]) for f in _timeline_fx(timeline) if f.type == "meme" and f.params.get("lib_id")}
+    out |= {str(s.key) for s in timeline_shots(timeline) if s.prov == "meme" and s.key}
+    return out
+
+
+def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
+                     channel_memes: frozenset[str] | set[str] = frozenset()) -> TimelineMeasure:
+    """A medida da timeline. `channel_memes`: os memes dos últimos vídeos do canal (`timeline_memes` de cada um); o
+    mesmo meme de novo é repetição."""
     duration = timeline_duration(timeline)
     shots = timeline_shots(timeline, doc)
     if duration <= 0 or not shots:
@@ -387,25 +438,40 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None) ->
     classes = Counter(SFX_CLASS_OF.get(e.type, "other") for e in accents)
     drops = timeline.get("music_drops") or []
 
-    # Repetições: o mesmo asset em mais cenas do que o livre, e o mesmo meme da biblioteca mais de uma vez.
-    repeats: list[tuple[float, str]] = []
+    # Repetições (ADR §6): o mesmo asset em mais cenas do que o livre (`MAX_APPEARANCES`), o mesmo meme de novo (no
+    # vídeo ou num dos últimos do canal) e o mesmo som da biblioteca acima da franquia por minuto.
+    repeats: list[tuple[float, str, str]] = []
     seen_scenes: dict[str, list[str]] = {}
     for s in shots:
         if not s.key or s.kind in CARD_KINDS:
             continue
-        scenes_with = seen_scenes.setdefault(str(s.key), [])
+        key = str(s.key)
+        if s.prov == "meme" and key in channel_memes and key not in seen_scenes:
+            repeats.append((s.start, s.scene_id, "meme do canal"))
+        scenes_with = seen_scenes.setdefault(key, [])
         if s.scene_id in scenes_with:
             continue
         scenes_with.append(s.scene_id)
-        if len(scenes_with) > MAX_APPEARANCES:
-            repeats.append((s.start, s.scene_id))
+        if s.prov == "meme" and len(scenes_with) > 1:
+            repeats.append((s.start, s.scene_id, "meme"))
+        elif len(scenes_with) > MAX_APPEARANCES:
+            repeats.append((s.start, s.scene_id, "imagem"))
     memes_seen: set[str] = set()
     for f in fxs:
         lib = f.params.get("lib_id")
         if f.type == "meme" and lib:
             if str(lib) in memes_seen:
-                repeats.append((f.at, f.scene_id))
+                repeats.append((f.at, f.scene_id, "meme"))
+            elif str(lib) in channel_memes:
+                repeats.append((f.at, f.scene_id, "meme do canal"))
             memes_seen.add(str(lib))
+    sfx_free = max(SFX_LIB_FREE, math.ceil(minutes * SFX_LIB_FREE_PER_MIN))
+    sfx_count: Counter[str] = Counter()
+    for e in sfx:
+        if e.lib_id:
+            sfx_count[e.lib_id] += 1
+            if sfx_count[e.lib_id] > sfx_free:
+                repeats.append((e.at, e.scene_id, "som"))
     repeats.sort()
 
     fp = EditFingerprint(
@@ -458,14 +524,18 @@ def fingerprint_from_timeline(timeline: dict[str, Any], doc: ProjectDoc) -> Edit
 
 
 def prov_strip(timeline: dict[str, Any], doc: ProjectDoc | None = None) -> list[dict[str, Any]]:
-    """Trechos seguidos com o mesmo nível de fonte: `[{start, end, prov, scene_id}]` (segundos), para a faixa colorida.
-    `scene_id` é a cena onde o trecho começa."""
+    """Trechos seguidos com o mesmo nível de fonte: `[{start, end, prov, scene_id, scene_ids}]` (segundos), para a
+    faixa colorida. `scene_id` é a cena onde o trecho começa; `scene_ids`, todas as cenas do trecho, em ordem (um
+    trecho atravessa cenas)."""
     out: list[dict[str, Any]] = []
     for shot in timeline_shots(timeline, doc):
         if out and out[-1]["prov"] == shot.prov and abs(out[-1]["end"] - shot.start) < 1e-3:
             out[-1]["end"] = _r(shot.end)
+            if shot.scene_id not in out[-1]["scene_ids"]:
+                out[-1]["scene_ids"].append(shot.scene_id)
         else:
-            out.append({"start": _r(shot.start), "end": _r(shot.end), "prov": shot.prov, "scene_id": shot.scene_id})
+            out.append({"start": _r(shot.start), "end": _r(shot.end), "prov": shot.prov, "scene_id": shot.scene_id,
+                        "scene_ids": [shot.scene_id]})
     return out
 
 
@@ -480,11 +550,19 @@ def real_share(fp: EditFingerprint) -> float:
     return sum(v for k, v in fp.materials.prov_mix.items() if k in REAL_TIERS)
 
 
-def flat_metrics(fp: EditFingerprint) -> dict[str, Any]:
-    """As métricas da tabela do ADR 0004 §6 com os nomes de lá."""
+def hook_ok(hook_prov: str | None, targets: Targets | None = None) -> bool:
+    """O gancho abre com um nível que o estilo aceita (`sources.hook`; sem alvos, qualquer material real). Cartão,
+    meme, banco (quando o estilo não aceita) e IA não contam."""
+    tiers = (targets.hook_tiers if targets is not None and targets.hook_tiers else None) or sorted(REAL_TIERS)
+    return hook_prov is not None and hook_prov in tiers
+
+
+def flat_metrics(fp: EditFingerprint, targets: Targets | None = None) -> dict[str, Any]:
+    """As métricas da tabela do ADR 0004 §6 com os nomes de lá. `targets`: os do estilo (o `hook_real` segue a
+    política do gancho dele)."""
     return {
         "ai_screen_share": _share(ai_screen_share(fp)),
-        "hook_real": fp.hook_prov is not None and fp.hook_prov != "ai",
+        "hook_real": hook_ok(fp.hook_prov, targets),
         "hook_prov": fp.hook_prov,
         "real_share": _share(real_share(fp)),
         "official_share": _share(fp.materials.prov_mix.get("official", 0.0)),
@@ -519,6 +597,9 @@ class Targets(BaseModel):
     cv_min: float = CV_MIN
     kb_max: float = 0.30
     events_min: float = 0.0
+    """O alvo de eventos por minuto (o nome ficou do contrato; vale a faixa `events_band`)."""
+    events_band: tuple[float, float] = (0.0, 0.0)
+    """Alvo ÷ e × (1 + tolerância): "perfil ±tolerância" do ADR §6, nos dois sentidos, no índice e no item."""
     sfx_band: tuple[float, float] = (2.0, 5.0)
     switch_min: float = 2.0
     max_still_s: float = 6.0
@@ -539,6 +620,25 @@ def expected_events_per_min(grammar: EditGrammar, median_s: float | None = None,
     inserts = (grammar.punch_per_min + grammar.text_pop_per_min + grammar.meme_per_min + grammar.annot_per_min
                + grammar.shake_per_min) * scale
     return 60.0 / mean + inserts
+
+
+def kb_cap(style: StyleSpec) -> float:
+    """Teto do `kb_share` (movimento lento sobre foto parada) pela mesma regra do sorteio de câmera do planejador
+    (`edit_resolve.grammar_motion`): `static_share_min` parado, até `slow_zoom_share` de zoom lento e o resto entre os
+    outros movimentos do estilo (sem eles, `push`). O teto é o zoom lento mais a fração do resto que também é
+    movimento lento (pan, push, deriva). Assim a timeline que segue a gramática à risca não perde ponto, e o índice
+    pune o que passa dela (Ken Burns em tudo, nenhum plano parado)."""
+    try:
+        from studio.core.edit_resolve import SLOW_ZOOMS as planner_slow  # type: ignore[attr-defined]
+    except ImportError:
+        planner_slow = PLANNER_SLOW_ZOOMS
+    grammar = grammar_for(style)
+    camera = {k: float(w) for k, w in (style.edit.camera or {}).items() if float(w) > 0}
+    static = min(1.0, grammar.static_share_min)
+    slow = min(grammar.slow_zoom_share, 1.0 - static) if any(k in planner_slow for k in camera) else 0.0
+    rest = {k: w for k, w in camera.items() if k not in planner_slow and k != "static"}
+    rest_slow = sum(w for k, w in rest.items() if k in SLOW_STILL_MOTIONS) / sum(rest.values()) if rest else 1.0
+    return _r(min(1.0, slow + max(0.0, 1.0 - static - slow) * rest_slow))
 
 
 def targets_for(style: StyleSpec, profile: EditProfile | None = None) -> Targets:
@@ -575,12 +675,13 @@ def targets_for(style: StyleSpec, profile: EditProfile | None = None) -> Targets
         short=short,
         ai_max_share=sources.ai_max_share,
         official_max_share=sources.official_max_share,
-        hook_tiers=list(sources.hook),
+        hook_tiers=list(sources.hook) or list(HOOK_DEFAULT),
         shot_median_s=_r(median),
         shot_median_band=(_r(median / (1 + tol)), _r(median * (1 + tol))),
         cv_min=min(CV_MIN, cv) if "pace.cv" in used else CV_MIN,
-        kb_max=grammar.slow_zoom_share,
+        kb_max=kb_cap(style),
         events_min=_r(events, 2),
+        events_band=(_r(events / (1 + tol), 2), _r(events * (1 + tol), 2)),
         sfx_band=(_r(sfx_target * lo, 2), _r(sfx_target * hi, 2)),
         switch_min=switch,
         max_still_s=grammar.max_still_s,
@@ -592,12 +693,21 @@ def targets_for(style: StyleSpec, profile: EditProfile | None = None) -> Targets
 # --- Índice "Cara de IA" --------------------------------------------------------------------------------------------
 
 
+Unit = Literal["share", "ratio", "per_min", "count"]
+
+
 class IndexPart(BaseModel):
     key: str
     label: str
     value: float
     target: str
-    """O alvo em texto ("≤ 0.2", "≥ 0.45", "2–5")."""
+    """O alvo em texto ("≤ 0.2", "≥ 0.45", "2–5"), para o CLI. A tela formata por `lo`, `hi` e `unit`."""
+    lo: float | None = None
+    """Limite de baixo do alvo (None: sem piso)."""
+    hi: float | None = None
+    """Limite de cima do alvo (None: sem teto)."""
+    unit: Unit = "ratio"
+    """share: fração do tempo (mostrar em %); ratio: número puro; per_min: por minuto; count: contagem."""
     penalty: float
     """0 (no alvo) a 1 (o pior)."""
     weight: int
@@ -643,20 +753,30 @@ def ai_look_index(fp: EditFingerprint, style: StyleSpec, profile: EditProfile | 
     t = targets_for(style, profile)
     ai = ai_screen_share(fp)
     lo, hi = t.sfx_band
-    raw: dict[str, tuple[float, str, float]] = {
-        "ai_screen_share": (ai, f"≤ {t.ai_max_share:g}", _over(ai, t.ai_max_share)),
-        "shot_cv": (fp.pace.cv, f"≥ {t.cv_min:g}", _under(fp.pace.cv, t.cv_min)),
-        "kb_share": (fp.camera.kb_share, f"≤ {t.kb_max:g}", _over(fp.camera.kb_share, t.kb_max)),
-        "events_per_min": (fp.pace.events_per_min, f"≥ {t.events_min:g}", _under(fp.pace.events_per_min, t.events_min)),
-        "sfx_per_min": (fp.audio.sfx_per_min, f"{lo:g}–{hi:g}", _outside(fp.audio.sfx_per_min, lo, hi)),
-        "switch_per_min": (fp.materials.switch_per_min, f"≥ {t.switch_min:g}",
+    e_lo, e_hi = t.events_band
+    # (valor, piso, teto, unidade, penalidade)
+    raw: dict[str, tuple[float, float | None, float | None, Unit, float]] = {
+        "ai_screen_share": (ai, None, t.ai_max_share, "share", _over(ai, t.ai_max_share)),
+        "shot_cv": (fp.pace.cv, t.cv_min, None, "ratio", _under(fp.pace.cv, t.cv_min)),
+        "kb_share": (fp.camera.kb_share, None, t.kb_max, "share", _over(fp.camera.kb_share, t.kb_max)),
+        "events_per_min": (fp.pace.events_per_min, e_lo, e_hi, "per_min", _outside(fp.pace.events_per_min, e_lo, e_hi)),
+        "sfx_per_min": (fp.audio.sfx_per_min, lo, hi, "per_min", _outside(fp.audio.sfx_per_min, lo, hi)),
+        "switch_per_min": (fp.materials.switch_per_min, t.switch_min, None, "per_min",
                            _under(fp.materials.switch_per_min, t.switch_min)),
-        "repeat_hits": (float(fp.repeat_hits), "0", min(1.0, fp.repeat_hits / REPEAT_FULL)),
+        "repeat_hits": (float(fp.repeat_hits), None, 0.0, "count", min(1.0, fp.repeat_hits / REPEAT_FULL)),
     }
+
+    def text(a: float | None, b: float | None) -> str:
+        if a is not None and b is not None and b > 0:
+            return f"{a:g}–{b:g}"
+        if a is not None:
+            return f"≥ {a:g}"
+        return f"≤ {b:g}" if b else "0"
+
     parts = [
-        IndexPart(key=key, label=INDEX_LABELS[key], value=_r(value), target=target, penalty=_r(penalty),
-                  weight=INDEX_WEIGHTS[key], points=_r(INDEX_WEIGHTS[key] * penalty, 2))
-        for key, (value, target, penalty) in raw.items()
+        IndexPart(key=key, label=INDEX_LABELS[key], value=_r(value), target=text(a, b), lo=a, hi=b, unit=unit,
+                  penalty=_r(penalty), weight=INDEX_WEIGHTS[key], points=_r(INDEX_WEIGHTS[key] * penalty, 2))
+        for key, (value, a, b, unit, penalty) in raw.items()
     ]
     score = int(round(sum(p.weight * p.penalty for p in parts)))
     return AiLookIndex(score=score, band=band_of(score), parts=parts)

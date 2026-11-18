@@ -124,8 +124,25 @@ def is_fresh(ctx: FinalContext, report: dict[str, Any] | None) -> bool:
     return made + 1.0 >= video.stat().st_mtime
 
 
+def edit_section(ctx: FinalContext) -> dict[str, Any] | None:
+    """A conferência da edição auditada no MP4 (`QualityReport(kind="edit")`) para a Conferência final, quando ela
+    vale para este vídeo (mesma regra do `is_fresh`): `{report_id, status, score, band, items}`. Os itens `perfil.*`
+    nunca passam de aviso e ficam fora do `status` do preflight: edição é gosto, não trava o envio."""
+    from studio.workers.finalcheck.profile_check import fresh_edit_report
+
+    report, _ = fresh_edit_report(ctx)
+    if report is None:
+        return None
+    index = (report.get("data") or {}).get("index") or {}
+    items = [{**i, "level": "aviso" if i.get("level") == "erro" else i.get("level", "ok")}
+             for i in report.get("items") or []]
+    return {"report_id": report["id"], "status": worst(items), "score": index.get("score"), "band": index.get("band"),
+            "items": items}
+
+
 def preflight(project_id: str, lang: str | None = None) -> dict[str, Any]:
-    """Estado antes de publicar: avisos rápidos de agora + o relatório salvo (o pior nível decide)."""
+    """Estado antes de publicar: avisos rápidos de agora + o relatório salvo (o pior nível decide). `edit`: os itens
+    `perfil.*` da conferência da edição em dia, à parte (não entram no `status`)."""
     ctx = load_context(project_id, lang)
     quick = quick_items(ctx)
     report = latest_report(project_id, ctx.lang)
@@ -134,4 +151,4 @@ def preflight(project_id: str, lang: str | None = None) -> dict[str, Any]:
     if fresh and report:
         items += [i for i in report["items"] if i.get("code") not in QUICK_CODES]
     return {"lang": ctx.lang, "video": ctx.video_rel if ctx.has_video else None, "report": report, "fresh": fresh,
-            "quick": quick, "status": worst(items), "items": items}
+            "quick": quick, "status": worst(items), "items": items, "edit": edit_section(ctx)}

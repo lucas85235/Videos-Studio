@@ -51,6 +51,15 @@ export type Preflight = {
   status: CheckLevel;
   /** Tudo o que conta para o estado: os avisos rápidos de agora e, com relatório fresco, as medidas dele. */
   items: CheckItem[];
+  /** Conferência da edição auditada no MP4 (itens `perfil.*`, no máximo aviso), quando vale para este vídeo. Fica
+   * fora do `status`: edição é gosto, não trava o envio. */
+  edit?: {
+    report_id: number;
+    status: CheckLevel;
+    score: number | null;
+    band: AiLookBand | null;
+    items: CheckItem[];
+  } | null;
 };
 
 /** Nível (origem) do material na tela, do mais real ao gerado (ADR 0004; `core/sources.py`). */
@@ -63,8 +72,14 @@ export type AiLookPart = {
   key: string;
   label: string;
   value: number;
-  /** Alvo em texto ("≤ 0.2", "≥ 0.45", "2–5"). */
+  /** Alvo em texto ("≤ 0.2", "≥ 0.45", "2–5"), para o CLI; a tela formata por `lo`, `hi` e `unit`. */
   target: string;
+  /** Limite de baixo do alvo (null: sem piso). */
+  lo: number | null;
+  /** Limite de cima do alvo (null: sem teto). */
+  hi: number | null;
+  /** share: fração do tempo (em %); ratio: número puro; per_min: por minuto; count: contagem. */
+  unit: 'share' | 'ratio' | 'per_min' | 'count';
   /** 0 (no alvo) a 1 (o pior). */
   penalty: number;
   weight: number;
@@ -92,8 +107,9 @@ export type EditFlatMetrics = {
   repeat_hits: number;
 };
 
-/** Trecho seguido com o mesmo nível de fonte (segundos). `scene_id`: a cena onde o trecho começa. */
-export type ProvStripSpan = { start: number; end: number; prov: Prov; scene_id: string };
+/** Trecho seguido com o mesmo nível de fonte (segundos). `scene_id`: a cena onde o trecho começa; `scene_ids`: todas
+ * as cenas do trecho, em ordem (um trecho atravessa cenas). */
+export type ProvStripSpan = { start: number; end: number; prov: Prov; scene_id: string; scene_ids: string[] };
 
 export type EditMetricsSource = 'final' | 'preview' | 'estimate';
 
@@ -104,7 +120,15 @@ export type EditMetrics = {
   /** Timeline medida: a do vídeo final, a da última prévia ou a estimada pelo roteiro. */
   source: EditMetricsSource;
   source_label: string;
+  /** Frase pronta para a tela ("Medido no vídeo final", "Estimado pelo roteiro"; diz quando o projeto mudou). */
+  source_text: string;
+  /** Versão do projeto que a timeline medida descreve (null: a estimada, que é a de agora). */
   version: number | null;
+  current_version: number | null;
+  /** A timeline medida é de outra versão ou não bate mais com as cenas: o projeto mudou depois. */
+  outdated: boolean;
+  /** render: números da conferência auditada no MP4 (vídeo final em dia); timeline: da timeline. */
+  measured_from: 'render' | 'timeline';
   profile_refs: string[];
   index: { score: number; band: AiLookBand; parts: AiLookPart[] };
   metrics: EditFlatMetrics;
@@ -121,9 +145,13 @@ export type EditMetrics = {
   items: CheckItem[];
   status: CheckLevel;
   strip: ProvStripSpan[];
+  /** Cenas com algum plano de IA, em ordem e sem repetir (o "Trocar IA por real"). */
+  ai_scene_ids: string[];
   duration: number;
-  /** Último `QualityReport(kind="edit")` do idioma (auditado no MP4), se houver. */
+  /** Último `QualityReport(kind="edit")` do idioma (auditado no MP4), só quando vale para o vídeo final de agora. */
   report: QualityReport | null;
+  /** Havia um relatório da edição, mas de outro render. */
+  report_outdated: boolean;
 };
 
 export const checksApi = {

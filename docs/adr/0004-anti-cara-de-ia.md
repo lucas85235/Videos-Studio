@@ -844,6 +844,14 @@ Camadas alteradas:
 
 **Dependências:** fundação; usa `refprofile` para auditar o render (stub até o merge de `ref-perfil`).
 
+**Como ficou (desvios registrados na revisão):**
+- A timeline do vídeo final só vale no `auto` quando bate com as cenas do documento e é da versão atual; senão, a prévia nas mesmas condições ou a estimada. A resposta diz `outdated`, `version` e `current_version`. A timeline de outra versão é medida com o documento daquela versão.
+- `kb_share` mede todo movimento lento sobre foto parada (Ken Burns, pan, `zoom_to`, `push`, `drift`, parallax). O teto não é o `slow_zoom_share` puro: é o que o sorteio de câmera do planejador permite (`metrics.kb_cap`: zoom lento mais a fração do resto que também é movimento lento). Com a gramática padrão e a câmera do estilo padrão, isso dá 0,75. Se `timeline-fx` passar a limitar pan e deriva junto (`edit_resolve.SLOW_ZOOMS` = `metrics.SLOW_STILL_MOTIONS`), o teto cai sozinho para o `slow_zoom_share`.
+- `events_per_min` usa a faixa alvo ÷/× (1 + tolerância) nos dois sentidos, no índice e no item.
+- `repeat_hits`: a mesma imagem em mais de 3 cenas (o reaproveitamento planejado do storyboard é livre até aí), o mesmo meme de novo no vídeo ou nos últimos vídeos do canal (janela do `novelty`), e o mesmo SFX da biblioteca acima de max(2, 1 por minuto). O dHash entre vídeos continua no aviso `novelty` da conferência final, e não no índice.
+- SFX no formato antigo (sem `at`): o som no início da própria cena conta como de corte; o carimbo e o reveal, dentro da cena, contam como evento.
+- Auditoria do MP4: só ritmo e câmera vêm do vídeo. O áudio fica o da timeline, e o item `perfil.render` avisa quando o MP4 diverge dela. Com o vídeo final em dia e o relatório auditado fresco, a rota devolve os números do relatório (`measured_from: "render"`).
+
 ---
 
 ### 3.11 `ui-edicao`: telas e integração final
@@ -862,7 +870,8 @@ Camadas alteradas:
 - Cena: `push` em `MOTIONS` (`ScenesTab.tsx:59`), com o rótulo "Aproximação reta" em `CAMERA_LABELS`. Os rótulos de `clip`/`capture`/`meme` e das origens `youtube`/`library`/`capture` já estão em `labels.ts`, e o select "Tipo" da mídia fica só leitura nesses tipos.
 - Projeto:
   - painel "Acervo": lista do `pool.json`, colar links oficiais, trocar candidato;
-  - `EditScore` montado na Prévia e na revisão do storyboard;
+  - `EditScore` montado na Prévia e na revisão do storyboard (o "Trocar IA por real" usa `ai_scene_ids`, e com `outdated` a tela diz que o projeto mudou depois da medida);
+  - Conferência final: mostrar `preflight.edit.items` (os `perfil.*` do `QualityReport kind="edit"` em dia com o MP4, no máximo aviso, com `at_s` clicável), à parte e sem entrar no `status`;
   - `EditTrack.tsx`: por cena, os subplanos e eventos, com travar, apagar e mover gatilho por `PATCH /projects/{id}/scenes/{sid}/fx` e `/shots` (rotas em `api/routes_edit.py`);
   - botão "Reeditar" com intensidade.
 - `apiVisual.ts` e `api.ts`: as chamadas.

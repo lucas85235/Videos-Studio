@@ -31,7 +31,8 @@ def format_result(row: dict[str, Any], title: str = "") -> str:
     m = row["metrics"]
     idx = row["index"]
     lines = [f"{row['project_id']}  {title}".rstrip(),
-             f"  timeline: {row['source_label']} ({row['lang']}, {_num(row['duration'], 0)} s)",
+             f"  timeline: {row['source_label']} ({row['lang']}, {_num(row['duration'], 0)} s)"
+             + ("  [desatualizada: o projeto mudou depois]" if row.get("outdated") else ""),
              f"  Cara de IA: {idx['score']} de 100 ({idx['band']})"]
     for part in idx["parts"]:
         target = str(part["target"]).translate(_ASCII_MATH)
@@ -93,8 +94,12 @@ def run(args: argparse.Namespace) -> int:
     if not args.all and not args.projects:
         print("Informe um ou mais projetos, ou --all.")
         return 2
-    with readonly_engine():
-        rows = collect(list(args.projects), all_projects=args.all, lang=args.lang, source=args.source)
+    try:
+        with readonly_engine():
+            rows = collect(list(args.projects), all_projects=args.all, lang=args.lang, source=args.source)
+    except (ValueError, FileNotFoundError) as exc:  # banco que não é SQLite em arquivo, ou que não existe
+        print(f"Não deu para abrir o banco só para leitura: {exc}")
+        return 2
     if args.json:
         slim = [{k: v for k, v in r.items() if k not in ("strip", "report")} for r in rows]
         print(json.dumps(slim, ensure_ascii=True, indent=2))

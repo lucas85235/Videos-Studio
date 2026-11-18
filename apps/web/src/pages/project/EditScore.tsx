@@ -6,6 +6,7 @@ import { Gauge, ImageOff, Wand2 } from "lucide-react";
 import type React from "react";
 import {
   type AiLookBand,
+  type AiLookPart,
   checksApi,
   type EditMetrics,
   type EditMetricsSource,
@@ -39,6 +40,29 @@ export const PROV_COLOR: Record<Prov, string> = {
 };
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
+
+const decimal = (value: number, digits = 1) =>
+  value.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+
+/** Um valor do detalhamento na unidade da parte: fração em %, taxa em "/min", contagem inteira. */
+const formatUnit = (value: number, unit: AiLookPart["unit"]) => {
+  if (unit === "share") return percent(value);
+  if (unit === "per_min") return `${decimal(value)}/min`;
+  if (unit === "count") return String(Math.round(value));
+  return decimal(value, 2);
+};
+
+/** O alvo da parte: "≤ 20%", "≥ 0,45", "19,3–35,2/min", "0". */
+export const formatTarget = (part: Pick<AiLookPart, "lo" | "hi" | "unit">) => {
+  const { lo, hi, unit } = part;
+  if (lo != null && hi != null && hi > 0) {
+    const plain = unit === "per_min" ? decimal : (v: number) => formatUnit(v, unit);
+    return `${plain(lo)}–${formatUnit(hi, unit)}`;
+  }
+  if (lo != null) return `≥ ${formatUnit(lo, unit)}`;
+  if (hi != null && hi > 0) return `≤ ${formatUnit(hi, unit)}`;
+  return formatUnit(0, unit);
+};
 
 export const useEditMetrics = (
   projectId: string,
@@ -95,7 +119,8 @@ export const EditScoreView: React.FC<{
   busy?: boolean;
 }> = ({ data, onReedit, onReplaceAi, onSeek, busy }) => {
   const { index, metrics } = data;
-  const aiScenes = [...new Set(data.strip.filter((s) => s.prov === "ai").map((s) => s.scene_id))];
+  // Todas as cenas com IA (uma faixa da timeline junta várias cenas seguidas do mesmo nível).
+  const aiScenes = data.ai_scene_ids;
   const issues = data.items.filter((i) => i.level !== "ok");
   return (
     <div className="flex flex-col gap-4">
@@ -107,7 +132,13 @@ export const EditScoreView: React.FC<{
         <Badge tone={BAND_TONE[index.band]} icon={Gauge}>
           Cara de IA: {index.band}
         </Badge>
-        <span className="text-xs text-subtle">Medido na {data.source_label}</span>
+        <span className="text-xs text-subtle">
+          {data.source_text}
+          {data.measured_from === "render" ? " · ritmo conferido no vídeo renderizado" : ""}
+        </span>
+        {data.outdated ? (
+          <Badge tone="warn">Desatualizado: o projeto mudou depois</Badge>
+        ) : null}
         {data.adherence?.score != null ? (
           <Badge tone={data.adherence.score >= 70 ? "good" : "warn"}>Aderência à referência: {data.adherence.score}</Badge>
         ) : null}
@@ -126,11 +157,11 @@ export const EditScoreView: React.FC<{
         </div>
         <div>
           <dt className="text-subtle">Plano mediano</dt>
-          <dd className="tabular-nums text-fg">{metrics.shot_median.toFixed(1)} s</dd>
+          <dd className="tabular-nums text-fg">{decimal(metrics.shot_median)} s</dd>
         </div>
         <div>
           <dt className="text-subtle">Maior trecho parado</dt>
-          <dd className="tabular-nums text-fg">{metrics.max_still_s.toFixed(1)} s</dd>
+          <dd className="tabular-nums text-fg">{decimal(metrics.max_still_s)} s</dd>
         </div>
       </dl>
 
@@ -141,7 +172,7 @@ export const EditScoreView: React.FC<{
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate text-fg">{part.label}</span>
                 <span className="shrink-0 tabular-nums text-subtle">
-                  {part.value.toFixed(2)} · alvo {part.target}
+                  {formatUnit(part.value, part.unit)} · alvo {formatTarget(part)}
                 </span>
               </div>
               <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-sm bg-canvas">

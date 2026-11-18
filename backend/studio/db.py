@@ -242,13 +242,29 @@ def _configure_readonly(dbapi_connection, _record) -> None:  # pragma: no cover 
     cursor.close()
 
 
+def sqlite_path(url: str) -> Path:
+    """O arquivo de um URL `sqlite:///caminho` (também `sqlite+pysqlite:///` e `sqlite:///file:caminho?...`)."""
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "sqlite":
+        raise ValueError(f"o modo só leitura só funciona com SQLite, e o banco configurado é {parsed.get_backend_name()}")
+    database = parsed.database or ""
+    if not database or database == ":memory:" or database.startswith("file::memory:"):
+        raise ValueError("o modo só leitura precisa de um banco SQLite em arquivo")
+    if database.startswith("file:"):
+        database = database[len("file:"):].split("?", 1)[0]
+    return Path(database)
+
+
 @contextmanager
 def readonly_engine() -> Iterator[Engine]:
     """Durante o bloco, todo `session_scope` lê o banco SQLite em modo só leitura (`mode=ro` e `query_only`): nada
     é gravado (nem migração, nem checkpoint do WAL). Para comandos que só consultam, como `studio edit-metrics`.
-    O banco precisa existir."""
+    O banco é o da configuração (`Settings.db_url`, que respeita `VS_DATABASE_URL`) e precisa existir; banco que não
+    é arquivo SQLite é recusado (ValueError)."""
     global _engine, _session_factory
-    path = get_settings().data_dir / "studio.db"
+    path = sqlite_path(get_settings().db_url)
     if not path.is_file():
         raise FileNotFoundError(f"banco não encontrado: {path}")
     # Sem o arquivo -wal (banco fechado e com checkpoint), `mode=ro` ainda criaria um -wal vazio: `immutable` lê o

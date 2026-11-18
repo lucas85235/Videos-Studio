@@ -311,12 +311,19 @@ def _n(value: float) -> str:
     return f"{value:.1f}".replace(".", ",")
 
 
-def _library_licenses() -> dict[str, str]:
-    """Licença de cada item das bibliotecas de SFX e memes (manifestos `library/sfx|memes/manifest.json` do usuário e
-    o do pacote básico do repositório). Biblioteca ainda inexistente: vazio."""
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return one if n == 1 else many
+
+
+def _library_rows() -> dict[str, dict[str, Any]]:
+    """Cada item das bibliotecas de SFX e memes (manifestos `library/sfx|memes/manifest.json` do usuário e o do pacote
+    básico do repositório), por id: `{license, risk, author, credit, source_url, ...}`. Biblioteca ainda
+    inexistente: vazio."""
     from studio.config import REPO_ROOT
 
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, Any]] = {}
     paths = [REPO_ROOT / "assets" / "sfx" / "vulto-basico" / "manifest.json",
              get_settings().library_dir / "sfx" / "manifest.json",
              get_settings().library_dir / "memes" / "manifest.json"]
@@ -328,47 +335,142 @@ def _library_licenses() -> dict[str, str]:
         rows = data.get("items", []) if isinstance(data, dict) else data
         for row in rows if isinstance(rows, list) else []:
             if isinstance(row, dict) and row.get("id"):
-                out[str(row["id"])] = str(row.get("license") or "")
+                out[str(row["id"])] = row
     return out
 
 
-def _license_items(doc: ProjectDoc, timeline: dict[str, Any], starts: dict[str, float]) -> list[dict[str, Any]]:
-    """Meme anexado sem licença e inserto da biblioteca (SFX ou meme, por `lib_id`) com licença desconhecida."""
+def _unknown(license_: str | None) -> bool:
+    return (license_ or "").strip().lower() in UNKNOWN_LICENSES
+
+
+def _norm_license(license_: str | None) -> str:
+    return (license_ or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+HIGH_RISKS = frozenset({"high", "alto", "alta"})
+THIRD_PARTY_TIERS = frozenset({"meme", "free", "stock", "official"})
+"""Níveis de material de terceiros cuja licença ou origem a conferência confere."""
+
+
+def _project_pool(doc: ProjectDoc) -> Any:
+    from studio.core.project.pool import Pool, load_pool
+
+    try:
+        return load_pool(doc.id)
+    except (ValueError, OSError):
+        return Pool()
+
+
+def _license_items(doc: ProjectDoc, timeline: dict[str, Any], starts: dict[str, float],
+                   pool: Any = None) -> tuple[list[dict[str, Any]], int]:
+    """Licença do que é de terceiros: (avisos, quantos insertos foram conferidos).
+
+    - mídia anexada (a da cena e a dos subplanos): meme sem licença; foto livre ou de banco sem licença; material
+      oficial sem a página de origem;
+    - item do acervo usado (por `pool_id`, na mídia ou no subplano): o mesmo, pelo nível do item;
+    - inserto da biblioteca (SFX ou meme, por `lib_id`): sem registro em nenhum manifesto, licença desconhecida,
+      `fair_comment` ou risco alto (uso como comentário: pode cair) e `cc_by` sem autor nem crédito."""
+    from studio.core.sources import prov_of_media
+
     out: list[dict[str, Any]] = []
+    checked = 0
+    pool = pool if pool is not None else _project_pool(doc)
+    problems: dict[str, list[str]] = {}
+    texts = {
+        "meme": ("Meme sem licença declarada",
+                 "material de terceiros só entra com licença registrada: declare a licença ou troque."),
+        "free": ("Foto livre ou de banco sem licença declarada",
+                 "sem a licença não dá para conferir o uso nem montar o crédito: declare a licença ou troque."),
+        "official": ("Material oficial sem a página de origem",
+                     "guarde o link de onde veio o material (crédito e defesa no Content ID)."),
+    }
+
+    def check(prov: str, license_: str, origin: str, scene_id: str) -> None:
+        if prov == "meme" and _unknown(license_):
+            problems.setdefault("meme", []).append(scene_id)
+        elif prov in ("free", "stock") and _unknown(license_):
+            problems.setdefault("free", []).append(scene_id)
+        elif prov == "official" and not origin.strip():
+            problems.setdefault("official", []).append(scene_id)
+
+    used_pool: list[tuple[str, str]] = []
     for scene in doc.ordered_scenes():
-        media = scene.visual.media
-        if media is not None and media.kind == "meme" and media.license.strip().lower() in UNKNOWN_LICENSES:
-            out.append(item("perfil.licenca", "aviso", "Meme sem licença declarada",
-                            "material de terceiros só entra com licença registrada: declare a licença ou troque.",
-                            starts.get(scene.id), scene.id))
+        for media in (scene.visual.media, *(sh.media for sh in scene.shots)):
+            if media is None:
+                continue
+            prov = prov_of_media(media)
+            if prov in THIRD_PARTY_TIERS:
+                checked += 1
+                check(prov, media.license, media.page_url or media.url, scene.id)
+            elif media.pool_id:
+                used_pool.append((media.pool_id, scene.id))
+        used_pool += [(sh.pool_id, scene.id) for sh in scene.shots if sh.pool_id and sh.media is None]
+    seen_pool: set[str] = set()
+    for pool_id, scene_id in used_pool:
+        found = pool.item(pool_id) if pool is not None else None
+        if found is None or pool_id in seen_pool:
+            continue
+        seen_pool.add(pool_id)
+        if found.tier in THIRD_PARTY_TIERS:
+            checked += 1
+            check(found.tier, found.license, found.page_url or found.url, scene_id)
+    for key, found_in in problems.items():
+        title, detail = texts[key]
+        scenes = list(dict.fromkeys(found_in))
+        n = len(scenes)
+        out.append(item("perfil.licenca", "aviso", title + (f" ({n} cenas)" if n > 1 else ""), detail,
+                        starts.get(scenes[0]), scenes[0]))
+
     libs: list[tuple[str, str]] = []
     for scene in doc.scenes:
         libs += [(str(fx.params["lib_id"]), scene.id) for fx in scene.fx if fx.params.get("lib_id")]
+    for tl_scene in timeline.get("scenes") or []:
+        libs += [(str(fx["params"]["lib_id"]), str(tl_scene.get("id") or "")) for fx in tl_scene.get("fx") or []
+                 if isinstance(fx, dict) and isinstance(fx.get("params"), dict) and fx["params"].get("lib_id")]
     libs += [(str(e["lib_id"]), str(e.get("scene") or e.get("scene_id") or "")) for e in timeline.get("sfx") or []
              if isinstance(e, dict) and e.get("lib_id")]
     if libs:
-        licenses = _library_licenses()
+        rows = _library_rows()
         seen: set[str] = set()
         for lib_id, scene_id in libs:
-            if lib_id in seen or lib_id not in licenses:
+            if lib_id in seen:
                 continue
             seen.add(lib_id)
-            if licenses[lib_id].strip().lower() in UNKNOWN_LICENSES:
+            checked += 1
+            at, sid = starts.get(scene_id), scene_id or None
+            row = rows.get(lib_id)
+            if row is None:
+                out.append(item("perfil.licenca", "aviso", f"Inserto \"{lib_id}\" sem registro na biblioteca",
+                                "não há licença registrada para este som ou meme: importe na biblioteca com a licença "
+                                "ou troque.", at, sid))
+                continue
+            license_ = str(row.get("license") or "")
+            norm = _norm_license(license_)
+            if _unknown(license_):
                 out.append(item("perfil.licenca", "aviso", f"Inserto \"{lib_id}\" com licença desconhecida",
                                 "som ou meme sem licença conhecida fica fora do automático: troque ou declare a "
-                                "licença na biblioteca.", starts.get(scene_id), scene_id or None))
-    return out
+                                "licença na biblioteca.", at, sid))
+            elif norm == "fair_comment" or str(row.get("risk") or "").strip().lower() in HIGH_RISKS:
+                out.append(item("perfil.licenca", "aviso", f"Inserto \"{lib_id}\" usado como comentário",
+                                "uso como comentário (fair comment) ou de risco alto pode gerar reclamação: confira o "
+                                "contexto ou troque.", at, sid))
+            elif norm.startswith("cc_by") and not str(row.get("author") or row.get("credit") or "").strip():
+                out.append(item("perfil.licenca", "aviso", f"Inserto \"{lib_id}\" sem crédito",
+                                "a licença CC BY pede o crédito do autor: preencha o autor na biblioteca.", at, sid))
+    return out, checked
 
 
 def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, profile: Any = None,
-               fp: Any = None) -> list[dict[str, Any]]:
+               fp: Any = None, *, channel_memes: frozenset[str] | set[str] = frozenset(),
+               pool: Any = None) -> list[dict[str, Any]]:
     """Itens `perfil.*` da edição a partir da timeline (um `ok` por código quando está tudo certo; `perfil.material`
     e `perfil.licenca` podem ter mais de um aviso). `profile`: o `EditProfile` da referência (alvos medidos). `fp`:
     impressão a usar no lugar da medida da timeline (a do MP4 mesclada, na conferência do render); os tempos e as cenas
-    dos itens continuam saindo da timeline. Nenhum item é erro: edição é gosto, não trava o envio."""
+    dos itens continuam saindo da timeline. `channel_memes`: os memes dos últimos vídeos do canal. `pool`: o acervo
+    (None: o gravado do projeto). Nenhum item é erro: edição é gosto, não trava o envio."""
     from studio.core.editing import metrics
 
-    measure = metrics.measure_timeline(timeline, doc)
+    measure = metrics.measure_timeline(timeline, doc, channel_memes)
     if not measure.shots:
         return [item("perfil.ia", "ok", "Edição não medida", "a timeline não tem cenas.")]
     fp = fp or measure.fp
@@ -379,19 +481,21 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
         starts.setdefault(shot.scene_id, shot.start)
     out: list[dict[str, Any]] = []
 
+    # Sequências seguidas do mesmo nível: (planos, segundos, início, cena, nível).
+    runs: list[tuple[int, float, float, str, str]] = []
+    for shot in measure.shots:
+        if runs and runs[-1][4] == shot.prov:
+            n, secs, at, sid, prov = runs[-1]
+            runs[-1] = (n + 1, secs + shot.dur, at, sid, prov)
+        else:
+            runs.append((1, shot.dur, shot.start, shot.scene_id, shot.prov))
+
     def longest_run(prov: str) -> tuple[float | None, str | None]:
-        best, best_at, best_scene = 0.0, None, None
-        run, run_at, run_scene = 0.0, 0.0, None
-        for shot in measure.shots:
-            if shot.prov != prov:
-                run = 0.0
-                continue
-            if run == 0:
-                run_at, run_scene = shot.start, shot.scene_id
-            run += shot.dur
-            if run > best:
-                best, best_at, best_scene = run, run_at, run_scene
-        return best_at, best_scene
+        mine = [r for r in runs if r[4] == prov]
+        if not mine:
+            return None, None
+        best = max(mine, key=lambda r: r[1])
+        return best[2], best[3]
 
     # IA na tela (com o índice no detalhe)
     ai = metrics.ai_screen_share(fp)
@@ -407,21 +511,31 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
     # Ritmo dos planos
     lo, hi = t.shot_median_band
     pace_issues = []
-    if fp.pace.median_s < lo or fp.pace.median_s > hi:
+    short_shots = fp.pace.median_s < lo
+    if short_shots or fp.pace.median_s > hi:
         pace_issues.append(f"plano mediano de {_n(fp.pace.median_s)} s (alvo de {_n(lo)} a {_n(hi)} s)")
-    if fp.pace.cv < t.cv_min:
+    flat = fp.pace.cv < t.cv_min
+    if flat:
         pace_issues.append(f"durações parecidas demais (variação {_n(fp.pace.cv)}, mínimo {_n(t.cv_min)})")
     if pace_issues:
-        out.append(item("perfil.ritmo", "aviso", "Ritmo de slideshow", "; ".join(pace_issues) + "."))
+        if short_shots and flat:
+            pace_title = "Planos curtos e de duração parecida"
+        elif short_shots:
+            pace_title = "Planos curtos demais"
+        else:
+            pace_title = "Ritmo de slideshow"
+        out.append(item("perfil.ritmo", "aviso", pace_title, "; ".join(pace_issues) + "."))
     else:
         out.append(item("perfil.ritmo", "ok",
                         f"Ritmo dos planos: mediana {_n(fp.pace.median_s)} s, variação {_n(fp.pace.cv)}"))
 
     # Material: gancho, real, oficial e sequência do mesmo tipo
     material: list[dict[str, Any]] = []
-    if fp.hook_prov == "ai":
-        material.append(item("perfil.material", "aviso", "O gancho abre com imagem de IA",
-                             "os 3 primeiros segundos pedem material real (oficial, captura ou foto).", 0.0,
+    if fp.hook_prov is not None and not metrics.hook_ok(fp.hook_prov, t):
+        label = PROV_LABELS.get(fp.hook_prov, fp.hook_prov)
+        accepted = ", ".join(PROV_LABELS.get(p, p) for p in t.hook_tiers)
+        material.append(item("perfil.material", "aviso", f"O gancho abre com {label}",
+                             f"os 3 primeiros segundos pedem material real ({accepted}).", 0.0,
                              measure.shots[0].scene_id))
     real = metrics.real_share(fp)
     if real < t.real_share_min:
@@ -432,21 +546,19 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
         at, sid = longest_run("official")
         material.append(item("perfil.material", "aviso", f"Material oficial em {_pct(official)} da tela",
                              f"acima de {_pct(t.official_max_share)} cresce o risco de Content ID.", at, sid))
-    if fp.materials.max_same_prov_run > t.max_run_shots or fp.materials.max_same_prov_run_s > t.max_run_s:
-        run, run_at, run_scene, prev = 0, 0.0, "", ""
-        best: tuple[int, float, str, str] = (0, 0.0, "", "")
-        for shot in measure.shots:
-            if shot.prov == prev:
-                run += 1
-            else:
-                run, run_at, run_scene, prev = 1, shot.start, shot.scene_id, shot.prov
-            if run > best[0]:
-                best = (run, run_at, run_scene, prev)
-        label = PROV_LABELS.get(best[3], best[3])
-        material.append(item("perfil.material", "aviso",
-                             f"{fp.materials.max_same_prov_run} planos seguidos de {label}",
+    over = [r for r in runs if r[0] > t.max_run_shots or r[1] > t.max_run_s + 1e-9]
+    if over:
+        # A sequência que mais passa do limite (por planos ou por segundos), e o título pelo motivo.
+        worst_run = max(over, key=lambda r: max(r[0] / max(1, t.max_run_shots), r[1] / max(1e-9, t.max_run_s)))
+        n, secs, at, sid, prov = worst_run
+        label = PROV_LABELS.get(prov, prov)
+        if n > t.max_run_shots:
+            run_title = f"{n} planos seguidos de {label} ({_n(secs)} s)"
+        else:
+            run_title = f"{_n(secs)} s seguidos de {label}"
+        material.append(item("perfil.material", "aviso", run_title,
                              f"troque o tipo de mídia a cada {t.max_run_shots} planos ou {_n(t.max_run_s)} s.",
-                             best[1], best[2] or None))
+                             at, sid or None))
     out += material or [item("perfil.material", "ok", f"Material real em {_pct(real)} da tela")]
 
     # SFX (sem contar os da transição)
@@ -459,13 +571,14 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
     else:
         out.append(item("perfil.sfx", "ok", f"{_n(sfx)} efeitos sonoros por minuto"))
 
-    # Eventos (cortes + punch + fx + insertos)
+    # Eventos (cortes + punch + fx + insertos): a mesma faixa do índice, alvo ÷/× (1 + tolerância)
     events = fp.pace.events_per_min
-    floor = t.events_min * (1 - min(t.tolerance, 0.9))
-    if events < floor:
-        out.append(item("perfil.eventos", "aviso", f"{_n(events)} eventos por minuto",
-                        f"cortes, punch, textos e insertos somam menos que {_n(floor)} por minuto (alvo "
-                        f"{_n(t.events_min)})."))
+    e_lo, e_hi = t.events_band
+    if events < e_lo or (e_hi > 0 and events > e_hi):
+        how = "poucos" if events < e_lo else "muitos"
+        out.append(item("perfil.eventos", "aviso", f"{_n(events)} eventos por minuto ({how})",
+                        f"cortes, punch, textos e insertos: o alvo é de {_n(e_lo)} a {_n(e_hi)} por minuto "
+                        f"(perfil {_n(t.events_min)})."))
     else:
         out.append(item("perfil.eventos", "ok", f"{_n(events)} eventos por minuto"))
 
@@ -484,13 +597,24 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
 
     # Repetições
     if fp.repeat_hits:
-        rep_at, rep_scene = measure.repeats[0] if measure.repeats else (None, None)
+        rep_at, rep_scene, _ = measure.repeats[0] if measure.repeats else (None, None, "")
         n = fp.repeat_hits
-        out.append(item("perfil.repeticao", "aviso", f"{n} repetiç{'ões' if n > 1 else 'ão'} de imagem ou meme",
-                        f"a mesma imagem aparece em mais de {metrics.MAX_APPEARANCES} cenas, ou o mesmo meme volta.",
-                        rep_at, rep_scene))
+        kinds = sorted({what for _, _, what in measure.repeats})
+        reasons = {
+            "imagem": f"a mesma imagem em mais de {metrics.MAX_APPEARANCES} cenas",
+            "meme": "o mesmo meme volta no vídeo",
+            "meme do canal": "um meme já usado num dos últimos vídeos do canal",
+            "som": "o mesmo som da biblioteca toca vezes demais",
+        }
+        detail = "; ".join(reasons[k] for k in kinds if k in reasons)
+        out.append(item("perfil.repeticao", "aviso", f"{n} {_plural(n, 'repetição', 'repetições')} no vídeo",
+                        (detail[:1].upper() + detail[1:] + ".") if detail else "", rep_at, rep_scene))
     else:
-        out.append(item("perfil.repeticao", "ok", "Sem repetição de imagem ou meme"))
+        out.append(item("perfil.repeticao", "ok", "Sem repetição de imagem, meme ou som"))
 
-    out += _license_items(doc, timeline, starts) or [item("perfil.licenca", "ok", "Insertos com licença registrada")]
+    licenses, checked = _license_items(doc, timeline, starts, pool)
+    if not licenses:
+        licenses = [item("perfil.licenca", "ok",
+                         "Insertos com licença registrada" if checked else "Nenhum inserto de terceiros")]
+    out += licenses
     return out
