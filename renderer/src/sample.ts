@@ -308,3 +308,198 @@ export const sampleDataProps: TimelineProps = {
     }),
   ],
 };
+
+// --- edição (ADR 0004): planos, eventos e clipe ---------------------------------------------------------------------
+
+/** Imagem de exemplo embutida (SVG próprio, sem arquivo nem rede). */
+const svg = (w: number, h: number, body: string) =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`)}`;
+
+/** "Captura" de página desenhada: barras de texto cinza numa página clara (o marca-texto cai na 3ª linha). */
+const SAMPLE_PAGE = svg(
+  1920,
+  1080,
+  '<rect width="1920" height="1080" fill="#f4f1ea"/><rect width="1920" height="90" fill="#1b2a3a"/>' +
+    '<rect x="160" y="160" width="1200" height="64" rx="6" fill="#222"/>' +
+    [260, 330, 400, 470, 540, 610, 680, 750].map((y, i) => `<rect x="160" y="${y}" width="${1300 - (i % 3) * 180}" height="34" rx="4" fill="#9aa0a6"/>`).join('') +
+    '<rect x="1500" y="160" width="300" height="420" rx="10" fill="#c9d3dd"/>',
+);
+
+/** Paisagem desenhada (o B-roll do acervo no exemplo). */
+const SAMPLE_PHOTO = svg(
+  1920,
+  1080,
+  '<defs><linearGradient id="c" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9a5a"/><stop offset="1" stop-color="#3b2a6b"/></linearGradient></defs>' +
+    '<rect width="1920" height="1080" fill="url(#c)"/><circle cx="1350" cy="430" r="140" fill="#ffe08a"/>' +
+    '<path d="M0 820 L420 520 L760 760 L1100 480 L1500 800 L1920 600 L1920 1080 L0 1080 Z" fill="#1d1534"/>',
+);
+
+/** Alvo do teste de quadro: quadrado branco de 200 px no meio de um quadro preto (o punch aumenta o quadrado). */
+export const SAMPLE_TARGET = svg(1920, 1080, '<rect width="1920" height="1080" fill="#000"/><rect x="860" y="440" width="200" height="200" fill="#fff"/>');
+
+/**
+ * Clipe de exemplo (relativo ao `assetBaseUrl`): o `renderer/scripts/fx-stills.mjs` gera com o ffmpeg (testsrc) numa
+ * pasta temporária e serve; no Remotion Studio sem esse servidor o plano de clipe fica sem vídeo.
+ */
+export const SAMPLE_CLIP = 'samples/fx-clip.mp4';
+
+/** Cena de medida (`fx_target`): punch no quadro 20 (relativo à cena), com escala 1,2. */
+export const SAMPLE_PUNCH = { scene: 'fx_target', at: 20, scale: 1.2 };
+
+const fxBlank = { brightness: 0, contrast: 0, saturation: 0, warmth: 0, blur: 0, grade: null };
+
+/** Cena com todos os planos (próprio, acervo com enquadramento, clipe, jump cut) e todos os tipos de evento. */
+const fxShowcase: TimelineScene = {
+  id: 'fx_show',
+  kind: 'image',
+  from: 0,
+  durationInFrames: 180,
+  src: SAMPLE_PAGE,
+  motion: 'static',
+  transition: 'cut',
+  seed: 21,
+  look: fxBlank,
+  text: '',
+  number: null,
+  prov: 'capture',
+  clean: true,
+  captions: [
+    {
+      from: 0,
+      to: 48,
+      words: [
+        { text: 'A', from: 0, to: 6 },
+        { text: 'notícia', from: 6, to: 22, emph: 'color' },
+        { text: 'confirmou', from: 22, to: 46, emph: 'pop' },
+      ],
+    },
+    {
+      from: 50,
+      to: 118,
+      words: [
+        { text: 'e', from: 50, to: 56 },
+        { text: 'ninguém', from: 56, to: 80 },
+        { text: 'acreditou', from: 80, to: 116, emph: 'emoji', emoji: '😱' },
+      ],
+    },
+    {
+      from: 120,
+      to: 178,
+      words: [
+        { text: 'até', from: 120, to: 132 },
+        { text: 'agora', from: 132, to: 176 },
+      ],
+    },
+  ],
+  words: [],
+  shots: [
+    { from: 0, dur: 50, prov: 'capture', framing: { scale: 1, x: 0.5, y: 0.5 }, motion: 'none' },
+    { from: 50, dur: 40, prov: 'free', src: SAMPLE_PHOTO, framing: { scale: 1.3, x: 0.65, y: 0.4 }, motion: 'push', easing: 'outCubic' },
+    {
+      from: 90,
+      dur: 30,
+      prov: 'official',
+      video: SAMPLE_CLIP,
+      clipIn: 0.5,
+      speed: 1.5,
+      hold: true,
+      seconds: 1.5,
+      framing: { scale: 1, x: 0.5, y: 0.5 },
+      motion: 'none',
+    },
+    { from: 120, dur: 60, prov: 'capture', framing: { scale: 1.25, x: 0.35, y: 0.45 }, motion: 'drift', easing: 'snap' },
+  ],
+  fx: [
+    // Captura: marca-texto na 3ª linha, círculo e seta; depois a câmera vai até o trecho (tudo solta no corte do 50).
+    { type: 'highlight', from: 8, dur: 0, params: { rect: [160 / 1920, 400 / 1080, 1300 / 1920, 34 / 1080] } },
+    { type: 'circle', from: 14, dur: 0, params: { rect: [1500 / 1920, 160 / 1080, 300 / 1920, 420 / 1080] } },
+    { type: 'arrow', from: 18, dur: 0, params: { x: 0.8, y: 0.35, side: 'left' } },
+    { type: 'zoom_rect', from: 32, dur: 0, params: { rect: [150 / 1920, 380 / 1080, 700 / 1920, 80 / 1080] } },
+    { type: 'counter', from: 4, dur: 0, params: { n: 1, total: 3 } },
+    { type: 'sfx', from: 8, dur: 0, params: { lib_id: 'shutter' } },
+    // B-roll: punch na palavra, tremor, PiP e queda da trilha antes do whip.
+    { type: 'punch', from: 60, dur: 0, params: { scale: 1.25 } },
+    { type: 'shake', from: 70, dur: 12, params: { amount: 1 } },
+    { type: 'pip', from: 54, dur: 30, params: { src: SAMPLE_PAGE, side: 'left' } },
+    { type: 'music_drop', from: 84, dur: 12, params: {} },
+    // Clipe: whip no corte, câmera lenta e meme de canto (emoji, sem arquivo de terceiros).
+    { type: 'whip', from: 90, dur: 8, params: { side: 'right' } },
+    { type: 'speed', from: 96, dur: 15, params: { rate: 0.5 } },
+    { type: 'meme', from: 100, dur: 18, params: { emoji: '🤯', variant: 'corner', side: 'right' } },
+    // Jump cut: clarão, congela e texto que pula.
+    { type: 'flash', from: 120, dur: 6, params: {} },
+    { type: 'freeze', from: 130, dur: 24, params: {} },
+    { type: 'text_pop', from: 132, dur: 30, params: { text: 'ATÉ AGORA', emoji: '👀' } },
+  ],
+};
+
+/** Meme "congela + zoom" sem arquivo (emoji) sobre a imagem com Ken Burns. */
+const fxFreezeZoom: TimelineScene = {
+  id: 'fx_meme',
+  kind: 'image',
+  from: 180,
+  durationInFrames: 75,
+  src: SAMPLE_PHOTO,
+  motion: 'ken_burns_in',
+  transition: 'flash',
+  seed: 22,
+  look: fxBlank,
+  text: '',
+  number: null,
+  prov: 'ai',
+  captions: [
+    {
+      from: 0,
+      to: 60,
+      words: [
+        { text: 'Só', from: 0, to: 12 },
+        { text: 'que', from: 12, to: 20 },
+        { text: 'não', from: 20, to: 44, emph: 'pop' },
+      ],
+    },
+  ],
+  words: [],
+  fx: [{ type: 'meme', from: 22, dur: 30, params: { emoji: '🙃', variant: 'freeze_zoom' } }],
+};
+
+/** Medida: alvo parado (sem câmera), cena limpa, punch no quadro 20. */
+const fxTarget: TimelineScene = {
+  id: SAMPLE_PUNCH.scene,
+  kind: 'image',
+  from: 255,
+  durationInFrames: 45,
+  src: SAMPLE_TARGET,
+  motion: 'none',
+  transition: 'cut',
+  seed: 23,
+  look: fxBlank,
+  text: '',
+  number: null,
+  prov: 'graphic',
+  clean: true,
+  captions: [],
+  words: [],
+  fx: [{ type: 'punch', from: SAMPLE_PUNCH.at, dur: 0, params: { scale: SAMPLE_PUNCH.scale } }],
+};
+
+/** Edição (16:9): subplanos, câmera por eventos, eventos de tela, legenda com ênfase e um clipe. */
+export const sampleFxProps: TimelineProps = {
+  ...sampleProps,
+  width: 1920,
+  height: 1080,
+  durationInFrames: 300,
+  style: {
+    ...sampleProps.style,
+    family: 'motion_graphics',
+    families: ['motion_graphics'],
+    effects: [
+      { type: 'grade', amount: 0.5, preset: 'vivid' },
+      { type: 'grain', amount: 0.3 },
+      { type: 'vignette', amount: 0.4 },
+    ],
+    captions: { ...sampleProps.style.captions, size: 72, position: 'bottom', max_words_per_line: 4 },
+    textCards: { font: 'Anton', color: '#FFFFFF', accent: '#FFD400', background: '#111111', animation: 'pop' },
+    progressBar: false,
+  },
+  scenes: [fxShowcase, fxFreezeZoom, fxTarget],
+};

@@ -58,6 +58,11 @@ export type TimelineShot = {
   clipIn?: number;
   speed?: number;
   hold?: boolean;
+  /**
+   * Segundos úteis do clipe a partir de `clipIn` (`MediaRef.dur_s`/`PoolItem.dur_s`). Com `hold`, o plano congela quando
+   * eles acabam; sem `hold`, o clipe curto desacelera para cobrir. Ausente: toca até o fim do plano.
+   */
+  seconds?: number;
   framing: ShotFraming;
   motion: string;
   easing?: ShotEasing;
