@@ -2123,6 +2123,8 @@ def _bare_builder(project_id: str, mode: Mode, doc: ProjectDoc | None = None,
     builder.stats = BuildStats()
     builder.warnings = []
     builder._pronunciation = None
+    builder.edit_pool = None  # a camada de edição só é montada no `run`
+    builder.shot_files = None
     builder._settle_pending_media()
     return builder
 

@@ -20,6 +20,7 @@ from PIL import Image
 from studio.api.app import create_app
 from studio.core.project import service
 from studio.core.project.document import Metadata
+from studio.core.timeline import REAL_MOTIONS
 from studio.media import safe_http
 from studio.providers import media_search
 from studio.workers.jobs import get_job, get_runner
@@ -189,7 +190,8 @@ def test_suggestion_to_published_credits(isolated_settings, net, monkeypatch):
         shown = by_id[scene.id]
         assert "credit" not in shown and "news" not in shown
         assert shown["src"] and "/media/" in shown["src"] and shown["src"] != media["asset"]
-        assert scene.motion or shown["motion"] in ("ken_burns_in", "ken_burns_out", "drift")  # câmera suave na foto
+        # câmera suave na foto (com a camada de edição entram também o plano parado e o push-in: `REAL_MOTIONS`)
+        assert scene.motion or shown["motion"] in REAL_MOTIONS
         for sid in reusers:
             assert by_id[sid]["src"] == shown["src"]
         assert all("credit" not in s for s in timeline["scenes"])
