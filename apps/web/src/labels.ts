@@ -144,6 +144,9 @@ export const REAL_KIND_LABELS: LabelMap = {
   photo: 'Foto real',
   news: 'Notícia',
   official: 'Material oficial',
+  clip: 'Trecho de vídeo',
+  capture: 'Captura de página',
+  meme: 'Meme',
 };
 
 export const MEDIA_SOURCE_LABELS: LabelMap = {
@@ -152,6 +155,91 @@ export const MEDIA_SOURCE_LABELS: LabelMap = {
   pexels: 'Pexels',
   link: 'Link',
   upload: 'Arquivo enviado',
+  youtube: 'YouTube (link oficial)',
+  library: 'Acervo',
+  capture: 'Captura de página',
+};
+
+/* Camada de edição (ADR 0004): eventos, fontes dos subplanos, câmera e papéis da batida. */
+
+export const FX_LABELS: LabelMap = {
+  punch: 'Punch (zoom seco)',
+  shake: 'Tremida',
+  zoom_rect: 'Zoom no trecho',
+  freeze: 'Congela',
+  flash: 'Flash',
+  text_pop: 'Texto que pula',
+  meme: 'Meme',
+  sfx: 'Efeito sonoro',
+  highlight: 'Marca-texto',
+  arrow: 'Seta',
+  circle: 'Círculo',
+  counter: 'Contador',
+  music_drop: 'Queda da trilha',
+  speed: 'Velocidade',
+  whip: 'Chicote (whip)',
+  pip: 'Janela (PiP)',
+};
+
+export const SHOT_SOURCE_LABELS: LabelMap = {
+  self: 'Visual da cena',
+  pool: 'Acervo',
+  media: 'Mídia',
+  reuse: 'Imagem de outra cena',
+  ai: 'Imagem de IA',
+};
+
+export const SHOT_MOTION_LABELS: LabelMap = {
+  static: 'Parado',
+  push: 'Aproxima',
+  drift: 'Deriva',
+  pan_left: 'Panorâmica à esquerda',
+  pan_right: 'Panorâmica à direita',
+  ken_burns_in: 'Aproximar devagar',
+  ken_burns_out: 'Afastar devagar',
+  none: 'Sem câmera',
+};
+
+export const BEAT_ROLE_LABELS: LabelMap = {
+  hook: 'Gancho',
+  reveal: 'Revelação',
+  joke: 'Piada',
+  aside: 'Aparte',
+  list: 'Lista',
+  number: 'Número',
+  tension: 'Tensão',
+  breath: 'Respiro',
+  cta: 'Chamada final',
+};
+
+export const HUMOR_LABELS: LabelMap = {
+  none: 'Sem humor',
+  light: 'Leve',
+  meme: 'Com memes',
+};
+
+export const CAPTION_EMPHASIS_LABELS: LabelMap = {
+  none: 'Sem destaque',
+  color: 'Cor',
+  pop: 'Cor e tamanho',
+  emoji: 'Com emoji',
+};
+
+/** Material da referência (`materials.mix` do perfil de edição). */
+export const MATERIAL_LABELS: LabelMap = {
+  gameplay: 'Gameplay',
+  official_trailer: 'Trailer oficial',
+  page_capture: 'Captura de página',
+  news: 'Notícia',
+  meme_reaction: 'Meme / reação',
+  facecam: 'Rosto (facecam)',
+  mascot: 'Mascote',
+  photo_real: 'Foto real',
+  stock_video: 'Vídeo de banco',
+  text_card: 'Cartão de texto',
+  chart_map: 'Gráfico / mapa',
+  ai_illustration: 'Ilustração de IA',
+  other: 'Outro',
 };
 
 /** `auto` é a escolha pela proporção da foto (MediaRef.fit null). */

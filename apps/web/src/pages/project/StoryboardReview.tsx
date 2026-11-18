@@ -1,7 +1,8 @@
-// Painel da curadoria no topo da aba Cenas: direção de arte, contagem, avisos da revisão e a aprovação das cenas.
+// Painel da curadoria no topo da aba Cenas: direção de arte, contagem, índice "cara de IA" (antes de gastar cota),
+// avisos da revisão e a aprovação das cenas.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronDown, ChevronUp, CircleCheck, Info, Palette, RotateCw, Sparkles, TriangleAlert } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, CircleCheck, Gauge, Info, Palette, RotateCw, Sparkles, TriangleAlert } from 'lucide-react';
 import React, { useId, useState } from 'react';
 import { api, type ArtDirection, type ProjectDetail, type StoryboardIssue, type StyleItem, type StyleSpec } from '../../api';
 import {
@@ -15,6 +16,8 @@ import {
 import { Badge, type BadgeTone, Button, ErrorBox, useConfirm, useToast } from '../../ui';
 import { approveKey, useJobStarting, useStartJob } from '../ProjectPage';
 import { useUnsavedCount } from './core/drafts';
+import { EditScore, useEditMetrics } from './EditScore';
+import { poolTargets } from './PoolPanel';
 import { EDITORIAL_NOTICE, hasEditorialMedia, realSuggestions } from './core/media';
 import {
   awaitingScenes,
@@ -33,6 +36,20 @@ import { usePreviewPlan } from './core/usePreviewPlan';
 const BUSY_REASON = 'Aguarde o trabalho em andamento terminar.';
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+
+const AI_BAND_TONE: Record<string, BadgeTone> = { verde: 'good', amarelo: 'warn', vermelho: 'bad' };
+
+/** Selo do índice "cara de IA" no cabeçalho (a mesma consulta do painel aberto). */
+const AiLookBadge: React.FC<{ projectId: string; lang: string; version: number }> = ({ projectId, lang, version }) => {
+  const query = useEditMetrics(projectId, lang, 'auto', version);
+  if (!query.data) return null;
+  const { score, band } = query.data.index;
+  return (
+    <Badge tone={AI_BAND_TONE[band] ?? 'neutral'} icon={Gauge} title={`Medido na ${query.data.source_label}. Mais alto = mais cara de IA.`}>
+      Cara de IA {score}
+    </Badge>
+  );
+};
 
 /** Cor CSS de um nome da paleta ("teal", "#FF2E88", "hot pink" → hotpink, "sunset orange" → orange), ou null. */
 const swatchColor = (name: string): string | null => {
@@ -295,7 +312,7 @@ export const StoryboardReview: React.FC<{
   const editorial = counts.realMedia > 0 && hasEditorialMedia(doc);
 
   const fit = art?.style_fit ?? 'ok';
-  const hasDetails = Boolean(art) || Boolean(review);
+  const hasDetails = Boolean(art) || Boolean(review) || doc.scenes.length > 0;
 
   return (
     <section
@@ -331,6 +348,11 @@ export const StoryboardReview: React.FC<{
             ) : null}
             {counts.realMedia ? ` · ${plural(counts.realMedia, 'cena com mídia real', 'cenas com mídia real')}` : null}
           </p>
+          {doc.scenes.length ? (
+            <div className="mt-1">
+              <AiLookBadge projectId={doc.id} lang={doc.primary_language} version={detail.project.current_version} />
+            </div>
+          ) : null}
           {editorial ? (
             <p className="mt-1 flex items-start gap-1.5 text-[13px] text-amber-200">
               <TriangleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -376,6 +398,19 @@ export const StoryboardReview: React.FC<{
       {hasDetails ? (
         <div id={bodyId} hidden={!expanded} className="flex flex-col gap-4 border-t border-line px-4 py-3">
           {art ? <Direction art={art} /> : null}
+
+          {doc.scenes.length ? (
+            <div className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium text-fg">Cara de IA (antes de gastar cota)</h3>
+              <EditScore
+                projectId={doc.id}
+                lang={doc.primary_language}
+                refreshKey={detail.project.current_version}
+                onSeek={(_seconds, sceneId) => onShowScene(sceneId)}
+                onReplaceAi={(ids) => poolTargets.set(doc.id, 'cenas', ids)}
+              />
+            </div>
+          ) : null}
 
           {art && fit !== 'ok' ? (
             <div role="note" className="flex gap-3 rounded-lg border border-amber-300/35 bg-amber-300/10 p-3 text-sm">

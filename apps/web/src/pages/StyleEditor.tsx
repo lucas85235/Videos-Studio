@@ -10,6 +10,7 @@ import {
   FileText,
   History,
   Image,
+  Layers,
   LayoutTemplate,
   Lock,
   Music,
@@ -18,6 +19,7 @@ import {
   RectangleVertical,
   RotateCcw,
   Save,
+  Scissors,
   SlidersHorizontal,
   Sparkles,
   Trash2,
@@ -27,11 +29,15 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ApiError, api, type Channel, type StyleItem, type StyleSpec } from '../api';
+import { ApiError, api, type Channel, type EditGrammar, type Prov, type SourcePolicy, type StyleItem, type StyleSpec } from '../api';
+import { EDIT_INTENSITY_LABELS, type EditIntensity } from '../apiEdit';
+import { PROV_LABELS } from '../apiPool';
 import {
   CAMERA_LABELS,
   CAPTION_POSITION_LABELS,
+  CAPTION_EMPHASIS_LABELS,
   CAPTION_STYLE_LABELS,
+  HUMOR_LABELS,
   MUSIC_SOURCE_LABELS,
   STRUCTURE_LABELS,
   TEXT_ANIMATION_LABELS,
@@ -49,6 +55,7 @@ import {
   Empty,
   ErrorBox,
   Field,
+  FieldGroup,
   Input,
   Page,
   PageHeader,
@@ -103,7 +110,9 @@ const SECTIONS: EditorSection[] = [
   { id: 'formato', label: 'Formato e roteiro', icon: FileText },
   { id: 'voz', label: 'Voz', icon: AudioLines },
   { id: 'arte', label: 'Arte', icon: Image },
+  { id: 'fontes', label: 'Fontes', icon: Layers },
   { id: 'ritmo', label: 'Ritmo e câmera', icon: Video },
+  { id: 'gramatica', label: 'Gramática de edição', icon: Scissors },
   { id: 'efeitos', label: 'Efeitos', icon: Sparkles },
   { id: 'legendas', label: 'Legendas', icon: Captions },
   { id: 'textos', label: 'Textos na tela', icon: Type },
@@ -135,7 +144,31 @@ const isObj = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof
 const getPath = (obj: unknown, path: string) => path.split('.').reduce<unknown>((cur, key) => (isObj(cur) ? cur[key] : undefined), obj);
 
 /** Objetos cujas chaves são escolhas do usuário (pesos, mapas): não recebem chaves da versão salva. */
-const OPEN_MAPS = new Set(['edit.camera', 'edit.transitions', 'edit.treatments', 'art.sources_mix', 'script.speakers', 'script.words_per_minute']);
+const OPEN_MAPS = new Set([
+  'edit.camera',
+  'edit.transitions',
+  'edit.treatments',
+  'art.sources_mix',
+  'art.sources.mix',
+  'edit.grammar.sfx_palette',
+  'script.speakers',
+  'script.words_per_minute',
+]);
+
+/** Campos obsoletos que o editor esconde (também no JSON): `art.sources_mix` nunca foi lido (vale `art.sources`) e
+ * `edit.new_image_ratio` deu lugar ao teto de IA em tempo de tela. Continuam no estilo salvo, com o valor de antes. */
+const HIDDEN_PATHS = ['art.sources_mix', 'edit.new_image_ratio'];
+
+/** O estilo como o JSON do editor mostra: sem os campos obsoletos (o `fillMissing` devolve o valor salvo). */
+const styleJson = (style: unknown) => {
+  const copy = structuredClone(style) as Record<string, unknown>;
+  for (const path of HIDDEN_PATHS) {
+    const [head, key] = path.split('.');
+    const parent = copy[head];
+    if (isObj(parent)) delete parent[key];
+  }
+  return pretty(copy);
+};
 
 /**
  * Completa as chaves ausentes com a versão salva (como o deep_merge do backend: listas e valores presentes ficam como estão).
@@ -332,8 +365,9 @@ const checkStyleJson = (text: string, baseline: StyleSpec): JsonCheck => {
     };
   }
   if (!isObj(parsed)) return { ok: false, message: 'O estilo precisa ser um objeto JSON (entre chaves).', offset: null };
-  const filled: string[] = [];
-  const value = fillMissing(parsed, baseline, '', filled);
+  const filledAll: string[] = [];
+  const value = fillMissing(parsed, baseline, '', filledAll);
+  const filled = filledAll.filter((path) => !HIDDEN_PATHS.includes(path));
   fillEffects(value);
   const problem = leafError(value);
   if (problem) return { ok: false, message: problem.message, offset: keyOffset(text, problem.path) };
@@ -478,6 +512,252 @@ const Fields: React.FC<{ disabled: boolean; children: React.ReactNode; className
 
 const Anchor: React.FC<{ id: string; children: React.ReactNode }> = ({ id, children }) => <div id={sectionDomId(id)}>{children}</div>;
 
+/* ------------------------------------------------------------------ */
+/* Fontes e gramática de edição (ADR 0004)                             */
+/* ------------------------------------------------------------------ */
+
+const PROVS: Prov[] = ['own', 'official', 'capture', 'free', 'stock', 'graphic', 'meme', 'ai'];
+const pctOf = (v: number) => `${Math.round(v * 100)}%`;
+
+/** A mistura volta somando 1 (o editor de pesos trabalha com pesos livres). */
+const normalizeMix = (weights: Record<string, number>): Partial<Record<Prov, number>> => {
+  const total = Object.values(weights).reduce((a, b) => a + Math.max(0, b), 0);
+  if (total <= 0) return {};
+  return Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, Math.round((Math.max(0, v) / total) * 1000) / 1000]));
+};
+
+type SetStyle = (mutate: (s: StyleSpec) => void) => void;
+
+const SourcesFields: React.FC<{ policy: SourcePolicy; preset: boolean; set: SetStyle }> = ({ policy, preset, set }) => {
+  const put = (mutate: (p: SourcePolicy) => void) =>
+    set((s) => {
+      if (s.art.sources) mutate(s.art.sources);
+    });
+  return (
+    <Fields disabled={preset}>
+      <RangeField
+        label="Teto de imagem de IA (tempo de tela)"
+        min={0}
+        max={1}
+        step={0.05}
+        value={policy.ai_max_share}
+        display={pctOf(policy.ai_max_share)}
+        hint="Quanto do vídeo pode mostrar imagem gerada por IA. O resto vem do acervo real, de cartões e de gráficos. No Short, o padrão de 20% vira 30%."
+        onChange={(v) => put((p) => void (p.ai_max_share = v))}
+      />
+      <WeightsEditor
+        legend="Mistura de fontes"
+        hint="De onde vem o que aparece na tela, em fração do tempo. O storyboard escolhe do acervo nessa proporção."
+        options={PROVS}
+        labels={PROV_LABELS}
+        value={policy.mix as Record<string, number>}
+        onChange={(v) => put((p) => void (p.mix = normalizeMix(v)))}
+      />
+      <FieldGroup legend="Fontes aceitas no gancho" hint="Os primeiros segundos mostram material desses níveis (nunca IA, no padrão).">
+        <div className="flex flex-wrap gap-x-4 gap-y-2">
+          {PROVS.map((prov) => (
+            <Checkbox
+              key={prov}
+              label={PROV_LABELS[prov]}
+              checked={policy.hook.includes(prov)}
+              disabled={preset}
+              onChange={(on) => put((p) => void (p.hook = on ? [...p.hook.filter((x) => x !== prov), prov] : p.hook.filter((x) => x !== prov)))}
+            />
+          ))}
+        </div>
+      </FieldGroup>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <NumberField
+          label="Trecho oficial máximo (segundos)"
+          step={0.5}
+          min={0.5}
+          max={30}
+          value={policy.official_max_clip_s}
+          hint="Cada plano de trailer ou gameplay oficial fica com no máximo isso."
+          onChange={(v) => put((p) => void (p.official_max_clip_s = v))}
+        />
+        <RangeField
+          label="Teto de material oficial"
+          min={0}
+          max={1}
+          step={0.05}
+          value={policy.official_max_share}
+          display={pctOf(policy.official_max_share)}
+          hint="Risco de reivindicação (Content ID)."
+          onChange={(v) => put((p) => void (p.official_max_share = v))}
+        />
+      </div>
+      <Checkbox
+        label="IA só com motivo declarado"
+        description="A cena de IA precisa dizer por que é IA (hipótese, futuro, conceito); sem motivo, a revisão acusa “faltou real”."
+        checked={policy.require_ai_reason}
+        disabled={preset}
+        onChange={(v) => put((p) => void (p.require_ai_reason = v))}
+      />
+      <Checkbox
+        label="IA pode imitar foto"
+        description="Desligado, a IA usa linguagem assumidamente não fotográfica (colagem, traço, gráfico)."
+        checked={policy.ai_photo}
+        disabled={preset}
+        onChange={(v) => put((p) => void (p.ai_photo = v))}
+      />
+    </Fields>
+  );
+};
+
+type QuotaKey =
+  | 'punch_per_min'
+  | 'text_pop_per_min'
+  | 'sfx_per_min'
+  | 'meme_per_min'
+  | 'annot_per_min'
+  | 'switch_per_min'
+  | 'shake_per_min'
+  | 'micro_per_min';
+
+const QUOTAS: { key: QuotaKey; label: string; max: number }[] = [
+  { key: 'punch_per_min', label: 'Punch', max: 60 },
+  { key: 'text_pop_per_min', label: 'Texto que pula', max: 60 },
+  { key: 'sfx_per_min', label: 'Efeitos sonoros', max: 120 },
+  { key: 'meme_per_min', label: 'Memes', max: 30 },
+  { key: 'annot_per_min', label: 'Setas e marca-texto', max: 30 },
+  { key: 'switch_per_min', label: 'Trocas de material', max: 60 },
+  { key: 'shake_per_min', label: 'Tremidas', max: 60 },
+  { key: 'micro_per_min', label: 'Micro-planos', max: 60 },
+];
+
+type IntensityId = '0' | '1' | '2' | '3';
+
+const GrammarFields: React.FC<{ grammar: EditGrammar; preset: boolean; set: SetStyle }> = ({ grammar: g, preset, set }) => {
+  const put = (mutate: (g: EditGrammar) => void) =>
+    set((s) => {
+      if (s.edit.grammar) mutate(s.edit.grammar);
+    });
+  const intensity = Math.max(0, Math.min(3, g.intensity)) as EditIntensity;
+  return (
+    <Fields disabled={preset}>
+      {g.profile_refs.length ? (
+        <p className="text-[13px] text-muted">Medida da referência ({g.profile_refs.join(', ')}). O que você ajustar aqui vale mais que o medido.</p>
+      ) : null}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Segmented
+          legend="Editor automático"
+          hint="Desligado, cada cena fica com um plano só, como antes."
+          value={g.editor}
+          options={[
+            { id: 'auto', label: 'Ligado' },
+            { id: 'off', label: 'Desligado' },
+          ]}
+          onChange={(v) => put((x) => void (x.editor = v))}
+        />
+        <Segmented
+          legend="Intensidade"
+          hint="Escala as cotas: calma 0,5×, leve 0,75×, normal 1×, agitada 1,4×."
+          value={String(intensity) as IntensityId}
+          options={([0, 1, 2, 3] as EditIntensity[]).map((n) => ({ id: String(n) as IntensityId, label: EDIT_INTENSITY_LABELS[n] }))}
+          onChange={(v) => put((x) => void (x.intensity = Number(v)))}
+        />
+        <Segmented
+          legend="Humor"
+          value={g.humor}
+          options={(['none', 'light', 'meme'] as const).map((id) => ({ id, label: label(HUMOR_LABELS, id) }))}
+          onChange={(v) => put((x) => void (x.humor = v))}
+        />
+        <Segmented
+          legend="Destaque na legenda"
+          hint="Como as palavras de ênfase aparecem."
+          value={g.caption_emphasis}
+          options={(['none', 'color', 'pop', 'emoji'] as const).map((id) => ({ id, label: label(CAPTION_EMPHASIS_LABELS, id) }))}
+          onChange={(v) => put((x) => void (x.caption_emphasis = v))}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <NumberField label="Plano mediano (s)" step={0.1} min={0.2} max={30} value={g.shot_median_s} onChange={(v) => put((x) => void (x.shot_median_s = v))} />
+        <NumberField
+          label="Variação dos planos (CV)"
+          step={0.05}
+          min={0}
+          max={3}
+          value={g.shot_cv}
+          hint="0,45 ou mais tira o ritmo de slideshow."
+          onChange={(v) => put((x) => void (x.shot_cv = v))}
+        />
+        <NumberField label="Plano máximo (s)" step={0.5} min={0.5} max={60} value={g.shot_max_s} onChange={(v) => put((x) => void (x.shot_max_s = v))} />
+        <NumberField
+          label="Parado no máximo (s)"
+          step={0.5}
+          min={0.5}
+          max={60}
+          value={g.max_still_s}
+          hint="Maior trecho sem corte, punch ou inserto."
+          onChange={(v) => put((x) => void (x.max_still_s = v))}
+        />
+      </div>
+      <FieldGroup legend="Cotas por minuto" hint="Quantos eventos de cada tipo por minuto na intensidade normal.">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {QUOTAS.map((q) => (
+            <NumberField key={q.key} label={q.label} step={0.1} min={0} max={q.max} value={g[q.key]} onChange={(v) => put((x) => void (x[q.key] = v))} />
+          ))}
+        </div>
+      </FieldGroup>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <RangeField
+          label="Zoom lento no máximo"
+          min={0}
+          max={1}
+          step={0.05}
+          value={g.slow_zoom_share}
+          display={pctOf(g.slow_zoom_share)}
+          hint="Ken Burns em tudo é a assinatura do slideshow."
+          onChange={(v) => put((x) => void (x.slow_zoom_share = v))}
+        />
+        <RangeField
+          label="Planos parados no mínimo"
+          min={0}
+          max={1}
+          step={0.05}
+          value={g.static_share_min}
+          display={pctOf(g.static_share_min)}
+          onChange={(v) => put((x) => void (x.static_share_min = v))}
+        />
+        <RangeField
+          label="Chance de rajada"
+          min={0}
+          max={1}
+          step={0.05}
+          value={g.burst_prob}
+          display={pctOf(g.burst_prob)}
+          hint="Gancho, piada e lista ganham 2 a 4 planos curtos."
+          onChange={(v) => put((x) => void (x.burst_prob = v))}
+        />
+      </div>
+      <Segmented
+        legend="Grão e vinheta"
+        value={g.effects_policy}
+        options={[
+          { id: 'per_tier', label: 'Só no material de arquivo' },
+          { id: 'global', label: 'Em tudo' },
+        ]}
+        onChange={(v) => put((x) => void (x.effects_policy = v))}
+      />
+      <Checkbox
+        label="Trilha cai antes da revelação"
+        checked={g.music_drop_before_reveal}
+        disabled={preset}
+        onChange={(v) => put((x) => void (x.music_drop_before_reveal = v))}
+      />
+      <Checkbox
+        label="Efeitos sonoros tonais no automático"
+        description="Som com nota (riser, drop) pode brigar com a trilha."
+        checked={g.sfx_tonal_ok}
+        disabled={preset}
+        onChange={(v) => put((x) => void (x.sfx_tonal_ok = v))}
+      />
+    </Fields>
+  );
+};
+
+
 /** Nome legível de uma voz quando o catálogo não está à mão ("Microsoft Maria Desktop" → "Maria"). */
 const cleanVoiceId = (id: string) => {
   const chirp = /-Chirp3-HD-([A-Za-z]+)$/.exec(id);
@@ -593,7 +873,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
     setStyle(server);
     setBaseline(server);
     if (tabRef.current === 'json') {
-      setJson(pretty(server));
+      setJson(styleJson(server));
       setJsonError(null);
       setJsonFilled([]);
     }
@@ -800,7 +1080,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
       if (cur && canonicalJson(cur) === canonicalJson(sent)) {
         setStyle(data.style);
         if (tabRef.current === 'json') {
-          setJson(pretty(data.style));
+          setJson(styleJson(data.style));
           setJsonError(null);
           setJsonFilled([]);
         }
@@ -916,7 +1196,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
   };
 
   const openJson = (current: StyleSpec, error: { message: string; offset: number | null } | null = null) => {
-    setJson(pretty(current));
+    setJson(styleJson(current));
     setJsonError(error);
     setJsonFilled([]);
     setTab('json');
@@ -971,7 +1251,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
     if (!ok) return;
     clearDraft();
     setStyle(baseline);
-    setJson(pretty(baseline));
+    setJson(styleJson(baseline));
     setJsonError(null);
     setJsonFilled([]);
   };
@@ -980,7 +1260,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
     if (!draftOffer) return;
     setStyle(draftOffer.style);
     if (tab === 'json') {
-      setJson(pretty(draftOffer.style));
+      setJson(styleJson(draftOffer.style));
       setJsonError(null);
       setJsonFilled([]);
     }
@@ -1567,6 +1847,17 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                 </Section>
               </Anchor>
 
+              {/* Fontes */}
+              <Anchor id="fontes">
+                <Section icon={Layers} title="Fontes" description="De onde vem o que aparece na tela e quanto pode ser IA.">
+                  {style.art.sources ? (
+                    <SourcesFields policy={style.art.sources} preset={preset} set={set} />
+                  ) : (
+                    <p className="text-[13px] text-muted">O servidor ainda não tem a política de fontes: reinicie o app.</p>
+                  )}
+                </Section>
+              </Anchor>
+
               {/* Ritmo e câmera */}
               <Anchor id="ritmo">
                 <Section icon={Video} title="Ritmo e câmera" description="Quanto tempo cada cena dura e como a câmera se move entre elas.">
@@ -1632,6 +1923,21 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
                       onChange={(v) => set((s) => void (s.edit.treatments = v))}
                     />
                   </Fields>
+                </Section>
+              </Anchor>
+
+              {/* Gramática de edição */}
+              <Anchor id="gramatica">
+                <Section
+                  icon={Scissors}
+                  title="Gramática de edição"
+                  description="Ritmo dos planos dentro da cena e quantos eventos (punch, texto, som, meme) entram por minuto."
+                >
+                  {style.edit.grammar ? (
+                    <GrammarFields grammar={style.edit.grammar} preset={preset} set={set} />
+                  ) : (
+                    <p className="text-[13px] text-muted">O servidor ainda não tem a gramática de edição: reinicie o app.</p>
+                  )}
                 </Section>
               </Anchor>
 

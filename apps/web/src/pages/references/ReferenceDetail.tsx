@@ -1,9 +1,10 @@
-// Uma referência analisada: ritmo, paleta, folhas de contato e a tabela de planos.
+// Uma referência analisada: ritmo, paleta, perfil de edição (com Criar estilo e Novo projeto), folhas de contato e a
+// tabela de planos.
 import React from 'react';
 import { fileUrl } from '../../api';
 import type { ReferenceVideo } from '../../apiVisual';
 import { formatSeconds } from '../../ui';
-import { ReferenceStyleButton } from './ReferenceStyle';
+import { ReferenceProfile } from './ReferenceProfile';
 
 const num = (v: number | undefined, digits = 1) => (v ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: 0 });
 
@@ -28,7 +29,7 @@ export const ReferenceDetail: React.FC<{ reference: ReferenceVideo }> = ({ refer
           ))}
         </div>
       ) : null}
-      <ReferenceStyleButton reference={ref} />
+      <ReferenceProfile reference={ref} />
       {ref.sheets.map((sheet, i) => (
         <a key={sheet} href={fileUrl(sheet)} target="_blank" rel="noreferrer" className="block">
           <img src={fileUrl(sheet)} alt={`Folha de contato ${i + 1} de ${ref.title}`} loading="lazy" className="w-full rounded-md border border-line" />

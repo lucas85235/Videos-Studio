@@ -1,10 +1,10 @@
 /* Cliente do acervo de material real do projeto (ADR 0004 §3.4): `pool.json`, coletado antes do storyboard, e os
  * links oficiais que o usuário dá (trailer, gameplay). As rotas ficam em `backend/studio/api/routes_media.py`; os
  * modelos em `backend/studio/core/project/pool.py`. */
-import { api, type Job } from './api';
+import { api, type Job, type Prov } from './api';
 
 /** Nível (origem) do material na tela, do mais real ao gerado (`Prov` em core/project/document.py). */
-export type Prov = 'own' | 'official' | 'capture' | 'free' | 'stock' | 'graphic' | 'meme' | 'ai';
+export type { Prov };
 export type PoolMedia = 'image' | 'clip' | 'capture' | 'meme';
 
 /** Um candidato do acervo (`PoolItem`). Caminhos relativos à pasta de dados (use `fileUrl`). */
@@ -67,4 +67,10 @@ export const poolApi = {
     api.post<{ links: PoolLink[] }>(`/api/projects/${projectId}/pool/links`, { links, replace }),
   /** POST /api/projects/:id/pool/refresh — coleta de novo (job `media_pool`). */
   refresh: (projectId: string) => api.post<Job>(`/api/projects/${projectId}/pool/refresh`),
+  /** POST /api/projects/:id/scenes/:sceneId/media (via "pool") — a cena passa a mostrar este item do acervo. */
+  attach: (projectId: string, sceneId: string, poolId: string) =>
+    api.post<{ version: number; warnings: string[] }>(`/api/projects/${projectId}/scenes/${sceneId}/media`, {
+      via: 'pool',
+      pool_id: poolId,
+    }),
 };

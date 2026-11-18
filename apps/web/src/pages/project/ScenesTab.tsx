@@ -50,6 +50,7 @@ import {
   storyboardReviewOf,
   STYLE_MISSING_REASON,
 } from './core/model';
+import { PoolPanel } from './PoolPanel';
 import { PresenterChip } from './PresenterChip';
 import { RealMediaFinder, RealMediaPanel } from './RealMediaPanel';
 import { StoryboardReview } from './StoryboardReview';
@@ -768,6 +769,7 @@ export const ScenesTab: React.FC<{ detail: ProjectDetail; busy: boolean } & TabN
   return (
     <div className="flex flex-col gap-6">
       <StoryboardReview detail={detail} busy={busy} numbers={numbers} onShowScene={showScene} />
+      <PoolPanel detail={detail} disabled={Boolean(blockedReason) || busy} onShowScene={showScene} />
       <VideoClipsPanel projectId={doc.id} disabled={Boolean(blockedReason) || busy} onShowScene={showScene} />
       <RealMediaFinder detail={detail} busy={busy} blockedReason={blockedReason} />
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-card/95 px-3 py-2.5 backdrop-blur-md">

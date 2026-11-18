@@ -5,7 +5,9 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  AppWindow,
   Camera,
+  Clapperboard,
   Copyright,
   ExternalLink,
   Globe,
@@ -14,6 +16,7 @@ import {
   ListChecks,
   Newspaper,
   Replace,
+  Smile,
   RotateCw,
   Search,
   Trash2,
@@ -29,6 +32,7 @@ import {
   type Job,
   type MediaCandidate,
   type MediaCandidates,
+  type MediaKind,
   type MediaPatch,
   type MediaRef,
   type ProjectDetail,
@@ -59,7 +63,15 @@ import {
   uploadMedia,
 } from './core/media';
 
-const KIND_ICONS: Record<RealKind, typeof Camera> = { photo: Camera, news: Newspaper, official: Copyright };
+const KIND_ICONS: Record<MediaKind, typeof Camera> = {
+  photo: Camera,
+  news: Newspaper,
+  official: Copyright,
+  clip: Clapperboard,
+  capture: AppWindow,
+  meme: Smile,
+};
+const isRealKind = (kind: MediaKind | undefined): kind is RealKind => kind === 'photo' || kind === 'news' || kind === 'official';
 const KINDS: RealKind[] = ['photo', 'news', 'official'];
 const FITS = ['auto', 'cover', 'contain'];
 const URL_MAX = 2000;
@@ -397,7 +409,8 @@ const MediaOptions: React.FC<OptionsProps> = ({ scene, doc, projectId, hint, loc
       onLocalError('O arquivo passa de 25 MB.');
       return;
     }
-    onAttach({ via: 'upload', file, kind: hint?.kind ?? scene.visual.media?.kind ?? 'photo' });
+    const shownKind = scene.visual.media?.kind;
+    onAttach({ via: 'upload', file, kind: hint?.kind ?? (isRealKind(shownKind) ? shownKind : 'photo') });
   };
 
   const busy = pending !== null;
