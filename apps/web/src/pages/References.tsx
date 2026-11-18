@@ -81,7 +81,8 @@ export const ReferencesPage: React.FC = () => {
 
   const caps = useQuery({ queryKey: ['visual-capabilities'], queryFn: visualApi.capabilities, staleTime: 60_000 });
   const jobs = useJobs();
-  const active = (jobs.data ?? []).filter((j) => j.kind === 'reference_shots' && isActiveJob(j));
+  // A análise dos planos e o perfil de edição que ela enfileira (minutos de CPU): a referência só fica "pronta" depois.
+  const active = (jobs.data ?? []).filter((j) => (j.kind === 'reference_shots' || j.kind === 'reference_profile') && isActiveJob(j));
   const refs = useQuery({ queryKey: REFS_KEY, queryFn: visualApi.references, refetchInterval: active.length ? 3000 : false });
   const refresh = () => client.invalidateQueries({ queryKey: REFS_KEY });
   // O job da análise não tem projeto, então os eventos não atualizam a lista: busca de novo quando um termina.

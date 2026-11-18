@@ -3,7 +3,9 @@
 Interface única `classify_frames(sheets, schema) -> list[dict]`: uma resposta por imagem, com as chaves do esquema.
 
 - `ClaudeVision`: `claude -p` pela conta do usuário, com a ferramenta Read liberada só na pasta temporária onde as
-  imagens são copiadas (tarefa `vision_classify` em `providers/llm.py`);
+  imagens são copiadas (tarefa `vision_classify` em `providers/llm.py`, modelo `VS_VISION_MODEL`, padrão sonnet). A
+  chamada passa pela cadeia do registro (`registry.run_chain`): o uso fica registrado como o das outras tarefas de LLM
+  e o dia com a cota esgotada é respeitado;
 - `CodexVision`: reserva, `codex exec -i` em sandbox só de leitura;
 - `MockVision`: determinístico e offline (testes e `VS_OFFLINE=1`), decide pela saturação e pela densidade de bordas.
 """
@@ -199,11 +201,14 @@ class ClaudeVision:
     def classify_frames(self, sheets: list[Path], schema: dict[str, Any]) -> list[dict[str, Any]]:
         from studio.providers import registry
 
-        llm = registry.get("claude_code")
         names = [f"img{n:02d}{Path(p).suffix.lower() or '.jpg'}" for n, p in enumerate(sheets)]
-        result = llm.complete_json(task=VISION_TASK, system=VISION_SYSTEM, prompt=_prompt(names),
-                                   schema=_items_schema(schema),
-                                   context={"images": [str(p) for p in sheets], "names": names})
+        context = {"images": [str(p) for p in sheets], "names": names}
+        result, _provider, _ = registry.run_chain(
+            "llm", ["claude_code"],
+            lambda llm: llm.complete_json(task=VISION_TASK, system=VISION_SYSTEM, prompt=_prompt(names),
+                                          schema=_items_schema(schema), context=context),
+            usage_of=lambda r: (r.usage.units, r.usage.unit_name, r.usage.cost_usd),
+        )
         return _by_index(result.data, len(sheets), schema)
 
 
@@ -257,6 +262,8 @@ class CodexVision:
                 proc = run(cmd, cwd=workdir, env=env, timeout=self.timeout_s)
             except subprocess.TimeoutExpired as exc:
                 raise TransientError("o Codex demorou demais para classificar os quadros") from exc
+            except OSError as exc:  # shim do codex quebrado, arquivo sumiu: pula para o próximo, não derruba o job
+                raise TransientError(f"não consegui iniciar o Codex: {exc}") from exc
             text = last.read_text(encoding="utf-8") if last.is_file() else (getattr(proc, "stdout", "") or "")
         start, end = text.find("{"), text.rfind("}")
         try:
@@ -297,7 +304,7 @@ class ChainVision:
                 continue
             try:
                 out = provider.classify_frames(sheets, schema)
-            except ProviderError as exc:
+            except (ProviderError, OSError) as exc:
                 errors.append(f"{provider.id}: {exc}")
                 continue
             self.used = provider.id

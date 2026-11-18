@@ -9,7 +9,7 @@ from refprofile_fixture import CUTS, DURATION, FPS, ONSET_S, PUNCH_S, ffmpeg_ava
 
 from studio.core.editing.profile import EditFingerprint, EditProfile
 from studio.media import refprofile
-from studio.media.refprofile import audio_events, cuts, motion
+from studio.media.refprofile import audio_events, cuts, decode
 from studio.providers.vision import MockVision
 
 pytestmark = pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg ausente")
@@ -67,8 +67,7 @@ def test_quick_profile_and_cache(video, monkeypatch):
     assert notes["skipped"]["vision"] == "modo rápido"
     assert profile.materials.mix == {}
     # em cache: a segunda medição não chama o ffmpeg
-    monkeypatch.setattr(cuts, "scan", lambda *a, **k: pytest.fail("deveria vir do cache"))
-    monkeypatch.setattr(motion, "decode_gray", lambda *a, **k: pytest.fail("deveria vir do cache"))
+    monkeypatch.setattr(decode, "scan_and_gray", lambda *a, **k: pytest.fail("deveria vir do cache"))
     again, _ = refprofile.analyze(video, quick=True)
     assert again.pace == profile.pace and again.camera == profile.camera
 
@@ -101,3 +100,81 @@ def test_video_without_audio_has_no_audio_block(tmp_path):
     assert audio_events.load(silent) is None
     profile, _ = refprofile.analyze(silent, quick=True)
     assert profile.audio.sfx_per_min == 0 and "audio.sfx_per_min" not in profile.meta
+
+
+def test_cancel_stops_the_analysis(video, tmp_path):
+    copy = tmp_path / "cancelado.mp4"
+    copy.write_bytes(video.read_bytes())
+    with pytest.raises(refprofile.Cancelled):
+        refprofile.analyze(copy, quick=True, cancelled=lambda: True)
+    calls = {"n": 0}
+
+    def later() -> bool:  # cancela no meio da leitura do vídeo
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    with pytest.raises(refprofile.Cancelled):
+        refprofile.analyze(copy, quick=True, cancelled=later)
+    assert not (refprofile.cache_dir_for(copy) / "base.json").exists()  # nada gravado
+
+
+def test_audio_that_starts_late_is_on_the_video_clock(video, tmp_path):
+    """MKV com o áudio começando 0,5 s depois do vídeo: o tom (3,7 s no áudio) toca em 4,2 s na tela."""
+    import subprocess
+
+    late = tmp_path / "atrasado.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video), "-itsoffset", "0.5",
+                    "-i", str(video), "-map", "0:v", "-map", "1:a", "-c", "copy", str(late)],
+                   check=True, capture_output=True, timeout=60)
+    assert decode.audio_offset(late) == pytest.approx(0.5, abs=0.03)
+    base = refprofile.measure_base(late)
+    for got, want in zip(sorted(base["cuts"]), CUTS, strict=True):  # os cortes não mudam
+        assert abs(got - want) <= 1 / FPS + 1e-6
+    near = [o for o in base["audio"]["onsets"] if abs(o["t"] - (ONSET_S + 0.5)) <= 0.06]
+    assert len(near) == 1 and near[0]["sfx"], base["audio"]["onsets"]
+
+
+def _words_over(t0: float, t1: float) -> list[tuple[str, float, float]]:
+    return [("palavra", round(t, 2), round(t + 0.25, 2)) for t in [t0 + 0.3 * i for i in range(int((t1 - t0) / 0.3))]]
+
+
+def test_deep_never_counts_more_sfx_than_quick(video):
+    quick, _ = refprofile.analyze(video, quick=True)
+
+    def humor(system, prompt, context):
+        return {"structure": [], "tone_tags": ["calmo"], "patterns": ["pausa antes do dado"], "gag_count": 0}
+
+    # a narração cobre o tom de 3,7 s: o ataque está dentro de uma palavra e não é SFX
+    deep, notes = refprofile.analyze(video, quick=False, vision_provider=MockVision(),
+                                     transcriber=lambda p, lang: (_words_over(3.4, 4.3), "en"), humor_llm=humor,
+                                     use_cache=False)
+    assert notes["speech_lang"] == "en"
+    assert deep.audio.sfx_per_min <= quick.audio.sfx_per_min
+    assert deep.audio.sfx_per_min == 0
+
+
+def test_humor_failure_is_not_cached_and_is_retried(video, tmp_path):
+    copy = tmp_path / "humor.mp4"
+    copy.write_bytes(video.read_bytes())
+    calls = {"transcribe": 0, "humor": 0}
+
+    def transcriber(path, lang):
+        calls["transcribe"] += 1
+        assert lang is None  # sem língua fixa: o faster-whisper detecta
+        return [("oi", 0.5, 0.8), ("gente", 0.9, 1.3)], "pt"
+
+    def flaky(system, prompt, context):
+        calls["humor"] += 1
+        if calls["humor"] == 1:
+            from studio.providers.base import TransientError
+
+            raise TransientError("limite de uso do plano")
+        return {"structure": [], "tone_tags": ["conversado"], "patterns": ["pergunta e resposta"], "gag_count": 1}
+
+    first = refprofile.speech_stage(copy, DURATION, transcriber=transcriber, humor_llm=flaky)
+    assert "humor_error" in first and "humor" not in first
+    second = refprofile.speech_stage(copy, DURATION, transcriber=transcriber, humor_llm=flaky)
+    assert second["humor"]["tone_tags"] == ["conversado"] and "humor_error" not in second
+    assert calls == {"transcribe": 1, "humor": 2}  # a transcrição veio do cache; só o humor foi refeito
+    third = refprofile.speech_stage(copy, DURATION, transcriber=transcriber, humor_llm=flaky)
+    assert third["humor"] == second["humor"] and calls["humor"] == 2

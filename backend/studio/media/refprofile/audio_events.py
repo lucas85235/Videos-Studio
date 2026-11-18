@@ -4,10 +4,13 @@ O corte antigo (`reference_video.cuts`) roda com `-an`; aqui o áudio é lido: m
 
 - **Ataques (onsets)**: fluxo espectral (soma das subidas do log-espectro, STFT de 1024/256) com limiar adaptativo
   (mediana de 1 s + margem) e pico local; o instante é afinado no envelope de 2 ms.
-- **SFX**: o ataque a ±80 ms de um corte; com transcrição, também o ataque fora das palavras; sem transcrição, o ataque
-  isolado (12 dB acima dos 150 ms anteriores) ou grave e forte, com classe definida. Com narração há uns 4 ataques
-  por segundo (sílabas): só conta o ataque que se destaca dos vizinhos (quartil de cima em ±3 s). Sem transcrição a
-  confiança do campo é baixa (0,4).
+- **SFX**: o ataque a ±80 ms de um corte, ou o ataque isolado (12 dB acima dos 150 ms anteriores) ou grave e forte,
+  com classe definida. Com narração há uns 4 ataques por segundo (sílabas): só conta o ataque que se destaca dos
+  vizinhos (quartil de cima em ±3 s). Com transcrição (modo profundo), a mesma regra vale só FORA das palavras (a
+  sílaba forte não vira SFX), e o ataque no corte que cai dentro de uma palavra precisa de classe definida: a
+  transcrição só tira falsos positivos, nunca acrescenta. Assim as batidas da trilha nos respiros não contam como SFX
+  e o profundo não infla o `sfx_per_min` do rápido. Sem transcrição a confiança do campo é baixa (0,4).
+- **Régua**: os instantes saem na régua do vídeo (`offset`: início do áudio - início do vídeo, ver `decode.py`).
 - **Classe** grosseira por envelope e centroide: impact, whoosh, pop, riser, scratch (o resto é "other").
 - **Trilha**: nível nos respiros (janelas de 0,4 s fora da fala) em relação à fala, em dB. O plano falava em
   `ebur128`/`astats`; o RMS em numpy dá o mesmo número relativo sem outra passada do ffmpeg.
@@ -258,12 +261,14 @@ def find_drops(audio: np.ndarray) -> list[float]:
     return out
 
 
-def analyze(audio: np.ndarray | None, cut_times: list[float], words: list[tuple[float, float]] | None = None
-            ) -> AudioResult:
-    """Ataques, SFX (com classe), nível da trilha e drops. `words`: (início, fim) de cada palavra, se houver."""
+def analyze(audio: np.ndarray | None, cut_times: list[float], words: list[tuple[float, float]] | None = None,
+            offset: float = 0.0) -> AudioResult:
+    """Ataques, SFX (com classe), nível da trilha e drops. `cut_times` na régua do vídeo; `words`: (início, fim) de
+    cada palavra na régua do áudio (a da transcrição), se houver. `offset`: início do áudio - início do vídeo; os
+    instantes devolvidos ficam na régua do vídeo."""
     if audio is None or not len(audio):
         return AudioResult()
-    cuts_sorted = sorted(cut_times)
+    cuts_sorted = sorted(float(c) - offset for c in cut_times)
     spans = sorted((a - WORD_PAD_S, b + WORD_PAD_S) for a, b in words) if words else None
     result = AudioResult(has_audio=True)
     onsets = detect_onsets(audio)
@@ -277,17 +282,19 @@ def analyze(audio: np.ndarray | None, cut_times: list[float], words: list[tuple[
         salient = hi - lo < 4 or strength >= float(np.percentile(strengths[lo:hi], 75))
         on_cut = bool(near) and min(near) <= NEAR_CUT_S and salient
         cls, facts = classify(audio, t)
+        in_word = spans is not None and _inside(t, spans)
         if on_cut:
-            sfx = True
-        elif spans is not None:
-            sfx = not _inside(t, spans)
+            sfx = not in_word or cls != "other"
+        elif in_word:
+            sfx = False
         else:
             i0 = int(t * RATE)
             pre = _rms_db(audio[max(0, i0 - int(0.15 * RATE)):max(0, i0 - int(0.01 * RATE))])
             post = _rms_db(audio[i0:i0 + int(0.05 * RATE)])
             centroid = facts.get("centroid", 1000.0)
             sfx = salient and cls != "other" and (post - pre >= ISOLATED_DB or (centroid < 150 and post > -25))
-        result.onsets.append(Onset(t=t, strength=strength, sfx=sfx, on_cut=on_cut and sfx, cls=cls))
+        result.onsets.append(Onset(t=round(t + offset, 4), strength=strength, sfx=sfx, on_cut=on_cut and sfx,
+                                   cls=cls))
     result.music_level_db = music_level(audio, words)
-    result.drops = find_drops(audio)
+    result.drops = [round(d + offset, 2) for d in find_drops(audio)]
     return result

@@ -25,6 +25,7 @@ from studio.media import page_capture, reference_video
 from studio.media.safe_http import BlockedUrl
 from studio.workers.jobs import get_runner
 from studio.workers.visual import proofs, references, thumbs
+from studio.workers.visual.tasks import submit_profile
 
 router = APIRouter(prefix="/api", tags=["visual"])
 
@@ -228,7 +229,11 @@ def measure_profile(ref_id: str, body: ProfileBody | None = None) -> dict[str, A
         raise HTTPException(status_code=404, detail="referência não encontrada")
     if ref["status"] != "pronto":
         raise HTTPException(status_code=409, detail="Analise o vídeo antes de medir o perfil.")
-    return get_runner().submit("reference_profile", {"reference_id": ref_id, "deep": body.deep})
+    try:
+        job_row, _created = submit_profile(ref_id, body.deep)  # um job ativo da mesma referência é reaproveitado
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job_row
 
 
 @router.get("/references/{ref_id}/profile")

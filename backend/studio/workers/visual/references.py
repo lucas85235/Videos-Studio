@@ -137,9 +137,10 @@ def analyze_reference(ref_id: str, progress: Callable[[float, str], None] | None
         raise
     stats = dict(result["stats"])
     previous = (get_reference(ref_id) or ref)["stats"]
-    for key in ("profile", "profile_notes"):  # o perfil do mesmo arquivo continua valendo (o job de perfil refaz)
-        if key in previous:
-            stats[key] = previous[key]
+    if profile_matches_file(previous, data_dir / ref["path"]):  # o perfil do MESMO arquivo continua valendo
+        for key in ("profile", "profile_notes"):
+            if key in previous:
+                stats[key] = previous[key]
     return _update(ref_id, info=result["info"], shots=result["shots"],
                    sheets=[_rel(p) for p in result["sheets"]], stats=stats, status="pronto", error=None)
 
@@ -152,12 +153,32 @@ def get_profile(ref_id: str) -> dict[str, Any] | None:
     return ref["stats"].get("profile")
 
 
-def profile_reference(ref_id: str, *, deep: bool = False,
-                      progress: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+def profile_matches_file(stats: dict[str, Any], path: Path) -> bool:
+    """O perfil gravado é deste arquivo (a chave do arquivo nas notas bate)? Arquivo baixado de novo, ou extrator
+    novo, muda a chave: o perfil antigo não vale mais."""
+    from studio.media import refprofile
+
+    key = (stats.get("profile_notes") or {}).get("file_key")
+    if not stats.get("profile") or not key or not path.is_file():
+        return False
+    return key == refprofile.file_key(path)
+
+
+def has_deep_profile(stats: dict[str, Any], path: Path) -> bool:
+    """Já há perfil profundo (visão e fala) deste arquivo."""
+    return profile_matches_file(stats, path) and not (stats.get("profile") or {}).get("quick", True)
+
+
+def profile_reference(ref_id: str, *, deep: bool = False, progress: Callable[[float, str], None] | None = None,
+                      cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Mede o perfil de edição da referência (ADR 0004 §3.2) e grava em `stats["profile"]`, sem migração.
 
     Modo rápido: cortes, movimento e áudio. Modo profundo: mais fala e visão. As miniaturas dos elementos recorrentes
-    ficam em `library/references/<id>-rec-<n>.jpg` (apagadas com a referência)."""
+    ficam em `library/references/<id>-rec-<n>.jpg` (apagadas com a referência).
+
+    O modo rápido nunca rebaixa um perfil profundo do mesmo arquivo (a visão e a fala gastaram cota; as medidas da
+    base seriam as mesmas, do mesmo cache): nesse caso nada é refeito nem gravado. Cancelado (`cancelled`), levanta
+    `refprofile.Cancelled` e não grava nada."""
     from studio.media import refprofile
 
     say = progress or (lambda f, m: None)
@@ -167,21 +188,39 @@ def profile_reference(ref_id: str, *, deep: bool = False,
     data_dir = get_settings().data_dir
     if not ref["path"] or not (data_dir / ref["path"]).is_file():
         raise rv.ReferenceVideoError("O arquivo do vídeo não está na biblioteca: analise a referência antes.")
-    profile, notes = refprofile.analyze(data_dir / ref["path"], quick=not deep, progress=say,
-                                        thumbs_dir=rv.references_dir(), thumb_prefix=ref_id)
+    path = data_dir / ref["path"]
+    if not deep and has_deep_profile(ref["stats"], path):
+        say(1.0, "Já existe o perfil profundo deste vídeo")
+        return ref
+    profile, notes = refprofile.analyze(path, quick=not deep, progress=say, thumbs_dir=rv.references_dir(),
+                                        thumb_prefix=ref_id, cancelled=cancelled)
+    if cancelled is not None and cancelled():
+        raise refprofile.Cancelled()
     profile.refs = [ref_id]
     current = get_reference(ref_id) or ref  # relê: a análise leva minutos e o título pode ter mudado
+    if not deep and has_deep_profile(current["stats"], path):  # um job profundo terminou no meio: ele vale
+        return current
     stats = {**current["stats"], "profile": profile.model_dump(mode="json"), "profile_notes": notes}
     return _update(ref_id, stats=stats)
 
 
 def delete_reference(ref_id: str) -> bool:
-    """Apaga a referência e os arquivos dela (vídeo e folhas, só dentro de `library/references`)."""
+    """Apaga a referência e os arquivos dela (vídeo e folhas, só dentro de `library/references`) e a pasta de cache
+    da análise de perfil (`cache/refprofile/<chave>`: tiras de quadros, transcrição, medidas), que são cópias de
+    material de terceiros."""
+    import shutil
+
+    from studio.media import refprofile
+
     ref = get_reference(ref_id)
     if ref is None:
         return False
     data_dir = get_settings().data_dir.resolve()
     root = rv.references_dir().resolve()
+    video = (data_dir / ref["path"]).resolve() if ref["path"] else None
+    if video is not None and video.is_file():
+        cache = refprofile.cache_dir_for(video)  # antes de apagar o vídeo: a chave sai do arquivo
+        shutil.rmtree(cache, ignore_errors=True)
     for rel in [ref["path"], *ref["sheets"]]:
         if not rel:
             continue

@@ -8,6 +8,16 @@ Confiança (0 a 1), pela qualidade do extrator:
 - SFX: 0,4 sem transcrição, 0,6 com; trilha e drops: 0,3 (0,5 com transcrição);
 - visão real: 0,7; `MockVision` (offline): 0,3;
 - fala medida: 0,8; tom, estrutura e humor (LLM): 0,5.
+
+Duas definições alinhadas com a métrica da timeline (`core/editing/metrics`):
+- `audio.sfx_per_min` não conta os SFX da transição: o whoosh colado no corte (`on_cut`) é o equivalente da referência
+  ao som de transição da timeline. `sfx_classes` também é dos SFX sem os da transição; `sfx_on_cut_share` continua
+  sendo de todos;
+- `camera.kb_share` é a fração do tempo dos planos de IMAGEM parada (`motion`: quase todo par é a mesma imagem movida)
+  com zoom lento ou pan, como a timeline mede; a câmera que anda na filmagem (gameplay, trailer) não conta.
+
+Perfil de canal (`merge_profiles`): cada campo usa só os perfis que o MEDIRAM (`meta[campo]` com confiança > 0). O
+padrão de um campo não medido (wpm 0 de um perfil rápido, mistura vazia de quem não teve visão) não entra na mediana.
 """
 
 from __future__ import annotations
@@ -50,9 +60,21 @@ def visual_events(base: dict[str, Any]) -> list[float]:
     return sorted(events)
 
 
-def max_still(events: list[float], dur: float) -> float:
-    marks = [0.0, *[e for e in events if 0 < e < dur], dur]
-    return round(max((b - a for a, b in zip(marks, marks[1:], strict=False)), default=dur), 2)
+def max_still(events: list[float], dur: float, start: float = 0.0) -> float:
+    """Maior trecho sem evento visual entre `start` e `dur`."""
+    marks = [start, *[e for e in events if start < e < dur], dur]
+    return round(max((b - a for a, b in zip(marks, marks[1:], strict=False)), default=dur - start), 2)
+
+
+def _kb_share(base: dict[str, Any]) -> float:
+    """Fração do tempo de imagem parada com Ken Burns ou pan (ver o topo)."""
+    image = float(base.get("image_s") or 0.0)
+    return round(min(1.0, float(base.get("kb_s") or 0.0) / image), 3) if image > 0 else 0.0
+
+
+def transition_sfx(onset: dict[str, Any]) -> bool:
+    """O SFX que faz o papel do som de transição da timeline: whoosh colado no corte."""
+    return bool(onset.get("on_cut")) and onset.get("cls") == "whoosh"
 
 
 def measured_blocks(base: dict[str, Any], audio: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
@@ -60,9 +82,11 @@ def measured_blocks(base: dict[str, Any], audio: dict[str, Any] | None = None) -
     dur = float(base["info"]["dur"])
     shots = base.get("shots") or []
     pace = cuts_mod.pace(shots, dur)
-    events = visual_events(base)
-    pace["max_still_s"] = max_still(events, dur)
-    pace["events_per_min"] = _per_min(len(events), dur)
+    # como o ritmo: sem a abertura e o encerramento sem cortes (o outro de 55 s não vira "parado máximo" do estilo)
+    lo, hi = cuts_mod.active_span(cuts_mod.regular_cut_times(shots), dur)
+    events = [e for e in visual_events(base) if lo <= e < hi]
+    pace["max_still_s"] = max_still(events, hi, lo)
+    pace["events_per_min"] = _per_min(len(events), hi - lo)
     punches = base.get("punches") or []
     ramps = base.get("ramps") or []
     analyzed = float(base.get("analyzed_s") or 0.0)
@@ -72,7 +96,7 @@ def measured_blocks(base: dict[str, Any], audio: dict[str, Any] | None = None) -
         "shake_per_min": _per_min(len(base.get("shakes") or []), dur),
         "slow_zoom_share": round(min(1.0, _span(ramps) / dur), 3) if dur else 0.0,
         "zoom_rate_pct_s": round(median(float(r["rate_pct_s"]) for r in ramps), 2) if ramps else 0.0,
-        "kb_share": round(min(1.0, (_span(ramps) + _span(base.get("pans") or [])) / dur), 3) if dur else 0.0,
+        "kb_share": _kb_share(base),
         "static_share": round(min(1.0, float(base.get("static_s") or 0.0) / analyzed), 3) if analyzed else 0.0,
         "freeze_per_min": _per_min(len(base.get("freezes") or []), dur),
     }
@@ -81,11 +105,12 @@ def measured_blocks(base: dict[str, Any], audio: dict[str, Any] | None = None) -
     data = audio if audio is not None else base.get("audio") or {}
     if data.get("has_audio"):
         sfx = [o for o in data.get("onsets") or [] if o.get("sfx")]
-        classes = Counter(o.get("cls") or "other" for o in sfx)
+        accents = [o for o in sfx if not transition_sfx(o)]
+        classes = Counter(o.get("cls") or "other" for o in accents)
         audio_block = {
-            "sfx_per_min": _per_min(len(sfx), dur),
+            "sfx_per_min": _per_min(len(accents), dur),
             "sfx_on_cut_share": round(sum(1 for o in sfx if o.get("on_cut")) / len(sfx), 3) if sfx else 0.0,
-            "sfx_classes": {k: round(v / len(sfx), 3) for k, v in classes.items()} if sfx else {},
+            "sfx_classes": {k: round(v / len(accents), 3) for k, v in classes.items()} if accents else {},
             "music_level_db": data.get("music_level_db"),
             "drops_per_min": _per_min(len(data.get("drops") or []), dur),
         }
@@ -242,6 +267,8 @@ def build(base: dict[str, Any], *, quick: bool = True, speech: dict[str, Any] | 
 
 
 def _merge_values(values: list[Any]) -> Any:
+    """A mediana (número), a moda (texto, booleano), a mistura mediana renormalizada (dict) ou a lista do primeiro
+    perfil (números) / a união (textos), só sobre os valores MEDIDOS (quem chama já filtrou)."""
     present = [v for v in values if v is not None]
     if not present:
         return None
@@ -254,15 +281,21 @@ def _merge_values(values: list[Any]) -> Any:
     if isinstance(first, str):
         return _mode(present) or ""
     if isinstance(first, dict):
+        present = [v for v in present if v]  # mistura vazia: ninguém mediu de verdade
+        if not present:
+            return {}
         keys = {k for v in present for k in v}
         out = {k: float(median(float(v.get(k, 0.0)) for v in present)) for k in keys}
         total = sum(out.values())
-        if total > 0 and all(0 <= x <= 1 for x in out.values()):
+        if total <= 0:
+            return {}
+        if all(0 <= x <= 1 for x in out.values()):
             out = {k: round(x / total, 4) for k, x in out.items() if x > 0}
         return out
     if isinstance(first, list):
-        if first and not isinstance(first[0], str):
-            return first  # janelas de cortes e estrutura: as da 1ª referência (não se somam)
+        if any(v and not isinstance(v[0], str) for v in present):
+            # janelas de cortes e estrutura: as do 1º perfil que tem a lista (não se somam)
+            return next(v for v in present if v)
         merged: list[Any] = []
         for v in present:
             for item in v:
@@ -272,26 +305,42 @@ def _merge_values(values: list[Any]) -> Any:
     return first
 
 
+def _measured(profile: EditProfile, block: str, key: str) -> bool:
+    meta = profile.meta.get(f"{block}.{key}")
+    return meta is not None and meta.confidence > 0
+
+
 def merge_profiles(profiles: list[EditProfile]) -> EditProfile:
-    """Perfil de canal: a mediana, campo a campo, dos perfis (mistura renormalizada; texto pela moda; listas unidas)."""
+    """Perfil de canal: a mediana, campo a campo, dos perfis que MEDIRAM o campo (`meta` com confiança > 0; mistura
+    renormalizada; texto pela moda; listas de texto unidas). Campo que ninguém mediu fica no padrão, sem `meta`."""
     if not profiles:
         return EditProfile()
     if len(profiles) == 1:
         return profiles[0]
     dumps = [p.model_dump() for p in profiles]
+    defaults = EditProfile().model_dump()
     out: dict[str, Any] = {}
+    meta: dict[str, FieldMeta] = {}
     for block in ("pace", "camera", "materials", "overlays", "captions", "audio", "speech", "humor"):
-        keys = dumps[0][block].keys()
-        out[block] = {k: _merge_values([d[block][k] for d in dumps]) for k in keys}
+        out[block] = {}
+        for k in defaults[block]:
+            pairs = [(p, d[block][k]) for p, d in zip(profiles, dumps, strict=False) if _measured(p, block, k)]
+            if not pairs:
+                out[block][k] = defaults[block][k]
+                continue
+            value = _merge_values([v for _, v in pairs])
+            out[block][k] = defaults[block][k] if value is None else value
+            metas = [p.meta[f"{block}.{k}"] for p, _ in pairs]
+            meta[f"{block}.{k}"] = FieldMeta(confidence=round(float(median(m.confidence for m in metas)), 2),
+                                             origin=metas[0].origin)
         for k in ("tone_tags", "patterns"):
             if k in out[block]:
                 out[block][k] = out[block][k][:6]
     recurring = sorted((r for d in dumps for r in d["recurring"]), key=lambda r: -r["count"])[:10]
-    meta: dict[str, FieldMeta] = {}
-    for key in {k for p in profiles for k in p.meta}:
-        metas = [p.meta[key] for p in profiles if key in p.meta]
-        meta[key] = FieldMeta(confidence=round(float(median(m.confidence for m in metas)), 2),
-                              origin=metas[0].origin)
+    rec_metas = [p.meta["recurring"] for p in profiles if "recurring" in p.meta and p.meta["recurring"].confidence > 0]
+    if rec_metas:
+        meta["recurring"] = FieldMeta(confidence=round(float(median(m.confidence for m in rec_metas)), 2),
+                                      origin=rec_metas[0].origin)
     return EditProfile(
         version=1, quick=all(p.quick for p in profiles),
         duration_s=round(float(median(p.duration_s for p in profiles)), 3),

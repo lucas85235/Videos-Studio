@@ -374,20 +374,15 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
     shots = timeline_shots(timeline, doc)
     if duration <= 0 or not shots:
         return TimelineMeasure(EditFingerprint(source="timeline"), shots, [], (0.0, 0.0), [], duration)
+    from studio.media.refprofile import cuts as ref_cuts  # import tardio: o pacote puxa o vídeo de referência
+
     minutes = duration / 60.0
     durs = [s.dur for s in shots]
     cuts = [s.start for s in shots[1:]]
-    mean = statistics.fmean(durs)
-    cv = statistics.pstdev(durs) / mean if mean > 0 and len(durs) > 1 else 0.0
-    windows: list[float] = []
-    w0 = 0.0
-    while w0 < duration - 1e-6:
-        w1 = min(duration, w0 + WINDOW_S)
-        n = sum(1 for c in cuts if w0 <= c < w1)
-        windows.append(_r(_per_min(n, (w1 - w0) / 60.0), 2))
-        w0 = w1
-    hook_end = min(duration, HOOK_CUTS_S)
-    micro = sum(1 for d in durs if d < MICRO_S)
+    # Ritmo pelo extrator único do perfil (emenda "Ritmo" do ADR 0004 §3.0): planos regulares (>= 0,4 s) com os micro
+    # à parte, pontas sem cortes fora do ritmo, CV robusto e a última janela curta fora. A referência, o MP4 e a
+    # timeline medem a mesma coisa (`test_pace_matches_the_timeline_metric`).
+    pace = ref_cuts.pace(ref_cuts.shots_from_durations(durs), duration)
 
     fxs = _timeline_fx(timeline)
     visual_fx = [f for f in fxs if f.type not in AUDIO_FX]
@@ -478,11 +473,7 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
         source="timeline",
         duration_s=_r(duration),
         pace=PaceBlock(
-            shots=len(shots), median_s=_r(statistics.median(durs)), mean_s=_r(mean), p10_s=_r(_quantile(durs, 0.1)),
-            p90_s=_r(_quantile(durs, 0.9)), cv=_r(cv), max_shot_s=_r(max(durs)),
-            cuts_per_min=_r(_per_min(len(cuts), minutes), 2), cuts_per_min_windows=windows,
-            hook_cuts_per_min=_r(_per_min(sum(1 for c in cuts if c < hook_end), hook_end / 60.0), 2),
-            micro_count=micro, micro_per_min=_r(_per_min(micro, minutes), 2), max_still_s=_r(still_len),
+            **pace, max_still_s=_r(still_len),
             events_per_min=_r(_per_min(len(cuts) + len(visual_fx) + len(punch_shots), minutes), 2),
         ),
         camera=CameraBlock(

@@ -5,14 +5,18 @@
 - Os quadros saem de uma passada só do ffmpeg (4 fps, leitura em fluxo), não de um `-ss` por quadro.
 - Classificação em lotes de 12 tiras pelo provedor de `providers/vision.py` (Claude Code; Codex de reserva; `MockVision`
   offline), com o esquema `SHOT_SCHEMA`.
-- Cache pelo sha256 da tira (mais a versão do esquema): reanalisar não gasta cota de novo.
+- Cache pelo sha256 da tira (mais a versão do esquema): reanalisar não gasta cota de novo. O cache é lido sempre, também
+  offline: o `MockVision` só responde as tiras sem resposta real guardada, e a resposta dele nunca é gravada.
+- Tempos na régua do 1º quadro de vídeo (`setpts=PTS-STARTPTS`), a mesma dos cortes (`decode.py`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,7 +25,9 @@ from PIL import Image
 
 from studio.config import get_settings
 from studio.core.editing.profile import MATERIALS
+from studio.core.subproc import kill_tree
 from studio.media.ffmpeg import FFmpegError
+from studio.media.refprofile.decode import Cancelled
 from studio.providers import vision as vision_provider
 
 STRIP_SIDE = 640
@@ -57,8 +63,12 @@ def strip_times(shot: dict[str, Any]) -> list[float]:
     return [a + 0.1 * d, a + 0.5 * d, max(a, b - 0.1 * d)]
 
 
+def _cancelled(cancelled: Callable[[], bool] | None) -> bool:
+    return cancelled is not None and cancelled()
+
+
 def frames_at(path: Path, wanted: list[float], w: int, h: int, *, fps: float = STRIP_FPS,
-              timeout: float = 7200) -> dict[int, Image.Image]:
+              timeout: float = 7200, cancelled: Callable[[], bool] | None = None) -> dict[int, Image.Image]:
     """Os quadros mais próximos dos instantes pedidos, numa passada do ffmpeg a `fps` (índice = round(t × fps))."""
     fw, fh = frame_dims(w, h)
     need = {max(0, int(round(t * fps))) for t in wanted}
@@ -66,7 +76,7 @@ def frames_at(path: Path, wanted: list[float], w: int, h: int, *, fps: float = S
         return {}
     last = max(need)
     cmd = [get_settings().ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path), "-an", "-sn", "-dn",
-           "-vf", f"fps={fps},scale={fw}:{fh}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+           "-vf", f"setpts=PTS-STARTPTS,fps={fps},scale={fw}:{fh}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     size = fw * fh * 3
     out: dict[int, Image.Image] = {}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW)
@@ -80,16 +90,33 @@ def frames_at(path: Path, wanted: list[float], w: int, h: int, *, fps: float = S
             if idx in need:
                 out[idx] = Image.frombytes("RGB", (fw, fh), buf)
             idx += 1
+            if idx % 40 == 0 and _cancelled(cancelled):
+                break
     finally:
-        proc.kill()
+        kill_tree(proc)
         proc.wait(timeout=30)
+    if _cancelled(cancelled):
+        raise Cancelled()
     if not out and need:
         raise FFmpegError("ffmpeg não devolveu os quadros das tiras")
     return out
 
 
+def _save_jpeg(image: Image.Image, target: Path) -> None:
+    """Grava num temporário de nome único e troca: dois jobs na mesma referência não leem tira pela metade."""
+    fd, tmp = tempfile.mkstemp(prefix=target.stem + "-", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            image.save(fh, "JPEG", quality=STRIP_QUALITY)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def build_strips(path: Path, shots: list[dict[str, Any]], info: dict[str, Any], out_dir: Path,
-                 progress: Callable[[float, str], None] | None = None) -> list[Path]:
+                 progress: Callable[[float, str], None] | None = None,
+                 cancelled: Callable[[], bool] | None = None) -> list[Path]:
     """Uma tira JPG por plano em `out_dir/strip-<k>.jpg` (reaproveita as que já existem)."""
     say = progress or (lambda f, m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -98,14 +125,14 @@ def build_strips(path: Path, shots: list[dict[str, Any]], info: dict[str, Any], 
     if missing:
         say(0.0, f"Lendo os quadros de {len(missing)} planos")
         times = [t for s, _ in missing for t in strip_times(s)]
-        frames = frames_at(path, times, int(info.get("w") or 0), int(info.get("h") or 0))
+        frames = frames_at(path, times, int(info.get("w") or 0), int(info.get("h") or 0), cancelled=cancelled)
         fw, fh = frame_dims(int(info.get("w") or 0), int(info.get("h") or 0))
         blank = Image.new("RGB", (fw, fh), (0, 0, 0))
         for n, (shot, target) in enumerate(missing):
             strip = Image.new("RGB", (fw * 3, fh), (0, 0, 0))
             for j, t in enumerate(strip_times(shot)):
                 strip.paste(frames.get(max(0, int(round(t * STRIP_FPS))), blank), (j * fw, 0))
-            strip.save(target, "JPEG", quality=STRIP_QUALITY)
+            _save_jpeg(strip, target)
             if n % 20 == 0:
                 say(0.3 + 0.7 * (n + 1) / len(missing), f"Tiras dos planos ({n + 1}/{len(missing)})")
     return targets
@@ -120,21 +147,25 @@ def strip_key(path: Path) -> str:
 
 
 def classify(strips: list[Path], provider: Any | None = None,
-             progress: Callable[[float, str], None] | None = None) -> tuple[list[dict[str, Any]], str]:
-    """Classificação de cada tira (na ordem), em lotes de 12, com cache pelo sha da tira. Devolve também o id do
-    provedor que respondeu ("cache" se tudo veio do cache). O `MockVision` não usa o cache: a resposta de mentira do
-    modo offline nunca passa por resposta real depois."""
+             progress: Callable[[float, str], None] | None = None,
+             cancelled: Callable[[], bool] | None = None) -> tuple[list[dict[str, Any]], str]:
+    """Classificação de cada tira (na ordem), em lotes de 12, com cache pelo sha da tira. Devolve também o id de quem
+    respondeu: "cache" (ou o provedor gravado no cache) se tudo veio do cache, o id do provedor se ele respondeu
+    alguma, e o do `MockVision` se alguma resposta veio dele.
+
+    O cache é lido sempre, também com o `MockVision` (offline): uma resposta real guardada vale mais que a de mentira.
+    O `MockVision` só responde as tiras sem resposta guardada, e a resposta dele nunca é gravada."""
     say = progress or (lambda f, m: None)
     vis = provider or vision_provider.get_vision()
-    cacheable = not isinstance(vis, vision_provider.MockVision)
+    is_mock = isinstance(vis, vision_provider.MockVision)
     cache = _cache_dir()
     cache.mkdir(parents=True, exist_ok=True)
     keys = [strip_key(p) for p in strips]
     results: list[dict[str, Any] | None] = [None] * len(strips)
-    used = "cache" if cacheable else vision_provider.MockVision.id
+    used = "cache"
     for i, key in enumerate(keys):
         file = cache / f"{key}.json"
-        if cacheable and file.is_file():
+        if file.is_file():
             try:
                 data = json.loads(file.read_text(encoding="utf-8"))
                 results[i] = data["result"]
@@ -143,6 +174,8 @@ def classify(strips: list[Path], provider: Any | None = None,
                 results[i] = None
     todo = [i for i, r in enumerate(results) if r is None]
     for b in range(0, len(todo), BATCH):
+        if _cancelled(cancelled):
+            raise Cancelled()
         batch = todo[b:b + BATCH]
         say(b / max(1, len(todo)), f"Classificando os planos ({b + len(batch)}/{len(todo)})")
         answers = vis.classify_frames([strips[i] for i in batch], vision_provider.SHOT_SCHEMA)
@@ -150,10 +183,22 @@ def classify(strips: list[Path], provider: Any | None = None,
         for i, answer in zip(batch, answers, strict=False):
             clean = normalize(answer)
             results[i] = clean
-            if cacheable and not answer.get("missing"):
-                (cache / f"{keys[i]}.json").write_text(json.dumps({"provider": used, "result": clean},
-                                                                  ensure_ascii=False), encoding="utf-8")
+            if not is_mock and not answer.get("missing"):
+                _write_json(cache / f"{keys[i]}.json", {"provider": used, "result": clean})
+    if is_mock and todo:
+        used = vision_provider.MockVision.id
     return [r or normalize({}) for r in results], used
+
+
+def _write_json(target: Path, data: dict[str, Any]) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=target.stem + "-", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _choice(value: Any, allowed: tuple[str, ...]) -> str:

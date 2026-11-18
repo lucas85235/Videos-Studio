@@ -1,12 +1,15 @@
 """Narração da referência (ADR 0004 §3.2, `speech.py`): ritmo da fala, pessoa, tom, estrutura e humor.
 
-- Transcrição com o `faster_whisper` que o app já usa no alinhamento (`providers/align.py`). Sem o pacote (ou no modo
-  offline), o bloco é pulado e fica `origin: "padrão", confidence: 0`.
+- Transcrição com o `faster_whisper` que o app já usa no alinhamento (`providers/align.py`), com a língua DETECTADA
+  (a referência pode ser em inglês: forçar "pt" dava texto errado e wpm, pessoa e humor inválidos). A língua usada vai
+  para as notas do perfil. Sem o pacote (ou no modo offline), o bloco é pulado e fica `origin: "padrão",
+  confidence: 0`.
 - Medidas diretas: palavras por minuto (no trecho falado), pausas de 0,35 s ou mais por minuto, perguntas por minuto e a
   pessoa gramatical dominante.
 - Tarefa de LLM `reference_humor`: recebe a transcrição e devolve a estrutura (papéis com tempos), as tags de tom e os
-  padrões de humor. Regra: descrever o padrão, nunca copiar frases; o que vier com 5 palavras seguidas da transcrição
-  é descartado aqui também.
+  padrões de humor. Regra: descrever o padrão, nunca copiar frases; o filtro anti-cópia vale para padrões, tags de tom
+  e papéis da estrutura: o que repete 5 palavras seguidas da transcrição (ou, no texto curto de 3 a 4 palavras, ele
+  inteiro) é descartado; o papel copiado vira "bloco".
 """
 
 from __future__ import annotations
@@ -71,12 +74,12 @@ def available() -> tuple[bool, str]:
     return FasterWhisperAligner().availability()
 
 
-def transcribe(path: Path, lang: str = "pt") -> list[Word]:
-    """Palavras com tempo (faster-whisper local)."""
+def transcribe(path: Path, lang: str | None = None) -> tuple[list[Word], str]:
+    """Palavras com tempo (faster-whisper local) e a língua usada (a detectada, sem `lang`)."""
     from studio.providers.align import FasterWhisperAligner
 
-    words = FasterWhisperAligner().transcribe(path, lang)
-    return [(w.text, float(w.start), float(w.end)) for w in words if w.text.strip()]
+    words, language = FasterWhisperAligner().transcribe_detect(path, lang)
+    return [(w.text, float(w.start), float(w.end)) for w in words if w.text.strip()], language
 
 
 def _norm(text: str) -> str:
@@ -123,9 +126,13 @@ def transcript_text(words: list[Word], every_s: float = 10.0) -> str:
     return out[:TRANSCRIPT_MAX_CHARS]
 
 
-def _copies(pattern: str, ngrams: set[tuple[str, ...]]) -> bool:
+def _copies(pattern: str, ngrams: set[tuple[str, ...]], short: set[tuple[str, ...]] | None = None) -> bool:
+    """O texto repete 5 palavras seguidas da transcrição (`ngrams`), ou, sendo curto (3 ou 4 palavras), aparece
+    inteiro nela (`short`: as sequências de 3 e 4 palavras)."""
     toks = _tokens(pattern)
-    return any(tuple(toks[i:i + COPY_NGRAM]) in ngrams for i in range(len(toks) - COPY_NGRAM + 1))
+    if any(tuple(toks[i:i + COPY_NGRAM]) in ngrams for i in range(len(toks) - COPY_NGRAM + 1)):
+        return True
+    return short is not None and 3 <= len(toks) < COPY_NGRAM and tuple(toks) in short
 
 
 def default_llm(system: str, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -153,8 +160,9 @@ def humor(words: list[Word], dur: float,
     data = (llm or default_llm)(HUMOR_SYSTEM, prompt, {"transcript": text, "duration_s": dur, "words": len(words)})
     toks = [t for w in words for t in _tokens(w[0])]
     ngrams = {tuple(toks[i:i + COPY_NGRAM]) for i in range(len(toks) - COPY_NGRAM + 1)}
+    short = {tuple(toks[i:i + n]) for n in (3, 4) for i in range(len(toks) - n + 1)}
     patterns = [" ".join(str(p).split())[:200] for p in data.get("patterns") or [] if str(p).strip()]
-    patterns = [p for p in patterns if not _copies(p, ngrams)][:6]
+    patterns = [p for p in patterns if not _copies(p, ngrams, short)][:6]
     structure = []
     for beat in data.get("structure") or []:
         try:
@@ -163,9 +171,12 @@ def humor(words: list[Word], dur: float,
         except (TypeError, ValueError):
             continue
         role = " ".join(str(beat.get("role") or "").split())[:40]
+        if role and _copies(role, ngrams, short):
+            role = "bloco"
         if role:
             structure.append({"role": role, "start_s": round(start, 1), "end_s": round(end, 1)})
-    tags = [" ".join(str(t).split())[:40] for t in data.get("tone_tags") or [] if str(t).strip()][:6]
+    tags = [" ".join(str(t).split())[:40] for t in data.get("tone_tags") or [] if str(t).strip()]
+    tags = [t for t in tags if not _copies(t, ngrams, short)][:6]
     try:
         gags = max(0, int(data.get("gag_count") or 0))
     except (TypeError, ValueError):

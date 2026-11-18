@@ -1258,6 +1258,7 @@ export const JOB_LABELS: Record<string, string> = {
   final_check: 'Conferência do vídeo final',
   page_capture: 'Captura de página',
   reference_shots: 'Planos do vídeo de referência',
+  reference_profile: 'Perfil de edição da referência',
   thumbs_variants: 'Miniaturas para o teste A/B',
   publish_instagram: 'Publicação no Instagram',
   ab_build: 'Versões A/B',

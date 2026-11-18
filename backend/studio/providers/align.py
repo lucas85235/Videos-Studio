@@ -84,6 +84,8 @@ class FasterWhisperAligner(AlignProvider):
     # Uma transcrição por vez. Com o modelo na GPU e o cuBLAS faltando, só a primeira chamada recebe o erro: as
     # chamadas simultâneas ficavam presas para sempre dentro do CTranslate2 e a prévia nunca terminava (14/11/2026).
     _run_lock = threading.Lock()
+    last_language = ""
+    """Língua da última transcrição (a detectada, quando `lang` vem vazio). Lida sob `_run_lock`."""
 
     def availability(self) -> tuple[bool, str]:
         try:
@@ -117,14 +119,18 @@ class FasterWhisperAligner(AlignProvider):
             return model, device
 
     @staticmethod
-    def _run(model, audio, lang: str) -> list[Word]:
-        segments, _info = model.transcribe(  # type: ignore[attr-defined]
-            audio, language=lang.split("-")[0], word_timestamps=True, beam_size=1, vad_filter=False
+    def _run(model, audio, lang: str | None) -> list[Word]:
+        language = lang.split("-")[0] if lang else None  # None: o faster-whisper detecta a língua
+        segments, info = model.transcribe(  # type: ignore[attr-defined]
+            audio, language=language, word_timestamps=True, beam_size=1, vad_filter=False
         )
-        return [Word(w.word.strip(), float(w.start), float(w.end)) for seg in segments for w in seg.words or []]
+        words = [Word(w.word.strip(), float(w.start), float(w.end)) for seg in segments for w in seg.words or []]
+        FasterWhisperAligner.last_language = str(getattr(info, "language", "") or language or "")
+        return words
 
-    def transcribe(self, audio_path: Path, lang: str) -> list[Word]:
-        """Palavras ouvidas no áudio, com timestamps."""
+    def transcribe(self, audio_path: Path, lang: str | None) -> list[Word]:
+        """Palavras ouvidas no áudio, com timestamps. `lang` vazio ou None: a língua é detectada (ver
+        `transcribe_detect`)."""
         # Decodifica pelo ffmpeg do app: a leitura interna do faster-whisper (PyAV) quebra com algumas versões do
         # pacote `av` ("unexpected keyword argument 'metadata_errors'").
         audio = decode_mono(audio_path, 16000)
@@ -140,6 +146,11 @@ class FasterWhisperAligner(AlignProvider):
                 FasterWhisperAligner._gpu_broken = True
                 model, _ = self._model()
                 return self._run(model, audio, lang)
+
+    def transcribe_detect(self, audio_path: Path, lang: str | None = None) -> tuple[list[Word], str]:
+        """Como `transcribe`, devolvendo também a língua usada (a detectada, sem `lang`)."""
+        words = self.transcribe(audio_path, lang)
+        return words, FasterWhisperAligner.last_language or (lang or "")
 
     def align(self, *, audio_path: Path, text: str, lang: str) -> list[Word]:
         return map_to_script(text, self.transcribe(audio_path, lang), audio_path)

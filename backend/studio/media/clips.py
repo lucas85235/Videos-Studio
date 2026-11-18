@@ -141,22 +141,18 @@ def fetch(url: str, *, runner: Callable[..., subprocess.CompletedProcess] | None
 
 
 def detect_cuts(path: Path) -> list[float]:
-    """Instantes dos cortes do vídeo pelo mesmo extrator da referência (`media/refprofile/cuts.py`): dois limiares
-    (duro e suave, para gameplay e trailer), rajadas coladas viradas num corte só e o candidato que é a mesma imagem
-    ampliada descartado (punch, não corte). O plano curto que sobra entre cortes sai em `cut` (`min_shot_s`)."""
+    """Instantes dos cortes do vídeo pelo mesmo extrator da referência (`media/refprofile`): uma passada do ffmpeg
+    (`decode.scan_and_gray`) dá a diferença entre quadros e os quadros em cinza; dois limiares (duro e suave, para
+    gameplay e trailer), rajadas coladas viradas num corte só e o candidato que é a mesma imagem ampliada descartado
+    (punch, não corte). O plano curto que sobra entre cortes sai em `cut` (`min_shot_s`)."""
     from studio.media.refprofile import cuts as ref_cuts
-    from studio.media.refprofile import motion
+    from studio.media.refprofile import decode, motion
 
-    scan = ref_cuts.scan(path)
+    info = reference_video.probe(path)
+    scan, frames, times = decode.scan_and_gray(path, int(info["w"]), int(info["h"]), float(info.get("dur") or 0) or None)
     cands = ref_cuts.merge_bursts(ref_cuts.candidates(scan.times, scan.mafd))
     if not cands:
         return []
-    try:
-        info = reference_video.probe(path)
-        frames, times = motion.decode_gray(path, int(info["w"]), int(info["h"]))
-    except (reference_video.ReferenceVideoError, FFmpegError, KeyError, ValueError) as exc:
-        log.warning("conferência dos cortes pelo movimento pulada: %s", exc)
-        return [c.t for c in cands]
     found, _punches = motion.verify_cuts(cands, frames, times)
     return found
 

@@ -50,6 +50,9 @@ WEB_TASKS = frozenset({"factcheck", "media_find", "video_ideas"})
 WEB_TIMEOUT_S = 1800  # a busca e a leitura das páginas levam bem mais que a escrita
 # Visão da referência (ADR 0004 §3.2): o Claude lê as tiras de quadros copiadas na pasta de trabalho, e só elas.
 VISION_TASK = "vision_classify"
+# Classificar tiras é tarefa de visão simples e repetida (~30 lotes numa referência de 13 min): modelo próprio, mais
+# leve que o da escrita. VS_VISION_MODEL troca (ex.: "opus"); o esforço segue VS_CLAUDE_EFFORT.
+VISION_MODEL_DEFAULT = "sonnet"
 
 
 def web_tools_enabled() -> bool:
@@ -116,6 +119,13 @@ class ClaudeCodeLLM(LLMProvider):
     @property
     def model(self) -> str:
         return os.environ.get("VS_CLAUDE_MODEL", CLAUDE_CODE_MODEL)
+
+    @property
+    def vision_model(self) -> str:
+        return os.environ.get("VS_VISION_MODEL", VISION_MODEL_DEFAULT)
+
+    def model_for(self, task: str) -> str:
+        return self.vision_model if task == VISION_TASK else self.model
 
     @property
     def effort(self) -> str:
@@ -215,7 +225,7 @@ class ClaudeCodeLLM(LLMProvider):
             "-p", "--output-format", "json",
             "--json-schema", json.dumps(schema, ensure_ascii=False),
             *tools, "--no-session-persistence", "--safe-mode",
-            "--model", self.model, "--effort", self.effort,
+            "--model", self.model_for(task), "--effort", self.effort,
             "--system-prompt-file", str(system_file),
         ]
 

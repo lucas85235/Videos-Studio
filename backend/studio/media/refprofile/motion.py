@@ -1,6 +1,6 @@
 """Movimento dentro do plano (ADR 0004 §3.2, `motion.py`): punch, zoom lento, pan, tremida, sobreposição e parado.
 
-Quadros em cinza com 160 px no lado maior, a 5 fps, decodificados numa passada do ffmpeg. Para cada par de quadros
+Quadros em cinza com 160 px no lado maior, a 5 fps, do ramo de movimento da passada do ffmpeg (`decode.py`). Para cada par de quadros
 seguidos do mesmo plano:
 - **escala**: correlação de fase sobre o espectro de amplitude em coordenadas log-polares (numpy puro). A amplitude não
   muda com translação; na log-polar, escala vira deslocamento no eixo do raio;
@@ -15,22 +15,21 @@ Daí saem:
 - **tremida**: variância alta da translação depois de tirar a média móvel (alta frequência);
 - **sobreposição**: caixa de mudança local estável (meme ou mascote sobre o trailer, ou o contrário: caixa parada
   sobre fundo que mexe) em 3 pares seguidos ou mais;
-- **parado**: par sem escala, sem translação e sem mudança.
+- **parado**: par sem escala, sem translação e sem mudança;
+- **imagem**: plano em que quase todo par é a mesma imagem movida (alinhado, correlação de 0,95 ou mais: foto, print,
+  cartão, arte parada). O `kb_share` do perfil é a fração do tempo desses planos com zoom lento ou pan, como a métrica
+  da timeline mede (tempo de imagem com Ken Burns ou pan); a câmera que anda na filmagem (gameplay, trailer) fica de
+  fora, porque ali a cena muda além do movimento.
 """
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image
-
-from studio.config import get_settings
-from studio.media.ffmpeg import FFmpegError
 
 FPS = 5.0
 SIDE = 160  # lado maior do quadro analisado
@@ -55,7 +54,8 @@ SHAKE_PAIRS = 5
 BLOCK_GRID = (16, 9)  # colunas x linhas no quadro deitado
 BLOCK_ACTIVE = 10.0
 OVERLAY_PAIRS = 3
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+RIGID_NCC = 0.95  # par alinhado com correlação a partir disto: a mesma imagem movida (sem nada mexendo dentro)
+IMAGE_SHARE = 0.8  # plano com esta fração de pares rígidos é imagem parada (com ou sem Ken Burns)
 
 
 # --------------------------------------------------------------------------------------------
@@ -70,21 +70,6 @@ def frame_size(w: int, h: int, side: int = SIDE) -> tuple[int, int]:
     if w >= h:
         return side, max(2, int(round(side * h / w / 2)) * 2)
     return max(2, int(round(side * w / h / 2)) * 2), side
-
-
-def decode_gray(path: Path, w: int, h: int, fps: float = FPS, timeout: float = 7200) -> tuple[np.ndarray, np.ndarray]:
-    """Quadros em cinza (N, altura, largura) uint8 a `fps` e os instantes de cada um."""
-    fw, fh = frame_size(w, h)
-    cmd = [get_settings().ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path), "-an", "-sn", "-dn",
-           "-vf", f"fps={fps},scale={fw}:{fh},format=gray", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
-    proc = subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=_NO_WINDOW)
-    if proc.returncode != 0:
-        raise FFmpegError(f"ffmpeg falhou ao ler os quadros: {proc.stderr.decode(errors='replace').strip()[-500:]}")
-    size = fw * fh
-    n = len(proc.stdout) // size
-    frames = np.frombuffer(proc.stdout[: n * size], dtype=np.uint8).reshape(n, fh, fw)
-    times = np.arange(n, dtype=np.float64) / fps
-    return frames, times
 
 
 # --------------------------------------------------------------------------------------------
@@ -260,7 +245,8 @@ def _neighbors(times: np.ndarray, t: float, reach: float) -> tuple[int, int] | N
 
 def verify_cuts(cands: list[Any], frames: np.ndarray, times: np.ndarray) -> tuple[list[float], list[dict[str, Any]]]:
     """Separa os candidatos a corte que são, na verdade, a mesma imagem ampliada (punch por corte): devolve os cortes
-    e os punches (`{t, scale}`)."""
+    e os punches (`{t, scale}`). O candidato de pico relativo (`kind == "relative"`, cena escura) só vira corte se os
+    quadros de antes e de depois não forem a mesma imagem movida (clarão, movimento brusco)."""
     cuts: list[float] = []
     punches: list[dict[str, Any]] = []
     for cand in cands:
@@ -270,6 +256,10 @@ def verify_cuts(cands: list[Any], frames: np.ndarray, times: np.ndarray) -> tupl
             if rel.ok and abs(np.log(rel.scale)) >= np.log(1 + PUNCH_MIN * 0.6):
                 punches.append({"t": round(float(cand.t), 3), "scale": round(rel.scale - 1, 3), "by": "cut"})
                 continue
+            if getattr(cand, "kind", "") == "relative" and rel.ok:
+                continue
+        elif getattr(cand, "kind", "") == "relative":
+            continue  # sem os quadros para conferir, o pico relativo não basta
         cuts.append(cand.t)
     return cuts, punches
 
@@ -369,11 +359,16 @@ class MotionResult:
     """{start, end, box: [x, y, w, h], frame: índice do quadro do meio}."""
     static_s: float = 0.0
     analyzed_s: float = 0.0
+    image_s: float = 0.0
+    """Tempo dos planos de imagem parada (com ou sem movimento de câmera sobre ela)."""
+    kb_s: float = 0.0
+    """Tempo com zoom lento ou pan dentro dos planos de imagem (Ken Burns)."""
 
     def to_dict(self) -> dict[str, Any]:
         return {"pairs": self.pairs, "punches": self.punches, "ramps": self.ramps, "pans": self.pans,
                 "shakes": self.shakes, "overlays": self.overlays, "static_s": round(self.static_s, 3),
-                "analyzed_s": round(self.analyzed_s, 3)}
+                "analyzed_s": round(self.analyzed_s, 3), "image_s": round(self.image_s, 3),
+                "kb_s": round(self.kb_s, 3)}
 
 
 def _runs(flags: list[bool]) -> list[tuple[int, int]]:
@@ -451,6 +446,7 @@ def analyze(frames: np.ndarray, times: np.ndarray, shots: list[dict[str, Any]]) 
                                 "scale": round(float(np.exp(total)) - 1, 3), "by": "zoom"})
             used.update(range(k, k + span))
         # zoom lento (rampa) e pan
+        moving: set[int] = set()
         ramp_flags = [i not in used and RAMP_MIN <= abs(v) <= RAMP_MAX for i, v in enumerate(logs)]
         for a, b in _runs(ramp_flags):
             seg = logs[a:b]
@@ -462,6 +458,7 @@ def analyze(frames: np.ndarray, times: np.ndarray, shots: list[dict[str, Any]]) 
             rate = abs(float(np.mean(seg))) / step * 100
             out.ramps.append({"start": round(float(times[idx[a]]), 3), "end": round(float(times[idx[b]]), 3),
                               "rate_pct_s": round(rate, 2)})
+            moving.update(range(a, b))
         moves = [(r.dx, r.dy) if r.ok else (0.0, 0.0) for r in rels]
         pan_flags = [i not in used and np.hypot(*m) >= PAN_MIN and not ramp_flags[i] for i, m in enumerate(moves)]
         for a, b in _runs(pan_flags):
@@ -473,6 +470,11 @@ def analyze(frames: np.ndarray, times: np.ndarray, shots: list[dict[str, Any]]) 
             if norm < PAN_MIN or float(np.linalg.norm(seg - mean, axis=1).mean()) > norm:
                 continue
             out.pans.append({"start": round(float(times[idx[a]]), 3), "end": round(float(times[idx[b]]), 3)})
+            moving.update(range(a, b))
+        # imagem parada (com ou sem Ken Burns): quase todo par é a mesma imagem movida
+        if rels and sum(1 for r in rels if r.ncc >= RIGID_NCC) >= IMAGE_SHARE * len(rels):
+            out.image_s += step * len(rels)
+            out.kb_s += step * len(moving)
         # tremida: alta frequência da translação
         if len(moves) >= SHAKE_PAIRS:
             dx = np.asarray([m[0] for m in moves])

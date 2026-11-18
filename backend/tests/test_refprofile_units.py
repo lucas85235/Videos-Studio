@@ -32,7 +32,10 @@ def test_scan_parse_reads_mafd_and_freezes():
     ])
     scan = cuts.parse_scan(text)
     assert scan.times == [0.0, 1.0] and scan.mafd == [0.0, 25.5]
-    assert scan.freezes == [(0.5, 1.4)]  # o congelado sem fim passa do último quadro: fica de fora
+    assert scan.freezes == [(0.5, 1.4)]  # sem a duração, o congelado sem fim passa do último quadro: fica de fora
+    # com a duração do vídeo, o congelamento que vai até o fim (o "record scratch" do fechamento) fecha nela: o
+    # mpdecimate já descartou os quadros congelados, então o último quadro mantido não serve de fim
+    assert cuts.parse_scan(text, 4.0).freezes == [(0.5, 1.4), (1.6, 4.0)]
 
 
 def test_candidates_hard_after_static_gap_and_soft_over_motion():
@@ -61,6 +64,22 @@ def test_candidates_hard_after_static_gap_and_soft_over_motion():
     assert len(found) == 3
 
 
+def test_dark_cut_is_a_relative_peak_checked_by_the_frames():
+    # cena escura com o mascote parado no meio: a diferença do corte é pequena (~0,1), mas 10x a da vizinhança
+    times = [round(i / 30, 4) for i in range(120)]
+    mafd = [0.3] * 120
+    mafd[60] = 4.0  # 2,0 s: ~0,10 na escala do select
+    found = cuts.candidates(times, mafd)
+    assert [(round(c.t, 2), c.kind) for c in found] == [(2.0, "relative")]
+    # conferido nos quadros: imagens diferentes = corte; a mesma imagem (clarão, mascote mexendo) = nada
+    a, b = _texture(seed=3), _texture(seed=9)
+    frames = np.stack([a, a, b, b])
+    ftimes = np.asarray([1.6, 1.8, 2.0, 2.2])
+    assert motion.verify_cuts(found, frames, ftimes) == ([2.0], [])
+    same = np.stack([a, a, a, a])
+    assert motion.verify_cuts(found, same, ftimes) == ([], [])
+
+
 def test_repeated_frames_do_not_look_like_cuts():
     # 60 fps com quadro repetido: sem o mpdecimate a diferença alterna 0 e alto. Os quadros que restam (30 fps) dão
     # movimento contínuo, e movimento contínuo não é corte.
@@ -69,10 +88,17 @@ def test_repeated_frames_do_not_look_like_cuts():
     assert cuts.candidates(times, mafd) == []
 
 
-def test_bursts_become_one_micro_shot():
-    cands = [cuts.Candidate(t, 0.5, "hard") for t in (1.0, 1.033, 1.1, 1.2, 1.25, 3.0)]
-    merged = cuts.merge_bursts(cands)
-    assert [c.t for c in merged] == [1.0, 1.25, 3.0]
+def test_bursts_transition_or_micro_shot():
+    # glitch: todo quadro muda (5 candidatos colados) = transição, um corte só
+    glitch = [cuts.Candidate(t, 0.5, "hard") for t in (1.0, 1.033, 1.1, 1.2, 1.25, 3.0)]
+    assert [c.t for c in cuts.merge_bursts(glitch)] == [1.0, 3.0]
+    # flash de 1 quadro (dois candidatos a 0,03 s) = transição, um corte só
+    flash = [cuts.Candidate(t, 0.5, "hard") for t in (1.0, 1.033, 3.0)]
+    assert [c.t for c in cuts.merge_bursts(flash)] == [1.0, 3.0]
+    # imagem de 3 quadros (dois candidatos a 0,1 s) = micro-plano de verdade (meme relâmpago)
+    meme = [cuts.Candidate(t, 0.5, "hard") for t in (1.0, 1.1, 3.0)]
+    merged = cuts.merge_bursts(meme)
+    assert [c.t for c in merged] == [1.0, 1.1, 3.0]
     shots = cuts.shots_from_cuts([c.t for c in merged], 5.0)
     assert [s["micro"] for s in shots] == [False, True, False, False]
 
@@ -86,6 +112,71 @@ def test_pace_regular_shots_micro_and_windows():
     assert pace["cuts_per_min"] == 5.0
     assert pace["cuts_per_min_windows"] == [6.0, 4.0]
     assert pace["hook_cuts_per_min"] == 6.0
+
+
+def test_pace_last_short_window_is_dropped():
+    shots = cuts.shots_from_cuts([10.0, 20.0, 40.0, 61.0], 63.0)
+    assert cuts.pace(shots, 63.0)["cuts_per_min_windows"] == [4.0, 2.0]  # 60 a 63 s: pedaço curto, fora
+
+
+def test_pace_ignores_an_outro_without_cuts_and_the_cv_is_robust():
+    # 4 min com um plano a cada 2 s (variando de 1,5 a 2,5 s) e um outro de 55 s sem corte
+    durs = [1.5, 2.0, 2.5] * 40 + [55.0]
+    shots = cuts.shots_from_durations(durs)
+    dur = sum(durs)
+    pace = cuts.pace(shots, dur)
+    # o outro sai do ritmo: a taxa é a do trecho com cortes, e o maior plano não é o de 55 s
+    assert pace["cuts_per_min"] == pytest.approx(30.0, abs=0.5)
+    assert pace["max_shot_s"] == 2.5 and pace["shots"] == 120
+    # as janelas continuam do vídeo inteiro (o outro aparece nelas) e o gancho é dos 30 s iniciais
+    assert pace["cuts_per_min_windows"][-1] < 5 and pace["hook_cuts_per_min"] == pytest.approx(30.0, abs=2.1)
+    # CV robusto (o da lognormal com o mesmo desvio do log): perto do CV dos planos regulares, não inflado pelo outro
+    arr = np.asarray([1.5, 2.0, 2.5])
+    assert pace["cv"] == pytest.approx(float(arr.std() / arr.mean()), abs=0.03)
+    naive = np.asarray(durs[:-1] + [55.0])
+    assert float(naive.std() / naive.mean()) > 1.0  # o CV ingênuo com o plano atípico
+
+
+def test_robust_cv_is_the_lognormal_parameter():
+    rng = np.random.default_rng(7)
+    sigma = float(np.sqrt(np.log(1 + 0.7 ** 2)))  # CV 0,7, como o editor-planejador sorteia
+    durs = list(np.exp(rng.normal(np.log(2.0), sigma, 4000)))
+    assert cuts.robust_cv(durs) == pytest.approx(0.7, abs=0.03)
+
+
+def test_pace_is_the_single_extractor_for_a_timeline():
+    # a mesma lista de planos (de uma timeline) dá o mesmo PaceBlock pelo caminho das durações e pelo dos cortes
+    durs = [2.0, 0.3, 1.5, 3.0, 0.2, 2.5, 1.0, 4.0, 0.35, 2.2]
+    by_durations = cuts.pace(cuts.shots_from_durations(durs), sum(durs))
+    cut_times = list(np.cumsum(durs)[:-1])
+    by_cuts = cuts.pace(cuts.shots_from_cuts(cut_times, sum(durs)), sum(durs))
+    assert by_durations == by_cuts
+    assert by_durations["micro_count"] == 3 and by_durations["shots"] == 7  # micro à parte (semântica do PaceBlock)
+
+
+def test_pace_matches_the_timeline_metric():
+    """Teste cruzado com `metricas-cara-ia`: a impressão da timeline e o extrator do perfil medem o mesmo ritmo.
+    Pula enquanto `fingerprint_from_timeline` for o encaixe vazio da fundação."""
+    from studio.core.editing.metrics import fingerprint_from_timeline
+    from studio.core.editing.profile import PaceBlock
+
+    fps = 30
+    durs = [2.0, 0.3, 1.5, 3.0, 0.2, 2.5, 1.0, 4.0, 0.35, 2.2, 1.8, 2.6]
+    scenes, frame = [], 0
+    for i, d in enumerate(durs):
+        n = int(round(d * fps))
+        scenes.append({"id": f"s{i}", "kind": "image", "from": frame, "durationInFrames": n, "src": f"img{i}.jpg"})
+        frame += n
+    timeline = {"fps": fps, "durationInFrames": frame, "scenes": scenes}
+    fp = fingerprint_from_timeline(timeline, None)  # type: ignore[arg-type]
+    if fp.pace.shots == 0 and fp.pace.median_s == 0:
+        pytest.skip("métrica da timeline ainda é o encaixe vazio da fundação")
+    want = PaceBlock(**cuts.pace(cuts.shots_from_durations([n / fps for n in
+                                                            (int(round(d * fps)) for d in durs)]), frame / fps))
+    got = fp.pace
+    for field in ("shots", "median_s", "p10_s", "p90_s", "cv", "max_shot_s", "cuts_per_min", "cuts_per_min_windows",
+                  "hook_cuts_per_min", "micro_count", "micro_per_min"):
+        assert getattr(got, field) == pytest.approx(getattr(want, field), abs=0.01), field
 
 
 def test_old_shot_list_keeps_the_micro_shots_aside():
@@ -174,6 +265,22 @@ def test_analyze_finds_slow_zoom_and_overlay():
     assert len(res.overlays) == 1
 
 
+def test_ken_burns_counts_only_on_still_images():
+    a = _texture()
+    # imagem parada com zoom lento: Ken Burns (a mesma imagem movida, par a par)
+    still = np.stack([motion._warp(a, 1.0 + 0.01 * i, 0, 0).astype(np.uint8) for i in range(10)])
+    times = np.arange(len(still)) / motion.FPS
+    shot = [{"k": 1, "a": 0.0, "b": 2.0, "dur": 2.0, "micro": False}]
+    res = motion.analyze(still, times, shot)
+    assert res.image_s > 0 and res.kb_s / res.image_s > 0.5
+    # filmagem com zoom lento: a cena muda além do movimento (ruído novo a cada quadro): não é imagem, não é KB
+    rng = np.random.default_rng(1)
+    live = np.stack([np.clip(f.astype(np.int16) + rng.integers(-60, 60, f.shape), 0, 255).astype(np.uint8)
+                     for f in still])
+    res = motion.analyze(live, times, shot)
+    assert res.image_s == 0 and res.kb_s == 0
+
+
 # --- fala ---------------------------------------------------------------------------------------------------------
 
 
@@ -201,6 +308,18 @@ def test_humor_offline_mock_and_no_copied_phrases():
 
     out = speech.humor(WORDS, 60.0, copier)
     assert out["patterns"] == ["exagero depois de dado sério"]
+
+
+def test_humor_tags_and_roles_never_copy_the_transcript():
+    def copier(system, prompt, context):
+        return {"structure": [{"role": "a gente vai zerar", "start_s": 0, "end_s": 2},
+                              {"role": "gancho", "start_s": 2, "end_s": 4}],
+                "tone_tags": ["vai zerar o jogo", "irônico", "zerar o jogo hoje"], "gag_count": 0,
+                "patterns": ["exagero"]}
+
+    out = speech.humor(WORDS, 60.0, copier)
+    assert out["tone_tags"] == ["irônico"]  # tag com 3 a 4 palavras seguidas da transcrição sai
+    assert [b["role"] for b in out["structure"]] == ["bloco", "gancho"]  # papel copiado vira genérico
 
 
 def test_speech_unavailable_offline():
@@ -244,6 +363,20 @@ def test_mock_vision_is_never_cached(tmp_path):
     strips = [_strip(tmp_path, "s.jpg", (200, 200, 200))]
     rvision.classify(strips, pvision.MockVision())
     assert not list(rvision._cache_dir().glob("*.json"))
+
+
+def test_offline_after_real_vision_keeps_the_real_answers(tmp_path):
+    strips = [_strip(tmp_path, f"r{i}.jpg", (i * 30, 90, 40)) for i in range(3)]
+    real, used = rvision.classify(strips[:2], CountingVision())
+    assert used == "contador"
+    # depois, offline (MockVision): as 2 tiras com resposta real vêm do cache; só a nova vem do mock
+    answers, used = rvision.classify(strips, pvision.MockVision())
+    assert answers[:2] == real and answers[0]["material"] == "official_trailer"
+    assert used == pvision.MockVision.id  # uma resposta veio do mock
+    assert len(list(rvision._cache_dir().glob("*.json"))) == 2  # a do mock não foi gravada
+    # tudo com resposta real guardada: o mock não responde nada e não marca a visão como de mentira
+    answers, used = rvision.classify(strips[:2], pvision.MockVision())
+    assert answers == real and used == "contador"
 
 
 def test_vision_normalize_rejects_unknown_material():
@@ -294,6 +427,59 @@ def test_claude_vision_task_reads_only_its_workdir(tmp_path, monkeypatch):
                                context={"images": [str(strip)], "names": ["img00.jpg"]})
     assert seen["files"] == ["img00.jpg", "system.txt"]
     assert pvision._by_index(result.data, 1, pvision.SHOT_SCHEMA)[0]["material"] == "gameplay"
+
+
+def test_vision_task_uses_its_own_lighter_model(tmp_path, monkeypatch):
+    llm = ClaudeCodeLLM()
+    monkeypatch.delenv("VS_VISION_MODEL", raising=False)
+    monkeypatch.setenv("VS_CLAUDE_MODEL", "opus")
+    cmd = llm._command(VISION_TASK, {"type": "object"}, tmp_path / "system.txt")
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
+    style = llm._command("style", {}, tmp_path / "s.txt")
+    assert style[style.index("--model") + 1] == "opus"
+    monkeypatch.setenv("VS_VISION_MODEL", "haiku")
+    cmd = llm._command(VISION_TASK, {"type": "object"}, tmp_path / "system.txt")
+    assert cmd[cmd.index("--model") + 1] == "haiku"
+
+
+def test_claude_vision_goes_through_the_registry_chain(tmp_path, monkeypatch):
+    from studio.providers import registry
+
+    calls = []
+
+    def run_chain(kind, chain, call, *, usage_of=None, **kw):
+        calls.append((kind, chain, usage_of is not None))
+        result = SimpleNamespace(data={"items": [{"i": 0, "material": "news"}]})
+        return result, None, []
+
+    monkeypatch.setattr(registry, "run_chain", run_chain)
+    out = pvision.ClaudeVision().classify_frames([_strip(tmp_path, "v.jpg", (3, 3, 3))], pvision.SHOT_SCHEMA)
+    assert out[0]["material"] == "news" and calls == [("llm", ["claude_code"], True)]
+
+
+def test_codex_that_does_not_start_is_skipped(tmp_path):
+    from studio.providers.base import TransientError
+
+    def runner(cmd, *, cwd=None, env=None, timeout=None):
+        raise FileNotFoundError("codex.cmd")
+
+    with pytest.raises(TransientError):
+        pvision.CodexVision(runner).classify_frames([_strip(tmp_path, "o.jpg", (9, 9, 9))], pvision.SHOT_SCHEMA)
+
+    class Broken:
+        id = "quebrado"
+
+        def availability(self):
+            return True, "ok"
+
+        def classify_frames(self, sheets, schema):
+            raise OSError("não iniciou")
+
+    good = CountingVision()
+    good.availability = lambda: (True, "ok")  # type: ignore[attr-defined]
+    chain = pvision.ChainVision([Broken(), good])
+    assert chain.classify_frames([_strip(tmp_path, "p.jpg", (5, 5, 5))], pvision.SHOT_SCHEMA)[0]["material"]
+    assert chain.used == "contador"
 
 
 def test_chain_vision_falls_back_and_reports_unavailable(tmp_path):
@@ -352,17 +538,75 @@ def test_recurrence_groups_five_or_more():
     assert found[0]["first_s"] == 0.0
 
 
+def _measured(fields: list[str], confidence: float = 0.9, origin: str = "medido") -> dict:
+    return {f: {"confidence": confidence, "origin": origin} for f in fields}
+
+
 def test_merge_profiles_takes_the_median():
+    fields = ["pace.median_s", "pace.shots", "materials.mix"]
     p1 = EditProfile(refs=["a"], duration_s=100, pace={"median_s": 1.0, "shots": 10},
-                     materials={"mix": {"gameplay": 1.0}})
+                     materials={"mix": {"gameplay": 1.0}}, meta=_measured(fields))
     p2 = EditProfile(refs=["b"], duration_s=200, pace={"median_s": 2.0, "shots": 20},
-                     materials={"mix": {"gameplay": 0.5, "news": 0.5}})
+                     materials={"mix": {"gameplay": 0.5, "news": 0.5}}, meta=_measured(fields))
     p3 = EditProfile(refs=["c"], duration_s=300, pace={"median_s": 4.0, "shots": 40},
-                     materials={"mix": {"news": 1.0}})
+                     materials={"mix": {"news": 1.0}}, meta=_measured(fields))
     merged = aggregate.merge_profiles([p1, p2, p3])
     assert merged.refs == ["a", "b", "c"]
     assert merged.pace.median_s == 2.0 and merged.pace.shots == 20 and merged.duration_s == 200
     assert merged.materials.mix == {"gameplay": 0.5, "news": 0.5}
+
+
+def test_merge_quick_and_deep_keeps_what_only_the_deep_measured():
+    pace = ["pace.median_s", "pace.cuts_per_min_windows"]
+    deep_fields = [*pace, "speech.wpm", "materials.mix", "audio.sfx_per_min"]
+    quick1 = EditProfile(refs=["q1"], pace={"median_s": 1.0, "cuts_per_min_windows": []}, meta=_measured(pace))
+    quick2 = EditProfile(refs=["q2"], pace={"median_s": 2.0, "cuts_per_min_windows": [10.0, 12.0]},
+                         meta=_measured(pace))
+    deep = EditProfile(refs=["d"], quick=False, pace={"median_s": 3.0, "cuts_per_min_windows": [20.0]},
+                       speech={"wpm": 160.0}, audio={"sfx_per_min": 4.0},
+                       materials={"mix": {"official_trailer": 0.8, "meme_reaction": 0.2}},
+                       meta={**_measured(deep_fields), "materials.mix": {"confidence": 0.7, "origin": "visão"}})
+    merged = aggregate.merge_profiles([quick1, quick2, deep])
+    assert merged.pace.median_s == 2.0  # o ritmo os três mediram
+    assert merged.speech.wpm == 160.0  # só o profundo mediu a fala: os 0 dos rápidos não entram
+    assert merged.materials.mix == {"official_trailer": 0.8, "meme_reaction": 0.2}
+    assert merged.meta["materials.mix"].confidence == 0.7 and merged.meta["materials.mix"].origin == "visão"
+    assert merged.audio.sfx_per_min == 4.0  # referência sem áudio não puxa para 0
+    # lista de números: a do 1º perfil que tem a lista, nunca a concatenação das janelas
+    assert merged.pace.cuts_per_min_windows == [10.0, 12.0]
+    # campo que ninguém mediu: padrão e sem meta
+    assert merged.humor.patterns == [] and "humor.patterns" not in merged.meta
+    assert not merged.quick
+    # 1 rápido + 1 profundo: wpm é o do profundo (antes: mediana(0, 160) = 80)
+    assert aggregate.merge_profiles([quick1, deep]).speech.wpm == 160.0
+
+
+def test_merge_mix_all_zero_is_empty():
+    meta = _measured(["materials.mix"], 0.7, "visão")
+    a = EditProfile(materials={"mix": {"news": 0.0}}, meta=meta)
+    b = EditProfile(materials={"mix": {}}, meta=meta)
+    assert aggregate.merge_profiles([a, b]).materials.mix == {}
+
+
+def test_sfx_per_min_leaves_out_the_transition_whoosh():
+    base = {"info": {"dur": 60.0}, "shots": cuts.shots_from_cuts([10.0, 20.0], 60.0),
+            "audio": {"has_audio": True, "onsets": [
+                {"t": 10.0, "sfx": True, "on_cut": True, "cls": "whoosh"},
+                {"t": 20.0, "sfx": True, "on_cut": True, "cls": "impact"},
+                {"t": 30.0, "sfx": True, "on_cut": False, "cls": "pop"},
+                {"t": 31.0, "sfx": False, "on_cut": False, "cls": "other"}]}}
+    audio = aggregate.measured_blocks(base)["audio"]
+    assert audio["sfx_per_min"] == 2.0  # o whoosh no corte é o som da transição
+    assert audio["sfx_on_cut_share"] == pytest.approx(2 / 3, abs=0.01)  # de todos os SFX, como antes
+    assert audio["sfx_classes"] == {"impact": 0.5, "pop": 0.5}
+
+
+def test_max_still_leaves_out_an_outro_without_cuts():
+    durs = [2.0] * 60 + [50.0]  # 2 min com corte a cada 2 s e um outro de 50 s
+    base = {"info": {"dur": sum(durs)}, "shots": cuts.shots_from_durations(durs), "punches": [], "overlays": [],
+            "freezes": []}
+    pace = aggregate.measured_blocks(base)["pace"]
+    assert pace["max_still_s"] == 2.0 and pace["events_per_min"] == pytest.approx(30.0, abs=0.6)
 
 
 def test_max_still_counts_every_visual_event():

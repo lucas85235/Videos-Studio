@@ -97,7 +97,7 @@ def test_slideshow_of_ai_scores_above_70(longo):
 
 def test_real_first_with_cv_07_scores_below_30(longo):
     fp = metrics.measure_timeline(real_first_timeline()).fp
-    assert 0.6 <= fp.pace.cv <= 0.8
+    assert 0.6 <= fp.pace.cv <= 0.9  # CV robusto (lognormal, `cuts.robust_cv`): ~0,85 nestes planos
     assert fp.materials.prov_mix["ai"] <= 0.2
     assert fp.hook_prov == "capture"  # 0,6 s de oficial e 2,4 s de captura nos 3 s iniciais
     assert fp.camera.punch_per_min > 0 and fp.overlays.text_pop_per_min > 0

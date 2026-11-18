@@ -17,7 +17,11 @@ E varre, em ordem:
 1. blocos de render, vídeos finais, mixagens, narrações aceleradas (Modo B), camadas de parallax e imagens gradadas
    por LUT que nada usa mais (refazê-los é só tempo de máquina; cada troca de LUT ou de intensidade gera uma cópia
    nova de todas as imagens);
-2. registros com falha, registros cujos arquivos sumiram e pastas sem registro;
+2. registros com falha, registros cujos arquivos sumiram e pastas sem registro. A análise de perfil das referências
+   (`cache/refprofile/<chave do arquivo>/`: medidas, transcrição, tiras de quadros) é uma unidade: sai inteira quando
+   nenhuma referência da biblioteca tem mais aquele arquivo (apagada, baixada de novo, extrator novo) ou quando é a
+   medida de um render (`measure_video`), passado o prazo de 24 h. As respostas da visão (`refprofile/vision/`,
+   pelo sha da tira) ficam: são pequenas e poupam cota;
 3. bundles de versões antigas do renderer e temporários;
 4. (opcional, `old_versions`) narrações, alinhamentos e imagens de versões antigas que nada protegido usa —
    refazê-las custa cota ou dinheiro, por isso só com a opção ligada;
@@ -57,6 +61,8 @@ SWEEP_KINDS = ("chunk", "final", "mix", "dub", "parallax", "lut")
 COSTLY_KINDS = {"tts": "old_voice", "align": "old_voice", "image": "old_image", "media_search": "old_image"}
 OLD_VERSION_KINDS = ("tts", "align", "image")
 GRACE = timedelta(hours=24)
+REFPROFILE_DIR = "refprofile"
+REFPROFILE_KEEP = frozenset({"vision"})
 GB = 1024**3
 POLICY_KEY = "cache_policy"
 
@@ -214,6 +220,25 @@ def _cache_paths(value: Any, used: set[tuple[str, str]]) -> None:
     elif isinstance(value, list):
         for item in value:
             _cache_paths(item, used)
+
+
+def _live_refprofile_keys() -> set[str]:
+    """As pastas `cache/refprofile/<chave>` das referências da biblioteca (com o arquivo presente)."""
+    from studio.media import refprofile
+    from studio.models import ReferenceVideo
+
+    data_dir = get_settings().data_dir
+    keys: set[str] = set()
+    with session_scope() as s:
+        paths = [row.path for row in s.query(ReferenceVideo).all() if row.path]
+    for rel in paths:
+        path = data_dir / rel
+        try:
+            if path.is_file():
+                keys.add(refprofile.file_key(path))
+        except OSError:
+            continue
+    return keys
 
 
 def cache_sizes() -> dict[str, int]:
@@ -390,6 +415,14 @@ def collect(dry_run: bool = True, now: datetime | None = None, *, old_versions: 
     if settings.cache_dir.is_dir():
         for kind_dir in settings.cache_dir.iterdir():
             if not kind_dir.is_dir():
+                continue
+            if kind_dir.name == REFPROFILE_DIR:
+                live = _live_refprofile_keys()
+                for folder in kind_dir.iterdir():
+                    if (not folder.is_dir() or folder.name in REFPROFILE_KEEP or folder.name in live
+                            or _mtime(folder) > cutoff):
+                        continue
+                    doomed.append(_Doomed("orphan", _dir_size(folder), folder))
                 continue
             for bucket in kind_dir.iterdir():
                 if not bucket.is_dir():

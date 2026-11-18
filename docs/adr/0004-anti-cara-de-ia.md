@@ -280,7 +280,7 @@ Encaixes vazios:
 - `sfx_per_min` sem os da transição (na referência: o whoosh colado no corte) e `kb_share` só sobre o tempo de imagem
   parada, nos dois lados.
 Ordem: esta emenda, depois `ref-perfil`, depois `metricas-cara-ia`, que passa a usar `cuts.pace` em `measure_timeline`
-(até lá o teste cruzado pula, porque a métrica da timeline é o encaixe vazio).
+(feito na integração das revisões: `measure_timeline` chama `cuts.pace` e o teste cruzado roda).
 
 **Testes:** `backend/tests/test_contracts_compat.py`:
 - todos os `presets/styles/*.yaml` e o estilo `refstyle.json` validam;
@@ -418,6 +418,24 @@ Outros arquivos:
 - a referência GTA (`ref_x1l83ap549`) dá, em modo rápido, cerca de 21 cortes/min, mediana ≈1,4 s e cerca de 6 micro/min;
 - no modo profundo, a mistura sai com `ai_illustration≈0` e `official_trailer` dominante;
 - tudo em cache.
+
+**Validação na GTA (revisão do item, 18/11/2026)** — cópia do vídeo numa pasta de dados do scratchpad:
+- O alvo "~21 cortes/min" vinha da análise antiga (`select='gt(scene,0.3)'`, 283 planos), que **perde cortes**.
+  Contagem manual de 120 a 180 s (folhas a 6 fps, com 15 fps nos trechos duvidosos): uns 30 cortes duros e 4 fusões
+  ou fades. O extrator acha 24 nessa janela (−20%); o que ainda escapa são cortes entre cenas escuras com o mascote
+  parado no meio da tela, fusões e fades. Falso positivo achado: um relâmpago no fundo, que virou micro-plano.
+  **Alvo corrigido: cortes/min de 26 a 34 no trecho com cortes**; o rápido dá 30,9 (sem a abertura e o
+  outro, ver o `PaceBlock`), mediana 1,40 s (alvo mantido) e CV robusto 0,74.
+- Micro-planos: 4,4/min. A contagem antiga de 9,25/min transformava toda rajada de 2 candidatos em micro-plano
+  (flash de 1 quadro, transição de glitch); agora rajada é transição e só a imagem de 2 quadros ou mais vira micro.
+  Na janela manual houve 1 micro-plano real (perdido) e 1 falso (o relâmpago): o alvo "~6/min" não foi confirmado e
+  fica como ordem de grandeza.
+- Modo profundo (visão com amostra de 48 planos, Claude Code com `VS_VISION_MODEL=sonnet`, 4 lotes, ~50 s; fala com
+  faster-whisper small na CPU, ~3 min; humor com 1 chamada): `official_trailer` 0,71, `photo_real` 0,10, `mascot`
+  0,06, `meme_reaction` 0,03, `ai_illustration` 0 (o mascote desenhado saiu como `mascot`, sem ajuste no prompt).
+  Língua detectada: pt; 195 palavras/min, 2ª pessoa. SFX no profundo: 1,0/min contra 7,8/min no rápido (a
+  transcrição só tira falsos positivos: sílaba forte no corte não é SFX).
+- Custo do rápido: ~146 s para 13,4 min de 1080p60 (antes 205 s: cortes e movimento agora saem da mesma decodificação).
 
 **Dependências:** fundação; merge depois de `card-nome`.
 
