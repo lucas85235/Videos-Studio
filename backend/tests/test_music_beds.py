@@ -11,10 +11,11 @@ from studio.core.hashing import hash_obj, seed_from
 from studio.core.project import service
 from studio.core.project.ops import apply_ops, parse_ops
 from studio.core.styles.library import get_style
-from studio.media import audio, music_curate, music_library
+from studio.media import audio, music_curate, music_library, sfx_library
 from studio.media.audio_check import decode
 from studio.media.ffmpeg import read_wav
 from studio.workers.jobs import get_job, get_runner
+from studio.workers.pipeline.build import Builder
 
 SR = audio.SAMPLE_RATE
 
@@ -149,12 +150,16 @@ def test_one_cue_keeps_v3_mix_and_two_cues_switch_beds(isolated_settings):
     music_hash = hash_obj({"mood": audio.mood_key(mood), "duration": float(int(total // 5 + 1) * 5),
                            "seed": seed_from(doc.seed, "music", mood), "v": 2})
     volume = cue.volume_db if cue.volume_db is not None else style.audio.music.volume_db
+    builder = Builder(project_id, mode="preview")
+    sfx_events = builder.sfx_plan(timeline)
     # a mesma chave do mix de antes (v3): projeto antigo com uma faixa não refaz o áudio (glitch/riser levam a versão
     # dos efeitos: o som deles mudou e o mix antigo, com apito, é refeito)
     key = {
         "voice": [(Path(n["path"]).parent.name, n["start"]) for n in timeline["narration"]],
         "music": (music_hash, volume, style.audio.music.ducking, audio.music_highpass(mood)),
-        "sfx": [(e["type"], e["start"]) for e in timeline["sfx"]],
+        # os efeitos como o mix os lê (`Builder.sfx_plan`: o do ADR 0004 cai na palavra e leva lib_id e ganho)
+        "sfx": [(e["type"], e["start"], e["lib_id"], e["gain_db"]) if e["extra"] else (e["type"], e["start"])
+                for e in sfx_events],
         "sfx_db": style.audio.sfx.volume_db,
         "loudness": style.audio.loudness_lufs,
         "total": total,
@@ -163,10 +168,17 @@ def test_one_cue_keeps_v3_mix_and_two_cues_switch_beds(isolated_settings):
     }
     # o storyboard novo passa pelo planejador (ADR 0004): efeito de evento (thump, swish...) leva a versão atual dos
     # efeitos; sem eles, a de glitch/riser; sem nenhum dos dois, a chave da v3 fica como era
-    if any(e["type"] in audio.EVENT_SFX_KINDS for e in timeline["sfx"]):
+    if {e["played"] for e in sfx_events} & set(audio.EVENT_SFX_KINDS):
         key["sfx_v"] = audio.SFX_VERSION
-    elif any(e["type"] in audio.SFX_RETUNED for e in timeline["sfx"]):
+    elif any(e["type"] in audio.SFX_RETUNED for e in sfx_events):
         key["sfx_v"] = audio.SFX_RETUNED_VERSION
+    lib_keys = [(ref, explicit, k) for ref, explicit in sorted({(e["ref"], e["explicit"]) for e in sfx_events})
+                if (k := sfx_library.mix_key(ref, tonal_ok=builder.sfx_tonal_ok, explicit=explicit)) is not None]
+    if lib_keys:
+        key["sfx_lib"] = lib_keys
+    drops = audio.clamp_drops(timeline.get("music_drops"), total)
+    if drops:
+        key["music_drops"] = drops
     expected = hash_obj(key)
     assert expected in entry["mix"]
     assert preview["music"]["beds"][0]["start_s"] == 0.0 and len(preview["music"]["beds"]) == 1
@@ -187,8 +199,6 @@ def test_one_cue_keeps_v3_mix_and_two_cues_switch_beds(isolated_settings):
     assert new_entry["mix"] != entry["mix"] and two["generated"].get("mix") == 1
     assert two["generated"].get("tts", 0) == 0
     # a trilha montada (para a conferência) troca de clima no segmento marcado
-    from studio.workers.pipeline.build import Builder
-
     track, info = Builder(project_id).music_track(timeline)
     music = decode(track, SR, 1)
     assert abs(music.size / SR - total) < 0.01 and info["beds"] == beds
