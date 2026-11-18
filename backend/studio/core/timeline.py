@@ -10,6 +10,7 @@ Regras importantes (README §5.4 e §6.5):
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import math
 import re
@@ -469,12 +470,16 @@ def _scene_sfx(style: StyleSpec, scene: Scene, resolved: dict[str, Any], s0: flo
     return sorted(events, key=lambda e: e["start"])
 
 
-def _load_pool(project_id: str) -> Pool | None:
+def edit_pool(doc: ProjectDoc) -> Pool | None:
+    """O acervo do projeto (`pool.json`) quando algum subplano vem dele; None sem subplano do acervo (ou id de projeto
+    que não vira pasta, documento de teste). A timeline, os créditos e o build leem por aqui."""
+    if not edit_resolve.uses_pool(doc):
+        return None
     from studio.core.project.pool import load_pool
 
     try:
-        return load_pool(project_id)
-    except ValueError:  # id de projeto que não vira pasta (documento de teste): sem acervo
+        return load_pool(doc.id)
+    except ValueError:
         return None
 
 
@@ -506,26 +511,33 @@ def _edit_layer(
     script: list[str] | None,
     music_drops: list[dict[str, Any]],
     warnings: list[str],
+    shot_files: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Subplanos, eventos e ênfase da legenda da cena (`edit_resolve`), gravados em `resolved` só quando há. Devolve
     os SFX de evento; as quedas da trilha e os avisos entram nas listas recebidas."""
     length = resolved["durationInFrames"]
     words = [{"text": w.text, "from": frame(w.start) - f0, "to": frame(w.end) - f0} for w in raw_words]
     merged = resolved["words"] if scene_words is not raw_words else None
-    real = doc.shown_media(scene) is not None
-    camera = real_motion_pool(style, edit=True) if real else style.edit.camera
+    media = doc.shown_media(scene)
     edit = edit_resolve.resolve(scene, words, fps, length=length, f0=f0, doc=doc, pool=pool, images=images,
-                                camera=camera, grammar=grammar, alt_words=merged,
-                                script=script, sfx_lead=SFX_LEAD)
+                                camera=style.edit.camera, real_camera=real_motion_pool(style, edit=True),
+                                grammar=grammar, alt_words=merged, script=script, sfx_lead=SFX_LEAD,
+                                scene_is_video=bool(resolved.get("video")) or bool(media is not None and media.video),
+                                files=shot_files, official_max_clip_s=style.art.sources.official_max_clip_s,
+                                auto_sfx=style.audio.sfx.auto)
     if edit["shots"]:
         resolved["shots"] = edit["shots"]
+        resolved[edit_resolve.CAPS_KEY] = edit["caps"]  # sai no acerto final (`fit_to_length`)
     if edit["fx"]:
         resolved["fx"] = edit["fx"]
-    if scene.mark is not None and scene.mark.emphasis:
-        edit_resolve.emphasize_captions(resolved["captions"], scene.mark.emphasis, grammar.caption_emphasis,
-                                        edit["fx"])
-    music_drops.extend(edit["music_drops"])
     label = scene_label(doc, scene.id)
+    if scene.mark is not None and scene.mark.emphasis:
+        lost = edit_resolve.emphasize_captions(resolved["captions"], scene.mark.emphasis, grammar.caption_emphasis,
+                                               edit["fx"], script=script)
+        if lost:
+            quoted = ", ".join(f'"{p}"' for p in lost)
+            warnings.append(f"{label}: a ênfase em {quoted} não foi achada na legenda traduzida.")
+    music_drops.extend(edit["music_drops"])
     warnings.extend(f"{label}: {w}." for w in edit["warnings"])
     return edit["sfx"]
 
@@ -540,12 +552,15 @@ def build_timeline(
     clips: dict[str, dict[str, Any]] | None = None,
     presenter: Presenter | None = None,
     pool: Pool | None = None,
+    shot_files: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Monta a timeline completa de um idioma (em quadros). `parallax`: camadas por cena (fundo → frente) para o
     movimento "parallax"; cena com parallax sem camadas (ou sem imagem) cai no Ken Burns. `clips`: vídeo IA pronto
     por cena ({"path", "seconds"}). `presenter`: o avatar efetivo do projeto (`core.project.presenter.effective`);
     None: nenhuma cena ganha avatar (a timeline fica igual à de antes). `pool`: o acervo do projeto, para os subplanos
-    que vêm dele (None: lido de `pool.json` quando algum subplano pede).
+    que vêm dele (None: lido de `pool.json` quando algum subplano pede). `shot_files`: arquivo de cada subplano de
+    mídia ou do acervo → a versão que o renderer recebe (recortada e gradada pelo build; None: o arquivo sumiu e o
+    plano fica com o visual da cena); None: os caminhos vão como estão.
 
     Camada de edição (ADR 0004 §3.7), só no projeto que a tem (`edit_resolve.edit_active`): cada cena ganha `prov`,
     `clean` (efeitos por nível), `shots` e `fx` resolvidos em quadros, a legenda marca a ênfase da batida, os SFX de
@@ -573,8 +588,8 @@ def build_timeline(
     caption_style = style.edit.captions
     digits = digit_captions(doc)
     grammar = grammar_for(style) if edit_resolve.edit_active(doc) else None
-    if grammar is not None and pool is None and any(sh.source == "pool" for s in doc.scenes for sh in s.shots):
-        pool = _load_pool(doc.id)
+    if grammar is not None and pool is None:
+        pool = edit_pool(doc)
     music_drops: list[dict[str, Any]] = []
     edit_warnings: list[str] = []
     for index, (seg, start, clip) in enumerate(placements):
@@ -659,7 +674,8 @@ def build_timeline(
             cut_sfx = _scene_sfx(style, scene, resolved, s0, fps, first=(index == 0 and k == 0))
             if grammar is not None:
                 event_sfx = _edit_layer(doc, style, grammar, scene, resolved, raw_words, scene_words, f0, frame, fps,
-                                        images, pool, script[k] if script else None, music_drops, edit_warnings)
+                                        images, pool, script[k] if script else None, music_drops, edit_warnings,
+                                        shot_files)
                 if style.audio.sfx.auto:
                     cut_sfx = edit_resolve.drop_stacked_sfx(cut_sfx, event_sfx, scene, SFX_LEAD, SFX_LEAD_DEFAULT)
                 cut_sfx = sorted(cut_sfx + event_sfx, key=lambda e: e["start"])
@@ -678,7 +694,7 @@ def build_timeline(
     scenes_out[-1]["durationInFrames"] = total_frames - scenes_out[-1]["from"]
     if grammar is not None:
         for scene_out in scenes_out:
-            edit_resolve.fit_to_length(scene_out)
+            edit_resolve.fit_to_length(scene_out, fps)
 
     out: dict[str, Any] = {
         "version": 1,
@@ -797,15 +813,52 @@ def scene_motion(doc: ProjectDoc, style: StyleSpec, scene: Scene) -> str:
     """Movimento de câmera da cena: o escolhido nela ou sorteado (semente da cena) entre os pesos do estilo. Mídia
     real sorteia só entre os movimentos calmos (REAL_MOTIONS).
 
-    Com a camada de edição e sem subplanos, o sorteio segue a gramática (`edit_resolve.grammar_motion`): pelo menos
-    `static_share_min` parada e no máximo `slow_zoom_share` de zoom lento (Ken Burns em tudo é a cara de slideshow)."""
+    Com a camada de edição: a captura (página, notícia) fica parada, e a cena sem subplanos segue a cota da gramática
+    no vídeo inteiro (`_grammar_motions`): pelo menos `static_share_min` paradas e no máximo `slow_zoom_share` de zoom
+    lento (Ken Burns em tudo é a cara de slideshow). O movimento gravado na cena (`scene.motion`) sempre vale: o
+    documento não diz se foi o usuário ou o LLM que escolheu, e quem limpa a escolha do LLM é o planejador."""
     if scene.motion:
         return scene.motion
     edit = edit_resolve.edit_active(doc)
-    camera = real_motion_pool(style, edit=edit) if doc.shown_media(scene) is not None else style.edit.camera
+    if edit and prov_of_scene(scene, doc) == "capture":
+        return "static"  # a página capturada não anda: o retângulo do marca-texto fica no lugar (ADR 0004 §3.6.3)
     if edit and not scene.shots:
-        return edit_resolve.grammar_motion(camera, grammar_for(style), seed_from(doc.seed, scene.id, "motion", "grammar"))
+        return _grammar_motions(doc, style).get(scene.id, "static")
+    camera = real_motion_pool(style, edit=edit) if doc.shown_media(scene) is not None else style.edit.camera
     return pick_weighted(camera, seed_from(doc.seed, scene.id, "motion"))
+
+
+def _grammar_units(doc: ProjectDoc) -> list[tuple[str, bool]]:
+    """As cenas cuja câmera a gramática sorteia (sem movimento escolhido, sem subplanos e fora a captura), cada uma com
+    a marca de mídia real (câmeras calmas)."""
+    return [(scene.id, doc.shown_media(scene) is not None) for scene in doc.scenes
+            if not scene.motion and not scene.shots and prov_of_scene(scene, doc) != "capture"]
+
+
+def _grammar_motions(doc: ProjectDoc, style: StyleSpec) -> dict[str, str]:
+    """A câmera de cada cena sorteada pela gramática, com a cota garantida no vídeo inteiro (`allocate_motions`):
+    pelo menos `static_share_min` das cenas paradas e no máximo `slow_zoom_share` delas em zoom lento."""
+    grammar = grammar_for(style)
+    return dict(_allocate_scene_motions(
+        doc.seed, tuple(_grammar_units(doc)), tuple(sorted(style.edit.camera.items())),
+        tuple(sorted(real_motion_pool(style, edit=True).items())), grammar.static_share_min, grammar.slow_zoom_share))
+
+
+@functools.lru_cache(maxsize=64)
+def _allocate_scene_motions(
+    seed: int,
+    units: tuple[tuple[str, bool], ...],
+    camera: tuple[tuple[str, float], ...],
+    calm: tuple[tuple[str, float], ...],
+    static_share_min: float,
+    slow_zoom_share: float,
+) -> tuple[tuple[str, str], ...]:
+    # Em cache: `scene_motion` é chamada por cena (e mais de uma vez no build), e a cota olha o vídeo inteiro.
+    grammar = EditGrammar(static_share_min=static_share_min, slow_zoom_share=slow_zoom_share)
+    style_camera, calm_camera = dict(camera), dict(calm)
+    motions = edit_resolve.allocate_motions(
+        [((scene_id, "motion"), calm_camera if real else style_camera) for scene_id, real in units], grammar, seed)
+    return tuple((scene_id, motion) for (scene_id, _real), motion in zip(units, motions, strict=True))
 
 
 PRESENTER_LEAD_FRAMES = 2

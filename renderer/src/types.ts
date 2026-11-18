@@ -86,7 +86,11 @@ export type TimelineSfxEvent = {
   lib_id?: string;
   gain_db?: number;
 };
-/** Queda da trilha (`timeline.music_drops`, só quando houver): início e duração em segundos. */
+/**
+ * Queda da trilha (`timeline.music_drops`, só quando houver): início e duração em segundos no vídeo. A trilha some em
+ * `at` e volta em `at + dur`, que é o quadro da palavra-gatilho do evento `music_drop` (a batida do reveal): o
+ * silêncio vem ANTES do impacto (ADR 0004 §3.6), nunca depois.
+ */
 export type TimelineMusicDrop = { at: number; dur: number };
 
 export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video' | 'stat' | 'compare' | 'chart' | 'map';

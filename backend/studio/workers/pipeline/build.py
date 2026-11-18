@@ -25,12 +25,14 @@ from typing import Any, Literal
 from PIL import Image
 
 from studio.config import get_settings
+from studio.core import edit_resolve
 from studio.core.graph.store import ArtifactStore
 from studio.core.hashing import hash_file, hash_obj, seed_from
 from studio.core.project import characters as characters_mod
 from studio.core.project import service
 from studio.core.project.document import ArtDirection, Character, Presenter, ProjectDoc, Scene, Visual
 from studio.core.project.media_edit import scene_label
+from studio.core.project.pool import Pool, PoolItem
 from studio.core.speech import (
     SPEECH_VERSION,
     PronunciationEntry,
@@ -47,6 +49,7 @@ from studio.core.timeline import (
     NarrationClip,
     build_timeline,
     chunk_timeline,
+    edit_pool,
     normalize_words,
     scene_motion,
 )
@@ -56,7 +59,7 @@ from studio.media import audio_check, music_library, sfx_library
 from studio.media import depth as depth_mod
 from studio.media import lut as lut_mod
 from studio.media.ffmpeg import read_wav
-from studio.media.real_media import EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
+from studio.media.real_media import CONTAIN_RATIO, EDITORIAL_WARNING, anchor_for, fit_media, resolve_fit
 from studio.media.render import get_render_client, renderer_version
 from studio.media.thumbnail import make_thumbnail
 from studio.media.video import assemble
@@ -297,6 +300,9 @@ class Builder:
         self.stats = BuildStats()
         self.warnings: list[str] = []
         self.lut_graded: dict[str, str] = {}  # imagem original → versão com o LUT do estilo (lut_images)
+        # Camada de edição (ADR 0004): o acervo dos subplanos e o arquivo de cada um como o renderer recebe.
+        self.edit_pool: Pool | None = None
+        self.shot_files: dict[str, str | None] | None = None
         self.music_used: dict[str, Any] | None = None
         self._done = 0
         self._total = 1
@@ -1625,7 +1631,11 @@ class Builder:
             n = len(videos)
             self.warnings.append(f"LUT de cor não é aplicado nos clipes de vídeo IA ({n} {'cena' if n == 1 else 'cenas'}): "
                                  "a cor deles fica diferente das imagens.")
-        if any((m := doc.shown_media(s)) is not None and m.editorial for s in scenes):
+        # Camada de edição: o acervo dos subplanos e os arquivos deles já recortados e gradados como os da cena.
+        self.edit_pool = edit_pool(doc) if edit_resolve.edit_active(doc) else None
+        self.shot_files = self.prepare_shot_files(self.edit_pool) if edit_resolve.edit_active(doc) else None
+        # O material dos subplanos (B-roll de terceiros) também pede o aviso de Content ID.
+        if any(m.editorial for m in edit_resolve.shown_materials(doc, self.edit_pool)):
             self.warnings.append(EDITORIAL_WARNING)
 
         results: dict[str, Any] = {}
@@ -1685,11 +1695,12 @@ class Builder:
         (`workers.pipeline.presenter.assign`, numa cópia do documento: o manual vence, o automático é refeito) e
         monta a timeline com a camada do avatar. Sem avatar, é a timeline de sempre (mesmos hashes de bloco)."""
         presenter = self.video_presenter
+        edit = {"pool": self.edit_pool, "shot_files": self.shot_files}
         if presenter is None:
-            return build_timeline(self.doc, self.style, lang, narration, images, layers, videos)
+            return build_timeline(self.doc, self.style, lang, narration, images, layers, videos, **edit)
         from studio.workers.pipeline import presenter as presenter_scenes
 
-        draft = build_timeline(self.doc, self.style, lang, narration, images, layers, videos)
+        draft = build_timeline(self.doc, self.style, lang, narration, images, layers, videos, **edit)
         fps = float(draft["fps"])
         words: dict[str, list[Word]] = {}
         times: dict[str, tuple[float, float]] = {}
@@ -1703,7 +1714,51 @@ class Builder:
         issues = presenter_scenes.assign(doc, presenter, words, scene_times=times, vertical=vertical)
         if issues:
             log.info("avatar: %s", "; ".join(i.message for i in issues))
-        return build_timeline(doc, self.style, lang, narration, images, layers, videos, presenter=presenter)
+        return build_timeline(doc, self.style, lang, narration, images, layers, videos, presenter=presenter, **edit)
+
+    def prepare_shot_files(self, pool: Pool | None) -> dict[str, str | None]:
+        """Os arquivos dos subplanos de mídia e do acervo como o renderer recebe: a imagem recortada no tamanho do
+        vídeo (`fit_media`, cache "media", como a da cena) e com o LUT do estilo; o vídeo como está. None: o arquivo
+        sumiu (o plano fica com o visual da cena, com aviso da timeline). Assim o corte dentro da cena não troca de
+        cor, o renderer não lê foto em resolução cheia a cada quadro e item apagado não derruba o render."""
+        width, height = self.style.format.width, self.style.format.height
+        anchor = anchor_for(width, height, self.style.edit.captions.position)
+        files: dict[str, str | None] = {}
+        for rel, owner in edit_resolve.shot_sources(self.doc, pool):
+            src = self.store.abs(rel)
+            if not src.is_file():
+                files[rel] = None
+                continue
+            if not rel.lower().endswith(lut_mod.IMAGE_EXTS):
+                files[rel] = rel  # vídeo: o renderer toca o arquivo (sem LUT, como o clipe da cena)
+                continue
+            if isinstance(owner, PoolItem):
+                ratio = (owner.w / owner.h) / (width / height) if owner.w and owner.h and width and height else 1.0
+                fit, focus = ("contain" if max(ratio, 1 / ratio) > CONTAIN_RATIO else "cover"), None
+            else:
+                fit, focus = resolve_fit(owner, width, height), owner.focus
+            inputs = {"media": rel, "size": [width, height], "fit": fit, "focus": focus or "center", "anchor": anchor,
+                      "v": 1}
+            h = hash_obj(inputs)
+            with _media_lock:
+                cached = self.store.lookup("media", h)
+                if cached:
+                    self.stats.hit("media", True)
+                    files[rel] = cached["path"]
+                    continue
+                out = fit_media(src, self.store.dir_for("media", h) / "image.jpg", width, height, fit=fit,
+                                focus=focus, anchor_y=anchor)
+                out_rel = self.store.rel(out)
+                self.store.save("media", h, {"path": out_rel, "files": [out_rel], "source": "shot"}, "pillow")
+            self.stats.hit("media", False)
+            files[rel] = out_rel
+        images = {k: v for k, v in files.items() if v and v.lower().endswith(lut_mod.IMAGE_EXTS)}
+        if images:
+            before = dict(self.lut_graded)  # `lut_images` troca o mapa; o da foto do cartão de notícia fica
+            graded = self.lut_images(images)
+            self.lut_graded = {**before, **self.lut_graded}
+            files.update(graded)
+        return files
 
     def _write_outputs(self, lang: str, timeline: dict[str, Any], mix_rel: str, srt: str) -> dict[str, Any]:
         """Grava a timeline e as legendas do idioma na pasta de saída e devolve a entrada do resultado.

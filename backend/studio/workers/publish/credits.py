@@ -1,6 +1,7 @@
 """Créditos da mídia real para a descrição da publicação ("Créditos das imagens").
 
-Entra cada mídia que aparece no vídeo (a da cena ou a reaproveitada), na ordem da primeira aparição e sem repetir.
+Entra cada mídia que aparece no vídeo (a da cena, a reaproveitada e a dos subplanos, inclusive o item do acervo), na
+ordem da primeira aparição e sem repetir.
 CC0 e domínio público também entram: a fonte é mostrada assim mesmo. Sem mídia real, nada muda na descrição.
 """
 
@@ -8,8 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from studio.core.edit_resolve import shown_materials
 from studio.core.project.document import MediaRef, ProjectDoc
-from studio.core.timeline import news_date
+from studio.core.project.pool import PoolItem
+from studio.core.timeline import edit_pool, news_date
 
 CREDITS_HEADING = {"pt": "Créditos das imagens", "en": "Image credits", "es": "Créditos de las imágenes"}
 
@@ -18,19 +21,20 @@ def heading(lang: str) -> str:
     return CREDITS_HEADING.get(lang.lower()[:2], CREDITS_HEADING["en"])
 
 
-def shown_media(doc: ProjectDoc) -> list[MediaRef]:
-    """Mídias mostradas no vídeo, na ordem da primeira aparição, sem repetir."""
+def shown_media(doc: ProjectDoc) -> list[MediaRef | PoolItem]:
+    """Mídias mostradas no vídeo (`edit_resolve.shown_materials`: as das cenas e as dos subplanos, inclusive o item
+    do acervo), na ordem da primeira aparição, sem repetir."""
     seen: set[str] = set()
-    out: list[MediaRef] = []
-    for scene in doc.ordered_scenes():
-        media = doc.shown_media(scene)
-        if media is None:
-            continue
-        key = media.candidate_id or media.asset or media.page_url or f"#{scene.id}"
+    out: list[MediaRef | PoolItem] = []
+    for k, material in enumerate(shown_materials(doc, edit_pool(doc))):
+        if isinstance(material, PoolItem):
+            key = f"pool:{material.id}"
+        else:
+            key = material.candidate_id or material.asset or material.video or material.page_url or f"#{k}"
         if key in seen:
             continue
         seen.add(key)
-        out.append(media)
+        out.append(material)
     return out
 
 
@@ -38,8 +42,16 @@ def _clean(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def credit_line(media: MediaRef, lang: str, fallback: str | None = None) -> str:
+def pool_credit_line(item: PoolItem) -> str:
+    """A linha do item do acervo: crédito, licença e página de origem (vazio sem nenhum)."""
+    parts = [_clean(item.credit), _clean(item.license), item.page_url or item.url]
+    return " — ".join(p.strip() for p in parts if p and p.strip())
+
+
+def credit_line(media: MediaRef | PoolItem, lang: str, fallback: str | None = None) -> str:
     """Uma linha (partes unidas por " — "); vazio quando não há o que creditar (arquivo enviado sem dados)."""
+    if isinstance(media, PoolItem):
+        return pool_credit_line(media)
     if media.source == "upload" and not (media.credit.strip() or media.license.strip() or media.page_url.strip()):
         return ""
     if media.kind == "news":
