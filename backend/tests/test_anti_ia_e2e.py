@@ -70,6 +70,9 @@ def project(isolated_settings, no_network):
     doc = service.create_project(title="O farol", style_id=STYLE, topic=TOPIC)
     _seed_acervo(doc.id)
     _run("script", doc.id)
+    # a coleta completa (job `media_pool`, a que roda ao enviar arquivos ou dar links) corta os clipes; a do storyboard
+    # é a rápida e só usa o que já foi cortado
+    _run("media_pool", doc.id)
     _run("storyboard", doc.id)
     return service.get_doc(doc.id)
 

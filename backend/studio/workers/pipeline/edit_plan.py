@@ -1262,14 +1262,35 @@ class _Planner:
             return [(s.t, s.end) for s in beat.shots if s.motion != "none"]
         return [(beat.start, beat.end)]
 
+    def _frozen_clip_spans(self, beat: _Beat) -> list[tuple[float, float]]:
+        """Planos do próprio clipe da cena que duram mais que o trecho útil dele (`dur_s` a partir da entrada): o
+        renderer estica ou congela o fim, e o plano vira imagem parada para quem assiste. Cortes do usuário ficam."""
+        media = beat.media
+        if beat.keep_shots or media is None or media.dur_s is None:
+            return []
+        shots = beat.shots or [_Shot(t=beat.start, word=None, prov=beat.prov)]
+        if not beat.shots:
+            shots[0].end = beat.end
+        spans: list[tuple[float, float]] = []
+        for shot in shots:
+            if shot.source != "self":
+                continue
+            clip_in = shot.clip_in if shot.clip_in is not None else media.start_s
+            useful = media.start_s + media.dur_s - clip_in
+            if shot.end - shot.t > useful + MIN_SHOT_S:
+                spans.append((shot.t, shot.end))
+        return spans
+
     def _max_still(self) -> None:
-        """Nenhum plano parado passa de `max_still_s`: punch no meio (ou o corte já resolve)."""
+        """Nenhum plano parado passa de `max_still_s`: punch no meio (ou o corte já resolve). O clipe que toca não é
+        parado; o plano do clipe que dura mais que o trecho útil dele é (`_frozen_clip_spans`)."""
         limit = self.g.max_still_s
         for beat in self.beats:
-            if not beat.editable or beat.card or not beat.framed or beat.clip:
+            if not beat.editable or beat.card or not beat.framed:
                 continue
             # todo plano de imagem conta: um push lento de 20 s também é "parado" para quem assiste
-            for start, end in self._still_spans(beat):
+            spans = self._frozen_clip_spans(beat) if beat.clip else self._still_spans(beat)
+            for start, end in spans:
                 if end - start <= limit:
                     continue
                 marks = sorted([start, end, *(e.t for e in self.events if e.beat is beat and start < e.t < end

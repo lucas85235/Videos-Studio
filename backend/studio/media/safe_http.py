@@ -179,14 +179,15 @@ def _mb(limit: int) -> str:
 
 
 def fetch(url: str, *, max_bytes: int, accept: str, http: httpx.Client | None = None, truncate: bool = False,
-          image_max_bytes: int | None = None) -> Fetched:
+          image_max_bytes: int | None = None, wall_clock_s: float = WALL_CLOCK_S) -> Fetched:
     """GET com a checagem de `check_url` em cada salto e leitura até `max_bytes`.
 
     `truncate=True` corta o corpo no limite sem erro (página: os metadados ficam no começo); senão, passar do limite
     é `TooLarge`. Com `image_max_bytes`, uma resposta `image/*` usa esse limite (sem cortar): o mesmo GET serve para
-    link de página e de imagem.
+    link de página e de imagem. `wall_clock_s` é o teto de tempo do pedido inteiro (um vídeo pede mais que uma
+    página).
     """
-    deadline = time.monotonic() + WALL_CLOCK_S
+    deadline = time.monotonic() + wall_clock_s
     client = http or new_client()
     try:
         current = check_url(url)

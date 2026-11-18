@@ -285,7 +285,7 @@ class Visual(BaseModel):
     antes."""
     ai_reason: str | None = None
     """Por que esta imagem é de IA (hipótese, futuro, conceito), dito pelo storyboard (ADR 0004). None: cena antiga
-    ou IA sem motivo declarado; cena de IA sem motivo vira o aviso `faltou_real` (no anexo do acervo e na revisão)."""
+    ou IA sem motivo declarado (a revisão acusa `faltou_real`)."""
 
 
 def _pick_text(texts: dict[str, str], lang: str, fallback: str | None) -> str:

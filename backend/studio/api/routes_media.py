@@ -6,21 +6,28 @@ commit, para não desfazer uma edição feita enquanto a imagem baixava.
 
 from __future__ import annotations
 
+import os
+import re
+import unicodedata
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from studio.api.routes_projects import _rebuild
+from studio.config import get_settings
 from studio.core.project import media_edit, service
 from studio.core.project.document import MediaRef, ProjectDoc, RealHint, RealKind, Scene
 from studio.core.project.ops import OpError
 from studio.core.project.pool import load_pool
 from studio.core.styles.library import get_style
-from studio.media import real_media
+from studio.media import clips, real_media
 from studio.media.real_media import SOURCE_LABELS, MediaError
 from studio.media.safe_http import BlockedUrl, FetchError, TooLarge
 from studio.providers import media_search
@@ -225,6 +232,23 @@ def put_real(project_id: str, scene_id: str, body: RealBody) -> dict[str, Any]:
     return {"version": version}
 
 
+class AiReasonBody(BaseModel):
+    reason: str | None = Field(default=None, max_length=300)
+    """Por que a cena é imagem de IA (hipótese, futuro, conceito). Vazio/None: sem motivo declarado."""
+
+
+@router.put("/{project_id}/scenes/{scene_id}/ai_reason")
+def put_ai_reason(project_id: str, scene_id: str, body: AiReasonBody) -> dict[str, Any]:
+    """O motivo de a cena ser imagem de IA (o achado `faltou_real` some quando a cena diz o motivo)."""
+    doc, scene = _load(project_id, scene_id)
+    _editable(scene)
+    reason = " ".join((body.reason or "").split()) or None
+    scene.visual.ai_reason = reason
+    action = "motivo da imagem de IA " + ("registrado" if reason else "removido")
+    version = service.commit(project_id, doc, f"{media_edit.scene_label(doc, scene_id)}: {action}")
+    return {"version": version, "ai_reason": reason}
+
+
 # --- acervo de material real (ADR 0004 §3.4) -----------------------------------------------------------------------
 
 
@@ -258,17 +282,30 @@ def _http_link(url: str) -> str:
 
 @router.get("/{project_id}/pool")
 def get_pool(project_id: str) -> dict[str, Any]:
-    """O acervo gravado (`pool.json`), os links oficiais do projeto e o resumo por nível."""
+    """O acervo gravado (`pool.json`), os links oficiais, os arquivos próprios, o resumo por nível, o espaço das
+    fontes de vídeo baixadas (com teto: as menos usadas saem) e o job ativo que mexe no acervo."""
     _project(project_id)
     pool = load_pool(project_id)
     return {"pool": pool.model_dump(mode="json"), "links": media_pool.pool_links(project_id),
-            "summary": media_pool.summary(pool)}
+            "summary": media_pool.summary(pool), "files": _own_files(project_id),
+            "sources_bytes": clips.sources_bytes(), "job": media_pool.active_job(project_id)}
+
+
+def _auto_refresh(project_id: str) -> dict[str, Any] | None:
+    """Coleta completa logo depois de o usuário dar links ou arquivos (baixa e corta já, não no storyboard). Com outro
+    job do acervo ativo (coleta, storyboard, piloto), não começa outra: devolve a coleta ativa ou None."""
+    active = media_pool.active_job(project_id)
+    if active is not None:
+        return active if active["kind"] == "media_pool" else None
+    return get_runner().submit("media_pool", {}, project_id)
 
 
 @router.post("/{project_id}/pool/links")
 def post_pool_links(project_id: str, body: PoolLinksBody) -> dict[str, Any]:
-    """Links oficiais dados pelo usuário (trailer, gameplay, vídeo do canal): a próxima coleta corta os planos."""
+    """Links oficiais dados pelo usuário (trailer, gameplay, vídeo do canal). Link novo dispara a coleta completa
+    (baixa e corta os planos); `job` é ela (ou a que já estava rodando)."""
     _project(project_id)
+    before = {link["url"] for link in media_pool.pool_links(project_id)}
     current = [] if body.replace else media_pool.pool_links(project_id)
     merged: dict[str, dict[str, str]] = {link["url"]: link for link in current}
     for link in body.links:
@@ -278,14 +315,123 @@ def post_pool_links(project_id: str, body: PoolLinksBody) -> dict[str, Any]:
     if len(links) > media_pool.MAX_LINKS:
         raise HTTPException(status_code=422, detail=f"No máximo {media_pool.MAX_LINKS} links por projeto.")
     service.update_settings(project_id, {media_pool.LINKS_KEY: links})
-    return {"links": links}
+    job = _auto_refresh(project_id) if any(link["url"] not in before for link in links) else None
+    return {"links": links, "job": job}
 
 
 @router.post("/{project_id}/pool/refresh")
 def refresh_pool(project_id: str) -> dict[str, Any]:
-    """Coleta o acervo de novo (job `media_pool`): baixa os links novos, captura as fontes e busca por tópico."""
+    """Coleta o acervo de novo (job `media_pool`): baixa os links novos, captura as fontes e busca por tópico. Com
+    uma coleta já rodando, devolve ela; com o storyboard ou o piloto rodando (eles leem e gravam o mesmo acervo),
+    409."""
     _project(project_id)
+    active = media_pool.active_job(project_id)
+    if active is not None:
+        if active["kind"] == "media_pool":
+            return active
+        raise HTTPException(status_code=409, detail="O planejamento das cenas está rodando e usa o acervo; espere "
+                                                    "terminar para atualizar.")
     return get_runner().submit("media_pool", {}, project_id)
+
+
+# Arquivos próprios do acervo: `uploads/<projeto>/acervo/` (o nível `own`, o mais real que existe).
+
+OWN_FILES_PER_REQUEST = 20
+_CHUNK = 1 << 20
+
+
+def _own_dir(project_id: str) -> Path:
+    return get_settings().uploads_dir / project_id / media_pool.OWN_DIR
+
+
+def _own_exts() -> frozenset[str]:
+    return media_pool.OWN_IMAGE_EXTS | media_pool.OWN_VIDEO_EXTS
+
+
+def _own_file_name(raw: str | None, folder: Path) -> str:
+    """Nome saneado, com a extensão aceita (imagem ou vídeo) e sem pisar num arquivo que já existe."""
+    name = Path(unicodedata.normalize("NFKC", raw or "").replace("\\", "/")).name
+    stem, suffix = Path(name).stem, Path(name).suffix.lower()
+    if suffix not in _own_exts():
+        allowed = ", ".join(sorted(_own_exts()))
+        raise HTTPException(status_code=422, detail=f"Arquivo {name[:80] or '(sem nome)'} não aceito: use {allowed}.")
+    stem = re.sub(r"[^\w\- ]+", "_", stem).strip(" ._-")[:80] or "arquivo"
+    candidate, n = f"{stem}{suffix}", 2
+    while (folder / candidate).exists():
+        candidate, n = f"{stem}-{n}{suffix}", n + 1
+    return candidate
+
+
+def _own_files(project_id: str) -> list[dict[str, Any]]:
+    folder = _own_dir(project_id)
+    if not folder.is_dir():
+        return []
+    out = []
+    for path in sorted(folder.iterdir()):
+        suffix = path.suffix.lower()
+        if path.is_file() and not path.name.startswith(".") and suffix in _own_exts():
+            out.append({"name": path.name, "size": path.stat().st_size,
+                        "kind": "video" if suffix in media_pool.OWN_VIDEO_EXTS else "image",
+                        "path": f"uploads/{project_id}/{media_pool.OWN_DIR}/{path.name}"})
+    return out
+
+
+@router.get("/{project_id}/pool/files")
+def get_pool_files(project_id: str) -> dict[str, Any]:
+    """Os arquivos próprios do acervo (fotos e vídeos do usuário)."""
+    _project(project_id)
+    return {"files": _own_files(project_id)}
+
+
+@router.post("/{project_id}/pool/files")
+def post_pool_files(project_id: str, files: Annotated[list[UploadFile], File()]) -> dict[str, Any]:
+    """Envia fotos e vídeos próprios para o acervo (`uploads/<projeto>/acervo/`) e dispara a coleta completa (o vídeo
+    é cortado em planos). Imagem até 25 MB, vídeo até 2 GB."""
+    _project(project_id)
+    if not files:
+        raise HTTPException(status_code=422, detail="Nenhum arquivo enviado.")
+    if len(files) > OWN_FILES_PER_REQUEST:
+        raise HTTPException(status_code=422, detail=f"No máximo {OWN_FILES_PER_REQUEST} arquivos por envio.")
+    folder = _own_dir(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+    for upload in files:
+        name = _own_file_name(upload.filename, folder)
+        video = Path(name).suffix.lower() in media_pool.OWN_VIDEO_EXTS
+        limit = media_pool.OWN_VIDEO_MAX_BYTES if video else real_media.UPLOAD_MAX_BYTES
+        tmp = folder / f".{uuid.uuid4().hex[:10]}.upload"
+        size = 0
+        try:
+            with open(tmp, "wb") as fh:
+                while chunk := upload.file.read(_CHUNK):
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(status_code=413, detail=f"{name}: passa de {limit // 1_000_000} MB.")
+                    fh.write(chunk)
+            if size == 0:
+                raise HTTPException(status_code=422, detail=f"{name}: arquivo vazio.")
+            if not video:
+                try:
+                    with Image.open(tmp) as im:
+                        im.verify()
+                except Exception as exc:  # noqa: BLE001 - não é imagem
+                    raise HTTPException(status_code=422, detail=f"{name}: não é uma imagem válida.") from exc
+            os.replace(tmp, folder / name)
+        finally:
+            tmp.unlink(missing_ok=True)
+        saved.append(name)
+    return {"saved": saved, "files": _own_files(project_id), "job": _auto_refresh(project_id)}
+
+
+@router.delete("/{project_id}/pool/files/{name}")
+def delete_pool_file(project_id: str, name: str) -> dict[str, Any]:
+    """Tira um arquivo próprio do acervo (sai na próxima coleta; a cena que já o usa tem a cópia dela)."""
+    _project(project_id)
+    path = _own_dir(project_id) / Path(name).name
+    if Path(name).name != name or name.startswith(".") or not path.is_file():
+        raise HTTPException(status_code=404, detail="arquivo não encontrado no acervo")
+    path.unlink()
+    return {"files": _own_files(project_id)}
 
 
 @router.get("/{project_id}/media/credits")

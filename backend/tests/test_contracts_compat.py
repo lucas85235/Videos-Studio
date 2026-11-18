@@ -440,10 +440,10 @@ def test_empty_hooks_change_nothing(isolated_settings):
 
     style = get_style("misterios-short")
     pool = media_pool.gather(doc, style)
-    # acervo-real: a mídia anexada à mão vira item do acervo, mas sem `pool_id` pendente nada é anexado nem trocado
-    # (só sai o aviso `faltou_real` das cenas de IA antigas, que não declaram motivo).
+    # acervo-real: a mídia anexada à mão vira item do acervo, mas sem `pool_id` nada é anexado nem trocado (o achado
+    # `faltou_real` é da conferência do storyboard, não do anexo).
     assert pool.items and all(i.source_id.startswith("file:") for i in pool.items)
-    assert all(w.startswith("faltou_real") for w in media_pool.attach_chosen(doc, pool))
+    assert media_pool.attach_chosen(doc, pool) == []
     # o planejador já não é encaixe vazio (editor-planejador): com o editor desligado, nada muda
     off = style.model_copy(update={"edit": style.edit.model_copy(
         update={"grammar": style.edit.grammar.model_copy(update={"editor": "off"})})})

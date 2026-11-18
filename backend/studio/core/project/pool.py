@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -36,7 +37,9 @@ class PoolItem(BaseModel):
     entities: list[str] = []
     """Nomes/ids de entidades que aparecem (personagem, lugar, produto)."""
     path: str | None = None
-    """Arquivo local (relativo a VS_DATA_DIR): imagem, captura ou proxy do clipe. None: ainda não baixado."""
+    """Arquivo local (relativo a VS_DATA_DIR): imagem ou captura; num trecho (`clip`), o vídeo de ORIGEM, e o plano é
+    `start_s` a `start_s + dur_s` (o anexo faz o proxy só do plano escolhido). None: ainda não baixado (ou o vídeo de
+    origem fica fora da pasta de dados)."""
     poster: str | None = None
     """Pôster JPEG do clipe (relativo a VS_DATA_DIR)."""
     url: str = ""
@@ -84,7 +87,13 @@ class Pool(BaseModel):
     """Avisos dos coletores (falha de um coletor não derruba os outros), em português, sem texto cru de exceção."""
     searched: bool = False
     """A coleta já rodou a busca na web paga (`media_find`) deste storyboard: o job não chama `media_find` de novo
-    depois do storyboard. O item `acervo-real` liga quando puser o `media_find` dentro do `gather`."""
+    depois do storyboard. A coleta rápida do storyboard (`gather(full=False)`) nunca faz a busca paga, então hoje
+    fica False e o job do storyboard segue com o `media_find` como antes."""
+    ids: dict[str, str] = {}
+    """Registro `source_id → id` de TODO item que já passou pelo acervo (não encolhe quando a coleta perde itens): um
+    id dado uma vez nunca vai para outro item, e a cena que cita "p7" continua certa."""
+    next_id: int = Field(default=1, ge=1)
+    """O próximo número de id livre (só cresce)."""
 
     @field_validator("items")
     @classmethod
@@ -119,7 +128,10 @@ def save_pool(project_id: str, pool: Pool) -> Path:
     """Grava `pool.json` (troca atômica: quem lê nunca vê o arquivo pela metade)."""
     path = pool_path(project_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.with_name(f".{path.stem}.{uuid.uuid4().hex[:10]}.json.tmp")  # único: duas gravações não se cruzam
     tmp.write_text(pool.model_dump_json(indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path

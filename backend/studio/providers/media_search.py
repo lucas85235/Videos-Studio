@@ -615,9 +615,10 @@ def parse_pexels_videos(data: dict[str, Any], target: int = VIDEO_TARGET_SIDE) -
 
 
 def search_videos(query: str, *, orientation: Orientation, refresh: bool = False,
-                  http: httpx.Client | None = None) -> list[VideoCandidate]:
+                  http: httpx.Client | None = None, target: int = VIDEO_TARGET_SIDE) -> list[VideoCandidate]:
     """Vídeos do Pexels para a busca (em inglês). Só com a chave do Pexels; offline (sem `http`), nada. Cache pelo
-    mesmo `_cache_key` das fotos, num tipo próprio (`media_search_video`), por `SEARCH_TTL`."""
+    mesmo `_cache_key` das fotos, num tipo próprio (`media_search_video`), por `SEARCH_TTL`. `target`: o lado maior
+    do vídeo final (o arquivo escolhido é o menor que ainda chega a ele)."""
     text = " ".join((query or "").split())[:120]
     if not text or (http is None and get_settings().offline):
         return []
@@ -625,7 +626,8 @@ def search_videos(query: str, *, orientation: Orientation, refresh: bool = False
     if not key:
         return []
     store = ArtifactStore()
-    input_hash = _cache_key(text, orientation, True, False)
+    target = max(320, int(target or VIDEO_TARGET_SIDE))
+    input_hash = _cache_key(text, orientation, True, False) + ("" if target == VIDEO_TARGET_SIDE else f"-{target}")
     cached = store.lookup(VIDEO_CACHE_KIND, input_hash)
     if cached and not refresh and _fresh(cached):
         return [VideoCandidate.from_dict(c) for c in cached.get("videos") or [] if isinstance(c, dict)]
@@ -646,7 +648,7 @@ def search_videos(query: str, *, orientation: Orientation, refresh: bool = False
             client.close()
     if data is None:
         return stale
-    videos = parse_pexels_videos(data)
+    videos = parse_pexels_videos(data, target)
     store.save(VIDEO_CACHE_KIND, input_hash, {"query": text, "videos": [asdict(v) for v in videos],
                                               "sources": {"pexels": _status(videos)},  # type: ignore[arg-type]
                                               "fetched_at": datetime.now(UTC).isoformat(), "files": []}, "pexels")

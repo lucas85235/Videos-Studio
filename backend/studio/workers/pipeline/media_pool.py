@@ -3,20 +3,27 @@
 `gather(doc, style)` junta, ANTES do LLM do storyboard, o material real que o vídeo pode mostrar. Cada coletor é
 independente: a falha de um vira aviso em `Pool.warnings` e os outros seguem.
 
-1. Material próprio (`own`): mídia anexada à mão no projeto, arquivos em `uploads/<projeto>/acervo/` e a biblioteca
-   do canal (thumbkit: quadros e objetos; os vídeos do kit viram trechos oficiais).
-2. Capturas de página (`capture`): as provas já feitas no projeto e, online com o Playwright, as fontes do roteiro
-   (`doc.sources`) — sempre a imagem LIMPA, com os retângulos dos trechos para o renderer animar o destaque.
+1. Material próprio (`own`): mídia anexada à mão no projeto (também a de coletas anteriores, enquanto o arquivo
+   existir), arquivos em `uploads/<projeto>/acervo/` (enviados pela tela do Acervo) e a biblioteca do canal
+   (thumbkit: quadros e objetos sem transparência; os vídeos do kit viram trechos oficiais).
+2. Capturas de página (`capture`): as provas já feitas no projeto e, na coleta completa com o Playwright, as fontes
+   do roteiro (`doc.sources`) — sempre a imagem LIMPA, com os retângulos dos trechos para o renderer animar o destaque.
 3. Trechos de links oficiais dados pelo usuário (`settings.pool_links`), cortados em planos por `media/clips.py`.
 4. Fotos livres (`media_search`: Commons, Openverse, Pexels) e vídeos do Pexels, por tópico do roteiro (só online).
 5. Arte oficial e notícias (`media_find`): uma chamada por vídeo, até 15 tópicos (só com o Claude Code buscando na web).
-6. Anti-repetição: item parecido (dHash) ou igual (endereço) ao usado nos últimos 10 vídeos do canal perde nota.
+6. Anti-repetição: item parecido (dHash) ou o mesmo (`source_id`; numa imagem, também o endereço do arquivo) usado
+   nos últimos 10 vídeos do canal perde nota. Trecho de vídeo conta pelo plano, nunca pelo link inteiro.
 
-`attach_chosen(doc, pool)` baixa e anexa sozinho o item que a cena cita em `visual.media.pool_id` (o storyboard põe
-uma `MediaRef` pendente, sem arquivo: ver `pending_ref`). Item que não baixa cai na reserva do mesmo tópico
-(`sources.FALLBACK`); sem reserva, a cena volta à imagem de reserva. Com acervo, cena de IA sem `visual.ai_reason`
-vira o aviso `faltou_real` (`missing_real` serve também à conferência do storyboard). `prompt_block(pool)` dá as
-linhas do acervo para o pedido do storyboard.
+Duas coletas: a RÁPIDA (padrão, dentro do job do storyboard) só usa o que já está baixado e analisado, sem yt-dlp,
+corte de vídeo novo, navegador nem chamada paga; a COMPLETA (`full=True`, job `media_pool`, botão "Atualizar acervo",
+que roda sozinho quando o usuário dá links ou envia arquivos) faz tudo, com progresso e cancelamento.
+
+`attach_chosen(doc, pool)` anexa sozinho o item que a cena cita em `visual.media.pool_id`, seja a `MediaRef`
+pendente (`pending_ref`) ou uma que aponte para fora da pasta do projeto (`needs_attach`): o trecho vira proxy mudo
+do plano, a imagem é normalizada e copiada. Item que não baixa cai na reserva (`fallbacks`); sem reserva, a cena
+volta à imagem de IA, repete a mídia real vizinha ou fica sem imagem, e o aviso diz qual. O achado `faltou_real` é
+da conferência do storyboard (`missing_real` fica de helper). `prompt_block(pool)` dá as linhas do acervo para o
+pedido do storyboard.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ from PIL import Image
 
 from studio.config import get_settings
 from studio.core.project.document import MediaRef, ProjectDoc, Scene
-from studio.core.project.pool import Pool, PoolItem, load_pool
+from studio.core.project.pool import POOL_ID_RE, Pool, PoolItem, load_pool
 from studio.core.sources import FALLBACK, prov_of_scene
 from studio.core.styles.schema import StyleSpec
 from studio.workers.jobs import JobContext, job
@@ -53,12 +60,25 @@ MAX_SOURCE_CAPTURES = 4
 MAX_KIT_VIDEOS = 4
 MAX_ITEMS = 240
 MAX_PER_TOPIC = 30
+"""Por tópico, fora os níveis reservados (foto livre, banco, meme...)."""
+RESERVED_TIERS = ("own", "official", "capture")
+"""Os níveis mais reais têm lugar garantido no corte do acervo e no pedido do storyboard."""
+RESERVED_MAX = 180
+RESERVED_PER_TOPIC = 60
+MAX_ID_REGISTRY = 5000
+MAX_FALLBACK_TRIES = 3
+"""Reservas tentadas por cena quando o item escolhido não anexa."""
+MAX_ATTACH_DOWNLOADS = 24
+"""Downloads por anexo (rede ruim não trava o storyboard por minutos)."""
+VIDEO_WALL_CLOCK_S = 180.0
 NOVELTY_WINDOW = 10
 NOVELTY_PENALTY = 0.5
 FIND_CACHE_KIND = "pool_find"
 OWN_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 OWN_VIDEO_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
 VIDEO_MAX_BYTES = 120_000_000
+OWN_VIDEO_MAX_BYTES = 2_000_000_000
+"""Vídeo próprio enviado pela tela do Acervo."""
 
 TIER_SCORE: dict[str, float] = {"own": 1.0, "official": 0.9, "capture": 0.85, "free": 0.7, "stock": 0.55,
                                 "meme": 0.45, "graphic": 0.3, "ai": 0.0}
@@ -207,12 +227,20 @@ class _Ctx:
     topics: list[Topic]
     settings: dict[str, Any]
     offline: bool
+    """`VS_OFFLINE`: só o material local. Um `http`/`open_page`/`runner` injetado vale só para o coletor que o usa."""
+    full: bool = False
+    """Coleta completa (job `media_pool`): baixa links, corta vídeos novos, captura páginas e faz a busca web paga.
+    Rápida (dentro do storyboard): só o que já está baixado e analisado, e as buscas de foto com cache."""
+    previous: Pool = field(default_factory=Pool)
     http: Any = None
     open_page: Any = None
     runner: Any = None
     job_id: str | None = None
     progress: Callable[[float, str], None] = lambda f, m: None
+    cancelled: Callable[[], bool] = lambda: False
     notes: list[str] = field(default_factory=list)
+    unanalyzed: int = 0
+    """Vídeos locais ainda não cortados em planos (coleta rápida: ficam para o "Atualizar acervo")."""
 
     @property
     def width(self) -> int:
@@ -230,12 +258,15 @@ class _Ctx:
     def orientation(self) -> str:
         return "portrait" if self.height > self.width else "landscape" if self.width > self.height else "square"
 
+    @property
+    def max_clip_s(self) -> float:
+        return float(self.style.art.sources.official_max_clip_s)
+
 
 def _data_rel(path: Path) -> str | None:
-    try:
-        return path.resolve().relative_to(get_settings().data_dir.resolve()).as_posix()
-    except ValueError:
-        return None
+    from studio.media import clips
+
+    return clips.rel_or_none(path)
 
 
 def _image_size(path: Path) -> tuple[int, int]:
@@ -246,17 +277,41 @@ def _image_size(path: Path) -> tuple[int, int]:
         return 0, 0
 
 
+def _analyze(ctx: _Ctx, path: Path, label: str) -> list[Any]:
+    """Os planos do vídeo (pôster e descrição). Na coleta rápida, só a análise que já existe: vídeo novo conta em
+    `ctx.unanalyzed` e fica para a coleta completa."""
+    from studio.media import clips
+
+    shots = clips.analyze(path, max_clip_s=ctx.max_clip_s, label=label, cached_only=not ctx.full,
+                          cancelled=ctx.cancelled)
+    if shots is None:
+        ctx.unanalyzed += 1
+        return []
+    return shots
+
+
 def _clip_items(shots: list[Any], *, tier: str, prefix: str, key: str, topic: str, url: str = "",
                 credit: str = "", editorial: bool = False, license: str = "") -> list[dict[str, Any]]:
-    return [{"tier": tier, "media": "clip", "desc": s.desc, "path": s.proxy, "poster": s.poster, "url": url,
+    """Um item por plano: `path` é o vídeo de origem (quando fica na pasta de dados) e o plano vai em `start_s` e
+    `dur_s`; o proxy só sai no anexo, para o plano escolhido."""
+    return [{"tier": tier, "media": "clip", "desc": s.desc, "path": s.src or None, "poster": s.poster, "url": url,
              "page_url": url, "start_s": s.a, "dur_s": s.dur, "w": s.width, "h": s.height, "credit": credit,
              "editorial": editorial, "license": license, "source_id": f"{prefix}:{key}#{i}", "topic": topic,
              "tags": [s.material] if s.material else []}
             for i, s in enumerate(shots, 1)]
 
 
+def _own_file_item(item: PoolItem, project_id: str) -> dict[str, Any] | None:
+    """Item `file:` da coleta anterior que ainda vale: o arquivo continua na pasta do projeto."""
+    data_dir = get_settings().data_dir
+    if not item.path or not item.path.startswith(f"uploads/{project_id}/") or not (data_dir / item.path).is_file():
+        return None
+    return item.model_dump(exclude={"id", "score", "dhash"})
+
+
 def _collect_own(ctx: _Ctx) -> list[dict[str, Any]]:
-    """Mídia anexada à mão no projeto e arquivos largados em `uploads/<projeto>/acervo/`."""
+    """Mídia anexada à mão no projeto (também a de coletas anteriores, cujo arquivo continua no projeto, mesmo que o
+    storyboard novo não a tenha escolhido) e arquivos largados em `uploads/<projeto>/acervo/`."""
     from studio.core.sources import prov_of_media
 
     out: list[dict[str, Any]] = []
@@ -272,14 +327,17 @@ def _collect_own(ctx: _Ctx) -> list[dict[str, Any]]:
                     "rects": media.rects, "w": media.width or 0, "h": media.height or 0, "license": media.license,
                     "credit": media.credit, "editorial": media.editorial,
                     "source_id": f"file:{media.video or media.asset}", "topic": TOPIC_DOC})
+    for old in ctx.previous.items:
+        if old.source_id.startswith("file:"):
+            kept = _own_file_item(old, ctx.project_id)
+            if kept is not None:
+                out.append(kept)
     folder = get_settings().uploads_dir / ctx.project_id / OWN_DIR
     if folder.is_dir():
-        from studio.media import clips
-
         for path in sorted(folder.iterdir()):
             suffix = path.suffix.lower()
             rel = _data_rel(path)
-            if not path.is_file() or rel is None:
+            if not path.is_file() or rel is None or path.name.startswith("."):
                 continue
             topic = _topic_for([path.stem], ctx.topics, TOPIC_FILES)
             if suffix in OWN_IMAGE_EXTS:
@@ -287,18 +345,17 @@ def _collect_own(ctx: _Ctx) -> list[dict[str, Any]]:
                 out.append({"tier": "own", "media": "image", "desc": path.stem.replace("_", " "), "path": rel,
                             "w": w, "h": h, "source_id": f"acervo:{path.name}", "topic": topic})
             elif suffix in OWN_VIDEO_EXTS:
-                shots = clips.analyze(path, width=ctx.width, height=ctx.height, fps=ctx.style.format.fps,
-                                      max_clip_s=ctx.style.art.sources.official_max_clip_s,
-                                      label=path.stem.replace("_", " "))
+                shots = _analyze(ctx, path, path.stem.replace("_", " "))
                 out += _clip_items(shots, tier="own", prefix="acervo", key=path.name, topic=topic)
     return out
 
 
 def _collect_kit(ctx: _Ctx) -> list[dict[str, Any]]:
-    """Biblioteca do canal (thumbkit): quadros e objetos como imagem; os vídeos registrados viram trechos."""
+    """Biblioteca do canal (thumbkit): quadros e objetos sem transparência como imagem (o recorte com alfa da thumb
+    vira colagem malfeita em tela cheia); os vídeos registrados viram trechos."""
     if not ctx.doc.channel_id:
         return []
-    from studio.media import clips, thumb_assets
+    from studio.media import thumb_assets
 
     try:
         kit = thumb_assets.thumbkit_dir(ctx.doc.channel_id)
@@ -315,6 +372,11 @@ def _collect_kit(ctx: _Ctx) -> list[dict[str, Any]]:
         rel = _data_rel(path)
         if rel is None or not path.is_file():
             continue
+        try:
+            if thumb_assets.has_alpha(path):
+                continue
+        except Exception:  # noqa: BLE001 - imagem ilegível: fora
+            continue
         tags = [str(t) for t in item.get("tags") or []]
         w, h = _image_size(path)
         editorial = bool(item.get("editorial"))
@@ -323,17 +385,23 @@ def _collect_kit(ctx: _Ctx) -> list[dict[str, Any]]:
                     "credit": str(item.get("credit") or ""), "editorial": editorial, "tags": tags[:8],
                     "source_id": f"kit:{item['id']}", "topic": _topic_for([*tags, str(item["id"])], ctx.topics, TOPIC_KIT)})
     for name, raw in list((manifest.get("videos") or {}).items())[:MAX_KIT_VIDEOS]:
-        path = Path(str(raw))
-        if not path.is_absolute():
-            path = kit / path
-        if not path.is_file():
+        if ctx.cancelled():
+            break
+        path = kit_video_path(kit, raw)
+        if path is None:
             continue
         label = str(name).replace("_", " ")
-        shots = clips.analyze(path, width=ctx.width, height=ctx.height, fps=ctx.style.format.fps,
-                              max_clip_s=ctx.style.art.sources.official_max_clip_s, label=label)
-        out += _clip_items(shots, tier="official", prefix="kitvideo", key=str(name), editorial=True,
+        shots = _analyze(ctx, path, label)
+        out += _clip_items(shots, tier="official", prefix="kitvideo", key=str(name), editorial=True, credit=label,
                            topic=_topic_for([label], ctx.topics, TOPIC_KIT))
     return out
+
+
+def kit_video_path(kit: Path, raw: object) -> Path | None:
+    path = Path(str(raw))
+    if not path.is_absolute():
+        path = kit / path
+    return path if path.is_file() else None
 
 
 def _capture_item(entry: dict[str, Any], source_id: str, topic: str) -> dict[str, Any]:
@@ -342,11 +410,13 @@ def _capture_item(entry: dict[str, Any], source_id: str, topic: str) -> dict[str
         desc = f"{entry['title'][:70]} — \"{entry['text'][:60]}\""
     return {"tier": "capture", "media": "capture", "desc": desc, "path": entry["asset"], "url": entry.get("url", ""),
             "page_url": entry.get("url", ""), "rects": entry.get("rects") or [], "w": entry.get("width", 0),
-            "h": entry.get("height", 0), "credit": entry.get("domain", ""), "source_id": source_id, "topic": topic}
+            "h": entry.get("height", 0), "credit": entry.get("domain", ""), "editorial": True,
+            "source_id": source_id, "topic": topic}
 
 
 def _collect_captures(ctx: _Ctx) -> list[dict[str, Any]]:
-    """As provas já capturadas no projeto (limpas) e, online com o Playwright, as fontes do roteiro."""
+    """As provas já capturadas no projeto (limpas) e, na coleta completa com o Playwright, as fontes do roteiro.
+    Offline, a captura nova só com `open_page` injetado (nunca abre o navegador de verdade)."""
     from studio.media import page_capture
     from studio.workers.visual import proofs
 
@@ -359,10 +429,14 @@ def _collect_captures(ctx: _Ctx) -> list[dict[str, Any]]:
         done_urls.add(entry["url"])
         topic = _topic_for([entry.get("title", ""), entry.get("text", "")], ctx.topics, TOPIC_SOURCES)
         out.append(_capture_item(entry, f"cap:{data['id']}", topic))
-    if ctx.offline or not page_capture.browser_status()["ok"]:
+    if not ctx.full:
+        return out
+    if ctx.open_page is None and (ctx.offline or not page_capture.browser_status()["ok"]):
         return out
     sources = [s for s in ctx.doc.sources if s.url.startswith(("http://", "https://")) and s.url not in done_urls]
     for source in sources[:MAX_SOURCE_CAPTURES]:
+        if ctx.cancelled():
+            break
         phrase = (source.title or source.note or "").strip()
         if not phrase:
             continue
@@ -395,16 +469,19 @@ def normalize_link(raw: dict[str, Any]) -> dict[str, str]:
 
 
 def _collect_links(ctx: _Ctx) -> list[dict[str, Any]]:
-    """Trechos dos links oficiais dados pelo usuário. Offline, só os que já foram baixados."""
+    """Trechos dos links oficiais dados pelo usuário. Só a coleta completa baixa (o yt-dlp, e offline só com `runner`
+    injetado); a rápida e a offline usam os que já foram baixados."""
     from studio.media import clips
 
     out: list[dict[str, Any]] = []
     pending = 0
     for link in pool_links(ctx.project_id):
+        if ctx.cancelled():
+            break
         url = link["url"]
         found = clips.cached_source(url)
         if found is None:
-            if ctx.offline:
+            if not ctx.full or (ctx.offline and ctx.runner is None):
                 pending += 1
                 continue
             try:
@@ -412,56 +489,66 @@ def _collect_links(ctx: _Ctx) -> list[dict[str, Any]]:
             except Exception as exc:  # noqa: BLE001 - um link ruim não derruba os outros
                 ctx.notes.append(f"O link {url[:80]} não baixou: {exc}")
                 continue
-        path, title = found
-        label = link["label"] or title or "vídeo oficial"
-        shots = clips.analyze(path, width=ctx.width, height=ctx.height, fps=ctx.style.format.fps,
-                              max_clip_s=ctx.style.art.sources.official_max_clip_s, label=label)
+        label = link["label"] or found.title or "vídeo oficial"
+        shots = _analyze(ctx, found.path, label)
         tier = link["tier"]
         out += _clip_items(shots, tier=tier, prefix="yt", key=clips.link_key(url), url=url,
-                           credit=link["label"] or title, editorial=tier == "official",
+                           credit=found.uploader or link["label"] or found.title, editorial=tier == "official",
                            topic=_topic_for([label], ctx.topics, label[:80] or TOPIC_LINKS))
     if pending:
-        ctx.notes.append(f"Modo offline: {pending} link(s) oficial(is) ainda não baixado(s) ficaram de fora.")
+        if ctx.offline:
+            ctx.notes.append(f"Modo offline: {pending} link(s) oficial(is) ainda não baixado(s) ficaram de fora.")
+        else:
+            ctx.notes.append(f"{pending} link(s) oficial(is) ainda não baixado(s): use \"Atualizar acervo\" para "
+                             "baixar e cortar os planos.")
     return out
 
 
 def _collect_free(ctx: _Ctx) -> list[dict[str, Any]]:
-    """Fotos livres e vídeos do Pexels por tópico (só online; as buscas têm cache próprio)."""
+    """Fotos livres e vídeos do Pexels por tópico (só online, ou com `http` injetado; as buscas têm cache)."""
     if ctx.offline and ctx.http is None:
         return []
     from studio.providers import media_search
 
     out: list[dict[str, Any]] = []
     for topic in ctx.topics[:MAX_PHOTO_TOPICS]:
+        if ctx.cancelled():
+            return out
         result = media_search.search(topic.query, orientation=ctx.orientation, http=ctx.http)  # type: ignore[arg-type]
         for c in result.candidates:
             out.append({"tier": "stock" if c.source == "pexels" else "free", "media": "image", "desc": c.title,
                         "url": c.download_url, "page_url": c.page_url, "w": c.width, "h": c.height,
                         "license": c.license, "credit": c.credit, "source_id": c.id, "topic": topic.label})
     for topic in ctx.topics[:MAX_VIDEO_TOPICS]:
-        for v in media_search.search_videos(topic.query, orientation=ctx.orientation, http=ctx.http):  # type: ignore[arg-type]
+        if ctx.cancelled():
+            return out
+        for v in media_search.search_videos(topic.query, orientation=ctx.orientation, http=ctx.http,  # type: ignore[arg-type]
+                                            target=max(ctx.width, ctx.height)):
+            # A cena mostra no máximo `official_max_clip_s` do vídeo: o pedido do storyboard recebe essa duração.
+            dur = min(v.duration, ctx.max_clip_s) if v.duration > 0 else None
             out.append({"tier": "stock", "media": "clip", "desc": v.title or topic.label, "url": v.download_url,
-                        "page_url": v.page_url, "dur_s": min(v.duration, 30.0) or None, "w": v.width, "h": v.height,
+                        "page_url": v.page_url, "dur_s": dur, "w": v.width, "h": v.height,
                         "license": v.license, "credit": v.credit, "source_id": v.id, "topic": topic.label})
     return out
 
 
 def _collect_found(ctx: _Ctx) -> list[dict[str, Any]]:
-    """Arte oficial e notícias por tópico (uma chamada do Claude Code com busca web por vídeo; cache de 7 dias)."""
+    """Arte oficial e notícias por tópico: uma chamada do Claude Code com busca web por vídeo, só na coleta completa
+    (a rápida usa o resultado em cache, de até 7 dias)."""
     if ctx.offline or not ctx.topics:
         return []
     from studio.core.graph.store import ArtifactStore
     from studio.core.hashing import hash_obj
     from studio.workers.pipeline import media_find
 
-    if not media_find.web_available():
-        return []
     topics = [(t.id, t.label, t.query) for t in ctx.topics[:media_find.MAX_TOPICS]]
     store = ArtifactStore()
     key = hash_obj({"doc": ctx.project_id, "topics": topics, "v": 1})
     cached = store.lookup(FIND_CACHE_KIND, key)
     if cached is not None and _fresh(cached.get("fetched_at")):
         found = cached.get("found") or {}
+    elif not ctx.full or not media_find.web_available():
+        return []
     else:
         result = media_find.find_for_topics(ctx.doc, topics, project_id=ctx.project_id, job_id=ctx.job_id,
                                             http=ctx.http)
@@ -500,7 +587,7 @@ COLLECTORS: list[tuple[str, Callable[[_Ctx], list[dict[str, Any]]]]] = [
 
 
 # --------------------------------------------------------------------------------------------
-# Nota, anti-repetição e ids
+# Nota, anti-repetição, seleção e ids
 # --------------------------------------------------------------------------------------------
 
 
@@ -526,7 +613,10 @@ def _hash_local(item: dict[str, Any]) -> str:
 
 def history_marks(doc: ProjectDoc, window: int = NOVELTY_WINDOW) -> tuple[list[str], set[str]]:
     """(hashes de imagem, endereços e ids) do material usado nos últimos `window` vídeos do canal. Só lê o que os
-    outros projetos já guardaram (impressão digital do último build e a mídia anexada); nunca calcula neles."""
+    outros projetos já guardaram (impressão digital do último build e a mídia anexada); nunca calcula neles.
+
+    Trecho de vídeo entra só pelo `source_id` do plano usado ("yt:<chave>#3"), nunca pelo endereço: o endereço é o do
+    vídeo inteiro, e um plano usado não pode rebaixar os outros planos do mesmo trailer."""
     if not doc.channel_id:
         return [], set()
     from studio.core.project import service
@@ -547,7 +637,8 @@ def history_marks(doc: ProjectDoc, window: int = NOVELTY_WINDOW) -> tuple[list[s
             media = scene.visual.media
             if media is None:
                 continue
-            refs.update(r for r in (media.url, media.page_url, media.candidate_id) if r)
+            if media.kind != "clip":
+                refs.update(r for r in (media.url, media.candidate_id) if r)
             used = other_pool.item(media.pool_id)
             if used is not None and used.source_id:
                 refs.add(used.source_id)
@@ -556,13 +647,16 @@ def history_marks(doc: ProjectDoc, window: int = NOVELTY_WINDOW) -> tuple[list[s
 
 def apply_novelty(items: list[dict[str, Any]], hashes: list[str], refs: set[str],
                   penalty: float = NOVELTY_PENALTY) -> int:
-    """Tira `penalty` da nota do item já usado nos últimos vídeos (imagem parecida pelo dHash ou o mesmo endereço) e
-    marca a tag "repetido". Devolve quantos itens perderam nota."""
+    """Tira `penalty` da nota do item já usado nos últimos vídeos (imagem parecida pelo dHash, o mesmo `source_id` ou,
+    numa imagem, o mesmo endereço do arquivo) e marca a tag "repetido". Trecho de vídeo compara só o `source_id` do
+    plano e o pôster; a página de origem nunca conta (vários achados da mesma página não são o mesmo material).
+    Devolve quantos itens perderam nota."""
     from studio.media import novelty
 
     hit = 0
     for item in items:
-        same_ref = any(r and r in refs for r in (item.get("url"), item.get("page_url"), item.get("source_id")))
+        keys = (item.get("source_id"),) if item.get("media") == "clip" else (item.get("url"), item.get("source_id"))
+        same_ref = any(r and r in refs for r in keys)
         same_image = bool(item.get("dhash")) and any(novelty.similar(item["dhash"], h) for h in hashes)
         if same_ref or same_image:
             item["score"] = round(float(item.get("score") or 0.0) - penalty, 4)
@@ -571,52 +665,123 @@ def apply_novelty(items: list[dict[str, Any]], hashes: list[str], refs: set[str]
     return hit
 
 
-def _assign_ids(items: list[dict[str, Any]], previous: Pool) -> None:
-    """Ids curtos e estáveis: o mesmo `source_id` mantém o id da coleta anterior (a cena que já cita "p7" continua
-    certa); os novos continuam a contagem."""
-    known = {i.source_id: i.id for i in previous.items if i.source_id}
-    top = max((int(i.id[1:]) for i in previous.items), default=0)
-    for item in items:  # `source_id` já sem repetição: um id antigo nunca vai para dois itens
-        pid = known.get(item.get("source_id") or "")
-        if pid is None:
+def _id_number(pid: str | None) -> int:
+    return int(pid[1:]) if pid and POOL_ID_RE.match(pid) else 0
+
+
+def _scene_pool_ids(doc: ProjectDoc) -> list[str]:
+    out: list[str] = []
+    for scene in doc.scenes:
+        if scene.visual.media is not None and scene.visual.media.pool_id:
+            out.append(scene.visual.media.pool_id)
+        for shot in getattr(scene, "shots", None) or []:
+            if shot.pool_id:
+                out.append(shot.pool_id)
+            if shot.media is not None and shot.media.pool_id:
+                out.append(shot.media.pool_id)
+    return out
+
+
+def _assign_ids(items: list[dict[str, Any]], previous: Pool, doc: ProjectDoc | None = None) -> tuple[dict[str, str], int]:
+    """Ids curtos e estáveis: o mesmo `source_id` mantém o id de sempre (registro `Pool.ids`, que não encolhe), e o
+    item novo ganha um número que nunca foi dado (nem a item que saiu do acervo, nem a um `pool_id` que alguma cena
+    cita). Devolve o registro novo e o próximo número livre."""
+    registry: dict[str, str] = dict(previous.ids)
+    for old in previous.items:
+        if old.source_id:
+            registry.setdefault(old.source_id, old.id)
+    numbers = [_id_number(p) for p in registry.values()]
+    numbers += [_id_number(i.id) for i in previous.items]
+    numbers += [_id_number(p) for p in _scene_pool_ids(doc)] if doc is not None else []
+    top = max([previous.next_id - 1, *numbers, 0])
+    given: set[str] = set()
+    for item in items:  # `source_id` já sem repetição
+        sid = str(item.get("source_id") or "")
+        pid = registry.get(sid)
+        if pid is None or pid in given or not POOL_ID_RE.match(pid):
             top += 1
             pid = f"p{top}"
+            registry[sid] = pid
+        given.add(pid)
         item["id"] = pid
+    if len(registry) > MAX_ID_REGISTRY:  # os mais antigos que não estão no acervo saem; o número nunca volta
+        current = {str(i.get("source_id") or "") for i in items}
+        extra = len(registry) - MAX_ID_REGISTRY
+        for sid in [s for s in registry if s not in current][:extra]:
+            registry.pop(sid)
+    return registry, top + 1
 
 
-def _order(items: list[dict[str, Any]], topics: list[Topic]) -> list[dict[str, Any]]:
-    """Por tópico (na ordem do roteiro, depois os grupos fixos) e, dentro dele, pela nota."""
+def _select(items: list[dict[str, Any]], topics: list[Topic]) -> list[dict[str, Any]]:
+    """O corte do acervo e a ordem de exibição. O corte é pela nota, com lugar garantido para o mais real: primeiro os
+    níveis `own`/`official`/`capture` (até `RESERVED_MAX`, `RESERVED_PER_TOPIC` por tópico), depois o resto até
+    `MAX_ITEMS` (`MAX_PER_TOPIC` por tópico). Só então a ordem: por tópico (na ordem do roteiro, depois os grupos
+    fixos) e, dentro dele, pela nota."""
+    ranked = sorted(items, key=lambda i: -float(i.get("score") or 0.0))
+    kept: list[dict[str, Any]] = []
+    taken: set[int] = set()
+    per_reserved: dict[str, int] = {}
+    for n, item in enumerate(ranked):
+        if len(kept) >= RESERVED_MAX:
+            break
+        topic = str(item.get("topic") or "")
+        if item.get("tier") in RESERVED_TIERS and per_reserved.get(topic, 0) < RESERVED_PER_TOPIC:
+            per_reserved[topic] = per_reserved.get(topic, 0) + 1
+            kept.append(item)
+            taken.add(n)
+    per_topic: dict[str, int] = {}
+    for n, item in enumerate(ranked):
+        if len(kept) >= MAX_ITEMS:
+            break
+        topic = str(item.get("topic") or "")
+        if n not in taken and per_topic.get(topic, 0) < MAX_PER_TOPIC:
+            per_topic[topic] = per_topic.get(topic, 0) + 1
+            kept.append(item)
     rank = {t.label: i for i, t in enumerate(topics)}
     groups: dict[str, list[dict[str, Any]]] = {}
-    for item in items:
-        groups.setdefault(item.get("topic") or "", []).append(item)
-    keys = sorted(groups, key=lambda k: (rank.get(k, len(rank)), k == "", list(groups).index(k)))
+    for item in items:  # a ordem de chegada desempata os grupos fixos
+        groups.setdefault(str(item.get("topic") or ""), [])
+    for item in kept:
+        groups[str(item.get("topic") or "")].append(item)
+    order = list(groups)
+    keys = sorted((k for k in groups if groups[k]), key=lambda k: (rank.get(k, len(rank)), k == "", order.index(k)))
     out: list[dict[str, Any]] = []
     for key in keys:
-        out += sorted(groups[key], key=lambda i: -float(i.get("score") or 0.0))[:MAX_PER_TOPIC]
-    return out[:MAX_ITEMS]
+        out += sorted(groups[key], key=lambda i: -float(i.get("score") or 0.0))
+    return out
 
 
 def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: Any = None, runner: Any = None,
            job_id: str | None = None, progress: Callable[[float, str], None] | None = None,
-           cancelled: Callable[[], bool] | None = None) -> Pool:
-    """Coleta o acervo do projeto (falha de um coletor vira aviso em `Pool.warnings`). Offline não toca a rede: só
-    o material local (projeto, canal, provas já feitas e links já baixados). Com `cancelled()` verdadeiro, para entre
-    os coletores e devolve o que juntou."""
+           cancelled: Callable[[], bool] | None = None, full: bool = False) -> Pool:
+    """Coleta o acervo do projeto (falha de um coletor vira aviso em `Pool.warnings`).
+
+    `full=False` (o padrão, dentro do storyboard): rápida, só o que já está baixado e analisado, as provas já
+    capturadas, as buscas de foto (com cache) e a busca web em cache; nada de yt-dlp, corte de vídeo novo, navegador
+    ou chamada paga. `full=True` (job `media_pool`, botão "Atualizar acervo"): baixa, corta, captura e busca na web,
+    com `progress` e `cancelled` conferido entre os coletores e entre os planos.
+
+    Offline (`VS_OFFLINE=1`) não toca a rede, mesmo com `http` injetado: ele só vale para os coletores httpx."""
     from studio.core.project import service
 
     try:
         settings = dict(service.get_project_row(doc.id).get("settings") or {})
     except Exception:  # noqa: BLE001 - documento fora do banco
         settings = {}
+    try:
+        previous = load_pool(doc.id)
+    except ValueError:
+        previous = Pool()
     say = progress or (lambda f, m: None)
+    stop = cancelled or (lambda: False)
     ctx = _Ctx(doc=doc, style=style, project_id=doc.id, topics=topics_of(doc), settings=settings,
-               offline=get_settings().offline and http is None, http=http, open_page=open_page, runner=runner,
-               job_id=job_id, progress=say)
+               offline=get_settings().offline, full=full, previous=previous, http=http, open_page=open_page,
+               runner=runner, job_id=job_id, progress=say, cancelled=stop)
     raw: list[dict[str, Any]] = []
     warnings: list[str] = []
     for i, (label, collect) in enumerate(COLLECTORS):
-        if cancelled is not None and cancelled():
+        if stop():
+            warnings.append("Coleta do acervo cancelada.")
             break
         say(0.05 + 0.85 * i / len(COLLECTORS), f"Acervo: {label}")
         try:
@@ -625,6 +790,9 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
             log.warning("coletor do acervo %r falhou: %s", label, exc)
             warnings.append(f"Acervo ({label}): {exc}")
     warnings += ctx.notes
+    if ctx.unanalyzed:
+        warnings.append(f"{ctx.unanalyzed} vídeo(s) do acervo ainda não cortado(s) em planos: use \"Atualizar "
+                        "acervo\" para incluí-los.")
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in raw:
@@ -640,12 +808,8 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
         apply_novelty(items, hashes, refs)
     except Exception as exc:  # noqa: BLE001 - sem histórico, sem penalidade
         log.warning("anti-repetição do acervo falhou: %s", exc)
-    items = _order(items, ctx.topics)
-    try:
-        previous = load_pool(doc.id)
-    except ValueError:
-        previous = Pool()
-    _assign_ids(items, previous)
+    items = _select(items, ctx.topics)
+    registry, next_id = _assign_ids(items, previous, doc)
     pool_items: list[PoolItem] = []
     for item in items:
         try:
@@ -654,7 +818,7 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
             log.warning("item do acervo descartado (%s): %s", item.get("source_id"), exc)
     say(1.0, f"Acervo: {len(pool_items)} itens")
     return Pool(items=pool_items, gathered_at=datetime.now(UTC).isoformat(timespec="seconds"),
-                warnings=list(dict.fromkeys(warnings)))
+                warnings=list(dict.fromkeys(warnings)), ids=registry, next_id=next_id)
 
 
 # --------------------------------------------------------------------------------------------
@@ -671,7 +835,8 @@ def _line(item: PoolItem) -> str:
 def prompt_block(pool: Pool, max_lines: int = 120) -> str:
     """As linhas do acervo para o pedido do storyboard: `id · nível · tipo · desc · dur`, agrupadas por tópico
     (`[tópico]`). Com mais itens que linhas, cada tópico leva a sua parte (os melhores de cada um, em rodízio) e a
-    última linha diz quantos ficaram de fora. Acervo vazio: ""."""
+    última linha diz quantos ficaram de fora. Se nem todos os tópicos cabem, ficam primeiro os grupos com material
+    próprio, oficial ou captura (o mais real nunca sai da lista por ser um grupo fixo do fim). Acervo vazio: ""."""
     if not pool.items or max_lines <= 0:
         return ""
     groups: dict[str, list[PoolItem]] = {}
@@ -681,7 +846,12 @@ def prompt_block(pool: Pool, max_lines: int = 120) -> str:
     room = max_lines - 1  # a linha final de "fora da lista", se precisar
     if len(pool.items) + len(topics) <= max_lines:
         room = max_lines
-    topics = topics[: max(1, room // 2)] if len(topics) * 2 > room else topics
+    if len(topics) * 2 > room:
+        keep = max(1, room // 2)
+        prio = sorted(topics, key=lambda t: (0 if any(i.tier in RESERVED_TIERS for i in groups[t]) else 1,
+                                             topics.index(t)))
+        chosen = set(prio[:keep])
+        topics = [t for t in topics if t in chosen]
     budget = max(0, room - len(topics))
     take = {t: 0 for t in topics}
     while budget > 0:
@@ -727,11 +897,14 @@ def _media_kind(item: PoolItem) -> str:
 
 def _media_source(item: PoolItem) -> str:
     prefix = item.source_id.split(":", 1)[0]
+    if prefix == "file":
+        return {"own": "upload", "capture": "capture"}.get(item.tier, "link")
     return _PREFIX_SOURCE.get(prefix, "library" if item.tier in ("own", "official") else "link")
 
 
 def pending_ref(item: PoolItem) -> MediaRef:
-    """A `MediaRef` pendente que o storyboard põe na cena que escolheu o item (sem arquivo: `attach_chosen` baixa)."""
+    """A `MediaRef` pendente que o storyboard põe na cena que escolheu o item (sem arquivo: `attach_chosen` baixa).
+    É o construtor recomendado; o anexo aceita também a cena montada de outro jeito (ver `needs_attach`)."""
     return MediaRef(kind=_media_kind(item), source=_media_source(item), tier=item.tier, pool_id=item.id,  # type: ignore[arg-type]
                     page_url=item.page_url, title=item.desc[:300], credit=item.credit, editorial=item.editorial,
                     license=item.license)
@@ -741,71 +914,144 @@ def is_pending(media: MediaRef | None) -> bool:
     return media is not None and bool(media.pool_id) and not media.asset and not media.video
 
 
+def needs_attach(media: MediaRef | None, project_id: str) -> bool:
+    """A mídia cita um item do acervo e ainda não está pronta no projeto: sem arquivo (pendente) ou apontando para
+    fora da pasta do projeto (o cache da biblioteca, o vídeo de origem inteiro, a foto crua de `acervo/`). Pronta é
+    a imagem em `uploads/<projeto>/media/` e o vídeo em `uploads/<projeto>/clips/`, que é o que o anexo produz: assim
+    o anexo copia, normaliza e preenche `hold`/`mute`/`tier`/`credit` qualquer que seja a forma que o storyboard deu
+    à cena."""
+    if media is None or not media.pool_id:
+        return False
+    if not media.asset and not media.video:
+        return True
+    root = f"uploads/{project_id}/"
+    asset_ok = media.asset is None or media.asset.startswith(root + "media/")
+    video_ok = media.video is None or media.video.startswith(root + "clips/")
+    return not (asset_ok and video_ok)
+
+
 def _store_local(rel: str, project_id: str) -> Any:
     from studio.media import real_media
 
     return real_media.store_image((get_settings().data_dir / rel).read_bytes(), project_id)
 
 
-def _download_video(url: str) -> Path:
-    """Baixa o arquivo de vídeo (Pexels) uma vez para `library/clips/src/<chave>/video.mp4`."""
+def _download_video(url: str, http: Any = None) -> Path:
+    """Baixa o arquivo de vídeo (Pexels) uma vez para `library/clips/src/<chave>/video.mp4`, com prazo próprio (um
+    MP4 de dezenas de MB não cabe nos 20 s de uma página)."""
     from studio.media import clips, safe_http
 
     found = clips.cached_source(url)
     if found is not None:
-        return found[0]
-    fetched = safe_http.fetch(url, max_bytes=VIDEO_MAX_BYTES, accept="video/mp4,video/*;q=0.9,*/*;q=0.5")
-    folder = clips.clips_dir() / "src" / clips.link_key(url)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "video.mp4"
-    tmp = folder / ".video.tmp"
-    tmp.write_bytes(fetched.content)
-    tmp.replace(path)
-    return path
+        return found.path
+    fetched = safe_http.fetch(url, max_bytes=VIDEO_MAX_BYTES, accept="video/mp4,video/*;q=0.9,*/*;q=0.5", http=http,
+                              wall_clock_s=VIDEO_WALL_CLOCK_S)
+    return clips.save_source(url, fetched.content).path
+
+
+def _clip_source(item: PoolItem, doc: ProjectDoc, http: Any = None) -> Path:
+    """O vídeo de origem do trecho: o arquivo local do item, o vídeo do thumbkit, o link já baixado ou (Pexels) o
+    download do arquivo. O anexo nunca chama o yt-dlp (isso é da coleta completa)."""
+    from studio.media import clips
+
+    data_dir = get_settings().data_dir
+    if item.path and (data_dir / item.path).is_file():
+        return data_dir / item.path
+    if item.source_id.startswith("kitvideo:") and doc.channel_id:
+        from studio.media import thumb_assets
+
+        name = item.source_id[len("kitvideo:"):].rsplit("#", 1)[0]
+        kit = thumb_assets.thumbkit_dir(doc.channel_id)
+        raw = (thumb_assets.load_manifest(kit, doc.channel_id).get("videos") or {}).get(name)
+        path = kit_video_path(kit, raw) if raw else None
+        if path is not None:
+            return path
+    if item.url:
+        found = clips.cached_source(item.url)
+        if found is not None:
+            return found.path
+        if item.source_id.startswith("pexels-video:"):
+            return _download_video(item.url, http)
+    raise FileNotFoundError(item.id)
+
+
+def _needs_network(item: PoolItem) -> bool:
+    """O anexo do item vai baixar alguma coisa (conta no teto de downloads do anexo)."""
+    from studio.media import clips
+
+    data_dir = get_settings().data_dir
+    if item.source_id.startswith("file:") or (item.path and (data_dir / item.path).is_file()):
+        return False
+    if item.media == "clip":
+        if item.source_id.startswith("kitvideo:"):
+            return False
+        return not (item.url and clips.cached_source(item.url) is not None)
+    return True
+
+
+def _materialize_file(item: PoolItem, doc: ProjectDoc) -> MediaRef:
+    """Item `file:` (mídia anexada à mão): a `MediaRef` da cena que ainda a mostra, ou refeita do próprio item (o
+    storyboard novo pode ter reescrito a cena dona)."""
+    from studio.media import clips
+
+    rel = item.source_id[5:]
+    same = next((s.visual.media for s in doc.scenes if s.visual.media is not None
+                 and (s.visual.media.asset == rel or s.visual.media.video == rel)), None)
+    if same is not None:
+        return same.model_copy(deep=True)
+    data_dir = get_settings().data_dir
+    path = item.path or rel
+    if not (data_dir / path).is_file():
+        raise FileNotFoundError(path)
+    project_media = f"uploads/{doc.id}/media/"
+    video: str | None = None
+    if item.media == "clip":
+        video = path
+        poster = item.poster
+        if not poster or not (data_dir / poster).is_file():
+            poster = _data_rel(clips.make_poster(data_dir / path, 0.3, data_dir / f"{path}.jpg"))
+        assert poster is not None
+        asset_rel = poster
+    else:
+        asset_rel = path
+    width, height = item.w or None, item.h or None
+    if not asset_rel.startswith(project_media):
+        stored = _store_local(asset_rel, doc.id)
+        asset_rel, width, height = stored.rel, stored.width, stored.height
+    return MediaRef(kind=_media_kind(item), source=_media_source(item), asset=asset_rel, video=video,  # type: ignore[arg-type]
+                    start_s=item.start_s, dur_s=item.dur_s, hold=item.media == "clip", mute=True, rects=item.rects,
+                    url=item.url, page_url=item.page_url, title=item.desc[:300], credit=item.credit,
+                    license=item.license, editorial=item.editorial, width=width, height=height)
 
 
 def materialize(item: PoolItem, doc: ProjectDoc, style: StyleSpec | None = None, *, http: Any = None,
                 base: MediaRef | None = None) -> MediaRef:
     """Baixa/copia o item para a pasta do projeto e devolve a `MediaRef` pronta, com `tier`, `pool_id`, `video`,
-    `start_s`, `dur_s`, `rects`, `editorial` e `credit`. Levanta erro quando não dá (o anexo tenta a reserva)."""
+    `start_s`, `dur_s`, `rects`, `editorial` e `credit`. O trecho de vídeo vira um proxy mudo do plano, no tamanho e
+    fps do estilo, direto em `uploads/<projeto>/clips/`. Levanta erro quando não dá (o anexo tenta a reserva)."""
     from studio.media import clips, real_media
 
     project_id = doc.id
     data_dir = get_settings().data_dir
-    extra: dict[str, Any] = {}
     if item.source_id.startswith("file:"):
-        rel = item.source_id[5:]
-        same = next((s.visual.media for s in doc.scenes if s.visual.media is not None
-                     and (s.visual.media.asset == rel or s.visual.media.video == rel)), None)
-        if same is None:
-            raise FileNotFoundError(rel)
-        media = same.model_copy(deep=True)
+        media = _materialize_file(item, doc)
     elif item.media == "clip":
-        if item.path and (data_dir / item.path).is_file():
-            proxy_rel = item.path
-        else:
-            if not item.url:
-                raise FileNotFoundError(item.id)
-            if style is None:
-                raise ValueError("sem estilo para o tamanho do trecho")
-            fmt = style.format
-            w, h = (int(x) for x in fmt.resolution.lower().split("x"))
-            src = _download_video(item.url)
-            dur = min(float(item.dur_s or style.art.sources.official_max_clip_s), style.art.sources.official_max_clip_s)
-            out = clips.clips_dir() / "pexels" / f"{clips.link_key(item.url)}-{w}x{h}-{fmt.fps}.mp4"
-            proxy_rel = _data_rel(clips.make_proxy(src, float(item.start_s), dur, out, width=w, height=h, fps=fmt.fps))
-            assert proxy_rel is not None
-            extra["dur_s"] = dur
-        poster_rel = item.poster
-        if not poster_rel or not (data_dir / poster_rel).is_file():
-            poster = clips.make_poster(data_dir / proxy_rel, 0.3, data_dir / f"{proxy_rel}.jpg")
-            poster_rel = _data_rel(poster)
+        if style is None:
+            raise ValueError("sem estilo para o tamanho do trecho")
+        fmt = style.format
+        w, h = (int(x) for x in fmt.resolution.lower().split("x"))
+        max_clip = float(style.art.sources.official_max_clip_s)
+        dur = min(float(item.dur_s or max_clip), max_clip)
+        src = _clip_source(item, doc, http)
+        video = clips.proxy_for_project(src, float(item.start_s), dur, project_id, width=w, height=h, fps=fmt.fps,
+                                        src_w=item.w, src_h=item.h)
+        poster = clips.make_poster(data_dir / video, min(dur / 2, 1.0), (data_dir / video).with_suffix(".jpg"))
+        poster_rel = _data_rel(poster)
         assert poster_rel is not None
         stored = _store_local(poster_rel, project_id)
-        video = clips.copy_into_project(proxy_rel, project_id)
         media = MediaRef(kind="clip", source=_media_source(item), asset=stored.rel, video=video, start_s=0.0,  # type: ignore[arg-type]
-                         dur_s=extra.get("dur_s", item.dur_s), hold=True, mute=True, width=stored.width,
-                         height=stored.height, url=item.url, page_url=item.page_url, title=item.desc[:300])
+                         dur_s=dur, hold=True, mute=True, width=stored.width, height=stored.height, url=item.url,
+                         page_url=item.page_url, title=item.desc[:300])
     elif item.path:
         stored = _store_local(item.path, project_id)
         media = MediaRef(kind=_media_kind(item), source=_media_source(item), asset=stored.rel, url=item.url,  # type: ignore[arg-type]
@@ -834,13 +1080,20 @@ def materialize(item: PoolItem, doc: ProjectDoc, style: StyleSpec | None = None,
 
 
 def fallbacks(pool: Pool, item: PoolItem, used: set[str]) -> list[PoolItem]:
-    """A reserva do item: os outros itens do mesmo tópico e tipo de mídia parecido, na ordem de `sources.FALLBACK`
-    a partir do nível do item (e pela nota dentro do nível), sem os já usados."""
+    """A reserva do item, sem os já usados nem a IA: primeiro o mesmo tópico e o mesmo tipo de mídia (trecho ou
+    imagem), depois o mesmo tópico com o outro tipo, depois os tópicos vizinhos (na ordem do acervo). Em cada
+    faixa, a ordem de `sources.FALLBACK` a partir do nível do item, e a nota dentro do nível."""
     order = {tier: i for i, tier in enumerate(FALLBACK)}
     start = order.get(item.tier, 0)
-    same = [i for i in pool.items if i.id != item.id and i.id not in used and i.topic == item.topic
-            and (i.media == "clip") == (item.media == "clip") and i.tier != "ai"]
-    return sorted(same, key=lambda i: ((order.get(i.tier, len(order)) - start) % len(order), -i.score))
+    topics = list(dict.fromkeys(i.topic for i in pool.items))
+    here = topics.index(item.topic) if item.topic in topics else 0
+
+    def distance(topic: str) -> int:
+        return abs(topics.index(topic) - here) if topic in topics else len(topics)
+
+    others = [i for i in pool.items if i.id != item.id and i.id not in used and i.tier != "ai"]
+    return sorted(others, key=lambda i: (distance(i.topic), 0 if (i.media == "clip") == (item.media == "clip") else 1,
+                                         (order.get(i.tier, len(order)) - start) % len(order), -i.score))
 
 
 def _label(doc: ProjectDoc, scene: Scene) -> str:
@@ -849,12 +1102,15 @@ def _label(doc: ProjectDoc, scene: Scene) -> str:
     return scene_label(doc, scene.id)
 
 
-def missing_real(doc: ProjectDoc) -> list[Scene]:
-    """Cenas que mostram imagem de IA sem motivo declarado (`visual.ai_reason`): o achado `faltou_real`. A cena que
-    reaproveita outra herda o motivo da dona da imagem."""
+def missing_real(doc: ProjectDoc, style: StyleSpec | None = None) -> list[Scene]:
+    """Cenas que mostram imagem de IA sem motivo declarado (`visual.ai_reason`), sem as travadas. A cena que
+    reaproveita outra herda o motivo da dona da imagem. Com a política do estilo sem `require_ai_reason`, nenhuma.
+    Helper para a conferência do storyboard (o achado `faltou_real` é dela, em `storyboard_check`)."""
+    if style is not None and not style.art.sources.require_ai_reason:
+        return []
     out: list[Scene] = []
     for scene in doc.ordered_scenes():
-        if prov_of_scene(scene, doc) != "ai":
+        if scene.locked or prov_of_scene(scene, doc) != "ai":
             continue
         owner = doc.reuse_root(scene) if scene.visual.reuse_of else scene
         reason = (owner or scene).visual.ai_reason or scene.visual.ai_reason
@@ -863,42 +1119,55 @@ def missing_real(doc: ProjectDoc) -> list[Scene]:
     return out
 
 
-def faltou_real_warning(doc: ProjectDoc) -> str | None:
-    missing = missing_real(doc)
+def faltou_real_warning(doc: ProjectDoc, style: StyleSpec | None = None) -> str | None:
+    """O texto para o usuário quando há cenas de IA sem motivo e material real no acervo (sem código interno)."""
+    missing = missing_real(doc, style)
     if not missing:
         return None
     labels = [_label(doc, s) for s in missing]
     shown = ", ".join(labels[:8]) + ("…" if len(labels) > 8 else "")
-    return (f"faltou_real: {len(missing)} cena(s) com imagem de IA sem motivo declarado ({shown}). "
-            "Adicione material real ou diga por que a cena é IA.")
+    return (f"{len(missing)} cena(s) usam imagem de IA sem motivo e há material real no Acervo ({shown}): troque pelo "
+            "real ou diga o motivo.")
+
+
+def _has_real(scene: Scene, project_id: str) -> bool:
+    media = scene.visual.media
+    return media is not None and bool(media.asset or media.video) and not needs_attach(media, project_id)
 
 
 def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]:
-    """Anexa (em `doc`, no lugar) a mídia do acervo nas cenas que citam `pool_id` (MediaRef pendente). Item que não
-    baixa cai na reserva do mesmo tópico; sem reserva, a cena fica com a imagem de reserva. Devolve os avisos,
-    incluindo o `faltou_real` das cenas de IA sem motivo."""
+    """Anexa (em `doc`, no lugar) a mídia do acervo nas cenas que citam `pool_id` e ainda não estão prontas no
+    projeto (`needs_attach`). Item que não baixa cai na reserva (`fallbacks`, até `MAX_FALLBACK_TRIES`; no máximo
+    `MAX_ATTACH_DOWNLOADS` downloads por anexo). Sem reserva, a cena volta à imagem de IA quando tem prompt; sem
+    prompt, repete a mídia real da cena vizinha, ou fica sem imagem (fundo do estilo). Devolve os avisos, dizendo o
+    que de fato aconteceu."""
     from studio.core.styles.library import get_style
 
     warnings: list[str] = []
     try:
         style: StyleSpec | None = get_style(doc.style_id, doc.style_overrides)
-    except Exception:  # noqa: BLE001 - sem estilo: só o trecho de vídeo baixado fica de fora
+    except Exception:  # noqa: BLE001 - sem estilo: só o trecho de vídeo fica de fora
         style = None
     used: set[str] = set()
+    downloads = 0
+    failed: list[tuple[Scene, str]] = []
     for scene in doc.ordered_scenes():
         media = scene.visual.media
-        if scene.locked or not is_pending(media):
+        if scene.locked or not needs_attach(media, doc.id):
             continue
         assert media is not None
         item = pool.item(media.pool_id)
-        label = _label(doc, scene)
         if item is None:
             scene.visual.media = None
-            warnings.append(f"{label}: o item {media.pool_id} não está no acervo; a cena ficou com a imagem de reserva.")
+            failed.append((scene, f"o item {media.pool_id} não está no acervo"))
             continue
         chosen: MediaRef | None = None
         source: PoolItem | None = None
-        for candidate in [item, *fallbacks(pool, item, used)]:
+        for candidate in [item, *fallbacks(pool, item, used)[:MAX_FALLBACK_TRIES]]:
+            remote = _needs_network(candidate)
+            if remote and downloads >= MAX_ATTACH_DOWNLOADS:
+                continue
+            downloads += int(remote)
             try:
                 chosen = materialize(candidate, doc, style, http=http, base=media)
                 source = candidate
@@ -907,24 +1176,46 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
                 log.warning("item %s do acervo não anexou: %s", candidate.id, exc)
         if chosen is None or source is None:
             scene.visual.media = None
-            warnings.append(f"{label}: a mídia do acervo ({item.id}) não baixou e não havia reserva; a cena ficou "
-                            "com a imagem de reserva.")
+            failed.append((scene, f"a mídia do acervo ({item.id}) não baixou e a reserva também não"))
             continue
         scene.visual.media = chosen
         used.add(source.id)
         if source.id != item.id:
-            warnings.append(f"{label}: o item {item.id} não baixou; entrou {source.id} ({source.tier}) do mesmo tópico.")
-    # Só com acervo: havia material real e a cena ficou com IA sem motivo. Sem acervo nenhum, o achado é da revisão
-    # das cenas (`missing_real` serve à conferência do storyboard) e o job não ganha um aviso a cada storyboard.
-    note = faltou_real_warning(doc) if pool.items else None
-    if note:
-        warnings.append(note)
+            warnings.append(f"{_label(doc, scene)}: o item {item.id} não baixou; entrou {source.id} ({source.tier}, "
+                            f"{source.topic or 'sem tópico'}).")
+    ordered = doc.ordered_scenes()
+    for scene, why in failed:
+        label = _label(doc, scene)
+        if scene.visual.prompt.strip() and scene.visual.type in ("ai_image", "ai_video"):
+            warnings.append(f"{label}: {why}; a cena ficou com a imagem de IA de reserva.")
+            continue
+        at = next(i for i, s in enumerate(ordered) if s.id == scene.id)
+        near = sorted((s for s in ordered if s.id != scene.id and _has_real(s, doc.id)),
+                      key=lambda s: (abs(ordered.index(s) - at), ordered.index(s) > at))
+        if near:
+            scene.visual.reuse_of = near[0].id
+            warnings.append(f"{label}: {why}; a cena repete a mídia real da {_label(doc, near[0])}.")
+        else:
+            scene.visual.type = "none"
+            warnings.append(f"{label}: {why}; a cena ficou sem imagem (fundo do estilo).")
     return warnings
 
 
 # --------------------------------------------------------------------------------------------
 # Job: coletar de novo (botão "Atualizar acervo")
 # --------------------------------------------------------------------------------------------
+
+
+BUSY_KINDS = ("media_pool", "storyboard", "autopilot")
+"""Jobs que escrevem ou leem o acervo do projeto: com um deles ativo, a coleta não começa outra vez."""
+
+
+def active_job(project_id: str) -> dict[str, Any] | None:
+    """O job ativo do projeto que mexe no acervo (coleta, storyboard ou piloto automático), se houver."""
+    from studio.workers.jobs import ACTIVE_STATUSES, list_jobs
+
+    return next((j for j in list_jobs(project_id, limit=100)
+                 if j["kind"] in BUSY_KINDS and j["status"] in ACTIVE_STATUSES), None)
 
 
 def summary(pool: Pool) -> dict[str, Any]:
@@ -936,17 +1227,26 @@ def summary(pool: Pool) -> dict[str, Any]:
 
 @job("media_pool")
 def run_media_pool(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
-    """Coleta o acervo de novo e grava `pool.json` (mesmo vazio: a tela mostra quando rodou)."""
+    """Coleta completa (baixa, corta, captura e busca na web) e grava `pool.json` (mesmo vazio: a tela mostra quando
+    rodou). Cancelada, não grava nada. No fim, as fontes baixadas por link passam pelo teto de espaço."""
     from studio.core.project import service
     from studio.core.project.pool import save_pool
     from studio.core.styles.library import get_style
+    from studio.media import clips
 
     project_id = ctx.project_id
     assert project_id
     doc = service.get_doc(project_id)
     style = get_style(doc.style_id, doc.style_overrides)
-    pool = gather(doc, style, job_id=ctx.job_id, progress=ctx.progress)
+    pool = gather(doc, style, job_id=ctx.job_id, progress=lambda f, m: ctx.progress(0.02 + 0.93 * f, m),
+                  cancelled=ctx.cancelled, full=True)
+    if ctx.cancelled():
+        return {"canceled": True}
     save_pool(project_id, pool)
+    try:
+        clips.prune_sources(keep={clips.link_key(link["url"]) for link in pool_links(project_id)})
+    except OSError as exc:
+        log.warning("limpeza das fontes de vídeo falhou: %s", exc)
     result = summary(pool)
     if pool.warnings:
         result["warnings"] = pool.warnings

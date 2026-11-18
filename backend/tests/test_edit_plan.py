@@ -97,10 +97,21 @@ LONG_TEXT = (
 
 
 def _fixture_pool() -> Pool:
-    """Acervo-fixture: fotos e capturas do tema, de níveis variados (o coletor real é o item `acervo-real`)."""
+    """Acervo-fixture: fotos e capturas do tema, de níveis variados (o coletor real é o item `acervo-real`). Os
+    arquivos existem na pasta de dados do teste: o anexo do acervo copia o arquivo para o projeto e, sem ele, a cena
+    cai na reserva."""
+    from PIL import Image
+
+    from studio.config import get_settings
+
     tiers = ["free", "stock", "official", "capture", "free", "official"]
+    root = get_settings().data_dir
+    for i in range(1, len(tiers) + 1):
+        path = root / "uploads" / "prj" / "pool" / f"{i}.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1280, 720), (40 * i, 90, 160 - 20 * i)).save(path, quality=85)
     return Pool(items=[PoolItem(id=f"p{i}", tier=tier, desc="farol", tags=["farol", "ilha", "história", "detalhe"],
-                                path=f"uploads/prj/pool/{i}.jpg") for i, tier in enumerate(tiers, 1)])
+                                path=f"uploads/prj/pool/{i}.jpg", w=1280, h=720) for i, tier in enumerate(tiers, 1)])
 
 
 def test_mock_project_comes_out_with_shots_and_fx_within_quotas(isolated_settings, monkeypatch):
