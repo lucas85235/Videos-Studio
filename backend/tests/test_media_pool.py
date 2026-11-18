@@ -555,5 +555,12 @@ def test_storyboard_job_gathers_before_and_writes_the_pool(isolated_settings):
         job = get_runner().submit(kind, {}, doc.id, run_inline=True)
         final = get_job(job["id"])
         assert final is not None and final["status"] == "done", final and final["error"]
-    assert load_pool(doc.id).items[0].tier == "own"
-    assert any(w.startswith("faltou_real") for w in final["result"].get("warnings", []))
+    pool = load_pool(doc.id)
+    assert pool.items[0].tier == "own"
+    # o storyboard leu o acervo gravado antes dele: o real entra (já anexado) e a IA que sobra vem com motivo, então o
+    # anexo não acusa `faltou_real` (o aviso de IA sem motivo fica em `test_attach_*`/`missing_real`)
+    shown = service.get_doc(doc.id)
+    real = [s for s in shown.scenes if s.visual.media is not None and s.visual.media.pool_id == pool.items[0].id]
+    assert real and all(s.visual.media.asset for s in real)
+    assert not media_pool.missing_real(shown)
+    assert not any(w.startswith("faltou_real") for w in final["result"].get("warnings", []))

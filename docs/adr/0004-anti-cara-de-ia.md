@@ -569,7 +569,7 @@ Outros arquivos:
 **2. Fonte do subplano**, nesta ordem:
 - próximo plano do mesmo clipe;
 - outro `PoolItem` com a mesma tag;
-- o mesmo asset com outro `framing` (jump-cut 1,0→1,25 em outro ponto), no máximo 2 reenquadramentos por asset;
+- o mesmo asset com outro `framing` (jump-cut 1,0→1,25 em outro ponto), no máximo 2 reenquadramentos por asset (imagem de IA: no vídeo todo; material real: por aparição, porque o storyboard real primeiro volta ao mesmo item do acervo de propósito);
 - nunca a mesma IA com `zoom_to` mais de 2 vezes.
 
 **3. Câmera**

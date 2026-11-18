@@ -418,29 +418,10 @@ def _item_tokens(item: PoolItem) -> set[str]:
     return _match_tokens(item.desc, *item.tags, *item.entities)
 
 
-def _pool_lines(pool: Pool, max_lines: int = POOL_MAX_LINES) -> str:
-    """Reserva local do bloco do acervo (`media_pool.prompt_block` é o dono do formato): `id · nível · tipo · desc ·
-    dur`, agrupado pelo primeiro tópico (entidade ou etiqueta) de cada item."""
-    groups: dict[str, list[PoolItem]] = {}
-    for item in pool.items:
-        topic = (item.entities or item.tags or ["geral"])[0]
-        groups.setdefault(topic, []).append(item)
-    lines: list[str] = []
-    for topic, items in groups.items():
-        lines.append(f"[{topic}]")
-        for item in items:
-            dur = f"{_seconds_text(item.dur_s)} s" if item.dur_s else "-"
-            lines.append(f"{item.id} · {item.tier} · {item.media} · {_text(item.desc, 140) or '(sem descrição)'} · {dur}")
-    if len(lines) > max_lines:
-        lines = [*lines[:max_lines - 1], f"(+{len(lines) - max_lines + 1} linhas)"]
-    return "\n".join(lines)
-
-
 def pool_block(pool: Pool) -> str:
-    """As linhas do acervo para o pedido: as de `media_pool.prompt_block` ou, enquanto ele não existe, a reserva."""
-    if not pool.items:
-        return ""
-    return media_pool.prompt_block(pool, max_lines=POOL_MAX_LINES) or _pool_lines(pool)
+    """As linhas do acervo para o pedido (`media_pool.prompt_block` é o dono do formato: `id · nível · tipo · desc ·
+    dur`, agrupado por tópico). Acervo vazio: ""."""
+    return media_pool.prompt_block(pool, max_lines=POOL_MAX_LINES)
 
 
 _HUMOR_TEXT = {"none": "sem humor", "light": "humor leve (reação pontual)", "meme": "humor de meme (reações frequentes)"}

@@ -491,7 +491,7 @@ class _Planner:
         # zoom_to já usado nas cenas que reaproveitam a imagem conta no limite de reenquadramento
         for beat in beats:
             if beat.scene.motion == "zoom_to":
-                self.reframes[beat.asset] += 1
+                self.reframes[_reframe_key(beat)] += 1
         return beats
 
     @staticmethod
@@ -784,9 +784,10 @@ class _Planner:
 
     def _reframe(self, beat: _Beat, prev: _Shot, word: _W, rng: random.Random) -> _Shot | None:
         """O mesmo asset noutro enquadramento (jump cut 1,0 ↔ 1,25 noutro ponto), até 2 vezes por asset."""
-        if beat.clip or self.reframes[beat.asset] >= MAX_REFRAMES:
+        key = _reframe_key(beat)
+        if beat.clip or self.reframes[key] >= MAX_REFRAMES:
             return None
-        self.reframes[beat.asset] += 1
+        self.reframes[key] += 1
         wide = prev.framing is None or prev.framing.scale < 1.1
         scale = REFRAME_SCALE if wide else 1.0
         x = round(rng.uniform(0.35, 0.65), 3)
@@ -1187,6 +1188,14 @@ class _Planner:
             framing=shot.framing, motion=shot.motion, easing=shot.easing, strength=shot.strength,  # type: ignore[arg-type]
             clip_in=shot.clip_in, hold=shot.hold,
         )
+
+
+def _reframe_key(beat: _Beat) -> str:
+    """De quem é a cota de `MAX_REFRAMES`. Imagem de IA: do asset no vídeo todo (a mesma IA reenquadrada de novo é o
+    enchimento que o ADR 0004 corta). Material real: de cada aparição do asset (a batida), porque o storyboard real
+    primeiro volta ao mesmo item do acervo de propósito; com a cota do vídeo todo, um acervo pequeno esgotava os
+    cortes logo no começo e o resto do vídeo ficava em planos do tamanho da batida (ritmo uniforme, CV baixo)."""
+    return beat.asset if beat.prov == "ai" else f"{beat.asset}#{beat.pos}"
 
 
 def _similar(a: float, b: float) -> bool:

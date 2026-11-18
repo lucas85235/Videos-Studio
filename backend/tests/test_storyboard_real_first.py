@@ -147,9 +147,10 @@ def test_hook_is_real_and_ai_stays_under_the_time_cap(monkeypatch):
     for scene in new_doc.scenes:
         if scene.visual.reuse_of:
             assert tiers.prov_of_scene(scene, new_doc) != "ai"
-    # o pedido levou o acervo, a política e a gramática; o contexto do mock também
+    # o pedido levou o acervo (no formato de `media_pool.prompt_block`), a política e a gramática; o contexto do mock
+    # também
     prompt = fake.calls[0]["prompt"]
-    assert "Acervo de material real" in prompt and "p3 · official · clip · Lucia dirigindo na ponte · 2,5 s" in prompt
+    assert "Acervo de material real" in prompt and "p3 · official · clip · Lucia dirigindo na ponte · 2.5s" in prompt
     assert "Teto de imagem de IA: 30% do tempo de tela" in prompt
     assert "Gramática de edição deste estilo" in prompt and "planos de ~1,6 s" in prompt
     assert [i["id"] for i in fake.calls[0]["context"]["pool"]] == ["p1", "p2", "p3", "p4", "p5"]
