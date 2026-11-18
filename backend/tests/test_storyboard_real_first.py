@@ -275,7 +275,10 @@ def test_marks_come_from_the_answer_and_only_keep_spoken_words(monkeypatch):
                 "gag_at": "ponte"},
         0: {"role": "reveal", "serious": True, "gag_payoff": "meme", "gag_line": "kkk", "gag_at": "Vice"},
     }
-    new_doc, _, beats, _ = run(monkeypatch, doc, extra, pool=make_pool())
+    # o preset de mistério não tem humor (`edit.grammar.humor: none`): para ler a piada, um estilo com humor leve
+    funny = STYLE.model_copy(deep=True)
+    funny.edit.grammar.humor = "light"
+    new_doc, _, beats, _ = run(monkeypatch, doc, extra, pool=make_pool(), style=funny)
     scenes = by_key(new_doc, beats)
     assert scenes[news].mark.role == "number" and scenes[news].mark.emphasis == ["90 milhões", "24"]
     gag = scenes[lucia].mark.gag
@@ -284,6 +287,10 @@ def test_marks_come_from_the_answer_and_only_keep_spoken_words(monkeypatch):
     assert hook.role == "hook" and hook.serious and hook.gag is None and hook.energy <= 1  # séria: sem piada
     cta = scenes[-1].mark
     assert cta.role == "cta"
+    # o mesmo pedido no preset sem humor: a batida continua marcada, mas sem piada
+    assert STYLE.edit.grammar.humor == "none"
+    plain_doc, _, plain_beats, _ = run(monkeypatch, base_doc(), extra, pool=make_pool())
+    assert by_key(plain_doc, plain_beats)[lucia].mark.gag is None
 
 
 def test_media_from_pool_fills_tier_and_credit():
