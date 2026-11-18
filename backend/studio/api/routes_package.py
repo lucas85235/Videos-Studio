@@ -364,11 +364,21 @@ def upload_thumbkit(channel_id: str, file: Annotated[UploadFile, File()],
             "source": {"upload": file.filename or item_id}}
     if kind == "cutout":
         # lados cortados e qualidade medidos já no envio: o seletor do pacote e o compositor usam a mesma medida
-        from studio.media.thumb_assets import cut_edges_of, cutout_quality, straight_cuts_of
+        from studio.media.thumb_assets import (
+            QUALITY_LOW,
+            cut_edges_of,
+            cutout_defect,
+            holes_of,
+            straight_cuts_of,
+        )
 
         item["cut_edges"] = cut_edges_of(folder / item["file"])
         item["straight_cuts"] = straight_cuts_of(folder / item["file"])
-        item["quality"] = cutout_quality(item)
+        item["holes"] = holes_of(folder / item["file"])
+        defect = cutout_defect(item)
+        item["quality"] = QUALITY_LOW if defect else "ok"
+        if defect:
+            item["quality_note"] = defect
     items.append(item)
     out = {**raw, "items": items} if isinstance(raw, dict) else {"items": items}
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

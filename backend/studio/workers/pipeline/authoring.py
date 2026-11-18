@@ -2450,6 +2450,9 @@ class PackageAssets:
     """Material do próprio vídeo para a thumb (`project_proofs`): capturas de matéria, prints, imagens do acervo."""
     kit_dir: Any = None
     """Pasta da biblioteca do canal (para medir a cor do fundo atrás do texto)."""
+    low_cutouts: list[dict[str, Any]] = field(default_factory=list)
+    """Recortes que não servem para thumb (`cutout_defect`: buraco no corpo, corte sem encaixe), com o motivo em
+    `defect`. Fora da lista do prompt; o candidato que cita um deles troca pelo do mesmo personagem."""
 
     def ids(self, kind: str) -> set[str]:
         return {str(item.get("id")) for item in getattr(self, kind) if item.get("id")}
@@ -2492,12 +2495,16 @@ def package_assets(doc: ProjectDoc, style: StyleSpec, bible: dict[str, Any] | No
     allow = effective_allow_editorial(style.thumbnail.allow_editorial, bible)
     items = [i for i in thumbkit_manifest(doc.channel_id) if allow or not i.get("editorial")]
     by_kind: dict[str, list[dict[str, Any]]] = {"frame": [], "cutout": [], "logo": [], "object": []}
-    from studio.media.thumb_assets import QUALITY_LOW, cutout_quality
+    from studio.media.thumb_assets import cutout_defect
 
     kit_dir = get_settings().library_dir / "thumbkit" / doc.channel_id if doc.channel_id else None
+    low: list[dict[str, Any]] = []
     for item in items:
-        if item.get("kind") == "cutout" and cutout_quality(item, kit_dir) == QUALITY_LOW:
-            continue  # recorte que sai torto na thumb (marcado ou cortado sem encaixe): o LLM nem vê
+        defect = cutout_defect(item, kit_dir) if item.get("kind") == "cutout" else None
+        if defect:
+            # recorte que sai torto na thumb (marcado, cortado sem encaixe, buraco no corpo): o LLM nem vê
+            low.append({**item, "defect": defect})
+            continue
         by_kind.setdefault(str(item.get("kind") or "frame"), []).append(item)
     from studio.core.project import presenter as presenter_core
 
@@ -2512,7 +2519,7 @@ def package_assets(doc: ProjectDoc, style: StyleSpec, bible: dict[str, Any] | No
                          objects=by_kind["object"], poses=poses, allow_editorial=allow,
                          presenter_height=presenter.thumb_height, presenter_crop=presenter.thumb_crop,
                          presenter_outline=presenter.thumb_outline_px, proofs=project_proofs(doc, allow),
-                         kit_dir=kit_dir)
+                         kit_dir=kit_dir, low_cutouts=low)
 
 
 PROOF_TIERS = ("own", "capture", "official", "free")
@@ -2888,6 +2895,39 @@ def _pick_characters(chars: list[str], cutouts: list[dict[str, Any]], recent: An
     return out
 
 
+def replace_low_cutout(item: dict[str, Any], cutouts: list[dict[str, Any]], template: str, cost: Any,
+                       taken: Any = ()) -> str | None:
+    """O melhor recorte bom (`cutouts`, já sem os de qualidade baixa) para ficar no lugar de `item`, um recorte que não
+    serve para thumb: o do mesmo tipo (`_same_kind`: mesmo personagem, solo com solo, rosto com rosto; nunca corpo
+    inteiro no heroi-palavra) menos usado (`cost`), fora os de `taken`. None quando o personagem não tem outro."""
+    alts = [str(c["id"]) for c in cutouts if str(c["id"]) not in set(taken) and _same_kind(item, c, template)]
+    return min(alts, key=cost) if alts else None
+
+
+def _fix_low_cutouts(hints: list[str], low: list[dict[str, Any]], cutouts: list[dict[str, Any]], template: str,
+                     recent: Any, batch: Any, notes: list[str]) -> list[str]:
+    """Os personagens citados com o recorte ruim (`PackageAssets.low_cutouts`: buraco no corpo, corte sem encaixe)
+    trocados pelo melhor recorte bom do mesmo personagem; sem alternativa, o personagem sai (a thumb fica sem a
+    figura e o fundo é escolhido como sem personagem). Cada troca ganha um CORRIGIDO."""
+    low_by_id = {str(c["id"]): c for c in low}
+    out: list[str] = []
+    for cid in hints:
+        bad = low_by_id.get(cid)
+        if bad is None:
+            out.append(cid)
+            continue
+        why = str(bad.get("defect") or "qualidade baixa")
+        pick = replace_low_cutout(bad, cutouts, template,
+                                  lambda v: thumb_variety.penalty("character", v, recent, batch), (*hints, *out))
+        if pick:
+            notes.append(f"CORRIGIDO: recorte {cid} não serve para thumb ({why}); usei {pick}")
+            out.append(pick)
+        else:
+            notes.append(f"CORRIGIDO: recorte {cid} não serve para thumb ({why}) e não há outro do personagem; "
+                         "a thumb sai sem a figura")
+    return out
+
+
 def _text_side(template: str, recent: Any, batch: Any, turn: int) -> str:
     """Onde vai o texto: o lado que o canal e o pacote menos usaram entre os que o template aceita (o molde inteiro
     espelha: texto à direita, figura e avatar à esquerda). O padrão do template vem primeiro (desempate)."""
@@ -3024,8 +3064,10 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             notes.append(f"CORRIGIDO: objeto sem objeto na biblioteca; usei {fallback[turn % len(fallback)]}")
             template = fallback[turn % len(fallback)]
         card = template in thumb_variety.CARD_TEMPLATES
-        chars = [str(c) for c in _list(item.get("characters_hint")) if str(c) in cutouts][:2]
-        missing = [str(c) for c in _list(item.get("characters_hint")) if str(c) not in cutouts]
+        hints = _fix_low_cutouts([str(c) for c in _list(item.get("characters_hint"))], assets.low_cutouts,
+                                 assets.cutouts, template, recent, batch, notes)
+        chars = list(dict.fromkeys(c for c in hints if c in cutouts))[:2]
+        missing = [c for c in hints if c not in cutouts]
         if missing:
             notes.append(f"CORRIGIDO: sem recorte de {', '.join(missing[:3])} (o personagem fica no fundo)")
         if card:

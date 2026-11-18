@@ -24,11 +24,13 @@ from studio.core.project.document import CutoutLayer, ThumbLayers
 from studio.core.styles.schema import DEFAULT_THUMB_PALETTE
 from studio.media import thumb_templates as T
 from studio.media.thumb_assets import (
+    HOLE_NOTE,
     Asset,
     AssetError,
     AssetResolver,
     anchorable,
     cut_edges_of,
+    holes_of,
     open_rgba,
     prepared_cutout,
     straight_cuts_of,
@@ -37,7 +39,7 @@ from studio.media.thumbnail import load_font
 
 log = logging.getLogger(__name__)
 
-VERSION = 2
+VERSION = 3
 """Versão do desenho: muda quando o compositor passa a desenhar diferente (entra na chave do cache da capa)."""
 BASE_H = 720
 """Altura de referência: todos os px fixos (contornos, sombras) são a 720p e escalam com o canvas."""
@@ -583,6 +585,10 @@ def _cutouts(size: tuple[int, int], layers: ThumbLayers, resolver: AssetResolver
             except (OSError, ValueError) as exc:  # arquivo sumiu no meio: mede como antes
                 log.warning("recorte %s: preparo falhou (%s)", asset.ref, exc)
                 edges, straight = cut_edges_of(asset.path, meta), straight_cuts_of(asset.path, meta)
+        if asset.kind == "cutout" and holes_of(asset.path, asset.meta):
+            # o gerador não escolhe recorte assim (`cutout_quality`); quem pôs à mão fica com ele, avisado
+            layout.warnings.append(f"figura {c.asset}: recorte com {HOLE_NOTE}; troque por outro recorte do "
+                                   "personagem")
         layer = Image.new("RGBA", size, (0, 0, 0, 0))
         before = len(layout.figures)
         if _place_cutout(layer, fig if fig is not None else _trim(im), c, asset.kind, pal, layout,
@@ -865,11 +871,16 @@ def _place_cutout(canvas: Image.Image, fig: Image.Image, c: CutoutLayer, kind: s
 
 
 def _mirror_segment(seg: dict[str, Any]) -> dict[str, Any]:
-    """Trecho reto da figura espelhada na horizontal."""
+    """Trecho reto da figura espelhada na horizontal. Lateral: troca de lado e a linha vai para 1 - x (`pos`, e
+    também `pos_a`/`pos_b`, que o degradê usa: sem eles a linha ficava no x de antes do espelho, e o degradê, virado
+    para o outro lado, apagava a faixa inteira da figura, como o queixo do Jason da capa). Em cima/embaixo: o trecho
+    anda ao contrário, então o começo e o fim trocam (e as posições da linha nas pontas também)."""
     side = seg["side"]
+    pos = float(seg["pos"])
+    pa, pb = float(seg.get("pos_a", pos)), float(seg.get("pos_b", pos))
     if side in ("left", "right"):
-        return {**seg, "side": _MIRROR[side], "pos": 1 - seg["pos"]}
-    return {**seg, "start": 1 - seg["end"], "end": 1 - seg["start"]}
+        return {**seg, "side": _MIRROR[side], "pos": 1 - pos, "pos_a": 1 - pa, "pos_b": 1 - pb}
+    return {**seg, "start": 1 - seg["end"], "end": 1 - seg["start"], "pos_a": pb, "pos_b": pa}
 
 
 def _big_vi(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver | None,

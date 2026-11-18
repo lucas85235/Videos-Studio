@@ -565,6 +565,90 @@ def straight_cuts_of(path: Path, meta: dict[str, Any] | None = None) -> list[dic
         return []
 
 
+HOLE_MIN_AREA = 0.004
+"""Buraco mínimo, em fração da área opaca da figura: o furo do brinco ou a fresta entre fios de cabelo não contam."""
+HOLE_MIN_RADIUS = 0.012
+"""Espessura mínima do buraco (raio do maior círculo que cabe nele), em fração do lado maior da figura: a fresta
+fina do cabelo solto não mostra o fundo; o pedaço de pescoço que falta mostra."""
+HOLE_LIMB = 0.045
+"""Raio (fração do lado maior da figura) da abertura morfológica que apaga braço, perna e pescoço finos (até ~9% do
+lado): o buraco que continua cercado depois dela está no meio do corpo; o vão entre o braço e o tronco (mão na
+cintura) abre para fora junto com o braço e não conta."""
+HOLE_SCALE = 400
+"""Lado maior da cópia em que o buraco é medido (rápido e igual para recorte de qualquer tamanho)."""
+
+
+def detect_holes(alpha: Image.Image) -> list[dict[str, Any]]:
+    """Faltas de dentro do recorte: região transparente (alfa < 128) cercada pela figura por todos os lados, que não
+    encosta na borda da imagem, com área de pelo menos `HOLE_MIN_AREA` da figura, espessura de `HOLE_MIN_RADIUS` e
+    no meio do corpo (continua cercado depois de apagar os membros finos, `HOLE_LIMB`). É o que sobra quando a figura da
+    frente (`minus`) estava inteira por cima do corpo, ou quando o rembg comeu um pedaço da roupa: na thumb, o fundo
+    aparece por dentro do personagem. O vão natural (braço aberto, mão na cintura) e o cabelo solto não contam.
+    Devolve [{box: [x0, y0, x1, y1] em fração da figura aparada, area: fração da figura}]; [] sem scipy."""
+    try:
+        import numpy as np
+        from scipy import ndimage  # type: ignore[import-untyped]
+    except Exception:  # noqa: BLE001 - scipy vem com o rembg; sem ele, não mede
+        return []
+    a = alpha if alpha.mode == "L" else alpha.convert("L")
+    box = a.point(lambda v: 255 if v > 8 else 0).getbbox()
+    if not box:
+        return []
+    a = a.crop(box)
+    scale = min(1.0, HOLE_SCALE / max(a.size))
+    if scale < 1.0:
+        a = a.resize((max(1, round(a.width * scale)), max(1, round(a.height * scale))), Image.Resampling.BOX)
+    solid = np.asarray(a, dtype=np.uint8) >= 128
+    total = int(solid.sum())
+    if not total:
+        return []
+    h, w = solid.shape
+    side = max(h, w)
+    holes = ndimage.binary_fill_holes(solid) & ~solid
+    labels, n = ndimage.label(holes)
+    if not n:
+        return []
+    # abertura (erosão + dilatação, pela distância): some com os membros finos; o que segue cercado é corpo grosso
+    limb = side * HOLE_LIMB
+    core = ndimage.distance_transform_edt(ndimage.distance_transform_edt(solid) <= limb) <= limb
+    core_holes = ndimage.binary_fill_holes(core) & ~core
+    out: list[dict[str, Any]] = []
+    sizes = ndimage.sum(holes, labels, range(1, n + 1))
+    for i, (sl, size) in enumerate(zip(ndimage.find_objects(labels), sizes, strict=True), start=1):
+        if sl is None or size < total * HOLE_MIN_AREA:
+            continue
+        comp = labels[sl] == i
+        if float(ndimage.distance_transform_edt(np.pad(comp, 1)).max()) < side * HOLE_MIN_RADIUS:
+            continue
+        if float(core_holes[sl][comp].mean()) < 0.5:
+            continue  # cercado só por um braço (ou pescoço) fino: vão natural
+        y0, y1, x0, x1 = sl[0].start, sl[0].stop, sl[1].start, sl[1].stop
+        out.append({"box": [round(x0 / w, 4), round(y0 / h, 4), round(x1 / w, 4), round(y1 / h, 4)],
+                    "area": round(float(size) / total, 4)})
+    return out
+
+
+@lru_cache(maxsize=64)
+def _holes_cached(path: str, mtime: float, size: int) -> str:
+    with Image.open(path) as im:
+        if im.mode not in ("RGBA", "LA", "PA") and "transparency" not in im.info:
+            return "[]"
+        return json.dumps(detect_holes(im.convert("RGBA").getchannel("A")))
+
+
+def holes_of(path: Path, meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Buracos de dentro do recorte (`detect_holes`): os do manifesto (`holes`, gravados na importação); senão
+    medidos no PNG, com cache pela data do arquivo."""
+    stored = (meta or {}).get("holes")
+    if isinstance(stored, list):
+        return [h for h in stored if isinstance(h, dict)]
+    try:
+        stat = path.stat()
+        return json.loads(_holes_cached(str(path), stat.st_mtime, stat.st_size))
+    except (OSError, ValueError):
+        return []
+
+
 def anchorable(cut: list[str] | set[str]) -> bool:
     """O compositor consegue encostar todo lado cortado na borda da thumb: embaixo, numa lateral (espelhando se
     preciso) e em cima só junto com embaixo (figura da altura toda). Dois lados opostos na horizontal ou só o topo
@@ -1158,18 +1242,34 @@ def _face_from_src(face_src: list[float] | None, cut_png: Path) -> list[float] |
 QUALITY_LOW = "baixa"
 
 
-def cutout_quality(item: dict[str, Any], kit_dir: Path | None = None) -> str:
-    """"baixa" quando o recorte não serve para thumb (marcado na semente ou cortado de um jeito que não encaixa na
-    borda); "ok" no resto. O seletor de ativos do pacote deixa os de qualidade baixa de fora. Item sem `cut_edges`
-    (enviado pela tela, recorte antigo) é medido no arquivo com `kit_dir`, como o compositor faz (`cut_edges_of`)."""
+HOLE_NOTE = "buraco no corpo: o fundo aparece por dentro da figura"
+
+
+def cutout_defect(item: dict[str, Any], kit_dir: Path | None = None) -> str | None:
+    """Por que o recorte não serve para thumb, ou None: marcado na semente (`quality`/`no_thumb`), cortado de um jeito
+    que não encaixa na borda, ou com buraco no corpo (`holes_of`: a figura da frente tirada com `minus`, a roupa
+    que o rembg comeu). Item sem `cut_edges`/`holes` (enviado pela tela, recorte antigo) é medido no arquivo com
+    `kit_dir`, como o compositor faz."""
     if str(item.get("quality") or "").lower() == QUALITY_LOW or item.get("no_thumb"):
-        return QUALITY_LOW
+        return str(item.get("quality_note") or "marcado como qualidade baixa")
     edges = _norm_edges(item.get("cut_edges"))
-    if edges is None and kit_dir is not None and item.get("file"):
-        edges = cut_edges_of(kit_dir / str(item["file"]))
+    path = kit_dir / str(item["file"]) if kit_dir is not None and item.get("file") else None
+    if edges is None and path is not None:
+        edges = cut_edges_of(path)
     if edges is not None and not anchorable(edges):
-        return QUALITY_LOW
-    return "ok"
+        return f"cortado em {', '.join(edges)}: não encaixa na borda da thumb"
+    holes = item.get("holes")
+    if not isinstance(holes, list) and path is not None:
+        holes = holes_of(path)
+    if holes:
+        return HOLE_NOTE
+    return None
+
+
+def cutout_quality(item: dict[str, Any], kit_dir: Path | None = None) -> str:
+    """"baixa" quando o recorte não serve para thumb (`cutout_defect`); "ok" no resto. O seletor de ativos do pacote
+    deixa os de qualidade baixa de fora (o LLM nem vê) e a troca automática não escolhe."""
+    return QUALITY_LOW if cutout_defect(item, kit_dir) else "ok"
 
 
 def _cutout_source(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1252,10 +1352,13 @@ def make_cutouts(kit: Path, manifest: dict[str, Any], entries: list[dict[str, An
                     # o alfa não mostra como borda do quadro mas precisa ser ancorado igual
                     cut_edges=_norm_edges([*cut_edges_of(dest), *(entry.get("occluded") or [])]),
                     # trechos retos de dentro (crop, `minus`, objeto na frente): o compositor some com eles
-                    straight_cuts=straight_cuts_of(dest))
-        item["quality"] = cutout_quality(item)
-        if item["quality"] == QUALITY_LOW and not item.get("quality_note"):
-            item["quality_note"] = f"cortado em {', '.join(item['cut_edges'])}: não encaixa na borda da thumb"
+                    straight_cuts=straight_cuts_of(dest),
+                    # falta de dentro do corpo (a figura da frente tirada com `minus`): sai do seletor
+                    holes=holes_of(dest))
+        defect = cutout_defect(item)
+        item["quality"] = QUALITY_LOW if defect else "ok"
+        if defect and not item.get("quality_note"):
+            item["quality_note"] = defect
         if item["quality"] == QUALITY_LOW:
             summary["warnings"].append(f"recorte {entry['id']}: qualidade baixa ({item.get('quality_note')})")
         upsert_item(manifest, item)
@@ -1287,8 +1390,8 @@ def default_canais_dir() -> Path:
 
 
 __all__ = [
-    "CUTOUT_MODEL", "CUTOUT_MODELS", "CUTOUT_VERSION", "QUALITY_LOW", "anchorable", "cut_edges_of", "cutout_quality",
-    "detect_cut_edges", "figure_mask", "Asset", "AssetError", "AssetResolver", "HAS_REMBG", "MANIFEST", "REPO_ROOT", "SEED_FILE",
+    "CUTOUT_MODEL", "CUTOUT_MODELS", "CUTOUT_VERSION", "HOLE_NOTE", "QUALITY_LOW", "anchorable", "cut_edges_of",
+    "cutout_defect", "cutout_quality", "detect_cut_edges", "detect_holes", "figure_mask", "holes_of", "Asset", "AssetError", "AssetResolver", "HAS_REMBG", "MANIFEST", "REPO_ROOT", "SEED_FILE",
     "auto_cutout", "cutout", "cutout_cache_key", "default_canais_dir", "extract_frame", "has_alpha", "import_kit",
     "load_manifest", "load_seed", "make_cutouts", "open_rgba", "rembg_available", "save_manifest", "thumbkit_dir",
     "upsert_item",

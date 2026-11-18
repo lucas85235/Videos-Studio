@@ -291,6 +291,38 @@ def _swap_figure(layers: Any, cutouts: list[dict[str, Any]], cost: Any) -> tuple
     return out, pick
 
 
+def _fix_low_figures(layers: Any, cutouts: list[dict[str, Any]], low: dict[str, dict[str, Any]],
+                     cost: Any) -> tuple[Any, list[str]]:
+    """As camadas sem recorte que não serve para thumb (`PackageAssets.low_cutouts`: buraco no corpo, corte sem
+    encaixe): cada um troca pelo melhor recorte bom do mesmo personagem (`authoring.replace_low_cutout`); sem
+    alternativa, a figura sai. Devolve (camadas, avisos CORRIGIDO); as mesmas camadas quando não há o que trocar."""
+    def key(asset: str) -> str:
+        return asset.removeprefix("cutout:")
+
+    if not any(key(c.asset) in low for c in layers.characters):
+        return layers, []
+    out = layers.model_copy(deep=True)
+    taken = {key(c.asset) for c in out.characters}
+    keep, notes = [], []
+    for c in out.characters:
+        bad = low.get(key(c.asset))
+        if bad is None:
+            keep.append(c)
+            continue
+        why = str(bad.get("defect") or "qualidade baixa")
+        pick = authoring.replace_low_cutout(bad, cutouts, out.template, cost, taken)
+        if pick:
+            notes.append(f"CORRIGIDO: recorte {key(c.asset)} não serve para thumb ({why}); usei {pick}")
+            taken.add(pick)
+            c.asset = pick
+            keep.append(c)
+        else:
+            notes.append(f"CORRIGIDO: recorte {key(c.asset)} não serve para thumb ({why}) e não há outro do "
+                         "personagem; a figura saiu")
+    out.characters = keep
+    return out, notes
+
+
 def _swap_pose(layers: Any, poses: list[dict[str, Any]], cost: Any) -> tuple[Any, str] | None:
     """As camadas com outra pose do avatar: a menos usada, de preferência com a mesma emoção. None sem outra."""
     if layers.presenter is None or not poses:
@@ -347,9 +379,10 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
     try:
         assets = authoring.package_assets(doc, style, _channel_info(doc.channel_id).get("style_bible"))
         cutouts, poses = assets.cutouts, assets.poses
+        low_cutouts = {str(c["id"]): c for c in assets.low_cutouts}
     except Exception as exc:  # noqa: BLE001 - sem os ativos, só a troca de fundo
         log.warning("pacote: ativos da thumb indisponíveis (%s)", exc)
-        cutouts, poses = [], []
+        cutouts, poses, low_cutouts = [], [], {}
     if history is None:
         history = thumb_history.channel_history(doc.channel_id, project_id, landscape=landscape)
     # o que o pacote inteiro usa (também os candidatos ainda por renderizar: a troca não pode cair no fundo ou na
@@ -405,6 +438,10 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
                    and not doc.package.locked)
         layers = cand.layers
         batch.add_layers(layers, -1.0)
+        fixed_notes: list[str] = []
+        if may_fix and low_cutouts:
+            # recorte com buraco no corpo (ou que não encaixa) não fica no automático: o do mesmo personagem
+            layers, fixed_notes = _fix_low_figures(layers, cutouts, low_cutouts, cost_of("character"))
         img, notes = _compose(layers, size, resolver=resolver, palette=palette, logo_asset=logo)
         digest, dup = dup_of(img)
         if dup < DUP_MIN_DISTANCE and may_fix and layers.background.kind == "frame" and frames:
@@ -469,7 +506,7 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
             score["warnings"].append(f"parecida demais com uma thumb recente do canal "
                                      f"({thumb_history.describe(like)}; {why}): troque fundo, figura ou pose")
         cand_notes = [str(n) for n in cand.score.get("notes") or []]
-        score["warnings"] = list(dict.fromkeys([*score["warnings"], *notes, *cand_notes]))
+        score["warnings"] = list(dict.fromkeys([*score["warnings"], *fixed_notes, *notes, *cand_notes]))
         if cand_notes:
             score["notes"] = cand_notes
         name = f"{cand.id}-{layers_hash(probe)}.jpg"
