@@ -6,6 +6,7 @@ clipes são gerados aqui com o `lavfi` do ffmpeg (um corte conhecido em 2,0 s e 
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import socket
@@ -385,8 +386,23 @@ def test_cached_capture_clean_reads_only_what_was_captured(isolated_settings):
     asset = f"uploads/{pid}/captures/pool-y.png"
     done.write_text(_json.dumps({"asset": asset}), encoding="utf-8")
     assert proofs.cached_capture_clean(pid, "https://a.example/x", ["Trecho"], 16 / 9) is None  # imagem sumiu
-    Image.new("RGB", (10, 10)).save(get_settings().data_dir / asset)
+    Image.new("RGB", (10, 10), (11, 13, 26)).save(get_settings().data_dir / asset)
+    assert proofs.cached_capture_clean(pid, "https://a.example/x", ["Trecho"], 16 / 9) is None  # página em branco
+    page = Image.new("RGB", (10, 10), "white")
+    page.paste((0, 0, 0), (0, 0, 10, 4))  # texto: contraste de verdade
+    page.save(get_settings().data_dir / asset)
     assert proofs.cached_capture_clean(pid, "https://a.example/x", ["  Trecho "], 16 / 9) == {"asset": asset}
+
+
+def test_blank_page_capture_is_refused(isolated_settings, monkeypatch):
+    blank = io.BytesIO()
+    Image.new("RGB", (1280, 720), (11, 13, 26)).save(blank, format="PNG")
+    shot = page_capture.CaptureResult(url="https://r.example/VI", domain="r.example", title="VI", png=blank.getvalue(),
+                                      text="", rects=[None], found=[False])
+    monkeypatch.setattr(page_capture, "capture", lambda *a, **k: shot)
+    with pytest.raises(proofs.ProofError, match="branco"):
+        proofs.capture_clean("prj_blank", "https://r.example/VI", ["GTA VI"], 16 / 9)
+    assert not list((get_settings().data_dir / "uploads" / "prj_blank").glob("captures/pool-*"))
 
 
 def test_gather_keeps_ids_stable_between_runs(isolated_settings, tmp_path):

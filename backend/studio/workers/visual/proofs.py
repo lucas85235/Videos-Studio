@@ -238,11 +238,26 @@ def cached_capture_clean(project_id: str, url: str, phrases: Sequence[str], aspe
         return None
     try:
         cached = json.loads(done.read_text(encoding="utf-8"))
-        if (get_settings().data_dir / cached["asset"]).is_file():
+        path = get_settings().data_dir / cached["asset"]
+        if path.is_file():
+            with Image.open(path) as im:
+                if is_blank_page(im):
+                    return None  # captura antiga em branco: a próxima coleta completa tenta de novo
             return cached
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return None
+
+
+BLANK_PAGE_STDDEV = 4.0
+"""Desvio padrão do cinza abaixo do qual a captura é uma cor só (página que não carregou: site em JS pesado, como o da
+Rockstar, sai como o fundo vazio)."""
+
+
+def is_blank_page(img: Image.Image) -> bool:
+    from PIL import ImageStat
+
+    return ImageStat.Stat(img.convert("L")).stddev[0] < BLANK_PAGE_STDDEV
 
 
 def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: float, *,
@@ -260,12 +275,14 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
     if cached is not None:
         return cached
     shot = page_capture.capture(url, texts, 0, open_page=open_page)
+    with Image.open(io.BytesIO(shot.png)) as im:
+        img = im.convert("RGB")
+    if is_blank_page(img):
+        raise ProofError("A página saiu em branco (não carregou a tempo): envie um print ou tente de novo.")
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"pool-{key}.png").write_bytes(shot.png)
     (folder / f"pool-{key}.txt").write_text(shot.text, encoding="utf-8")
-    with Image.open(io.BytesIO(shot.png)) as im:
-        img = im.convert("RGB")
-    raw = [{"text": t, "rects": shot.rects[i] or [], "found": bool(shot.found[i]) or bool(shot.rects[i]),
+    raw =[{"text": t, "rects": shot.rects[i] or [], "found": bool(shot.found[i]) or bool(shot.rects[i]),
             "view": None, "lock": False, "focus": i == 0} for i, t in enumerate(texts)]
     entry = _clean_entry(img, compute_views(img, raw), project_id, aspect, url=shot.url, domain=shot.domain,
                          title=shot.title, text=texts[0])
