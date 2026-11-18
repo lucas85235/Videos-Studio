@@ -1238,7 +1238,8 @@ def _check_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
         if not missing:
             continue
         others = [i for i in range(len(sources))
-                  if i not in matches and all(_known_number(v, backed[i]) for _t, v in values)]
+                  if i not in matches and all(_known_number(v, backed[i]) for _t, v in values)
+                  and all(_unit_backed(t, v, f"{sources[i].title}. {sources[i].note}") for t, v in values)]
         other_labels = list(dict.fromkeys(labels[i] for i in others))
         text = missing[0][0]
         if len(other_labels) == 1:
@@ -1255,6 +1256,26 @@ def _check_sources(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
                    else f'A fonte "{cited}" não traz o número "{text}": saiu do cartão.')
         issues.append(Issue("fonte_tirada", CORRIGIDO, message, beat.key, scene.id))
     return issues
+
+
+SWAP_MIN_BARE = 12
+"""Número sem unidade até este valor não troca a fonte do cartão: "1", "2", "6" aparecem em qualquer nota ("1º
+trimestre", "GTA 6") e a troca pela coincidência pôs "Fonte: GamesBeat" num cartão de "1 MB" da Malwarebytes."""
+
+_UNIT_WORD_RE = re.compile(r"[\d.,]+\s*([A-Za-zÀ-ÿ]{1,6})\b")
+_SCALE_WORDS = {"m", "b", "k", "mi", "bi", "mil", "mi+", "bi+", "x"}
+
+
+def _unit_backed(card_text: str, value: float, source_text: str) -> bool:
+    """A outra fonte sustenta o número com a mesma unidade do cartão ("1 MB" pede "MB" na fonte; "US$ 250" pede o
+    símbolo; "30%" pede "%"). Número pequeno sem unidade nunca basta para trocar a fonte."""
+    unit = _unit(card_text)
+    if not unit:
+        word = _UNIT_WORD_RE.search(card_text)
+        unit = word.group(1) if word and word.group(1).lower() not in _SCALE_WORDS else ""
+    if not unit:
+        return abs(value) > SWAP_MIN_BARE
+    return unit.lower() in source_text.lower()
 
 
 def _unit(value: str) -> str:

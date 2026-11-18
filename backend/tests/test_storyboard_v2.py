@@ -1072,6 +1072,30 @@ def test_check_sources_with_two_sources_of_the_same_name():
     assert doc.scenes[0].card.source == "Rockstar Newswire" and [i.code for i in issues] == ["fonte_trocada"]
 
 
+def test_check_sources_never_swaps_on_a_coincident_small_number_or_other_unit():
+    """Cartão "1 MB" citando a Malwarebytes ("~1,1 MB"): a nota da GamesBeat tem "1º trimestre", e a troca por
+    coincidência punha "Fonte: GamesBeat" no cartão. Número pequeno sem a unidade na outra fonte não troca."""
+    from studio.core.project.document import Scene, SceneCard, Visual
+
+    doc = gta_doc()
+    doc.sources = [Source(title="GamesBeat – GTA VI PC release is slated for Q1 2027",
+                          note="13/10/2026: quatro fontes apontam o 1º trimestre de 2027 para o PC"),
+                   Source(title="Malwarebytes – sites falsos de demo do GTA 6",
+                          note="gta6_installer.exe de ~1,1 MB, Vidar roubando dados de 19 navegadores")]
+    doc.scenes = [Scene(id="scn_a", segment_id=doc.segments[1].id, kind="stat", visual=Visual(type="none"),
+                        card=SceneCard(value={"pt-BR": "1 MB"}, source="Malwarebytes"))]
+    beat = storyboard_check.Beat(key=f"{doc.segments[1].id}:0", segment_id=doc.segments[1].id, part=0, parts=1,
+                                 index=1, role="body", words=GTA[1].split(), seconds=3.0)
+    issues = storyboard_check._check_sources(doc, [beat])
+    assert doc.scenes[0].card.source == "Malwarebytes" and not any(i.code == "fonte_trocada" for i in issues)
+    # Com a unidade na outra fonte, a troca continua valendo.
+    assert storyboard_check._unit_backed("1 MB", 1.0, "instalador de 1 MB") is True
+    assert storyboard_check._unit_backed("1 MB", 1.0, "o 1º trimestre") is False
+    assert storyboard_check._unit_backed("6", 6.0, "GTA 6") is False
+    assert storyboard_check._unit_backed("2015", 2015.0, "PC em 2015") is True
+    assert storyboard_check._unit_backed("US$ 250", 250.0, "cobrava US$ 250") is True
+
+
 def test_stamp_that_repeats_the_scene_title_is_dropped():
     from studio.core.project.document import Scene, SceneCard, Visual
 
