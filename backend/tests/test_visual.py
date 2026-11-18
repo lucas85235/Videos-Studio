@@ -176,7 +176,8 @@ def test_capture_proof_attaches_media_and_marks_partial(monkeypatch):
     assert "4,5%" in (data_dir / out["text_path"]).read_text(encoding="utf-8")
     media = service.get_doc(pid).scene("scn_1").visual.media
     assert media is not None and media.asset == out["proof"]
-    assert (media.kind, media.source, media.editorial) == ("official", "link", False)
+    # página de terceiros de nível oficial: sempre editorial (aviso de Content ID e crédito, revisão da fundação)
+    assert (media.kind, media.source, media.editorial) == ("official", "link", True)
     assert media.outlet == media.credit == "jornal.com.br" and media.title == "Inflação sobe em março - Jornal"
     assert media.page_url == "https://www.jornal.com.br/economia/inflacao"
     with Image.open(data_dir / media.asset) as proof:
