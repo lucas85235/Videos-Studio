@@ -1,0 +1,22 @@
+{
+ "url": "https://example.org/noticia-do-farol",
+ "domain": "example.org",
+ "title": "O farol voltou a acender",
+ "phrases": [
+  {
+   "text": "o farol voltou a acender",
+   "rects": [
+    [
+     0.1091,
+     0.4382,
+     0.7091,
+     0.0324
+    ]
+   ],
+   "found": true,
+   "view": null,
+   "lock": false,
+   "focus": true
+  }
+ ]
+}

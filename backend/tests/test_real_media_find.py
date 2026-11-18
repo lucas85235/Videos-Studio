@@ -14,6 +14,7 @@ from PIL import Image
 
 from studio.core.project import service
 from studio.core.project.document import FoundMedia, MediaRef, RealHint, Scene, Segment, Source, Visual
+from studio.core.project.pool import Pool
 from studio.db import session_scope
 from studio.media import safe_http
 from studio.models import CostEntry
@@ -364,6 +365,8 @@ def _fake_storyboard(monkeypatch, pid: str) -> None:
     monkeypatch.setattr(tasks.authoring, "storyboard", lambda doc, style, **k: (
         planned, "falso", {"counts": {"scenes": 4, "new_images": 4, "reused": 0, "cards": 0, "real_hints": 3}}))
     monkeypatch.setattr(tasks.media_search, "prefetch", lambda *a, **k: 0)
+    # O acervo (ADR 0004 §3.4) busca na web por conta própria quando está online: aqui só interessa a busca por cena.
+    monkeypatch.setattr(tasks.media_pool, "gather", lambda doc, style: Pool())
 
 
 def test_storyboard_queues_the_search_as_its_own_job(online, monkeypatch):

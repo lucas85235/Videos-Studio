@@ -444,6 +444,50 @@ def run_media_find(project_id: str, *, refresh: bool = False, job_id: str | None
             "message": message}
 
 
+# --------------------------------------------------------------------------------------------
+# Acervo antes do storyboard (ADR 0004 §3.4): por tópico do roteiro, não por cena
+# --------------------------------------------------------------------------------------------
+
+MAX_TOPICS = 15
+"""Tópicos por chamada no acervo (a busca por cena tem `MAX_HINTS`)."""
+
+
+def web_available() -> bool:
+    """Online e com o Claude Code buscando na web (nunca levanta erro)."""
+    if get_settings().offline:
+        return False
+    try:
+        return bool(web_search_status()[0])
+    except Exception as exc:  # noqa: BLE001 - só decide se busca
+        log.warning("não deu para saber se há busca web: %s", exc)
+        return False
+
+
+def topics_context(doc: ProjectDoc, topics: list[tuple[str, str, str]], *, today: str | None = None) -> dict[str, Any]:
+    """O pedido no mesmo formato do de cenas: cada tópico `(id, rótulo, busca)` entra como uma "cena" (o id do
+    tópico vai em `scene_id`)."""
+    hints = [{"scene_id": tid, "kind": "official",
+              "note": _clip(f"Tópico do vídeo: {label}. Arte oficial, captura de tela, foto de imprensa ou a imagem "
+                            f"principal de uma notícia sobre isto.", 300),
+              "query": _clip(query, 160), "narration": ""} for tid, label, query in topics[:MAX_TOPICS]]
+    return {"title": doc.title, "topic": _clip(doc.topic, 300), "today": today or date.today().isoformat(),
+            "orientation": _orientation(doc), "hints": hints}
+
+
+def find_for_topics(doc: ProjectDoc, topics: list[tuple[str, str, str]], *, project_id: str | None = None,
+                    job_id: str | None = None, http: httpx.Client | None = None) -> dict[str, list[FoundMedia]]:
+    """Arte oficial e notícias para até `MAX_TOPICS` tópicos numa chamada só (uma por vídeo). Sem busca web
+    (offline, outro LLM): `{}` sem chamar nada. Erro da chamada levanta `MediaFindError`."""
+    topics = [t for t in topics if t[0] and t[1]][:MAX_TOPICS]
+    if not topics or not web_available():
+        return {}
+    ctx = topics_context(doc, topics)
+    result = _ask_llm(ctx, project_id, job_id)
+    ids = {t[0] for t in topics}
+    candidates = parse_candidates(result.data, ids)
+    return validate_all(candidates, {tid: "official" for tid in ids}, http=http)
+
+
 def should_search(doc: ProjectDoc) -> bool:
     """Vale buscar no fim do storyboard: online, com sugestão oficial/notícia pendente e o Claude Code buscando na
     web. Nunca levanta erro."""
