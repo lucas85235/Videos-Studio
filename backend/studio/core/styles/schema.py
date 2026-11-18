@@ -129,10 +129,12 @@ FAMILY_TREATMENTS: dict[Family, str] = {
     Family.screen_ui: "screen",
 }
 # Templates do compositor de thumbs por camadas (espelho de `ThumbTemplate` em `core/project/document.py`).
-THUMB_TEMPLATES = ("heroi-palavra", "avatar-reage", "lugar-mapa", "numero-lista", "versus", "livre")
+THUMB_TEMPLATES = ("heroi-palavra", "avatar-reage", "lugar-mapa", "numero-lista", "versus", "livre", "prova", "objeto")
 # Paleta padrão das thumbs (Vice): amarelo, rosa, laranja, verde-água e a tinta do contorno.
 DEFAULT_THUMB_PALETTE: dict[str, str] = {
     "yellow": "#FFD400", "pink": "#FF2E88", "orange": "#FF8A1F", "teal": "#19D3C5", "ink": "#1A0B2E",
+    # cores do texto da thumb além do amarelo (alto contraste com o contorno escuro)
+    "white": "#FFFFFF", "red": "#FF2D3A", "cyan": "#2FE6FF", "lime": "#B6FF2E",
 }
 SCENE_KINDS = ("image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map")
 # Níveis de fonte do material na tela, do mais real ao gerado (espelho de `Prov` em `core/project/document.py`).

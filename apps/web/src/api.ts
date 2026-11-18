@@ -404,8 +404,8 @@ export type PresenterOverride = { enabled: boolean | null; thumb: boolean | null
 export type ChannelThumbs = { allow_editorial: boolean | null; ai_official_characters: false };
 
 /* --- Pacote: título e thumb antes do roteiro (espelho de core/project/document.py) ------------------------------ */
-export type ThumbTemplate = 'heroi-palavra' | 'avatar-reage' | 'lugar-mapa' | 'numero-lista' | 'versus' | 'livre';
-export const THUMB_TEMPLATES: ThumbTemplate[] = ['heroi-palavra', 'avatar-reage', 'lugar-mapa', 'numero-lista', 'versus', 'livre'];
+export type ThumbTemplate = 'heroi-palavra' | 'avatar-reage' | 'lugar-mapa' | 'numero-lista' | 'versus' | 'livre' | 'prova' | 'objeto';
+export const THUMB_TEMPLATES: ThumbTemplate[] = ['heroi-palavra', 'avatar-reage', 'lugar-mapa', 'numero-lista', 'versus', 'livre', 'prova', 'objeto'];
 export type BgLayer = {
   kind: 'frame' | 'media' | 'upload' | 'gradient' | 'ai';
   ref: string | null;
@@ -417,9 +417,13 @@ export type BgLayer = {
   /** Onde fica o assunto no quadro (fração da largura). */
   focus_x: number;
 };
-export type CutoutLayer = { asset: string; x: number; y: number; h: number; flip: boolean };
+/** `outline_px`: contorno branco de adesivo (px a 720p); 0 tira. */
+export type CutoutLayer = { asset: string; x: number; y: number; h: number; flip: boolean; outline_px?: number };
 export type PresenterThumbLayer = { pose: string; side: 'left' | 'right'; crop: 'busto' | 'meio'; h: number; outline_px: number; flip: boolean };
-export type TextLayer = { words: string; fill: 'yellow' | 'vice' | 'white'; pos: 'top' | 'left' | 'center'; size: number };
+/** Cor do texto: paleta de alto contraste do estilo (`vice` é o degradê rosa → laranja). */
+export type TextFill = 'yellow' | 'white' | 'red' | 'cyan' | 'lime' | 'orange' | 'vice';
+/** `right` espelha o molde: texto à direita, figura e avatar à esquerda. */
+export type TextLayer = { words: string; fill: TextFill; pos: 'top' | 'left' | 'right' | 'center'; size: number };
 export type CardLayer = { asset: string | null; label: string };
 export type ArrowLayer = { from_x: number; from_y: number; to_x: number; to_y: number; color: string };
 export type ThumbLayers = {
@@ -434,6 +438,8 @@ export type ThumbLayers = {
   logo: 'corner' | 'none';
   arrow: ArrowLayer | null;
   strike: boolean;
+  /** Marcação vermelha sobre a prova (templates `prova` e `objeto`). */
+  mark?: 'x' | 'circle' | null;
 };
 /** Saída da checagem de legibilidade (`thumb_check`): métricas e avisos (nunca bloqueia). */
 export type ThumbScore = {

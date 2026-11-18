@@ -100,6 +100,34 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "logo": {"anchor": "versus", "w": 0.15},
         "figure_min_face": 0.25,
     },
+    # Prova: a captura/print do próprio vídeo (matéria, site falso, janela do instalador) grande, como um cartão
+    # inclinado com marcação vermelha (X ou círculo), 1 palavra na coluna da esquerda e o avatar pequeno embaixo
+    # dela. O fundo é o degradê do canal (ou o próprio quadro desfocado, quando ele é colorido).
+    "prova": {
+        "bg": {"target_x": 0.5, "target_y": 0.42, "zoom": 1.0},
+        "backdrop": "vice",
+        "card": {"box": (0.385, 0.08, 0.59, 0.76), "tilt": -2.5, "zoom": 1.0, "border": 7},
+        "mark": "x",
+        "text": {"left": (0.035, 0.07, 0.335, 0.42), "top": (0.035, 0.07, 0.335, 0.42),
+                 "center": (0.035, 0.07, 0.335, 0.42), "size": 0.26, "sub": 0.62},
+        "presenter": {"side": "left", "crop": "meio", "h_max": 0.52},
+        "logo": {"anchor": "none", "w": 0.12},
+        "figure_min_face": 0.0,
+    },
+    # Objeto: o item-chave em close (recorte de objeto da biblioteca, ou um trecho ampliado da mídia do projeto num
+    # cartão reto) à direita e 1 palavra à esquerda. Sem avatar: o objeto é o foco.
+    "objeto": {
+        "bg": {"target_x": 0.5, "target_y": 0.45, "zoom": 1.1},
+        "backdrop": "noite",
+        "card": {"box": (0.42, 0.09, 0.55, 0.78), "tilt": 0.0, "zoom": 1.8, "border": 8},
+        "shade": {"side": "left", "width": 0.55, "alpha": 0.5},
+        "object": {"x": 0.70, "y": 0.96, "h": 0.86},
+        "text": {"left": (0.035, 0.10, 0.37, 0.62), "top": (0.035, 0.075, 0.55, 0.36),
+                 "center": (0.035, 0.10, 0.37, 0.62), "size": 0.30, "sub": 0.62},
+        "presenter": {"side": "right", "crop": "busto", "h": 1.3, "head_x": 0.82},
+        "logo": {"anchor": "top-right", "w": 0.12},
+        "figure_min_face": 0.0,
+    },
     # Short (1080×1920): caixa de 2 a 3 palavras no centro seguro (15% a 70% da altura).
     "livre": {
         "bg": {"target_x": 0.5, "target_y": 0.42, "zoom": 1.0},
@@ -111,6 +139,34 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "figure_min_face": 0.0,
     },
 }
+
+
+
+def _mirror_box(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    x, y, w, h = box
+    return (round(1 - x - w, 4), y, w, h)
+
+
+# Texto à direita (`pos="right"`): o espelho da coluna da esquerda; a figura e o avatar vão para a esquerda.
+def _clear_badge_box(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Caixa do lado direito que desceria até o selo de duração (canto de baixo à direita): termina antes dele."""
+    x, y, w, h = box
+    sx, sy = FORBIDDEN_LONG["selo"][:2]
+    if x + w > sx and y + h > sy - 0.02:
+        h = round(sy - 0.02 - y, 4)
+    return (x, y, w, h)
+
+
+for _name, _tpl in TEMPLATES.items():
+    if _name == "livre":
+        continue
+    _tpl["text"].setdefault("right", _clear_badge_box(_mirror_box(_tpl["text"]["left"])))
+    if "solo" in _tpl["text"]:
+        _tpl["text"].setdefault("solo_right", _clear_badge_box(_mirror_box(_tpl["text"]["solo"])))
+
+MIRRORABLE = ("heroi-palavra", "avatar-reage", "numero-lista", "lugar-mapa", "objeto")
+"""Templates que aceitam o texto à direita (o molde inteiro espelhado)."""
+
 
 # Emoções → pose (mapa do canais, para o pacote escolher a expressão pelo conceito).
 POSE_BY_EMOTION: dict[str, str] = {
@@ -160,7 +216,7 @@ def default_layers(template: str, hints: dict[str, Any] | None = None) -> ThumbL
     words = " ".join(str(hints.get("words") or "").split())
     text = None
     if words:
-        default_pos = "left" if tpl_name in ("numero-lista", "avatar-reage", "lugar-mapa") else "top"
+        default_pos = "left" if tpl_name in ("numero-lista", "avatar-reage", "lugar-mapa", "prova", "objeto") else "top"
         if tpl_name == "livre":
             default_pos = "center"
         text = TextLayer(words=words.upper(), fill=hints.get("fill", "yellow"), pos=hints.get("pos", default_pos),
@@ -176,8 +232,8 @@ def default_layers(template: str, hints: dict[str, Any] | None = None) -> ThumbL
             # `apontando` aponta para a direita de quem vê: à direita do quadro, vira para apontar para o texto.
             flip = pose == "apontando" and side == "right"
         h = float(hints.get("presenter_h") or pt.get("h") or pt.get("h_max") or 1.5)
-        if tpl_name == "heroi-palavra":
-            h = min(h, pt.get("h_max", 0.30))
+        if "h_max" in pt:
+            h = min(h, pt["h_max"])
         presenter = PresenterThumbLayer(pose=pose, side=side, crop=pt.get("crop", "busto"), h=h,
                                         outline_px=int(hints.get("outline_px", 10)), flip=bool(flip))
 
@@ -200,10 +256,12 @@ def default_layers(template: str, hints: dict[str, Any] | None = None) -> ThumbL
     logo = hints.get("logo")
     if logo not in ("corner", "none"):
         logo = "none" if tpl.get("logo", {}).get("anchor") == "none" else "corner"
+    mark = hints.get("mark", tpl.get("mark"))
     return ThumbLayers(
         template=tpl_name, background=background, big_vi=bool(hints.get("big_vi", tpl_name == "lugar-mapa")),
         characters=characters, presenter=presenter, text=text, pill=(hints.get("pill") or None),
         cards=cards, logo=logo, arrow=arrow, strike=bool(hints.get("strike", False)),
+        mark=mark if mark in ("x", "circle") else None,
     )
 
 

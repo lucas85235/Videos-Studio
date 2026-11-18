@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from studio.core.project.document import CutoutLayer, PresenterThumbLayer, ThumbLayers
+from studio.core.project.document import BgLayer, CutoutLayer, PresenterThumbLayer, ThumbLayers
 from studio.media import thumb_assets as A
 from studio.media import thumb_compose as C
 from studio.media import thumb_templates as T
@@ -188,12 +188,29 @@ def test_cortada_em_cima_e_embaixo_ocupa_a_altura_toda(tmp_path):
     assert f["bbox"][1] == 0 and f["bbox"][3] == H and f["bbox"][2] == W
 
 
-@pytest.mark.parametrize("edges", [["top"], ["left", "right"], ["bottom", "left", "right"]])
-def test_recorte_que_nao_encaixa_e_recusado_com_aviso(tmp_path, edges):
-    r = _kit(tmp_path, {"fig": (_figure((300, 500), (0.1, 0.1, 0.9, 0.9)), edges)})
-    lay = C.render(_hero("fig"), T.CANVAS, r).info["layout"]
-    assert not lay["figures"]
-    assert any("não encaixa na borda" in w for w in lay["warnings"])
+@pytest.mark.parametrize(("edges", "anchored", "faded"), [
+    (["top"], [], ["top"]),
+    (["left", "right"], ["right"], ["left"]),
+    (["bottom", "left", "right"], ["bottom", "right"], ["left"]),
+])
+def test_recorte_que_nao_encaixa_sai_com_degrade(tmp_path, edges, anchored, faded):
+    # figura retangular azul: o lado cortado que não dá para encostar na borda some num degradê (nunca uma reta)
+    im = Image.new("RGBA", (300, 500), (40, 90, 200, 255))
+    ImageDraw.Draw(im).rectangle((290, 0, 299, 9), fill=(0, 0, 0, 0))  # um canto vazio: é recorte, não foto
+    r = _kit(tmp_path, {"fig": (im, edges)})
+    layers = _hero("fig").model_copy(update={"background": BgLayer(kind="gradient", ref="#808080,#808080")})
+    img = C.render(layers, T.CANVAS, r)
+    lay = img.info["layout"]
+    f = lay["figures"][0]
+    assert f["cut_edges"] == anchored and f["faded"] == faded
+    assert any("saiu com degradê" in w for w in lay["warnings"])
+    x0, y0, x1, y1 = f["bbox"]
+    mid = ((x0 + x1) // 2, (y0 + y1) // 2)
+    edge = {"left": (x0 + 1, mid[1]), "top": (mid[0], y0 + 1)}[faded[0]]
+    inside = {"left": (x0 + 60, mid[1]), "top": (mid[0], y0 + 60)}[faded[0]]
+    px, core = img.getpixel(edge), img.getpixel(inside)
+    assert core[2] > 150 and core[0] < 90  # o miolo segue azul
+    assert px[2] < 175 and abs(px[0] - 128) < 50  # na borda reta, quase só o fundo (cinza): sem corte nem contorno
 
 
 def test_contorno_nao_desenha_no_lado_cortado():
@@ -313,9 +330,28 @@ def test_qualidade_mede_o_png_quando_o_item_nao_tem_cut_edges(tmp_path):
     assert [i["id"] for i in r.items("cutout")] == ["bom"]
 
 
-def test_vi_gigante_nao_segue_figura_recusada(tmp_path, monkeypatch):
-    r = _kit(tmp_path, {"faixa": (_figure((300, 500), (0.1, 0.1, 0.9, 0.9)), ["left", "right"]),
-                        "fig": (_figure((300, 500), (0.0, 0.0, 1.5, 1.5)), ["bottom", "right"])})
+def test_figura_escondida_atras_do_avatar_sai(tmp_path):
+    r = _kit(tmp_path, {"faixa": (_figure((300, 500), (0.1, 0.1, 0.9, 0.9)), [])})
+    poses = tmp_path / "poses"
+    poses.mkdir()
+    pose = Image.new("RGBA", (600, 900), (0, 0, 0, 0))
+    ImageDraw.Draw(pose).rectangle((0, 0, 600, 900), fill=(30, 30, 30, 255))
+    pose.save(poses / "parede.png")
+    r.pose_dirs.append(poses)
+    # personagem quase todo atrás do busto do avatar: sai (sobrava um pedaço de camiseta saindo do lado)
+    layers = ThumbLayers(template="numero-lista", logo="none",
+                         characters=[CutoutLayer(asset="faixa", x=0.85, y=1.0, h=0.6)],
+                         presenter=PresenterThumbLayer(pose="parede", side="right", crop="busto", h=1.5))
+    lay = C.render(layers, T.CANVAS, r).info["layout"]
+    assert not [f for f in lay["figures"] if f["kind"] == "cutout"]
+    assert any("escondida atrás do avatar" in w for w in lay["warnings"])
+    # do outro lado (à mostra), fica
+    side = layers.model_copy(update={"characters": [CutoutLayer(asset="faixa", x=0.2, y=1.0, h=0.6)]})
+    assert [f for f in C.render(side, T.CANVAS, r).info["layout"]["figures"] if f["kind"] == "cutout"]
+
+
+def test_vi_gigante_segue_a_figura_desenhada(tmp_path, monkeypatch):
+    r = _kit(tmp_path, {"fig": (_figure((300, 500), (0.0, 0.0, 1.5, 1.5)), ["bottom", "right"])})
     seen: list = []
     real = C._big_vi
 
@@ -324,8 +360,6 @@ def test_vi_gigante_nao_segue_figura_recusada(tmp_path, monkeypatch):
         return real(canvas, layers, resolver, pal, layout, tpl, text_box)
 
     monkeypatch.setattr(C, "_big_vi", spy)
-    C.render(_hero("faixa", x=0.72).model_copy(update={"big_vi": True}), T.CANVAS, r)
-    assert seen[-1] is None  # recorte recusado: o VI fica atrás do texto, não de uma figura que não existe
     lay = C.render(_hero("fig", x=0.72).model_copy(update={"big_vi": True}), T.CANVAS, r).info["layout"]
     assert seen[-1] is not None and seen[-1]["bbox"] == lay["figures"][0]["bbox"]
 
@@ -367,3 +401,62 @@ def test_logo_sai_com_o_vi_gigante_ou_espremido(tmp_path):
     layout.text_bbox = (40, 60, 500, 600)
     layout.figures.append({"kind": "cutout", "bbox": [760, 0, W, H]})
     assert C._logo_gap(layout, (W, H), 520, 30, 150, 60) == 260  # 2×150 + 2×32 não cabe: sai
+
+
+# --- Trechos retos, acabamento e manifesto -------------------------------------------------------------------------------
+def _straight_figure() -> Image.Image:
+    """Elipse com uma fatia tirada à esquerda no meio (linha reta vertical que não encosta na borda da imagem): o que
+    sobra quando uma figura da frente foi tirada com `minus` ou o quadro já vinha cortado."""
+    im = _figure((400, 600), (0.02, 0.0, 0.98, 1.0))
+    ImageDraw.Draw(im).rectangle((0, 240, 159, 420), fill=(0, 0, 0, 0))
+    return im
+
+
+def test_detecta_trecho_reto_de_dentro_e_ignora_contorno_natural():
+    segs = A.detect_straight_cuts(_straight_figure().getchannel("A"))
+    assert len(segs) == 1
+    seg = segs[0]
+    assert seg["side"] == "left" and abs(seg["pos"] - 160 / 399) < 0.01
+    assert seg["start"] < 0.42 and seg["end"] > 0.68
+    # elipse inteira (contorno de verdade) e retângulo encostado na borda (é `cut_edges`) não contam
+    assert A.detect_straight_cuts(_figure((400, 600), (0.05, 0.05, 0.95, 0.95)).getchannel("A")) == []
+    rect = Image.new("L", (300, 400), 0)
+    ImageDraw.Draw(rect).rectangle((0, 50, 200, 399), fill=255)
+    assert [s["side"] for s in A.detect_straight_cuts(rect)] == ["top", "right"]
+
+
+def test_trecho_reto_some_no_degrade_sem_contorno(tmp_path):
+    r = _kit(tmp_path, {"fig": (_straight_figure(), [])})
+    layers = _hero("fig", x=0.6, y=0.95, h=0.9).model_copy(
+        update={"background": BgLayer(kind="gradient", ref="#808080,#808080")})
+    img = C.render(layers, T.CANVAS, r)
+    f = img.info["layout"]["figures"][0]
+    assert f["straight"] == 1
+    # bem na linha reta (meio do trecho): nem contorno branco nem azul cheio
+    fw = f["bbox"][2] - f["bbox"][0]
+    x = round(f["bbox"][0] + fw * 160 / 399)
+    y = round(f["bbox"][1] + (f["bbox"][3] - f["bbox"][1]) * 0.55)
+    line = img.getpixel((x, y))
+    assert min(line) < 200  # sem branco do contorno
+    assert line[2] < 170  # e sem a figura cheia na linha
+    assert img.getpixel((x + 70, y))[2] > 170  # mais para dentro a figura aparece
+
+
+def test_acabamento_tira_franja_e_preserva_lado_ancorado():
+    im = Image.new("RGBA", (200, 300), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, 20, 179, 299), fill=(250, 240, 240, 120))  # franja clara de 1-2 px
+    d.rectangle((0, 22, 177, 299), fill=(40, 90, 200, 255))
+    out = C._refine(im, H, keep=["left", "bottom"])
+    a = out.getchannel("A")
+    assert a.getpixel((179, 150)) < 60  # a franja de fora quase some
+    assert a.getpixel((0, 150)) == 255 and a.getpixel((100, 299)) == 255  # lado ancorado intacto
+    assert a.getpixel((100, 150)) == 255
+
+
+def test_manifesto_grava_trechos_retos_e_le_sem_manifesto(tmp_path):
+    path = tmp_path / "fig.png"
+    _straight_figure().save(path)
+    segs = A.straight_cuts_of(path)  # recorte antigo: medido na hora
+    assert segs and segs[0]["side"] == "left"
+    assert A.straight_cuts_of(path, {"straight_cuts": []}) == []  # o do manifesto vale mais

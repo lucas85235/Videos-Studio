@@ -855,7 +855,8 @@ class ThumbnailDoc(BaseModel):
 
 
 # --- Pacote: título e thumb antes do roteiro ---------------------------------------------------------------------
-ThumbTemplate = Literal["heroi-palavra", "avatar-reage", "lugar-mapa", "numero-lista", "versus", "livre"]
+ThumbTemplate = Literal["heroi-palavra", "avatar-reage", "lugar-mapa", "numero-lista", "versus", "livre", "prova",
+                        "objeto"]
 assert set(ThumbTemplate.__args__) == set(THUMB_TEMPLATES)  # type: ignore[attr-defined]
 PACKAGE_TITLE_MAX = 90
 THUMB_WORDS_MAX = 3
@@ -887,6 +888,8 @@ class CutoutLayer(BaseModel):
     h: float = Field(default=0.9, gt=0, le=2.5)
     """Altura em fração da altura do quadro (> 1 vaza por baixo)."""
     flip: bool = False
+    outline_px: int = Field(default=8, ge=0, le=40)
+    """Contorno branco de adesivo (px a 720p); 0 tira o contorno."""
 
 
 class PresenterThumbLayer(BaseModel):
@@ -900,11 +903,17 @@ class PresenterThumbLayer(BaseModel):
     flip: bool = False
 
 
+TextFill = Literal["yellow", "white", "red", "cyan", "lime", "orange", "vice"]
+TEXT_FILLS: tuple[str, ...] = TextFill.__args__  # type: ignore[attr-defined]
+
+
 class TextLayer(BaseModel):
     words: str = ""
     """Texto principal (até 3 palavras no longo; a checagem avisa, não corta)."""
-    fill: Literal["yellow", "vice", "white"] = "yellow"
-    pos: Literal["top", "left", "center"] = "left"
+    fill: TextFill = "yellow"
+    """Cor do texto: a paleta de alto contraste do estilo (`vice` é o degradê rosa → laranja)."""
+    pos: Literal["top", "left", "right", "center"] = "left"
+    """`right` espelha o molde: texto à direita e figura/avatar à esquerda."""
     size: float = Field(default=0.3, ge=0, le=1)
 
 
@@ -940,6 +949,8 @@ class ThumbLayers(BaseModel):
     arrow: ArrowLayer | None = None
     strike: bool = False
     """Risco vermelho sobre a palavra."""
+    mark: Literal["x", "circle"] | None = None
+    """Marcação vermelha sobre a prova (templates `prova` e `objeto`): um X ou um círculo."""
 
 
 class PackageCandidate(BaseModel):

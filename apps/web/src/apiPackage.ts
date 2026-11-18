@@ -91,6 +91,8 @@ export const TEMPLATE_LABELS: Record<string, string> = {
   'numero-lista': 'Número + lista',
   versus: 'Versus',
   livre: 'Livre (Short)',
+  prova: 'Prova (print + marcação)',
+  objeto: 'Objeto em close',
 };
 
 export const EMPTY_PACKAGE: PackageDoc = { candidates: [], chosen_id: null, locked: false, references: [], generated_at: null };

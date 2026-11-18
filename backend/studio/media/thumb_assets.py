@@ -282,6 +282,110 @@ def cut_edges_of(path: Path, meta: dict[str, Any] | None = None) -> list[str]:
         return []
 
 
+STRAIGHT_TEXT_KEY = "vs:straight"
+"""Chave do texto no PNG do recorte com os trechos retos de dentro da imagem (`straight_cuts`, em JSON)."""
+STRAIGHT_MIN_FRAC = 0.05
+"""Trecho reto mínimo, em fração do lado: contorno de gente não fica reto (±1 px) por 5% da altura."""
+
+
+def detect_straight_cuts(alpha: Image.Image, *, min_frac: float = STRAIGHT_MIN_FRAC, min_px: int = 24,
+                         tol: int = 1, hard_px: int = 3, max_std: float = 12.0) -> list[dict[str, Any]]:
+    """Trechos retos do contorno que NÃO encostam na borda da imagem: a linha que sobra quando o recorte veio de um
+    quadro já cortado (crop da semente), de uma figura tirada da frente (`minus`) ou de um objeto que tapava o corpo.
+    Para cada lado, a primeira coluna/linha opaca (alfa ≥ 128) vista daquele lado: um trecho de pelo menos
+    `min_frac` do lado (e `min_px`) em que ela não anda mais que `tol` px, com borda dura (o alfa vai de < 40 a
+    > 200 em `hard_px` px) e uniforme (nas colunas da transição o alfa quase não muda de uma linha para outra:
+    desvio ≤ `max_std`; o cabelo reto de verdade oscila meio pixel e não conta), vira {side, pos, start, end} em
+    fração da imagem. Quem chama encosta o lado na borda da thumb (se for o caso) ou some com ele num degradê."""
+    import numpy as np
+
+    a = np.asarray(alpha if alpha.mode == "L" else alpha.convert("L"), dtype=np.int16)
+    h, w = a.shape
+    if not h or not w:
+        return []
+    out: list[dict[str, Any]] = []
+    for side in CUT_SIDES:
+        grid = {"left": a, "right": a[:, ::-1], "top": a.T, "bottom": a.T[:, ::-1]}[side]
+        n, depth = grid.shape
+        solid = grid >= 128
+        has = solid.any(axis=1)
+        first = np.where(has, solid.argmax(axis=1), -1)
+        need = max(min_px, round(n * min_frac))
+        i = 0
+        while i < n:
+            if first[i] <= 1 or first[i] >= depth - 2:  # sem figura, ou encostado na borda (é `cut_edges`)
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and first[j + 1] > 1 and abs(int(first[j + 1]) - int(first[i])) <= tol:
+                j += 1
+            if j - i + 1 >= need:
+                rows = np.arange(i, j + 1)
+                p = first[rows]
+                outside = grid[rows, np.clip(p - hard_px, 0, depth - 1)]
+                inside = grid[rows, np.clip(p + hard_px, 0, depth - 1)]
+                mid = int(np.median(p))
+                core = max(1, (j - i + 1) // 10)  # as pontas do trecho entram e saem da linha: mede o miolo
+                cols = grid[i + core:j + 1 - core, max(0, mid - hard_px):min(depth, mid + hard_px + 1)]
+                uniform = cols.size and float(cols.std(axis=0).max()) <= max_std
+                if uniform and np.mean((outside < 40) & (inside > 200)) >= 0.8:
+                    pos = float(np.median(p))
+                    pos = pos if side in ("left", "top") else depth - 1 - pos
+                    out.append({"side": side, "pos": round(pos / max(1, depth - 1), 4),
+                                "start": round(i / n, 4), "end": round((j + 1) / n, 4)})
+            i = j + 1
+    return out
+
+
+def _norm_straight(value: Any) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    out = []
+    for seg in value if isinstance(value, list) else []:
+        try:
+            if seg.get("side") in CUT_SIDES:
+                out.append({"side": seg["side"], "pos": float(seg["pos"]), "start": float(seg["start"]),
+                            "end": float(seg["end"])})
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+@lru_cache(maxsize=64)
+def _straight_cached(path: str, mtime: float, size: int) -> str:
+    with Image.open(path) as im:
+        stored = _norm_straight(im.info.get(STRAIGHT_TEXT_KEY)) if hasattr(im, "info") else None
+        if stored is not None:
+            return json.dumps(stored)
+        if im.mode not in ("RGBA", "LA", "PA") and "transparency" not in im.info:
+            return "[]"
+        alpha = im.convert("RGBA").getchannel("A")
+        if alpha.getextrema()[0] >= 250:
+            return "[]"
+        box = alpha.point(lambda v: 255 if v > 8 else 0).getbbox()
+        if box and box != (0, 0, *alpha.size):  # mede na figura aparada (frações batem com o `_trim` do compositor)
+            alpha = alpha.crop(box)
+        return json.dumps(detect_straight_cuts(alpha))
+
+
+def straight_cuts_of(path: Path, meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Trechos retos de dentro do recorte (`detect_straight_cuts`): os do manifesto (`straight_cuts`, gravados na
+    importação); senão os do PNG; senão medidos na hora (recorte antigo), com cache pela data do arquivo."""
+    stored = _norm_straight((meta or {}).get("straight_cuts"))
+    if stored is not None:
+        return stored
+    try:
+        stat = path.stat()
+        return json.loads(_straight_cached(str(path), stat.st_mtime, stat.st_size))
+    except (OSError, ValueError):
+        return []
+
+
 def anchorable(cut: list[str] | set[str]) -> bool:
     """O compositor consegue encostar todo lado cortado na borda da thumb: embaixo, numa lateral (espelhando se
     preciso) e em cima só junto com embaixo (figura da altura toda). Dois lados opostos na horizontal ou só o topo
@@ -513,6 +617,7 @@ def cutout(path: Path, out: Path, *, model: str | None = None, crop: list[float]
     info = PngInfo()
     info.add_text(CUT_TEXT_KEY, ",".join(cut))
     info.add_text(SRC_BOX_KEY, ",".join(f"{v:.5f}" for v in src_box))
+    info.add_text(STRAIGHT_TEXT_KEY, json.dumps(detect_straight_cuts(result.getchannel("A"))))
     info.add_text("vs:cutout_v", str(CUTOUT_VERSION))
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f".{out.stem}.tmp.png")
@@ -966,7 +1071,9 @@ def make_cutouts(kit: Path, manifest: dict[str, Any], entries: list[dict[str, An
                     source=source, size=_image_size(dest),
                     # `occluded`: lado em que a figura termina reta atrás de um objeto (a porta do carro), que
                     # o alfa não mostra como borda do quadro mas precisa ser ancorado igual
-                    cut_edges=_norm_edges([*cut_edges_of(dest), *(entry.get("occluded") or [])]))
+                    cut_edges=_norm_edges([*cut_edges_of(dest), *(entry.get("occluded") or [])]),
+                    # trechos retos de dentro (crop, `minus`, objeto na frente): o compositor some com eles
+                    straight_cuts=straight_cuts_of(dest))
         item["quality"] = cutout_quality(item)
         if item["quality"] == QUALITY_LOW and not item.get("quality_note"):
             item["quality_note"] = f"cortado em {', '.join(item['cut_edges'])}: não encaixa na borda da thumb"

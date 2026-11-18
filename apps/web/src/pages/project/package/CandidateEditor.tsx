@@ -271,8 +271,12 @@ export const CandidateEditor: React.FC<{
             onChange={(fill) => setText({ fill })}
             options={[
               { id: 'yellow', label: 'Amarelo' },
-              { id: 'vice', label: 'Vice' },
               { id: 'white', label: 'Branco' },
+              { id: 'red', label: 'Vermelho' },
+              { id: 'cyan', label: 'Ciano' },
+              { id: 'lime', label: 'Limão' },
+              { id: 'orange', label: 'Laranja' },
+              { id: 'vice', label: 'Vice' },
             ]}
           />
           <SegmentedControl
@@ -283,6 +287,7 @@ export const CandidateEditor: React.FC<{
             options={[
               { id: 'top', label: 'Topo' },
               { id: 'left', label: 'Esquerda' },
+              { id: 'right', label: 'Direita' },
               { id: 'center', label: 'Centro' },
             ]}
           />
@@ -298,6 +303,19 @@ export const CandidateEditor: React.FC<{
         </div>
         <div className="flex flex-wrap gap-x-5 gap-y-2">
           <Checkbox label="Risco vermelho sobre a palavra" checked={layers.strike} onChange={(v) => set('strike', v)} />
+          {(layers.template === 'prova' || layers.template === 'objeto') && (
+            <SegmentedControl
+              label="Marcação na prova"
+              size="sm"
+              value={layers.mark ?? 'none'}
+              onChange={(mark) => set('mark', mark === 'none' ? null : (mark as 'x' | 'circle'))}
+              options={[
+                { id: 'none', label: 'Nenhuma' },
+                { id: 'x', label: 'X vermelho' },
+                { id: 'circle', label: 'Círculo' },
+              ]}
+            />
+          )}
           <Checkbox label="VI gigante atrás" checked={layers.big_vi} onChange={(v) => set('big_vi', v)} />
           <Checkbox label="Logo no canto" checked={layers.logo === 'corner'} onChange={(v) => set('logo', v ? 'corner' : 'none')} />
           <Checkbox label="Seta amarela" checked={Boolean(layers.arrow)} onChange={(v) => set('arrow', v ? { from_x: 0.35, from_y: 0.55, to_x: 0.55, to_y: 0.45, color: 'yellow' } : null)} />
