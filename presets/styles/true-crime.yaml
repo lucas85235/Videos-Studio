@@ -33,12 +33,16 @@ voice:
   gap_s: 0.4
 
 art:
+  # Fontes da mídia (ADR 0004): Documentos, notícias e fotos livres; nunca rosto de IA de pessoa real.
+  sources: { mix: { capture: 0.3, free: 0.2, stock: 0.15, graphic: 0.15, official: 0.0, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "estética noir de arquivo policial, fotografias antigas em preto e branco, papel envelhecido, mesa de investigação, luz baixa e contrastada, sem rostos identificáveis"
   banned: ["texto", "letras", "logotipos", "marca d'água", "rostos de pessoas reais", "violência explícita"]
   languages: [archival, collage, painting]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): True crime: ritmo médio, sem humor, ênfase por cor.
+  grammar: { shot_median_s: 3.2, punch_per_min: 1.5, humor: none, caption_emphasis: color }
   shot_seconds: { min: 3.5, max: 6.0 }
   camera: { ken_burns_in: 3, pan_left: 2, pan_right: 2, pan_down: 1, drift: 1 }
   transitions: { cut: 6, fade_black: 1, flash: 1 }

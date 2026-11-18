@@ -32,12 +32,16 @@ voice:
   gap_s: 0.3
 
 art:
+  # Fontes da mídia (ADR 0004): Estátuas, pinturas e paisagens livres primeiro; IA como apoio.
+  sources: { mix: { free: 0.35, stock: 0.2, graphic: 0.15, capture: 0.05, official: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "pintura clássica a óleo, estátuas de mármore greco-romanas, templos e paisagens mediterrâneas, tons quentes, atmosfera serena e contemplativa"
   banned: ["texto", "letras", "logotipos", "marca d'água"]
   languages: [painting, render_3d]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Contemplativo: zoom lento, pouco punch, sem humor.
+  grammar: { punch_per_min: 1.5, slow_zoom_share: 0.45, humor: none, caption_emphasis: color }
   shot_seconds: { min: 2.2, max: 3.6 }
   camera: { ken_burns_in: 3, drift: 2, pan_up: 1, ken_burns_out: 1 }
   transitions: { cut: 5, fade_black: 2, light_leak: 1 }

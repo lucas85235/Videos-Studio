@@ -54,15 +54,19 @@ PRESETS = sorted((REPO_ROOT / "presets" / "styles").glob("*.yaml"))
 @pytest.mark.parametrize("path", PRESETS, ids=lambda p: p.stem)
 def test_presets_validate_with_the_new_policy_and_grammar(path):
     style = StyleSpec.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-    assert style.art.sources.mix == DEFAULT_SOURCE_MIX  # nenhum preset declara `sources` ainda: o padrão
-    assert style.edit.grammar == EditGrammar()
+    # Os presets declaram `sources` e `grammar` por família (perfil-estilo, ADR 0004 §3.3): a mistura soma 1.
+    assert sum(style.art.sources.mix.values()) == pytest.approx(1.0)
     grammar, policy = grammar_for(style), sources_for(style)
     if style.format.type == "short":
-        assert (grammar.shot_median_s, grammar.max_still_s, grammar.sfx_per_min) == (1.6, 3.0, 6.0)
-        assert policy.ai_max_share == 0.30
+        # No Short, só o que está no valor padrão troca.
+        own, defaults = style.edit.grammar, EditGrammar()
+        for key, short_value in (("shot_median_s", 1.6), ("max_still_s", 3.0), ("sfx_per_min", 6.0)):
+            expected = short_value if getattr(own, key) == getattr(defaults, key) else getattr(own, key)
+            assert getattr(grammar, key) == expected, key
+        own_ai = style.art.sources.ai_max_share
+        assert policy.ai_max_share == (0.30 if own_ai == SourcePolicy().ai_max_share else own_ai)
     else:
         assert grammar is style.edit.grammar and policy is style.art.sources
-        assert (grammar.shot_median_s, policy.ai_max_share) == (2.6, 0.20)
 
 
 def test_there_are_presets():

@@ -34,12 +34,16 @@ voice:
   gap_s: 0.35
 
 art:
+  # Fontes da mídia (ADR 0004): Gráficos e mapas do app são o material principal; a IA fica para paisagem e contexto.
+  sources: { mix: { graphic: 0.45, capture: 0.15, free: 0.1, stock: 0.1, official: 0.05, meme: 0.0, ai: 0.15 }, ai_max_share: 0.15 }
   bible: "ilustração editorial limpa em tons de azul-petróleo e areia, cidades, portos, fronteiras, paisagens e objetos do assunto vistos de longe, luz clara, fundo calmo"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "bandeiras com texto", "mapas desenhados pela IA"]
   languages: [editorial, isometric, flat_vector]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Dados: ritmo calmo, anotações (setas, círculos) e ênfase por cor.
+  grammar: { shot_median_s: 3.0, punch_per_min: 1.5, annot_per_min: 1.5, caption_emphasis: color, humor: none }
   shot_seconds: { min: 3.0, max: 5.5 }
   # Menos imagens novas: gráficos, mapas e números ocupam boa parte das batidas.
   new_image_ratio: 0.35

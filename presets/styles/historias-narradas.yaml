@@ -33,12 +33,16 @@ voice:
   gap_s: 0.4
 
 art:
+  # Fontes da mídia (ADR 0004): Banco de imagens e fotos livres primeiro; IA como apoio das cenas que não existem.
+  sources: { mix: { stock: 0.25, free: 0.25, graphic: 0.15, capture: 0.1, official: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "ilustração de livro ilustrado em pintura digital, pinceladas suaves, cores quentes e acolhedoras, luz natural, personagens expressivos sem rostos detalhados, cenários do cotidiano"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo", "violência explícita"]
   languages: [painting, editorial]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Narrado: ritmo médio e humor leve.
+  grammar: { shot_median_s: 3.0, humor: light }
   shot_seconds: { min: 3.5, max: 6.0 }
   camera: { ken_burns_in: 4, ken_burns_out: 2, pan_left: 2, pan_right: 2, drift: 2 }
   transitions: { cut: 5, fade_black: 2, light_leak: 1 }

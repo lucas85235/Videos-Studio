@@ -33,12 +33,16 @@ voice:
   gap_s: 0.3
 
 art:
+  # Fontes da mídia (ADR 0004): Real primeiro; números e cartões de lista contam como gráfico.
+  sources: { mix: { official: 0.25, capture: 0.15, free: 0.15, stock: 0.1, graphic: 0.2, meme: 0.0, ai: 0.15 }, ai_max_share: 0.2 }
   bible: "ilustração digital vibrante e detalhada, cores saturadas e luz clara, um sujeito em destaque com composição centralizada, cenário que muda a cada item"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
   languages: [key_art, editorial, render_3d]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Lista: punch e texto na tela a cada item.
+  grammar: { punch_per_min: 4.0, text_pop_per_min: 3.0, humor: light }
   shot_seconds: { min: 3.0, max: 5.0 }
   new_image_ratio: 0.6
   camera: { ken_burns_in: 3, ken_burns_out: 2, punch_zoom: 2, pan_left: 1, pan_right: 1 }

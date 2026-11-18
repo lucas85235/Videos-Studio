@@ -34,12 +34,16 @@ voice:
   gap_s: 0.2
 
 art:
+  # Fontes da mídia (ADR 0004): A lousa é o estilo assumido: a IA (desenho de traço) pode ocupar até metade do tempo.
+  sources: { mix: { ai: 0.5, graphic: 0.3, capture: 0.1, free: 0.05, stock: 0.05, official: 0.0, meme: 0.0 }, ai_max_share: 0.5 }
   bible: "desenho a traço de marcador preto sobre fundo branco liso, linhas firmes e simples, poucas sombras, um elemento principal por cena, visual de lousa branca"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo", "fundo colorido"]
   languages: [line_art, flat_vector]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Lousa: quadros parados e anotações.
+  grammar: { static_share_min: 0.4, annot_per_min: 2.0, humor: light }
   shot_seconds: { min: 2.5, max: 4.0 }
   new_image_ratio: 0.6
   camera: { static: 3, ken_burns_in: 2, drift: 1 }

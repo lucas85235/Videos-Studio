@@ -1,9 +1,11 @@
 """Estilo a partir de um vídeo de referência: as medidas (ritmo, paleta, proporção) viram um StyleSpec.
 
 Parte do preset mais próximo das medidas e troca só o que elas dizem: ritmo de corte → duração das cenas e
-transições, paleta → gradação e cores dos cartões, proporção → formato. Se houver LLM, ele completa o resto
-(arte, câmera, voz) com as medidas como restrições: mudança do LLM num campo medido é descartada. Sem LLM, fica
-só medidas + preset. Cada valor trocado sai com a origem ("de onde veio"), para a tela mostrar.
+transições, paleta → gradação e cores dos cartões, proporção → formato. Com o perfil de edição medido
+(`stats["profile"]`, ADR 0004), ele vira alvo: gramática de edição, política de fontes (de onde vem o que aparece na
+tela), legenda, SFX e ritmo da fala (`profile_changes`). Se houver LLM, ele completa o resto (arte, câmera, roteiro,
+voz) com as medidas como restrições: mudança do LLM num campo medido é descartada. Sem LLM, fica só medidas + preset.
+Cada valor trocado sai com a origem ("de onde veio"), para a tela mostrar.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from collections.abc import Callable
 from statistics import median
 from typing import Any
 
+from studio.core.editing.grammar import caption_weight, grammar_from_profile, is_measured
+from studio.core.editing.profile import EditProfile
 from studio.core.media_title import display_title
 from studio.core.styles.library import load_presets, set_path
 from studio.core.styles.schema import StyleSpec
@@ -39,13 +43,13 @@ PACE = {
     "lento": {"cut_share": 0.5, "transition_s": 0.6},
 }
 GRADE_AMOUNT = 0.6
-TEXT_HEAVY, TEXT_LIGHT = 0.4, 0.1  # fração de quadros com texto (quando medida)
+WPM_MIN, WPM_MAX = 90, 260  # palavras por minuto plausíveis de narração (fora disso a medida não vale)
 
 SOURCE_LABELS = {
     "ritmo": "Ritmo dos cortes",
     "paleta": "Paleta",
     "proporcao": "Proporção",
-    "texto": "Texto na tela",
+    "perfil": "Perfil de edição medido",
     "preset": "Preset mais próximo",
     "llm": "IA (completou o que as medidas não dizem)",
 }
@@ -282,14 +286,74 @@ def measured_changes(info: dict[str, Any], stats: dict[str, Any], shots: list[di
             for path in paths:
                 put(path, accent, "paleta", "a cor mais viva da paleta")
 
-    text_ratio = stats.get("text_ratio")
-    if isinstance(text_ratio, (int, float)):
-        pct = round(float(text_ratio) * 100)
-        if text_ratio >= TEXT_HEAVY:
-            put("edit.captions.style", "karaoke", "texto", f"texto em {pct}% dos quadros: legenda palavra a palavra")
-        elif text_ratio <= TEXT_LIGHT:
-            put("edit.captions.style", "line", "texto", f"texto em só {pct}% dos quadros: legenda discreta")
     return out
+
+
+def profile_of(stats: dict[str, Any]) -> EditProfile | None:
+    """O perfil de edição gravado em `stats["profile"]` (None se não houver ou não validar)."""
+    raw = stats.get("profile")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return EditProfile.model_validate(raw)
+    except ValueError:
+        return None
+
+
+def _pct(x: float) -> int:
+    return round(x * 100)
+
+
+def profile_changes(profile: EditProfile, base: StyleSpec,
+                    ref_ids: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    """O que o perfil de edição diz, como trocas {"path", "value", "source": "perfil", "detail"} sobre o preset base,
+    e as sugestões que não são campo do estilo (ligar o apresentador). Campo medido fica travado para o LLM."""
+    pg = grammar_from_profile(profile, base=base.edit.grammar, base_sources=base.art.sources, ref_ids=ref_ids)
+    out: list[dict[str, Any]] = []
+
+    def put(path: str, value: Any, detail: str) -> None:
+        out.append({"path": path, "value": value, "source": "perfil", "detail": detail})
+
+    g = pg.grammar
+    bits = [pg.details[k] for k in ("shot_median_s", "micro_per_min", "punch_per_min", "meme_per_min",
+                                    "sfx_per_min", "hook") if k in pg.details]
+    if not pg.grammar_fields:
+        bits.append("o perfil não mediu o ritmo; a gramática é a do preset")
+    bits.append(f"tolerância {g.tolerance:g} (confiança média {pg.confidence:g})")
+    put("edit.grammar", g.model_dump(mode="json"), "; ".join(bits))
+    if pg.sources_measured:
+        top = sorted(((k, v) for k, v in pg.sources.mix.items() if v > 0), key=lambda kv: -kv[1])[:3]
+        mix_txt = ", ".join(f"{k} {_pct(v)}%" for k, v in top)
+        put("art.sources", pg.sources.model_dump(mode="json"), f"{pg.details['sources']} ({mix_txt})")
+    for key, value in pg.captions.items():
+        detail = pg.details["font"] if key == "font" else "legenda medida na referência"
+        put(f"edit.captions.{key}", value, detail)
+        if key == "font":
+            weight = caption_weight(value, base.edit.captions.weight)
+            if weight != base.edit.captions.weight:
+                put("edit.captions.weight", weight, f"peso que a fonte {value} tem")
+    if "auto" in pg.sfx:
+        put("audio.sfx.auto", pg.sfx["auto"], f"{profile.audio.sfx_per_min:g} SFX por minuto na referência")
+    wpm = profile.speech.wpm
+    if WPM_MIN <= wpm <= WPM_MAX and is_measured(profile, "speech.wpm"):
+        lang = base.languages.primary
+        put("script.words_per_minute", {**base.script.words_per_minute, lang: round(wpm)},
+            f"narração com {round(wpm)} palavras por minuto")
+    suggestions: list[str] = []
+    if pg.suggest_presenter:
+        suggestions.append(f"Facecam e mascote ocupam {_pct(pg.presenter_share)}% da referência: ligue o "
+                           "apresentador (avatar) do canal para fazer esse papel.")
+    return out, suggestions
+
+
+def profile_summary(profile: EditProfile) -> dict[str, Any]:
+    """O perfil para o LLM de ajuste: os blocos com o que foi medido e a confiança de cada um (sem listas longas)."""
+    data = profile.model_dump(mode="json", exclude={"meta", "refs", "measured_at", "version", "recurring"})
+    data["pace"].pop("cuts_per_min_windows", None)
+    data["humor"]["patterns"] = data["humor"]["patterns"][:4]
+    data["confianca"] = {k: round(v.confidence, 2) for k, v in profile.meta.items()}
+    data["recorrentes"] = [{"kind": r.kind, "count": r.count} for r in profile.recurring[:5]]
+    return data
 
 
 # --------------------------------------------------------------------------------------------
@@ -324,20 +388,27 @@ def _llm_system() -> str:
 
     return ("Você completa um estilo de vídeo (StyleSpec) criado a partir das medidas de um vídeo de referência. "
             "As medidas são restrições: NÃO mude os campos listados como medidos (ritmo, transições, cores, "
-            "formato; a gradação de cor em edit.effects também é medida e volta sempre). Proponha só o que as "
-            "medidas não dizem (arte, câmera, efeitos de textura, trilha, voz), "
-            "coerente com elas, como pares path/value_json (JSON válido). Poucas mudanças; mantenha o resto.\n"
+            "formato, gramática de edição, fontes da mídia, legenda; a gradação de cor em edit.effects também é "
+            "medida e volta sempre). Proponha só o que as medidas não dizem (arte, câmera, efeitos de textura, "
+            "trilha, roteiro, voz), coerente com elas, como pares path/value_json (JSON válido). Quando vier o perfil "
+            "de edição, use a fala, o tom e o humor dele para ajustar script.tone, script.structure, script.cta e "
+            "voice.style_prompt/voice.speed; descreva o padrão, nunca copie frases da referência. Poucas mudanças; "
+            "mantenha o resto.\n"
             + STYLE_FIELDS_HELP)
 
 
 def _llm_prompt(title: str, info: dict[str, Any], stats: dict[str, Any], data: dict[str, Any],
-                locked: list[str]) -> str:
+                locked: list[str], profile: EditProfile | None = None) -> str:
     measures = {"titulo": title, "video": info, "medidas": {k: stats.get(k) for k in
-                ("shots", "median_s", "mean_s", "cuts_per_min", "palette", "text_ratio") if k in stats}}
-    current = {k: data[k] for k in ("family", "format", "art", "edit", "audio")}
-    return (f"Medidas do vídeo de referência:\n{json.dumps(measures, ensure_ascii=False)}\n\n"
+                ("shots", "median_s", "mean_s", "cuts_per_min", "palette") if k in stats}}
+    current = {k: data[k] for k in ("family", "format", "script", "voice", "art", "edit", "audio")}
+    prof = ""
+    if profile is not None:
+        prof = ("Perfil de edição medido (confiança por campo em 'confianca'):\n"
+                f"{json.dumps(profile_summary(profile), ensure_ascii=False)[:5000]}\n\n")
+    return (f"Medidas do vídeo de referência:\n{json.dumps(measures, ensure_ascii=False)}\n\n{prof}"
             f"Campos já definidos pelas medidas (não mude): {', '.join(locked)}\n\n"
-            f"Estilo atual (preset base + medidas):\n{json.dumps(current, ensure_ascii=False)[:6000]}")
+            f"Estilo atual (preset base + medidas):\n{json.dumps(current, ensure_ascii=False)[:8000]}")
 
 
 # --------------------------------------------------------------------------------------------
@@ -382,12 +453,15 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     """StyleSpec a partir de uma referência analisada (`reference_dict`). Não salva.
 
     Devolve {"style", "base_style_id", "base_reason", "origins", "llm": {"used", "provider", "summary",
-    "message"}, "rejected"}.
+    "message"}, "rejected", "suggestions"}. Com perfil de edição (`stats["profile"]`), a gramática, as fontes da
+    mídia e a legenda saem dele, e `edit.grammar.profile_refs` aponta para a referência.
     """
     info = dict(reference.get("info") or {})
     stats = dict(reference.get("stats") or {})
     shots = list(reference.get("shots") or [])
-    if not stats.get("median_s") and not shots and not stats.get("palette") and not info.get("w"):
+    profile = profile_of(stats)
+    if (not stats.get("median_s") and not shots and not stats.get("palette") and not info.get("w")
+            and profile is None):
         raise ValueError("A referência ainda não tem medidas: analise o vídeo primeiro.")
     presets = presets if presets is not None else load_presets()
     base_id, base_reason = nearest_preset(info, stats, presets)
@@ -397,6 +471,11 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     origins: list[dict[str, Any]] = [{"path": "base", "value": base_id, "source": "preset",
                                       "detail": f"{base.name}: {base_reason}"}]
     changes = measured_changes(info, stats, shots, base)
+    suggestions: list[str] = []
+    if profile is not None:
+        ref_ids = [str(reference["id"])] if reference.get("id") else None
+        extra, suggestions = profile_changes(profile, base, ref_ids)
+        changes += extra
     for ch in changes:
         data = set_path(data, ch["path"], ch["value"])
     StyleSpec.model_validate(data)  # as medidas sozinhas já dão um estilo válido
@@ -418,7 +497,8 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
         try:
             context = {"description": f"Estilo a partir da referência {title}",
                        "effects": data["edit"]["effects"]}
-            answer, provider_id = call(_llm_system(), _llm_prompt(title, info, stats, data, locked), context)
+            answer, provider_id = call(_llm_system(), _llm_prompt(title, info, stats, data, locked, profile),
+                                       context)
             llm_out.update(used=True, provider=provider_id, summary=str(answer.get("summary") or ""))
             for change in answer.get("changes") or []:
                 path = str(change.get("path") or "")
@@ -452,14 +532,15 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     med = stats.get("median_s")
     bits = [f"plano mediano de {med:g} s" if med else "", f"{stats['cuts_per_min']} cortes/min"
             if stats.get("cuts_per_min") else "", f"paleta {' '.join(stats['palette'][:5])}"
-            if stats.get("palette") else ""]
+            if stats.get("palette") else "",
+            ("perfil de edição " + ("rápido" if profile.quick else "completo")) if profile is not None else ""]
     data["description"] = (f"Criado a partir da referência “{title}” sobre o preset {base.name}: "
                            + ", ".join(b for b in bits if b))[:500]
     tags = [t for t in data.get("tags") or [] if t != "referencia"]
     data["tags"] = [*tags, "referencia"]
     style = StyleSpec.model_validate(data)
     return {"style": style.model_dump(mode="json"), "base_style_id": base_id, "base_reason": base_reason,
-            "origins": origins, "llm": llm_out, "rejected": rejected}
+            "origins": origins, "llm": llm_out, "rejected": rejected, "suggestions": suggestions}
 
 
 def create_from_reference(reference: dict[str, Any], *, llm: LLMCall | None = None, use_llm: bool = True,
