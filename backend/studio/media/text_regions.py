@@ -25,10 +25,19 @@ from PIL import Image, ImageFilter
 log = logging.getLogger(__name__)
 
 # Versão da detecção: muda o cache em disco (arquivo `<imagem>.text.json`) quando a conta muda.
-VERSION = 2
+VERSION = 3
 # Larguras de trabalho: 1280 pega o corpo da matéria (letra miúda), 640 a manchete, 200 o logo e o título gigante e
 # 96 a letra que ocupa meia tela (o "VI" do logo).
 SCALES = (1280, 640, 200, 96)
+# Passada na resolução do arquivo (até esta largura), sem suavizar: a letra de 12-16 px da página (resultados de
+# busca em modo escuro, corpo cinza-claro da matéria, menu do site) some na escala de 1280 suavizada e o "VERSÃO"
+# cinético caía em cima dos resultados que eram a prova. Nela só conta LINHA de texto (baixa e comprida, cheia):
+# textura fina de foto (folha, grade, ruído) não forma fileira assim.
+NATIVE_MAX = 2400
+LINE_MAX_ROWS = 4
+LINE_MIN_COLS = 8
+LINE_MIN_RATIO = 3.0
+LINE_MIN_FILL = 0.5
 # Na escala mais fina, só linha de texto (comprida) conta: pontinho isolado lá é luz de cidade, não letra.
 FINE_WIDTH = 1000
 FINE_MIN_COLS = 6
@@ -46,7 +55,7 @@ MIN_CELLS = 3
 # Caixas mais perto que isto (fração) viram uma só.
 MERGE_GAP = 0.012
 # Teto de caixas por imagem (a timeline não precisa de mais).
-MAX_RECTS = 12
+MAX_RECTS = 24
 # Letra é traço reto: dentro da caixa, a fração da borda que é horizontal ou vertical (±15°). Texto, manchete e logo
 # ficam em 0,45-0,9; fogos de artifício, cabelo, rosto e folhagem (bordas em todas as direções) ficam abaixo de 0,35.
 AXIS_MIN = 0.36
@@ -113,13 +122,16 @@ def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
     return out
 
 
-def _scale_rects(img: Image.Image, width: int) -> list[Rect]:
+def _scale_rects(img: Image.Image, width: int, *, lines_only: bool = False) -> list[Rect]:
     w0, h0 = img.size
     if w0 <= 0 or h0 <= 0:
         return []
     width = min(width, w0)
     height = max(CELL, round(h0 * width / w0))
-    gray = np.asarray(img.convert("L").resize((width, height), Image.Resampling.BILINEAR).filter(ImageFilter.SMOOTH))
+    small = img.convert("L")
+    if (width, height) != small.size:
+        small = small.resize((width, height), Image.Resampling.BILINEAR)
+    gray = np.asarray(small if lines_only else small.filter(ImageFilter.SMOOTH))
     mask = _close_rows(_cells(gray))
     rows, cols = mask.shape
     if not rows or not cols:
@@ -127,6 +139,14 @@ def _scale_rects(img: Image.Image, width: int) -> list[Rect]:
     out: list[Rect] = []
     for r0, c0, r1, c1, n in _components(mask):
         bw, bh = c1 - c0, r1 - r0
+        if lines_only:
+            # Só fileira de letras (ou poucas fileiras coladas, o parágrafo): baixa, comprida e cheia. O bloco alto é
+            # das outras escalas.
+            if (bh > LINE_MAX_ROWS * 3 or bw < LINE_MIN_COLS or bw < LINE_MIN_RATIO * max(bh, LINE_MAX_ROWS)
+                    or n / (bw * bh) < LINE_MIN_FILL):
+                continue
+            out.append([c0 / cols, r0 / rows, bw / cols, bh / rows])
+            continue
         if n < MIN_CELLS or bw < 2 or (width > FINE_WIDTH and bw < FINE_MIN_COLS):
             continue
         area = (bw * bh) / (rows * cols)
@@ -193,6 +213,8 @@ def detect(img: Image.Image) -> list[Rect]:
     found: list[Rect] = []
     for width in SCALES:
         found += _scale_rects(img, width)
+    if img.size[0] > SCALES[0]:
+        found += _scale_rects(img, min(img.size[0], NATIVE_MAX), lines_only=True)
     boxes = merge(found)
     boxes = [b for b in boxes if b[2] * b[3] <= MAX_AREA * 1.2]
     if boxes:
@@ -237,10 +259,29 @@ def rects_for(path: Path) -> list[Rect]:
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
+# Bloco de letras que vira a manchete guardada (`keep`) da imagem que não tem uma (logo da key art, título da página
+# oficial): no mínimo esta área e esta largura (fração da imagem). Menor que isso é letreiro ou legenda solta.
+KEEP_MIN_AREA = 0.02
+KEEP_MIN_W = 0.15
+
+
+def main_block(rects: Iterable[Rect]) -> Rect | None:
+    """O maior bloco de letras da imagem (logo, título, manchete) quando ele é grande o bastante para ser o assunto
+    dela; None sem um. O renderer nunca o corta no zoom, no punch e no reenquadramento do plano, e nada da tela pousa
+    nele (QA: "PRE-ORDEI" e "GRAND THEFT AUTO" sem o VI na página de pré-venda, que não tinha manchete guardada)."""
+    boxes = [list(map(float, r)) for r in rects if len(r) >= 4 and r[2] > 0 and r[3] > 0]
+    if not boxes:
+        return None
+    big = max(boxes, key=lambda r: r[2] * r[3])
+    if big[2] * big[3] < KEEP_MIN_AREA or big[2] < KEEP_MIN_W:
+        return None
+    return [round(v, 4) for v in big]
+
 
 def annotate_timeline(timeline: dict[str, Any], resolve: Callable[[str], Path]) -> None:
     """Grava `text_rects` (caixas de letras no arquivo que o renderer recebe) em cada cena e em cada subplano com
-    imagem própria. Cena sem imagem (ou com vídeo) fica como está."""
+    imagem própria. Cena sem imagem (ou com vídeo) fica como está. Imagem sem manchete guardada (`keep`, a da captura)
+    ganha o maior bloco de letras dela (`main_block`) como `keep`."""
     memo: dict[str, list[Rect]] = {}
 
     def of(rel: Any) -> list[Rect]:
@@ -250,12 +291,17 @@ def annotate_timeline(timeline: dict[str, Any], resolve: Callable[[str], Path]) 
             memo[rel] = rects_for(resolve(rel))
         return memo[rel]
 
+    def mark(item: dict[str, Any], rects: list[Rect]) -> None:
+        if not rects:
+            return
+        item["text_rects"] = rects
+        if not item.get("keep"):
+            keep = main_block(rects)
+            if keep:
+                item["keep"] = keep
+
     for scene in timeline.get("scenes", []):
-        rects = of(scene.get("src"))
-        if rects:
-            scene["text_rects"] = rects
+        mark(scene, of(scene.get("src")))
         for shot in scene.get("shots") or []:
             if isinstance(shot, dict) and shot.get("src") and not shot.get("video"):
-                own = of(shot.get("src"))
-                if own:
-                    shot["text_rects"] = own
+                mark(shot, of(shot.get("src")))

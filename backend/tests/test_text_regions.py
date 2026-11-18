@@ -86,6 +86,49 @@ def test_radial_texture_is_not_text_and_body_text_is_found():
     assert _covers(text_regions.detect(page), (200 / 1920, 650 / 1080, 900 / 1920, 780 / 1080), share=0.5)
 
 
+def test_small_text_on_dark_page_is_found():
+    """QA r3: o "VERSÃO" cinético cobria os resultados da busca do Google em modo escuro (letra de 12-16 px, azul e
+    cinza sobre quase preto): a escala de 1280 suavizada não via nada e o texto que pula achava a página livre. A passada
+    na resolução do arquivo pega as linhas (e o parágrafo de duas linhas coladas)."""
+    img = Image.new("RGB", (1920, 1080), (32, 33, 36))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype(str(FONT), 18)
+    small = ImageFont.truetype(str(FONT), 13)
+    for i in range(5):
+        y = 140 + i * 170
+        draw.text((540, y), "Rockstar Games: Grand Theft Auto VI demo download for PC", font=font, fill=(138, 180, 248))
+        draw.text((540, y + 30), "Grand Theft Auto VI launches November 19, 2026 on PlayStation 5 and Xbox Series", font=small,
+                  fill=(189, 193, 198))
+        draw.text((540, y + 46), "Standard Edition. Grand Theft Auto VI; Vintage Vice City Pack; Free Month of access", font=small,
+                  fill=(189, 193, 198))
+    rects = text_regions.detect(img)
+    assert _covers(rects, (560 / 1920, 140 / 1080, 1000 / 1920, 860 / 1080), share=0.35)
+    assert not _covers(rects, (0.0, 0.0, 0.25, 1.0), share=0.02)  # a margem lisa fica livre
+
+
+def test_main_block_becomes_keep_when_the_image_has_none(tmp_path: Path):
+    """QA r3: a página de pré-venda (oficial, sem manchete guardada) saía "PRE-ORDEI" no punch e no plano 1,25x. O maior
+    bloco de letras vira o `keep` da cena e do plano; a manchete da captura (`keep` que já veio) fica como está; letreiro
+    pequeno não vira `keep`."""
+    page = tmp_path / "cache" / "media" / "aa" / "image.jpg"
+    page.parent.mkdir(parents=True)
+    _page().save(page, quality=92)
+    timeline = {"scenes": [
+        {"id": "a", "src": "cache/media/aa/image.jpg"},
+        {"id": "b", "src": "cache/media/aa/image.jpg", "keep": [0.1, 0.1, 0.5, 0.2]},
+        {"id": "c", "src": None, "shots": [{"from": 0, "src": "cache/media/aa/image.jpg"}]},
+    ]}
+    text_regions.annotate_timeline(timeline, lambda rel: tmp_path / rel)
+    a, b, c = timeline["scenes"]
+    assert a["keep"] == text_regions.main_block(a["text_rects"])
+    x, y, w, h = a["keep"]
+    assert x <= 130 / 1920 and y <= 200 / 1080 and x + w >= 1000 / 1920 and y + h >= 420 / 1080
+    assert b["keep"] == [0.1, 0.1, 0.5, 0.2]
+    assert c["shots"][0]["keep"] == a["keep"] and "keep" not in c
+    assert text_regions.main_block([[0.4, 0.4, 0.1, 0.05]]) is None
+    assert text_regions.main_block([]) is None
+
+
 def test_merge_joins_touching_boxes_only():
     merged = text_regions.merge([[0.1, 0.1, 0.2, 0.05], [0.305, 0.1, 0.1, 0.05], [0.7, 0.7, 0.1, 0.1]])
     got = sorted([round(v, 6) for v in r] for r in merged)
