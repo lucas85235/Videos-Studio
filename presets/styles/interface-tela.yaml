@@ -33,12 +33,16 @@ voice:
   gap_s: 0.3
 
 art:
+  # Fontes da mídia (ADR 0004): Capturas de tela e páginas são o material principal.
+  sources: { mix: { capture: 0.4, graphic: 0.2, official: 0.1, stock: 0.05, free: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "ilustração digital limpa de tecnologia, cores vivas sobre fundo escuro, objetos e telas genéricas sem texto legível, um sujeito em destaque por cena"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "interface de marca real"]
   languages: [ui_mockup, editorial, flat_vector]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Tela: anotações e texto em destaque.
+  grammar: { annot_per_min: 1.5, text_pop_per_min: 2.5, humor: light }
   shot_seconds: { min: 3.0, max: 5.0 }
   new_image_ratio: 0.45
   camera: { ken_burns_in: 3, drift: 2, static: 1 }

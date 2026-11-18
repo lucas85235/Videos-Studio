@@ -34,12 +34,16 @@ voice:
   gap_s: 0.2
 
 art:
+  # Fontes da mídia (ADR 0004): A colagem é o estilo assumido: a IA (recortes, texturas) pode ocupar até metade do tempo.
+  sources: { mix: { ai: 0.5, free: 0.15, capture: 0.1, graphic: 0.15, official: 0.05, stock: 0.05, meme: 0.0 }, ai_max_share: 0.5 }
   bible: "colagem de papel recortado em camadas, texturas de papel e papelão, cores terrosas com um acento vivo, um sujeito em destaque por cena sobre fundo simples"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [collage, archival, painting]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Colagem: mais quadros parados e anotações à mão.
+  grammar: { static_share_min: 0.35, annot_per_min: 1.0, humor: light }
   shot_seconds: { min: 2.2, max: 3.5 }
   camera: { static: 2, drift: 2, ken_burns_in: 1 }
   transitions: { cut: 5, flash: 1 }

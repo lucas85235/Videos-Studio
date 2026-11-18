@@ -32,12 +32,16 @@ voice:
   gap_s: 0.35
 
 art:
+  # Fontes da mídia (ADR 0004): Banco de imagens e fotos livres degradadas; IA como apoio.
+  sources: { mix: { stock: 0.3, free: 0.2, capture: 0.15, graphic: 0.1, official: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "fotografia granulada de câmera VHS, corredores vazios, luz fluorescente doentia, espaços liminares, cores lavadas, sem pessoas nítidas"
   banned: ["texto", "letras", "logotipos", "marca d'água", "sangue explícito"]
   languages: [archival, painting]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Terror analógico: a textura (grão, VHS) é o estilo inteiro, então os efeitos valem em tudo.
+  grammar: { shake_per_min: 0.8, humor: none, caption_emphasis: none, effects_policy: global }
   shot_seconds: { min: 2.2, max: 3.8 }
   camera: { drift: 3, ken_burns_in: 2, static: 2, pan_right: 1 }
   transitions: { cut: 4, static_burst: 3, glitch: 2, fade_black: 1 }

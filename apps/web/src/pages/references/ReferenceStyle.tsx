@@ -17,9 +17,10 @@ const SOURCE_LABELS: Record<RefStyleOrigin['source'], string> = {
   ritmo: 'Do ritmo dos cortes',
   paleta: 'Da paleta de cores',
   texto: 'Do texto na tela',
+  perfil: 'Do perfil de edição medido',
   llm: 'Da IA (o que as medidas não dizem)',
 };
-const SOURCE_ORDER: RefStyleOrigin['source'][] = ['preset', 'proporcao', 'ritmo', 'paleta', 'texto', 'llm'];
+const SOURCE_ORDER: RefStyleOrigin['source'][] = ['preset', 'proporcao', 'ritmo', 'paleta', 'texto', 'perfil', 'llm'];
 
 const FIELD_LABELS: Record<string, string> = {
   base: 'Preset base',
@@ -40,6 +41,15 @@ const FIELD_LABELS: Record<string, string> = {
   'thumbnail.accent': 'Destaque da miniatura',
   'edit.camera': 'Câmera',
   'art.bible': 'Direção de arte',
+  'edit.grammar': 'Gramática de edição',
+  'art.sources': 'Fontes da mídia',
+  'edit.captions.font': 'Fonte da legenda',
+  'edit.captions.weight': 'Peso da legenda',
+  'edit.captions.uppercase': 'Legenda em caixa alta',
+  'edit.captions.position': 'Posição da legenda',
+  'edit.captions.max_words_per_line': 'Palavras por linha',
+  'audio.sfx.auto': 'Efeitos sonoros automáticos',
+  'script.words_per_minute': 'Palavras por minuto',
 };
 
 /** Limite do nome do estilo (o mesmo do campo Nome no editor e da API). */
@@ -77,7 +87,16 @@ function showValue(path: string, value: unknown): React.ReactNode {
       .map(([k, v]) => `${k} ${Math.round((v / total) * 100)}%`)
       .join(', ');
   }
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (path === 'edit.grammar' && value && typeof value === 'object') {
+    const g = value as { shot_median_s: number; punch_per_min: number; sfx_per_min: number; humor: string };
+    return `plano mediano ${g.shot_median_s} s, ${g.punch_per_min} punch/min, ${g.sfx_per_min} SFX/min, humor ${g.humor}`;
+  }
+  if (path === 'art.sources' && value && typeof value === 'object') {
+    const s = value as { ai_max_share: number };
+    return `IA em até ${Math.round(s.ai_max_share * 100)}% do tempo`;
+  }
+  if (typeof value === 'boolean') return value ? 'sim' : 'não';
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
   const text = JSON.stringify(value);
   return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
@@ -99,6 +118,11 @@ export const RefStyleOriginsList: React.FC<{ result: RefStyleResult }> = ({ resu
             ))}
           </ul>
         </div>
+      ))}
+      {result.suggestions?.map((s) => (
+        <p key={s} className="text-[13px] text-muted">
+          Sugestão: {s}
+        </p>
       ))}
       {result.llm.message ? <p className="text-[13px] text-muted">{result.llm.message}</p> : null}
       {result.llm.used && result.llm.summary && result.origins.some((o) => o.source === 'llm') ? <p className="text-[13px] text-muted">IA: {result.llm.summary}</p> : null}

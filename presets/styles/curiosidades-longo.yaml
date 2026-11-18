@@ -33,12 +33,16 @@ voice:
   gap_s: 0.35
 
 art:
+  # Fontes da mídia (ADR 0004): Real primeiro (trailer, print, foto livre); IA só como apoio declarado.
+  sources: { mix: { official: 0.25, capture: 0.15, free: 0.15, stock: 0.1, graphic: 0.15, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "ilustração digital detalhada e luminosa, estilo editorial de revista de ciência, cores vivas e naturais, luz clara, cenários do cotidiano, da natureza e do espaço, composição limpa"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água"]
   languages: [editorial, flat_vector, render_3d, isometric]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Explicativo: texto na tela e humor leve.
+  grammar: { text_pop_per_min: 2.5, humor: light }
   shot_seconds: { min: 3.0, max: 5.0 }
   camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 2, pan_right: 2, pan_up: 1, drift: 1 }
   transitions: { cut: 6, fade_black: 1, zoom_blur: 1, light_leak: 1 }

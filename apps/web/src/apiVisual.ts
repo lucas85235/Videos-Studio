@@ -124,7 +124,8 @@ export type ThumbsState = {
 export type RefStyleOrigin = {
   path: string;
   value: unknown;
-  source: 'ritmo' | 'paleta' | 'proporcao' | 'texto' | 'preset' | 'llm';
+  /** 'perfil': do perfil de edição medido (gramática, fontes da mídia, legenda); 'texto' não sai mais (legado). */
+  source: 'ritmo' | 'paleta' | 'proporcao' | 'texto' | 'perfil' | 'preset' | 'llm';
   detail: string;
 };
 
@@ -137,6 +138,8 @@ export type RefStyleResult = {
   origins: RefStyleOrigin[];
   llm: { used: boolean; provider: string | null; summary: string; message: string };
   rejected: { path: string; error: string }[];
+  /** O que o perfil sugere e não é campo do estilo (ex.: ligar o apresentador). */
+  suggestions?: string[];
 };
 
 /** POST /api/references: a referência criada e o job da análise, que começa sozinho. */

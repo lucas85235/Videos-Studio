@@ -34,6 +34,8 @@ voice:
   gap_s: 0.15
 
 art:
+  # Fontes da mídia (ADR 0004): Trailer e gameplay oficiais, prints e memes; IA quase fora (o público reconhece na hora).
+  sources: { mix: { official: 0.35, capture: 0.25, meme: 0.1, graphic: 0.15, free: 0.05, stock: 0.0, ai: 0.1 }, ai_max_share: 0.1, hook: [official, capture, own, free] }
   # Só o tratamento de referência: o assunto de cada vídeo define o mundo das imagens. Sem hora do dia nem luz fixa:
   # cada imagem diz a sua.
   bible: "cores saturadas e neon, contraste limpo, sem grão"
@@ -42,6 +44,8 @@ art:
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Games: cortes rápidos, punch, memes de reação e SFX.
+  grammar: { shot_median_s: 1.4, punch_per_min: 5.0, meme_per_min: 1.0, text_pop_per_min: 3.0, sfx_per_min: 8.0, humor: meme }
   shot_seconds: { min: 1.8, max: 3.0 }
   new_image_ratio: 0.5
   camera: { ken_burns_in: 3, punch_zoom: 2, pan_left: 1, pan_right: 1, pan_up: 1, drift: 1 }

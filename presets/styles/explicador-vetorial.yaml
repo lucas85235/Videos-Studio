@@ -33,12 +33,16 @@ voice:
   gap_s: 0.35
 
 art:
+  # Fontes da mídia (ADR 0004): O vetor é o estilo assumido: a IA (ilustração plana) pode ocupar até metade do tempo.
+  sources: { mix: { ai: 0.5, graphic: 0.25, capture: 0.1, free: 0.05, stock: 0.05, official: 0.05, meme: 0.0 }, ai_max_share: 0.5 }
   bible: "ilustração vetorial flat, formas geométricas simples e contornos limpos, paleta pastel viva sobre fundo claro (creme ou azul-claro), personagens simplificados sem rosto detalhado, ícones e objetos estilizados, visual de vídeo explicativo"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo", "texturas sujas"]
   languages: [flat_vector, isometric, editorial]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Explicador: anotações e texto na tela, humor leve.
+  grammar: { annot_per_min: 1.5, text_pop_per_min: 2.5, humor: light }
   shot_seconds: { min: 3.0, max: 5.0 }
   new_image_ratio: 0.4
   camera: { drift: 3, ken_burns_in: 2, static: 2, pan_left: 1, pan_right: 1 }

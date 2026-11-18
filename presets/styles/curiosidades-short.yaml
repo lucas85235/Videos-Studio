@@ -34,12 +34,16 @@ voice:
   gap_s: 0.15
 
 art:
+  # Fontes da mídia (ADR 0004): Real primeiro (trailer, print, foto livre); IA só como apoio declarado.
+  sources: { mix: { official: 0.25, capture: 0.2, free: 0.15, stock: 0.1, graphic: 0.1, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "ilustração digital colorida e limpa, estilo editorial moderno, cores vivas e equilibradas, luz natural clara, fundo simples, um sujeito em destaque por cena"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [editorial, flat_vector, render_3d, key_art]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Short explicativo: mais punch e texto na tela (o resto segue o padrão do Short).
+  grammar: { punch_per_min: 4.0, text_pop_per_min: 3.0, humor: light }
   shot_seconds: { min: 1.8, max: 3.0 }
   camera: { ken_burns_in: 3, punch_zoom: 2, pan_left: 1, pan_right: 1, pan_up: 1, drift: 1 }
   transitions: { cut: 6, zoom_blur: 2, flash: 1 }

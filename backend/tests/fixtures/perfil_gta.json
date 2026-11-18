@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "quick": false,
+  "duration_s": 804.5,
+  "measured_at": "2026-11-17T12:00:00Z",
+  "refs": ["ref_x1l83ap549"],
+  "pace": {
+    "shots": 364,
+    "median_s": 1.43,
+    "mean_s": 2.21,
+    "p10_s": 0.31,
+    "p90_s": 4.6,
+    "cv": 1.35,
+    "max_shot_s": 55.6,
+    "cuts_per_min": 21.0,
+    "cuts_per_min_windows": [30.0, 26.0, 22.0, 20.0, 18.0, 21.0],
+    "hook_cuts_per_min": 30.0,
+    "micro_count": 81,
+    "micro_per_min": 6.0,
+    "max_still_s": 55.6,
+    "events_per_min": 29.0
+  },
+  "camera": {
+    "punch_per_min": 4.2,
+    "punch_scale": 0.2,
+    "shake_per_min": 0.6,
+    "slow_zoom_share": 0.22,
+    "zoom_rate_pct_s": 1.5,
+    "kb_share": 0.05,
+    "static_share": 0.48,
+    "freeze_per_min": 0.7
+  },
+  "materials": {
+    "mix": {
+      "official_trailer": 0.42,
+      "gameplay": 0.12,
+      "page_capture": 0.08,
+      "news": 0.04,
+      "meme_reaction": 0.09,
+      "facecam": 0.08,
+      "mascot": 0.07,
+      "text_card": 0.06,
+      "photo_real": 0.03,
+      "ai_illustration": 0.0,
+      "other": 0.01
+    },
+    "switch_per_min": 5.5,
+    "max_same_prov_run": 9,
+    "max_same_prov_run_s": 21.0
+  },
+  "overlays": {
+    "text_pop_per_min": 3.1,
+    "meme_per_min": 1.4,
+    "annot_per_min": 0.8,
+    "overlay_per_min": 2.2,
+    "on_screen_text_share": 0.46,
+    "text_case": "upper",
+    "text_pos": "top",
+    "font_desc": "Pricedown, pesada, estilo GTA"
+  },
+  "captions": {
+    "style": "word",
+    "words_per_line": 2.4,
+    "uppercase": true,
+    "position": "center",
+    "font_desc": "display pesada, caixa alta, estilo GTA (Pricedown)",
+    "font_match": "",
+    "emphasis": "pop"
+  },
+  "audio": {
+    "sfx_per_min": 7.5,
+    "sfx_on_cut_share": 0.45,
+    "sfx_classes": {"impact": 0.3, "whoosh": 0.35, "pop": 0.25, "riser": 0.1},
+    "music_level_db": -18.0,
+    "drops_per_min": 0.4
+  },
+  "speech": {
+    "wpm": 172,
+    "pauses_per_min": 9.0,
+    "questions_per_min": 1.8,
+    "person": "1",
+    "tone_tags": ["empolgado", "conversado", "irônico"],
+    "structure": [
+      {"role": "hook", "start_s": 0, "end_s": 30},
+      {"role": "contexto", "start_s": 30, "end_s": 160},
+      {"role": "lista de detalhes", "start_s": 160, "end_s": 700},
+      {"role": "fechamento", "start_s": 700, "end_s": 804.5}
+    ]
+  },
+  "humor": {
+    "patterns": [
+      "exagero seguido de correção seca da própria fala",
+      "pergunta retórica respondida por uma reação absurda",
+      "comparação do jogo com a vida real do brasileiro",
+      "autoironia sobre a espera pelo lançamento",
+      "quinto padrão que não deve entrar no pedido"
+    ],
+    "gag_per_min": 1.2
+  },
+  "recurring": [
+    {"id": "r1", "kind": "mascot", "count": 14, "first_s": 12.0}
+  ],
+  "meta": {
+    "pace": {"confidence": 0.9, "origin": "medido"},
+    "pace.median_s": {"confidence": 0.95, "origin": "medido"},
+    "camera": {"confidence": 0.7, "origin": "medido"},
+    "camera.shake_per_min": {"confidence": 0.0, "origin": "padrão"},
+    "materials": {"confidence": 0.75, "origin": "visão"},
+    "overlays": {"confidence": 0.6, "origin": "visão"},
+    "captions": {"confidence": 0.6, "origin": "visão"},
+    "audio": {"confidence": 0.65, "origin": "medido"},
+    "speech": {"confidence": 0.8, "origin": "medido"},
+    "speech.tone_tags": {"confidence": 0.6, "origin": "llm"},
+    "humor": {"confidence": 0.5, "origin": "llm"}
+  }
+}

@@ -33,12 +33,16 @@ voice:
   gap_s: 0.15
 
 art:
+  # Fontes da mídia (ADR 0004): Fotos, documentos e arquivo primeiro; IA só para hipótese declarada.
+  sources: { mix: { free: 0.25, capture: 0.2, stock: 0.15, official: 0.1, graphic: 0.1, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, pouca luz, contraste dramático, grão de tela"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [painting, archival, collage]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Mistério: sem humor, ênfase por cor.
+  grammar: { humor: none, caption_emphasis: color }
   shot_seconds: { min: 1.6, max: 2.6 }
   camera: { ken_burns_in: 3, ken_burns_out: 2, pan_left: 1, pan_right: 1, punch_zoom: 2, drift: 1 }
   transitions: { cut: 6, flash: 2, glitch: 2, zoom_blur: 1 }

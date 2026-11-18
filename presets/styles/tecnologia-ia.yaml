@@ -34,12 +34,16 @@ voice:
   gap_s: 0.15
 
 art:
+  # Fontes da mídia (ADR 0004): Prints, anúncios e material oficial primeiro; IA só para conceito.
+  sources: { mix: { capture: 0.3, official: 0.2, graphic: 0.15, stock: 0.1, free: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "render 3D limpo e moderno, dispositivos, chips, robôs simpáticos e interfaces abstratas sem texto, paleta azul elétrico, ciano e branco, fundo claro com gradiente suave, luz de estúdio"
   banned: ["texto", "letras", "números", "logotipos", "marca d'água", "marcas reais"]
   languages: [render_3d, ui_mockup, isometric]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Tecnologia: texto na tela e humor leve.
+  grammar: { text_pop_per_min: 3.0, humor: light }
   shot_seconds: { min: 1.8, max: 3.0 }
   camera: { ken_burns_in: 3, punch_zoom: 2, pan_left: 1, pan_right: 1, drift: 1 }
   transitions: { cut: 6, zoom_blur: 2, glitch: 1, flash: 1 }

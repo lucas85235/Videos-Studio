@@ -33,12 +33,16 @@ voice:
   gap_s: 0.45
 
 art:
+  # Fontes da mídia (ADR 0004): Arquivo, documentos e fotos livres primeiro; IA só para reconstituição declarada.
+  sources: { mix: { free: 0.25, capture: 0.2, stock: 0.15, official: 0.1, graphic: 0.1, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "pintura a óleo histórica e sombria, estilo de gravura antiga colorizada, paleta sépia, ocre e preto, luz lateral dramática"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo moderno"]
   languages: [painting, archival, collage]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Sombrio: planos longos, zoom lento, quase sem punch e sem humor.
+  grammar: { shot_median_s: 3.4, punch_per_min: 1.0, shake_per_min: 0.1, slow_zoom_share: 0.45, sfx_per_min: 2.5, humor: none, caption_emphasis: color }
   shot_seconds: { min: 4.0, max: 7.0 }
   camera: { ken_burns_in: 4, ken_burns_out: 3, pan_left: 2, pan_right: 2, pan_up: 1, drift: 2 }
   transitions: { cut: 5, fade_black: 2, light_leak: 1, film_burn: 1 }

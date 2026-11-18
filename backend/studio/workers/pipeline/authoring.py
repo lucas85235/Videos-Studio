@@ -139,6 +139,21 @@ data e quanto falta ("chega em <dia> de <mês>, daqui a <n> dias"). Evite afirma
 não saiu", "ninguém jogou") sem dizer a data ("até hoje, <dia> de <mês>")."""
 
 
+def reference_voice_block(style: StyleSpec) -> str:
+    """Bloco "Voz e estrutura da referência" (ADR 0004 §3.3): só existe quando o estilo saiu de uma referência com
+    perfil de edição (`edit.grammar.profile_refs`) e o perfil mediu fala, tom, estrutura ou humor."""
+    refs = style.edit.grammar.profile_refs
+    if not refs:
+        return ""
+    from studio.core.editing.grammar import reference_profiles, script_reference_block
+
+    try:
+        return script_reference_block(reference_profiles(refs))
+    except Exception as exc:  # noqa: BLE001 - sem o perfil, o roteiro segue como antes
+        log.warning("perfil da referência indisponível para o roteiro: %s", exc)
+        return ""
+
+
 def generate_script(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = None, job_id: str | None = None,
                     persona: str = "", today: date | None = None,
                     lessons: list[dict[str, Any]] | None = None) -> tuple[ProjectDoc, str]:
@@ -166,6 +181,9 @@ Proibido usar: {", ".join(style.script.banned_phrases) or "(nada)"}
 {f"Persona do canal: {persona}" if persona else ""}
 Use role 'hook' no primeiro segmento, 'chapter' para aberturas de capítulo, 'cta' no último e 'body' no resto.
 Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
+    voice_block = reference_voice_block(style)
+    if voice_block:
+        prompt += "\n" + voice_block
     package_block = locked_package_block(doc, style)
     if package_block:
         prompt += "\n" + package_block
@@ -182,6 +200,8 @@ Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
     }
     if package_block:
         context["package"] = package_block  # o pedido muda com o pacote travado
+    if voice_block:
+        context["reference_voice"] = voice_block  # e com o perfil da referência
     result, provider_id = _llm("script", SCRIPT_SYSTEM, prompt, SCRIPT_SCHEMA, context, project_id, job_id)
     data = result.data
     new_doc = doc.model_copy(deep=True)

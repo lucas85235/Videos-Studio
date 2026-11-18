@@ -33,12 +33,16 @@ voice:
   gap_s: 0.45
 
 art:
+  # Fontes da mídia (ADR 0004): Pinturas, gravuras e fotos de época (domínio público) primeiro; IA só para reconstituição.
+  sources: { mix: { free: 0.35, capture: 0.15, official: 0.05, stock: 0.1, graphic: 0.15, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
   bible: "pintura digital histórica realista e luminosa, cores naturais da época, luz natural suave, cenas amplas de cidades, mercados, paisagens e pessoas comuns, figurinos e arquitetura fiéis ao período"
   banned: ["texto", "letras", "logotipos", "marca d'água", "violência explícita", "objetos modernos fora da época"]
   languages: [archival, painting, isometric]
   image_chain: [codex_cli, antigravity_cli]
 
 edit:
+  # Gramática de edição (ADR 0004): Documental: planos longos, zoom lento, sem humor.
+  grammar: { shot_median_s: 3.2, punch_per_min: 1.2, slow_zoom_share: 0.45, humor: none, caption_emphasis: color }
   shot_seconds: { min: 4.0, max: 6.5 }
   camera: { ken_burns_in: 4, ken_burns_out: 3, pan_left: 2, pan_right: 2, pan_up: 1, drift: 1 }
   transitions: { cut: 6, fade_black: 1, light_leak: 2 }
