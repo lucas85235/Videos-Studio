@@ -25,6 +25,7 @@ import httpx
 from studio.config import get_settings
 from studio.core.project import service
 from studio.core.project.document import FoundMedia, ProjectDoc, RealHint, Scene
+from studio.core.sources import looks_synthetic
 from studio.core.styles.library import get_style
 from studio.media import link_preview, safe_http
 from studio.providers import registry
@@ -62,7 +63,11 @@ cena do pedido, devolva até 3 candidatos, cada um com:
 Regras:
 1. Fonte oficial primeiro (sala de imprensa ou página de mídia do estúdio/editora/empresa, newswire oficial); depois
    veículos de imprensa conhecidos (a imagem principal/og:image da matéria).
-2. Nunca banco de imagens com marca d'água, fan art, sites de wallpaper, Pinterest nem imagem gerada por IA.
+2. Nunca banco de imagens com marca d'água, fan art, sites de wallpaper, Pinterest nem imagem gerada por IA. A
+   imagem de capa de blog ou matéria que é ilustração (arte editorial, montagem, imagem de IA imitando o logotipo, a
+   capa ou os personagens oficiais) também não serve: logotipo, capa e personagem só da fonte oficial do estúdio. Em
+   cada candidato, diga em made o que a imagem é: photo (foto real), official (arte ou quadro oficial do estúdio),
+   screenshot (print de página, app ou jogo) ou illustration (qualquer outra arte); illustration é descartada.
 3. A imagem tem de mostrar o que a nota da cena pede.
 4. Prefira imagem grande e na orientação do vídeo.
 5. Nunca invente URL: só endereços que apareceram na busca ou nas páginas que você abriu. Sem candidato bom, devolva
@@ -88,6 +93,8 @@ SCHEMA: dict[str, Any] = {
                                 "title": {"type": "string"},
                                 "outlet": {"type": "string"},
                                 "why": {"type": "string"},
+                                "made": {"type": "string", "enum": ["photo", "official", "screenshot",
+                                                                    "illustration"]},
                             },
                             "required": ["image", "page_url", "title", "outlet", "why"],
                         },
@@ -241,6 +248,9 @@ def parse_candidates(data: object, scene_ids: set[str]) -> dict[str, list[dict[s
             image = str(item.get("image") or "").strip()
             if not image or image in seen or len(bucket) >= MAX_PER_SCENE * 2:
                 continue
+            if str(item.get("made") or "").strip() == "illustration" or looks_synthetic(
+                    image, item.get("page_url"), item.get("title"), item.get("why")):
+                continue  # ilustração, arte de fã ou de IA: não é material real (regra 2)
             seen.add(image)
             bucket.append({k: str(item.get(k) or "").strip() for k in ("image", "page_url", "title", "outlet", "why")})
     return out

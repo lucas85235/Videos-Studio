@@ -33,9 +33,12 @@ from studio.core.project.document import CARD_KINDS, ProjectDoc
 from studio.core.sources import (
     AI_WINDOW_S,
     HOOK_DEFAULT,
+    PANEL_AI_WEIGHT,
+    PANEL_PROV_KINDS,
     REAL_TIERS,
     ai_window_cap,
     prov_of_scene,
+    visual_prov,
     window_share,
 )
 from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
@@ -145,6 +148,14 @@ class Shot:
     """Imagem parada (conta no tempo de imagem do Ken Burns): não é cartão nem clipe."""
     key: str | None
     """Identidade do que aparece (imagem ou vídeo), para as repetições."""
+    ai: float = -1.0
+    """Quanto do plano é imagem de IA na tela, de 0 a 1 (`sources.ai_weight`): 1 no plano de IA (imagem, fundo de
+    cartão de texto, moldura de tela, subplano), `PANEL_AI_WEIGHT` no fundo de IA atrás do cartão de dado. Negativo
+    (o padrão): pelo nível (`prov == "ai"`)."""
+
+    def __post_init__(self) -> None:
+        if self.ai < 0:
+            self.ai = 1.0 if self.prov == "ai" else 0.0
 
     @property
     def end(self) -> float:
@@ -174,10 +185,13 @@ def timeline_duration(timeline: dict[str, Any]) -> float:
 
 def _scene_prov(scene: dict[str, Any], provs: dict[str, str]) -> str:
     """O nível da cena: o da timeline (`prov`), o do documento ou, cena que o documento não tem mais, pelo que a
-    timeline mostra."""
+    timeline mostra. Quando o documento diz IA (a arte de fã ou de IA da web que a timeline gravou pelo nível do
+    acervo), vale o documento: a IA na tela não some por causa de um rótulo antigo."""
+    sid = str(scene.get("id") or "")
+    if provs.get(sid) == "ai":
+        return "ai"
     if scene.get("prov"):
         return str(scene["prov"])
-    sid = str(scene.get("id") or "")
     if sid in provs:
         return provs[sid]
     if scene.get("kind") in CARD_KINDS:
@@ -199,11 +213,46 @@ def _doc_provs(doc: ProjectDoc | None) -> dict[str, str]:
     return out
 
 
+def _doc_panel_ai(doc: ProjectDoc | None) -> set[str]:
+    """As cenas de cartão de dado com imagem de IA no fundo (pelo documento)."""
+    if doc is None:
+        return set()
+    out: set[str] = set()
+    for scene in doc.scenes:
+        try:
+            if scene.kind in PANEL_PROV_KINDS and visual_prov(scene, doc) == "ai":
+                out.add(scene.id)
+        except Exception:  # noqa: BLE001 - cena estranha não derruba a medida
+            continue
+    return out
+
+
+AI_IMAGE_CACHE = "cache/image/"
+"""Onde o build grava a imagem gerada por IA (a mídia real fica em `cache/media/`): na timeline antiga, sem `bg_prov`
+nem documento, é o que diz que o fundo do cartão de dado é IA."""
+
+
+def _scene_ai(scene: dict[str, Any], prov: str, panel_ai: set[str]) -> float:
+    """O peso de IA na tela do visual da própria cena (`sources.ai_weight`, pela timeline): o nível `ai` conta
+    inteiro; o cartão de dado com fundo de IA (`bg_prov`, o documento ou, na timeline antiga, a imagem gerada no
+    `src`) conta `PANEL_AI_WEIGHT`."""
+    if prov == "ai":
+        return 1.0
+    if str(scene.get("kind") or "") not in PANEL_PROV_KINDS:
+        return 0.0
+    sid = str(scene.get("id") or "")
+    bg = scene.get("bg_prov")
+    if bg == "ai" or (bg is None and (sid in panel_ai or str(scene.get("src") or "").startswith(AI_IMAGE_CACHE))):
+        return PANEL_AI_WEIGHT
+    return 0.0
+
+
 def timeline_shots(timeline: dict[str, Any], doc: ProjectDoc | None = None) -> list[Shot]:
     """Os planos da timeline, em ordem. Cena sem `shots` é um plano só; com `shots`, cada subplano vai de onde começa
     até o próximo (ou o fim da cena), e o trecho antes do primeiro é o visual da própria cena."""
     fps = _fps(timeline)
     provs = _doc_provs(doc)
+    panel_ai = _doc_panel_ai(doc)
     out: list[Shot] = []
     for scene in timeline.get("scenes") or []:
         f0 = float(scene.get("from") or 0)
@@ -217,7 +266,7 @@ def timeline_shots(timeline: dict[str, Any], doc: ProjectDoc | None = None) -> l
         own_video = bool(scene.get("video")) or kind == "video"
         own_key = None if is_card else (scene.get("video") or scene.get("src"))
         base = dict(prov=prov, motion=str(scene.get("motion") or ""), scene_id=sid, kind=kind,
-                    image=not is_card and not own_video, key=own_key)
+                    image=not is_card and not own_video, key=own_key, ai=_scene_ai(scene, prov, panel_ai))
         subs = sorted((s for s in scene.get("shots") or [] if isinstance(s, dict)), key=lambda s: float(s.get("from") or 0))
         subs = [s for s in subs if 0 <= float(s.get("from") or 0) < frames]
         if not subs:
@@ -233,10 +282,13 @@ def timeline_shots(timeline: dict[str, Any], doc: ProjectDoc | None = None) -> l
                 continue
             video = sub.get("video")
             key = video or sub.get("src") or own_key
+            sub_prov = str(sub.get("prov") or prov)
+            # O subplano com o próprio arquivo conta pelo nível dele; o que mostra o visual da cena, pelo peso dela.
+            sub_ai = 1.0 if sub_prov == "ai" else (base["ai"] if not (video or sub.get("src")) else 0.0)
             out.append(Shot(
-                start=(f0 + a) / fps, dur=(b - a) / fps, prov=str(sub.get("prov") or prov),
+                start=(f0 + a) / fps, dur=(b - a) / fps, prov=sub_prov,
                 motion=str(sub.get("motion") or ""), scene_id=sid, kind=kind,
-                image=not is_card and not video and (bool(sub.get("src")) or not own_video), key=key,
+                image=not is_card and not video and (bool(sub.get("src")) or not own_video), key=key, ai=sub_ai,
             ))
     return out
 
@@ -364,7 +416,7 @@ class TimelineMeasure:
 def ai_scene_ids(shots: list[Shot]) -> list[str]:
     out: list[str] = []
     for shot in shots:
-        if shot.prov == "ai" and shot.scene_id and shot.scene_id not in out:
+        if shot.ai > 0 and shot.scene_id and shot.scene_id not in out:
             out.append(shot.scene_id)
     return out
 
@@ -418,7 +470,10 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
     for s in shots:
         prov_time[s.prov] = prov_time.get(s.prov, 0.0) + s.dur
     total = sum(prov_time.values()) or 1.0
-    ai_window, ai_window_start = window_share([(s.start, s.end) for s in shots if s.prov == "ai"], duration)
+    # Todo pixel de IA na tela: o plano de IA, o fundo de cartão, a moldura, o subplano e, com peso, o fundo de IA
+    # atrás do cartão de dado (`Shot.ai`).
+    ai_time = sum(s.dur * s.ai for s in shots)
+    ai_window, ai_window_start = window_share([(s.start, s.end, s.ai) for s in shots if s.ai > 0], duration)
     switches = sum(1 for a, b in zip(shots, shots[1:], strict=False) if a.prov != b.prov)
     run, run_s, best, best_s = 0, 0.0, 0, 0.0
     prev: str | None = None
@@ -518,6 +573,7 @@ def measure_timeline(timeline: dict[str, Any], doc: ProjectDoc | None = None,
         hook_prov=hook_prov,
         repeat_hits=len(repeats),
         ai_window_share=_share(ai_window),
+        ai_share=_share(ai_time / total),
     )
     return TimelineMeasure(fp, shots, cuts, (still_start, still_len), repeats, duration, _r(ai_window_start))
 
@@ -547,6 +603,10 @@ def prov_strip(timeline: dict[str, Any], doc: ProjectDoc | None = None) -> list[
 
 
 def ai_screen_share(fp: EditFingerprint) -> float:
+    """IA na tela: o tempo pesado de todo pixel de IA (`EditFingerprint.ai_share`, da timeline) ou, no MP4 e na
+    impressão antiga, a fração do nível `ai`."""
+    if fp.ai_share is not None:
+        return float(fp.ai_share)
     return float(fp.materials.prov_mix.get("ai", 0.0))
 
 

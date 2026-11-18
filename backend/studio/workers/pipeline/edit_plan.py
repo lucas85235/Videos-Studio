@@ -75,7 +75,7 @@ from studio.core.project.document import (
 )
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.project.presenter import fold, trigger_index, word_key
-from studio.core.sources import item_tokens, media_tokens, prov_of_scene, reuse_problem
+from studio.core.sources import item_is_synthetic, item_tokens, media_tokens, prov_of_scene, reuse_problem
 from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
 from studio.core.text import _GOOD_CUT_BEFORE, _NO_CUT_AFTER
 from studio.core.text import words as split_words
@@ -1072,8 +1072,8 @@ class _Planner:
         chosen: PoolItem | None = None
         context = beat.tags | beat.spoken
         for item in self.pool.items:
-            if item.media == "meme" or not (item.path or item.poster):
-                continue
+            if item.media == "meme" or not (item.path or item.poster) or item_is_synthetic(item):
+                continue  # arte de fã ou de IA da web não é subplano real
             if beat.item is not None and item.id == beat.item.id:
                 continue
             if item.id in recent_ids or self.pool_uses[item.id] >= 2:

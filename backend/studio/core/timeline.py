@@ -26,7 +26,7 @@ from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, Projec
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
-from studio.core.sources import REAL_TIERS, prov_of_media, prov_of_scene
+from studio.core.sources import REAL_TIERS, ai_weight, prov_of_media, prov_of_scene
 from studio.core.styles.library import pick_weighted
 from studio.core.styles.schema import GRADE_PRESETS, EditGrammar, StyleSpec, grammar_for, treatment_pool
 from studio.core.styles.visual import FOCUS_POINTS, pick, rotate_variant
@@ -1114,6 +1114,8 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     if grammar is not None:
         prov = prov_of_scene(scene, doc)
         out["prov"] = prov
+        if prov != "ai" and ai_weight(scene, doc) > 0:
+            out["bg_prov"] = "ai"  # cartão de dado sobre imagem de IA: o fundo desfocado conta no tempo de IA
         if grammar.effects_policy == "per_tier" and prov in edit_resolve.CLEAN_TIERS:
             out["clean"] = True
     return out
@@ -1187,13 +1189,26 @@ def mark_treatment_continuations(scenes: list[dict[str, Any]]) -> None:
 def scene_treatment(doc: ProjectDoc, style: StyleSpec, scene: Scene, *, has_news: bool = False) -> str:
     """Variação de família da cena de imagem (whiteboard, colagem, tela), sorteada pelos pesos do estilo.
     "plain" (imagem com câmera, sem chave na timeline) para os outros tipos de cena, para a cena com cartão
-    de notícia (o cartão já é o desenho dela) e para os estilos sem variação."""
+    de notícia (o cartão já é o desenho dela) e para os estilos sem variação.
+
+    A tela (janela de navegador, celular ou post de feed com cursor que clica) nunca emoldura imagem de IA: ela
+    simularia uma captura ou um post de verdade que não existe (ADR 0004). A IA sorteia entre os outros tratamentos
+    (o mesmo sorteio, sem a tela)."""
     if scene.kind != "image" or has_news:
         return "plain"
     pool = treatment_pool(style)
+    if pool and "screen" in pool and _shows_ai(doc, scene):
+        pool = {k: v for k, v in pool.items() if k != "screen"}
     if not pool or set(pool) == {"plain"}:
         return "plain"
     return pick_weighted(pool, seed_from(doc.seed, scene.id, "treatment"))
+
+
+def _shows_ai(doc: ProjectDoc, scene: Scene) -> bool:
+    """A cena mostra imagem de IA: a dela ou a de um subplano gerado por IA."""
+    if prov_of_scene(scene, doc) == "ai":
+        return True
+    return any(shot.source == "ai" for shot in scene.shots) and scene.visual.type in ("ai_image", "ai_video")
 
 
 def image_framing(doc: ProjectDoc, scene: Scene) -> tuple[str | None, str | None]:

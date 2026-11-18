@@ -24,7 +24,15 @@ from typing import Any
 from studio.core import sources as tiers
 from studio.core.hashing import seed_from
 from studio.core.numbers import card_number, is_number_token, notable_number_runs, text_numbers
-from studio.core.project.document import CARD_KINDS, ProjectDoc, Scene, SceneCard, Source, Visual
+from studio.core.project.document import (
+    CARD_KINDS,
+    ArtDirection,
+    ProjectDoc,
+    Scene,
+    SceneCard,
+    Source,
+    Visual,
+)
 from studio.core.project.pool import Pool
 from studio.core.styles.schema import StyleSpec, sources_for
 from studio.core.styles.visual import (
@@ -78,7 +86,9 @@ STYLE_TERMS = (
 # Marca, material oficial e interface: risco de direitos e de imagem falsa. "Trailer" e "leak" só na forma de mídia
 # ("game trailer", "leaked"): "a trailer park" e "a gas leak" passam.
 BRAND_TERMS = (
-    "logo", "screenshot", "gameplay", "leaked", "hud", "game trailer", "official trailer", "teaser trailer",
+    "logo", "logotype", "wordmark", "brand mark", "title logo", "game title", "box art", "cover art",
+    "game cover", "official art", "official artwork", "key art", "promo art", "promotional art",
+    "screenshot", "gameplay", "leaked", "hud", "game trailer", "official trailer", "teaser trailer",
     "movie trailer", "film trailer", "trailer footage", "trailer scene", "trailer still", "trailer frame",
     "from the trailer", "in the trailer",
 )  # fmt: skip  # o plural simples também conta
@@ -281,7 +291,7 @@ def review_counts(doc: ProjectDoc, budget: int, *, style: StyleSpec | None = Non
     if style is not None and has_real(pool):
         timed = screen_seconds(doc, style)
         total = sum(seconds for _s, _p, seconds in timed) or 1.0
-        counts["ai_pct"] = round(100 * sum(sec for _s, prov, sec in timed if prov == "ai") / total)
+        counts["ai_pct"] = round(100 * sum(sec * tiers.ai_weight(scene, doc) for scene, _p, sec in timed) / total)
         counts["real_pct"] = round(100 * sum(sec for scene, prov, sec in timed
                                              if tiers.is_real(prov) and not media_pending(doc.shown_media(scene)))
                                    / total)
@@ -807,6 +817,41 @@ def _replace_name(text: str, name: str, reference: str) -> str:
         return reference[:1].upper() + reference[1:] if sentence_start else reference
 
     return _sub_folded(text, _name_re(name, article=True), sub)
+
+
+def official_characters(art: ArtDirection | None, narration: str) -> dict[str, list[str]]:
+    """Personagens oficiais de ficção da direção de arte: entidade de gente, inventada (não `real`), fora dos
+    personagens do canal, que a narração cita pelo nome (protagonista de jogo, filme, série): `{id: nomes}`. Em
+    história original (gênero narrativa) o personagem é do canal: nenhum."""
+    if art is None or art.genre == "narrativa":
+        return {}
+    out: dict[str, list[str]] = {}
+    for entity in art.entities:
+        if entity.real or entity.character:
+            continue
+        name, role = _split_entity_name(entity.name)
+        aliases = _aliases(name, narration)
+        if aliases and _is_person(entity.look, role):
+            out[entity.id] = aliases
+    return out
+
+
+def brand_request(prompt: str, entities: list[str], characters: dict[str, list[str]]) -> str | None:
+    """O que o pedido de imagem de IA tem de marca ou de personagem oficial (logotipo, capa, arte oficial, captura
+    de jogo, ou um personagem oficial pela entidade ou pelo nome): o termo ou o nome; None quando não tem. A IA nunca
+    imita marca nem personagem oficial: a batida mostra o material oficial do acervo (ou vira cartão)."""
+    brands = find_terms(prompt or "", BRAND_TERMS)
+    if brands:
+        return brands[0]
+    for eid in entities:
+        if eid in characters:
+            return characters[eid][0]
+    folded = _fold(prompt or "")
+    for names in characters.values():
+        for name in names:
+            if _name_re(name).search(folded):
+                return name
+    return None
 
 
 def fix_entity_names(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
@@ -1417,13 +1462,15 @@ def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool
                                 ai_scenes[0][1].key, ai_scenes[0][0].id, {"count": n}))
         return issues
     total = sum(seconds for _s, _p, seconds in timed) or 1.0
-    ai_share = sum(seconds for _s, prov, seconds in timed if prov == "ai") / total
+    # Todo pixel de IA na tela (`tiers.ai_weight`): também o fundo de IA atrás do cartão de dado, com peso.
+    weights = [tiers.ai_weight(scene, doc) for scene, _p, _s in timed]
+    ai_share = sum(w * seconds for w, (_s, _p, seconds) in zip(weights, timed, strict=True)) / total
     if ai_share > policy.ai_max_share + 0.005:
         issues.append(Issue("ai_over_budget", AVISO, f"Imagem de IA em {round(ai_share * 100)}% do tempo de tela; o "
                                                      f"teto é {round(policy.ai_max_share * 100)}%.",
                             extra={"share": round(ai_share, 3)}))
     else:
-        issues += _ai_window_issue(timed, in_beats, policy.ai_max_share)
+        issues += _ai_window_issue(timed, in_beats, policy.ai_max_share, weights)
     official = sum(seconds for _s, prov, seconds in timed if prov == "official") / total
     if official > policy.official_max_share + 0.005:
         issues.append(Issue("official_over_share", AVISO, f"Material oficial em {round(official * 100)}% do tempo; o "
@@ -1458,23 +1505,25 @@ def _clock(seconds: float) -> str:
 
 
 def _ai_window_issue(timed: list[tuple[Scene, str, float]], in_beats: dict[str, Beat],
-                     ai_max_share: float) -> list[Issue]:
+                     ai_max_share: float, weights: list[float] | None = None) -> list[Issue]:
     """`ai_window_over`: a média do vídeo cabe no teto de IA, mas um trecho de `tiers.AI_WINDOW_S` passa do teto por
     trecho (`tiers.ai_window_cap`: a IA concentrada num bloco, o slideshow de imagens geradas). Aponta a primeira cena
-    de IA do trecho."""
+    de IA do trecho. `weights`: o peso de IA de cada cena (`tiers.ai_weight`); sem ele, o nível `ai` conta inteiro."""
     cap = tiers.ai_window_cap(ai_max_share)
+    if weights is None:
+        weights = [1.0 if prov == "ai" else 0.0 for _s, prov, _x in timed]
     spans: list[tuple[float, float, Scene]] = []
     t = 0.0
     for scene, _prov, seconds in timed:
         spans.append((t, t + seconds, scene))
         t += seconds
-    ai = [(a, b) for (a, b, _s), (_x, prov, _y) in zip(spans, timed, strict=True) if prov == "ai"]
+    ai = [(a, b, w) for (a, b, _s), w in zip(spans, weights, strict=True) if w > 0]
     share, start = tiers.window_share(ai, t)
     if share <= cap + 1e-6:
         return []
     end = start + min(tiers.AI_WINDOW_S, t)
-    at = next((scene for (a, b, scene), (_x, prov, _y) in zip(spans, timed, strict=True)
-               if prov == "ai" and b > start and a < end), timed[0][0])
+    at = next((scene for (a, b, scene), w in zip(spans, weights, strict=True)
+               if w > 0 and b > start and a < end), timed[0][0])
     beat = in_beats.get(at.id)
     return [Issue("ai_window_over", AVISO, f"Imagem de IA em {round(share * 100)}% do trecho de {_clock(start)} a "
                                            f"{_clock(end)}; o teto é {round(cap * 100)}% em qualquer trecho de "

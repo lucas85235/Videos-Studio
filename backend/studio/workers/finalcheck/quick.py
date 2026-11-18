@@ -515,7 +515,7 @@ def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, prof
         # A média cabe, mas a IA se concentra num trecho (o bloco de imagens geradas que vira slideshow).
         start = measure.ai_window_start
         end = start + min(metrics.AI_WINDOW_S, measure.duration)
-        first = next((s for s in measure.shots if s.prov == "ai" and s.end > start and s.start < end), None)
+        first = next((s for s in measure.shots if s.ai > 0 and s.end > start and s.start < end), None)
         out.append(item("perfil.ia", "aviso",
                         f"Imagem de IA em {_pct(window)} do trecho de {_clock(start)} a {_clock(end)} "
                         f"(teto {_pct(t.ai_window_max)} por trecho de {metrics.AI_WINDOW_S:.0f} s)",

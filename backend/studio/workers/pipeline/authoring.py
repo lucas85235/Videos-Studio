@@ -370,8 +370,9 @@ Regras:
    acrescenta. Só no prompt de IA (o material real do acervo mostra o assunto de verdade): nada de logotipo,
    personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer;
    nome de personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no world, no hook nem no
-   look: descreva o que se vê (figura histórica, cidade e país reais podem); personagem oficial de ficção aparece de
-   costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha também language (a primeira da
+   look: descreva o que se vê (figura histórica, cidade e país reais podem). Batida que precisa mostrar o logotipo,
+   a capa ou um personagem oficial não é imagem de IA: use o item oficial do acervo (source "pool") ou um cartão; o
+   app troca sozinho a imagem nova que pedir isso. Na imagem nova, preencha também language (a primeira da
    direção), shot, composition e entities (ids da direção que aparecem nela).
 7. composition: deixe livre a faixa da legenda informada no pedido.
 8. A imagem de IA não se passa por foto nem por captura, e não troca de estilo: todas usam a primeira linguagem da
@@ -1049,8 +1050,9 @@ _SOURCE_OF_TIER = {"own": "upload", "capture": "capture", "stock": "pexels", "me
 
 def usable_item(item: PoolItem) -> bool:
     """O item pode ser a imagem (ou o fundo) de uma batida: material real e não meme. Meme é reação à frase (entra
-    como evento de piada, pelo editor), nunca decoração; `graphic` e `ai` do acervo não são material real."""
-    return tiers.is_real(item.tier) and item.media != "meme"
+    como evento de piada, pelo editor), nunca decoração; `graphic` e `ai` do acervo não são material real, nem a arte
+    de fã ou de IA que a fonte declara (`media_pool.is_synthetic`, do acervo coletado antes do filtro)."""
+    return tiers.is_real(item.tier) and item.media != "meme" and not media_pool.is_synthetic(item)
 
 
 def media_from_pool(item: PoolItem) -> MediaRef:
@@ -1123,13 +1125,26 @@ def _seconds_by_prov(picks: list[_Pick]) -> dict[str, float]:
     return out
 
 
+def _pick_ai(picks: list[_Pick], i: int) -> float:
+    """Quanto da batida é imagem de IA na tela (espelho de `sources.ai_weight`): inteira quando ela mostra IA, e
+    `tiers.PANEL_AI_WEIGHT` no cartão de dado sobre imagem de IA (o fundo fica desfocado atrás do painel)."""
+    if _pick_prov(picks, i) != "ai":
+        return 0.0
+    return tiers.PANEL_AI_WEIGHT if picks[i].kind in tiers.PANEL_PROV_KINDS else 1.0
+
+
+def _ai_seconds(picks: list[_Pick]) -> float:
+    return sum(p.beat.seconds * _pick_ai(picks, i) for i, p in enumerate(picks))
+
+
 def _ai_window(picks: list[_Pick]) -> tuple[float, float, float]:
     """O trecho de `tiers.AI_WINDOW_S` com mais IA, pela duração estimada das batidas: `(fração, início, fim)`."""
-    spans: list[tuple[float, float]] = []
+    spans: list[tuple[float, float, float]] = []
     t = 0.0
     for i, p in enumerate(picks):
-        if _pick_prov(picks, i) == "ai":
-            spans.append((t, t + p.beat.seconds))
+        weight = _pick_ai(picks, i)
+        if weight > 0:
+            spans.append((t, t + p.beat.seconds, weight))
         t += p.beat.seconds
     share, start = tiers.window_share(spans, t)
     return share, start, start + min(tiers.AI_WINDOW_S, t)
@@ -1254,6 +1269,48 @@ def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int |
                   p.beat.key)]
 
 
+def _official_not_ai(picks: list[_Pick], pool: Pool, policy: SourcePolicy,
+                     characters: dict[str, list[str]]) -> list[Issue]:
+    """A IA nunca imita marca nem personagem oficial (ADR 0004): a imagem nova cujo pedido cita logotipo, capa, arte
+    oficial, captura de jogo ou um personagem oficial (`storyboard_check.brand_request`) mostra o material oficial do
+    acervo sobre ele (o que cita o personagem ou o termo; senão o real do mesmo assunto) ou, sem nenhum, vira cartão
+    sobre o real vizinho. Vale também com motivo declarado e no gancho."""
+    issues: list[Issue] = []
+    for p in picks:
+        if p.source != "new":
+            continue
+        what = storyboard_check.brand_request(p.prompt, p.entities, characters)
+        if what is None:
+            continue
+        subject = _match_tokens(what, *(n for eid in p.entities for n in characters.get(eid, [])))
+        item = _official_item(pool, subject, picks, policy, p) or _specific_item(
+            pool, p.topic, picks, policy, p.beat.seconds, texts=p.texts)
+        if item is not None:
+            _to_pool(p, item)
+            done = f"mostra o item do acervo {_item_text(item)}"
+        else:
+            _to_graphic(p)
+            done = "virou cartão sobre o material real vizinho"
+        issues.append(Issue("marca_por_ia", CORRIGIDO, f'A imagem de IA pedia "{what}" (marca ou personagem '
+                                                       f"oficial, que a IA não imita): a cena {done}.", p.beat.key))
+    return issues
+
+
+def _official_item(pool: Pool, subject: set[str], picks: list[_Pick], policy: SourcePolicy,
+                   p: _Pick) -> PoolItem | None:
+    """O material oficial (ou próprio) do acervo que mostra o assunto pedido (`subject`: o personagem ou o termo),
+    o menos usado; oficial só enquanto cabe no teto."""
+    if not subject:
+        return None
+    uses = _uses(picks)
+    room = _official_room(picks, policy, p.beat.seconds)
+    ranked = [(-len(subject & _item_tokens(item)), uses.get(item.id, 0), -item.score, index, item)
+              for index, item in enumerate(pool.items)
+              if item.tier in ("own", "official") and usable_item(item) and (room or item.tier != "official")
+              and subject & _item_tokens(item)]
+    return min(ranked, key=lambda r: r[:4])[4] if ranked else None
+
+
 def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None) -> list[Issue]:
     """Imagem de IA sem motivo declarado, havendo no acervo um item real do mesmo assunto: usa o item."""
     if not policy.require_ai_reason:
@@ -1320,7 +1377,7 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
     cap = policy.ai_max_share * total
 
     def over_total() -> bool:
-        ai = _seconds_by_prov(picks).get("ai", 0.0)
+        ai = _ai_seconds(picks)
         news = sum(1 for p in picks if p.source == "new")
         return ai > cap + 1e-6 or news > budget
 
@@ -1416,10 +1473,11 @@ def _enforce_official(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook
 
 
 def _real_first(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, budget: int,
-                positions: list[int], lang: str) -> list[Issue]:
-    """Storyboard com acervo: gancho real, IA só com motivo, cartões sobre o real e os tetos de IA e de material
-    oficial em tempo de tela."""
+                positions: list[int], lang: str, characters: dict[str, list[str]] | None = None) -> list[Issue]:
+    """Storyboard com acervo: gancho real, marca e personagem oficial só pelo material oficial, IA só com motivo,
+    cartões sobre o real e os tetos de IA e de material oficial em tempo de tela."""
     issues = _real_hook(picks, pool, policy, hook, lang)
+    issues += _official_not_ai(picks, pool, policy, characters or {})
     issues += _require_reason(picks, pool, policy, hook)
     _real_backgrounds(picks, policy)
     _flatten_roots(picks)
@@ -1574,7 +1632,8 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
 
     if real_first:
         assert pool is not None
-        issues = early + _real_first(picks, pool, policy, hook, budget, positions, lang)
+        characters = storyboard_check.official_characters(art, doc.full_text(lang))
+        issues = early + _real_first(picks, pool, policy, hook, budget, positions, lang, characters)
     else:
         issues = _enforce_budget(picks, budget, hook, positions)
     _resolve_ahead(picks)

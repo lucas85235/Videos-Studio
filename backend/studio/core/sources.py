@@ -27,8 +27,27 @@ HOOK_DEFAULT: list[str] = ["own", "official", "capture", "free"]
 """Níveis aceitos no gancho quando o estilo não diz."""
 PANEL_PROV_KINDS = DATA_KINDS
 """Cartões de dado (stat, compare, chart, map): o painel ocupa a tela e o fundo fica desfocado atrás (`BLUR` no
-renderer), então a cena conta como `graphic`, seja qual for o fundo (não entra no tempo de IA nem no teto de material
-oficial). Os cartões de texto (text, title, quote, count, document) deixam o fundo à vista e contam pelo nível dele."""
+renderer), então o NÍVEL da cena é `graphic`, seja qual for o fundo (não entra no teto de material oficial). O fundo
+de IA desfocado atrás do painel continua sendo IA na tela: entra no tempo de IA com `PANEL_AI_WEIGHT`
+(`ai_weight`). Os cartões de texto (text, title, quote, count, document) deixam o fundo à vista e contam pelo nível
+dele."""
+PANEL_AI_WEIGHT = 0.5
+"""Quanto da imagem de IA fica à vista atrás de um cartão de dado (desfocada e escurecida, o painel cobre o meio):
+metade do tempo da cena conta como IA na tela. O fundo do cartão de texto, a imagem na moldura de tela e o subplano
+de IA contam inteiros."""
+
+# Arte de fã ou gerada por IA que chega pela web (Flickr, Openverse, capa de matéria): o texto da própria fonte diz
+# ("GTA 6 Fan Cover", "fan art", "made with Midjourney", "AI-generated"). Não é material real: não entra no acervo e,
+# já anexada, conta como IA na tela. "Rockstar fan" (a foto de um fã) não casa: só arte, capa ou pôster de fã.
+_SYNTHETIC_RE = re.compile(
+    r"\b(?:fan[\s_-]?(?:arts?|made|covers?|posters?|concepts?|renders?|edits?|artworks?|designs?|mock-?ups?|"
+    r"wallpapers?)|fanarts?|fanmade|"
+    r"ai[\s_-]?(?:generated|arts?|artworks?|images?|illustrations?|renders?)|"
+    r"(?:generated|made|created) (?:with|by|using) (?:an? )?ai|midjourney|stable[\s_-]?diffusion|dall[\s·._-]?e|"
+    r"leonardo\.ai|nightcafe|"
+    r"gerad[ao]s? (?:por|com) (?:uma )?ia|arte (?:de|com|por) ia|imagem (?:de|por|com) ia|feit[ao] (?:por|com) ia|"
+    r"arte de f[aã]|fan ?arte)\b",
+    re.IGNORECASE)
 
 # Mídia anexada sem `tier`: o nível pelo tipo e, em foto e clipe, pela origem.
 _KIND_TIER: dict[str, Prov] = {"news": "capture", "capture": "capture", "official": "official", "meme": "meme"}
@@ -45,11 +64,38 @@ def is_free_license(license_name: str) -> bool:
     return bool(_FREE_LICENSE_RE.match(license_name or ""))
 
 
+def looks_synthetic(*texts: object) -> bool:
+    """O texto da fonte (título, endereço, crédito, descrição) diz que a imagem é arte de fã ou gerada por IA."""
+    return any(_SYNTHETIC_RE.search(str(t)) for t in texts if t)
+
+
+def media_is_synthetic(media: MediaRef) -> bool:
+    """Mídia da web que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`). O arquivo enviado e a
+    biblioteca do canal são escolha do usuário e ficam com o nível deles."""
+    if media.source in ("upload", "library"):
+        return False
+    return looks_synthetic(media.title, media.url, media.page_url, media.credit, media.author)
+
+
+OWN_SOURCE_PREFIXES = ("file:", "acervo:", "kit:", "kitvideo:")
+"""Itens do acervo que o usuário pôs (arquivo anexado, pasta do projeto, biblioteca do canal): ficam como estão."""
+
+
+def item_is_synthetic(item: PoolItem) -> bool:
+    """Item do acervo que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`); o do usuário fica."""
+    if item.tier == "own" or item.source_id.startswith(OWN_SOURCE_PREFIXES):
+        return False
+    return looks_synthetic(item.desc, item.url, item.page_url, item.credit)
+
+
 def prov_of_media(media: MediaRef) -> Prov:
-    """O nível de uma mídia anexada: `tier` quando existe; senão pelo tipo (notícia/captura, oficial, meme) e, em foto
+    """O nível de uma mídia anexada: arte de fã ou de IA pela própria fonte (`media_is_synthetic`) é `ai`, seja qual
+    for o `tier` do acervo; senão o `tier` quando existe; senão pelo tipo (notícia/captura, oficial, meme) e, em foto
     e clipe, pela origem: arquivo enviado e biblioteca são próprios, Pexels é banco, Commons/Openverse são foto livre,
     YouTube é oficial. Link só é `free` com licença livre declarada; sem ela é material de terceiros com direitos
     (`official`: entra no teto de Content ID e fica `editorial`)."""
+    if media_is_synthetic(media):
+        return "ai"
     if media.tier is not None:
         return media.tier
     if media.kind in _KIND_TIER:
@@ -84,6 +130,12 @@ def prov_of_scene(scene: Scene, doc: ProjectDoc | None = None) -> Prov:
     `doc`, o reaproveitamento não é seguido (a cena vale pelo próprio visual)."""
     if scene.kind in PANEL_PROV_KINDS:
         return "graphic"
+    return visual_prov(scene, doc)
+
+
+def visual_prov(scene: Scene, doc: ProjectDoc | None = None) -> Prov:
+    """O nível da IMAGEM que a cena mostra (as regras 2 a 5 de `prov_of_scene`, sem a do cartão de dado): o fundo
+    atrás do painel de um cartão de dado também é imagem na tela."""
     media = doc.shown_media(scene) if doc is not None else scene.visual.media
     if media is not None:
         return prov_of_media(media)
@@ -106,6 +158,17 @@ def _bare_card(scene: Scene) -> bool:
 
 def is_real(prov: str) -> bool:
     return prov in REAL_TIERS
+
+
+def ai_weight(scene: Scene, doc: ProjectDoc | None = None) -> float:
+    """Quanto do tempo da cena é imagem de IA na tela, de 0 a 1: 1 quando ela mostra IA (imagem, fundo de cartão de
+    texto, moldura de tela ou arte de fã/IA da web); `PANEL_AI_WEIGHT` quando a IA é o fundo desfocado de um cartão
+    de dado; 0 no resto. É o peso do teto de IA na distribuição do storyboard e nas métricas."""
+    if prov_of_scene(scene, doc) == "ai":
+        return 1.0
+    if scene.kind in PANEL_PROV_KINDS and visual_prov(scene, doc) == "ai":
+        return PANEL_AI_WEIGHT
+    return 0.0
 
 
 # --- Distribuição do material no tempo --------------------------------------------------------------------------------
@@ -136,21 +199,23 @@ TOUCH_S = 1.0
 """Aparições a menos disto uma da outra são a mesma (cenas seguidas: a pausa da fala entre elas não separa)."""
 
 
-def window_share(spans: Iterable[tuple[float, float]], total: float,
+def window_share(spans: Iterable[tuple[float, ...]], total: float,
                  window_s: float = AI_WINDOW_S) -> tuple[float, float]:
-    """O trecho de `window_s` segundos mais coberto por `spans` (`(início, fim)` em segundos, sem sobreposição entre
-    eles): `(fração coberta, início do trecho)`. Vídeo mais curto que a janela: o vídeo todo."""
+    """O trecho de `window_s` segundos mais coberto por `spans` (`(início, fim)` ou `(início, fim, peso)` em segundos,
+    sem sobreposição entre eles; o peso, de 0 a 1, é quanto do trecho conta, como o `ai_weight` do fundo de IA atrás
+    do cartão de dado): `(fração coberta, início do trecho)`. Vídeo mais curto que a janela: o vídeo todo."""
     if total <= 0:
         return 0.0, 0.0
     width = min(window_s, total)
-    clipped = [(max(0.0, a), min(total, b)) for a, b in spans if min(total, b) > max(0.0, a)]
+    clipped = [(max(0.0, sp[0]), min(total, sp[1]), float(sp[2]) if len(sp) > 2 else 1.0) for sp in spans
+               if min(total, sp[1]) > max(0.0, sp[0]) and (len(sp) <= 2 or sp[2] > 0)]
     if not clipped:
         return 0.0, 0.0
     # O máximo cai numa janela que começa no início de um trecho ou termina no fim de um.
-    starts = sorted({min(max(0.0, t), total - width) for a, b in clipped for t in (a, b - width)})
+    starts = sorted({min(max(0.0, t), total - width) for a, b, _w in clipped for t in (a, b - width)})
     best, at = -1.0, 0.0
     for t in starts:
-        covered = sum(max(0.0, min(b, t + width) - max(a, t)) for a, b in clipped)
+        covered = sum(max(0.0, min(b, t + width) - max(a, t)) * w for a, b, w in clipped)
         if covered > best + 1e-9:
             best, at = covered, t
     return min(1.0, best / width), at

@@ -51,8 +51,10 @@ from studio.core.sources import (
     FALLBACK,
     ITEM_MAX_USES,
     ITEM_REUSE_GAP_S,
+    OWN_SOURCE_PREFIXES,
     REAL_TIERS,
     item_tokens,
+    looks_synthetic,
     media_tokens,
     prov_of_scene,
     reuse_problem,
@@ -733,6 +735,17 @@ def is_mockup(item: dict[str, Any]) -> bool:
     return describes_empty_screen(str(item.get("desc") or ""), str(item.get("page_url") or ""))
 
 
+def is_synthetic(item: dict[str, Any] | PoolItem) -> bool:
+    """Arte de fã ou gerada por IA que a própria fonte declara (`sources.looks_synthetic` na descrição, nos endereços e
+    no crédito): não é material real e sai do acervo antes do pedido do storyboard. Material próprio e biblioteca do canal (`acervo:`, `kit:`, `file:`) são escolha do usuário
+    e ficam."""
+    get = item.get if isinstance(item, dict) else (lambda key: getattr(item, key, None))
+    sid = str(get("source_id") or "")
+    if sid.startswith(OWN_SOURCE_PREFIXES) or get("tier") == "own":
+        return False
+    return looks_synthetic(get("desc"), get("url"), get("page_url"), get("credit"))
+
+
 def base_score(item: dict[str, Any]) -> float:
     """Nível primeiro (o mais real ganha); depois arquivo já local e resolução."""
     score = TIER_SCORE.get(str(item.get("tier")), 0.0)
@@ -937,7 +950,7 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
                         "acervo\" para incluí-los.")
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    mockups = 0
+    mockups = synthetic = 0
     for item in raw:
         sid = str(item.get("source_id") or "")
         if not sid or sid in seen:
@@ -946,12 +959,18 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
         if is_mockup(item):
             mockups += 1
             continue
+        if is_synthetic(item):
+            synthetic += 1
+            continue
         item["dhash"] = _hash_local(item)
         item["score"] = base_score(item)
         items.append(item)
     if mockups:
         warnings.append(f"{mockups} item(ns) de banco com a tela de chroma ou em branco (mockup) ficaram fora do "
                         "acervo.")
+    if synthetic:
+        warnings.append(f"{synthetic} item(ns) de arte de fã ou gerada por IA ficaram fora do acervo (não são "
+                        "material real).")
     try:
         hashes, refs = history_marks(doc)
         apply_novelty(items, hashes, refs)

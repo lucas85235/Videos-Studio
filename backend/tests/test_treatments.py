@@ -23,10 +23,11 @@ LEGACY_SCENE_KEYS = {"id", "kind", "motion", "transition", "seed", "look", "text
                      "src", "captions", "words"}
 
 
-def _doc(style_id: str, n: int = 24, kinds: dict[int, str] | None = None) -> ProjectDoc:
+def _doc(style_id: str, n: int = 24, kinds: dict[int, str] | None = None, visual: str = "ai_image") -> ProjectDoc:
     seg = Segment(id="seg_0", text={"pt-BR": " ".join(f"palavra{j}" for j in range(n * 3)) + "."})
     scenes = [
-        Scene(id=f"scn_{k}", segment_id=seg.id, part=k, parts=n, kind=(kinds or {}).get(k, "image"), visual=Visual(prompt="x"))
+        Scene(id=f"scn_{k}", segment_id=seg.id, part=k, parts=n, kind=(kinds or {}).get(k, "image"),
+              visual=Visual(type=visual, prompt="x"))  # type: ignore[arg-type]
         for k in range(n)
     ]
     return ProjectDoc(id="prj_t", title="t", style_id=style_id, segments=[seg], scenes=scenes, seed=7)
@@ -107,17 +108,32 @@ def test_mixed_pool_is_deterministic_and_uses_both_options():
 def test_screen_treatment_changes_block_key_but_plain_styles_keep_old_scenes():
     _, _, base = _timeline("misterios-short")
     assert all(set(s) == LEGACY_SCENE_KEYS for s in base["scenes"])  # estilos antigos: mesma timeline de antes
-    _, _, screen = _timeline("misterios-short", {"family": "screen_ui", "families_mix": [], "edit": {"treatments": {"screen": 1}}})
+    _, _, real = _timeline("misterios-short", visual="stock")
+    _, _, screen = _timeline("misterios-short", {"family": "screen_ui", "families_mix": [], "edit": {"treatments": {"screen": 1}}},
+                             visual="stock")
     assert all(s["treatment"] == "screen" for s in screen["scenes"])
-    assert [c["key"] for c in chunk_timeline(screen, "v")] != [c["key"] for c in chunk_timeline(base, "v")]
+    assert [c["key"] for c in chunk_timeline(screen, "v")] != [c["key"] for c in chunk_timeline(real, "v")]
 
 
 def test_scene_with_news_card_keeps_plain():
-    doc = _doc("interface-tela", n=2)
+    doc = _doc("interface-tela", n=2, visual="stock")
     style = get_style("interface-tela", {"edit": {"treatments": {"screen": 1, "plain": 0}}})  # troca os pesos do preset
     scene = doc.scenes[0]
     assert scene_treatment(doc, style, scene) == "screen"
     assert scene_treatment(doc, style, scene, has_news=True) == "plain"
+
+
+def test_screen_never_frames_an_ai_image():
+    """QA do prj_gq4krrs11w: post de celular com curtida e janela de navegador com cursor sobre imagem de IA simulam uma
+    captura real que não existe. A imagem de IA sorteia entre os outros tratamentos; só com a tela, fica sem."""
+    only_screen = {"family": "screen_ui", "families_mix": [], "edit": {"treatments": {"screen": 1}}}
+    _, _, ai = _timeline("misterios-short", only_screen)
+    assert all("treatment" not in s for s in ai["scenes"])
+    _, _, mixed = _timeline("misterios-short", {"family": "screen_ui", "families_mix": [],
+                                                "edit": {"treatments": {"screen": 3, "collage": 1}}})
+    assert {s.get("treatment") for s in mixed["scenes"]} == {"collage"}
+    _, _, real = _timeline("misterios-short", only_screen, visual="stock")
+    assert all(s["treatment"] == "screen" for s in real["scenes"])
 
 
 def test_first_whiteboard_scene_starts_drawn_and_quick():

@@ -694,6 +694,28 @@ def test_stock_photo_that_does_not_match_the_beat_is_refused(monkeypatch):
     assert by_key(kept, beats)[phone].visual.media.pool_id == "p5"
 
 
+def test_logo_or_official_character_never_goes_to_ai(monkeypatch):
+    """QA do prj_gq4krrs11w: o "VI" neon e Jason e Lucia redesenhados pela IA. A imagem nova que pede logotipo ou
+    personagem oficial mostra o material oficial do acervo (ou vira cartão), mesmo com motivo declarado."""
+    doc = base_doc()
+    beats = authoring.plan_beats(doc, STYLE)
+    lucia = next(i for i, b in enumerate(beats) if b.text.startswith("Lucia"))
+    views = next(i for i, b in enumerate(beats) if "90 milhões" in b.text)
+    data = response(beats, {
+        lucia: {"ai_reason": "cena imaginada", "entities": ["lucia"], "prompt": "A woman drives across a bridge."},
+        views: {"ai_reason": "conceito", "prompt": "The glowing game logo over a crowd of phones at night."},
+    })
+    data["direction"]["entities"] = [{"id": "lucia", "name": "Lucia", "look": "Latina woman in her 30s, dark hair",
+                                      "real": False}]
+    monkeypatch.setattr(authoring, "_llm", FakeLLM(data))
+    new_doc, _, review = authoring.storyboard(doc, STYLE, styles={}, pool=make_pool())
+    scenes = by_key(new_doc, beats)
+    assert scenes[lucia].visual.media is not None and scenes[lucia].visual.media.pool_id == "p3"
+    assert tiers.prov_of_scene(scenes[views], new_doc) != "ai"
+    found = [i["message"] for i in review["issues"] if i["code"] == "marca_por_ia"]
+    assert any('"Lucia"' in m for m in found) and any('"logo"' in m for m in found), found
+
+
 def test_set_ai_reason_op_edits_the_reason_without_touching_the_image():
     from studio.core.project.ops import apply_ops, parse_ops
 

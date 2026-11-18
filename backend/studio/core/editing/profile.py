@@ -277,6 +277,9 @@ class EditFingerprint(BaseModel):
     """dHash, meme ou SFX repetidos no vídeo e nos últimos vídeos do canal."""
     ai_window_share: float = Field(default=0.0, ge=0, le=1)
     """A maior fração de IA num trecho de `sources.AI_WINDOW_S` (só da timeline, que sabe o nível de cada plano)."""
+    ai_share: float | None = Field(default=None, ge=0, le=1)
+    """IA na tela pesada por plano (`sources.ai_weight`: o fundo de IA atrás do cartão de dado conta em parte), só da
+    timeline. None (MP4, impressão antiga): vale `materials.prov_mix["ai"]`."""
 
 
 def prov_mix_from_materials(mix: dict[str, float]) -> dict[str, float]:
