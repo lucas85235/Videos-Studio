@@ -111,14 +111,23 @@ def on_screen_text(desc: str | None) -> str:
     return found.group(1).strip() if found else ""
 
 
-def foreign_overlay(desc: str | None, *texts: object) -> bool:
+# O que outro criador cola por cima do plano (`clips.describe`: 'sobreposição "logo"'): logo de canal, mascote, meme,
+# print colado ou a câmera do rosto do streamer.
+_OVERLAY_MARK_RE = re.compile(r'\bsobreposi[cç][aã]o\s+"([^"]+)"')
+
+
+def foreign_overlay(desc: str | None, *texts: object, marks: bool = True) -> bool:
     """O plano mostra texto de outra pessoa por cima da imagem: post de rede social, legenda de usuário, nome de
     canal, faixa de notícia ou slate ("YoMammaJammer… RIP Rudi - C U in heaven, cuz." no trailer, QA do
     prj_gq4krrs11w, 4:57). Na tela ele parece vídeo reaproveitado de outro criador e briga com a legenda. Conta como
     alheio o texto de 3 palavras ou mais em frase (com minúscula: "Stay Alert VC! Remember to check"), o de mais de
     `OVERLAY_MAX_CAPS_WORDS` palavras, e o que tem @, # ou endereço; letreiro curto em caixa alta ou em título é
     cenário. Vale quando a fala (`texts`) não divide uma palavra de 4 letras ou mais com ele (a cena que fala daquele
-    post pode mostrá-lo)."""
+    post pode mostrá-lo). A sobreposição que a visão viu (logo de canal, mascote, meme, print colado, câmera do rosto
+    do streamer) conta sempre (`marks`).
+    Quem decide para que item isto vale é `overlay_blocks` (o material do usuário e o oficial ficam)."""
+    if marks and _OVERLAY_MARK_RE.search(desc or ""):
+        return True
     text = on_screen_text(desc)
     if not text:
         return False
@@ -131,6 +140,19 @@ def foreign_overlay(desc: str | None, *texts: object) -> bool:
     spoken = {normalize_token(w) for t in texts if isinstance(t, str) for w in re.findall(r"[^\W\d_][\w'’]*", t)
               if len(w) >= 4}
     return not mine & spoken
+
+
+def overlay_blocks(item: PoolItem, *texts: object, cutaway: bool = False) -> bool:
+    """O item do acervo fica fora da cena pelo texto ou pela sobreposição alheia (`foreign_overlay`)? Nunca o do
+    usuário (o vídeo que ele gravou ou pôs no acervo e no kit: a tela do tutorial com "Press E to enter the vehicle"
+    é o material dele). O oficial é a própria obra (o post do jogo dentro do trailer é do trailer): como plano da cena
+    ele fica; como subplano de corte (`cutaway`, escolha livre do planejador) só entra onde a fala é sobre o texto (o
+    logo do dono na obra oficial não conta)."""
+    if item.tier == "own" or item.source_id.startswith(OWN_SOURCE_PREFIXES):
+        return False
+    if item.tier == "official":
+        return cutaway and foreign_overlay(item.desc, *texts, marks=False)
+    return foreign_overlay(item.desc, *texts)
 
 
 def item_is_synthetic(item: PoolItem) -> bool:

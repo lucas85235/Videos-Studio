@@ -28,7 +28,7 @@ from studio.core.project.document import (
 )
 from studio.core.project.document import Segment as Seg
 from studio.core.project.pool import Pool, PoolItem
-from studio.core.sources import foreign_overlay, on_screen_text
+from studio.core.sources import foreign_overlay, on_screen_text, overlay_blocks
 from studio.core.styles.library import get_style
 from studio.core.styles.schema import grammar_for
 from studio.core.timeline import drop_false_verdict_fx, false_verdict_on_true_material
@@ -68,12 +68,19 @@ POOL = Pool(items=[
 
 
 def test_negative_verdict_over_stock_only_with_the_scam_theme():
-    # foto de banco de um produto: "GOLPE" diria que o console é golpe (6:33 do vídeo)
-    assert not verdict.allows_negative("stock", CONSOLE)
+    # foto de banco de um produto de marca (a busca "Xbox" achou os controles): "GOLPE" diria que o console é golpe
+    # (6:33 do vídeo)
+    assert not verdict.allows_negative("stock", CONSOLE, POOL.items[0].desc, "Xbox")
+    assert not verdict.allows_negative("stock", POOL.items[0])
     assert not verdict.allows_negative("free", None, "Xbox Series X and Series S consoles")
     # foto do tema do golpe, ilustração de IA e desenho do app continuam aceitando
     assert verdict.allows_negative("stock", HACKER)
     assert verdict.allows_negative("free", None, "phishing email on a laptop screen")
+    assert verdict.allows_negative("stock", None, "Xbox controller next to a hacker hoodie", "Xbox")
+    # a foto de banco comum é ilustração: o "golpe do Pix" e o canal que desmente mito ficam com o veredito
+    assert verdict.allows_negative("stock", None, "woman holding a smartphone", "Pix")
+    assert verdict.allows_negative("stock", None, "glass of ice water")
+    assert verdict.allows_negative("free", None, "close up of wireless joysticks on a video game console")
     assert verdict.allows_negative("ai", None) and verdict.allows_negative("graphic", None)
     doc = _doc(["Nuvem: só em console Xbox. Download de PC, grátis ou pago: golpe.", "Golpe de novo."],
                media=[CONSOLE, HACKER])
@@ -149,9 +156,41 @@ def test_clip_with_someone_elses_overlay_only_where_the_speech_is_about_it():
         assert not foreign_overlay(f'x · texto "{sign}"', speech), sign
     # a fala que cita o post pode mostrá-lo
     assert not foreign_overlay(rip, "O post dizia RIP Rudi, e virou meme.")
+    # vídeo de terceiro (banco, imprensa, web) com o post ou a sobreposição de outro criador: só onde a fala é dele
+    reup = PoolItem(id="p40", tier="free", media="clip", desc=rip.replace("Trailer 1 oficial (Rockstar)", "Reação"))
+    assert overlay_blocks(reup, speech) and not media_pool.fits_scene(reup, speech)
+    assert not overlay_blocks(reup.model_copy(update={"desc": "Reação · trailer"}), speech)
+    streamer = reup.model_copy(update={"desc": 'Reação · trailer · sobreposição "facecam"'})
+    assert overlay_blocks(streamer, speech) and not media_pool.fits_scene(streamer, speech)
+    # o oficial é a própria obra (o post dentro do trailer é do trailer) e o do usuário é a escolha dele: ficam
     trailer = PoolItem(id="p133", tier="official", media="clip", desc=rip)
-    assert not media_pool.fits_scene(trailer, speech)
-    assert media_pool.fits_scene(trailer.model_copy(update={"desc": "Trailer 1 oficial (Rockstar) · trailer"}), speech)
+    assert media_pool.fits_scene(trailer, speech)
+    own = PoolItem(id="p41", tier="own", media="clip", source_id="acervo:a#1",
+                   desc='Minha gravação · texto "Press E to enter the vehicle"')
+    assert media_pool.fits_scene(own, "Aqui eu entro no carro e saio dirigindo")
+    assert media_pool.fits_scene(own.model_copy(update={"source_id": "kitvideo:k#2", "tier": "official"}),
+                                 "Aqui eu entro no carro e saio dirigindo")
+
+
+def test_clip_description_carries_the_streamer_overlay(monkeypatch, tmp_path):
+    """A visão já diz se há logo, mascote, meme ou print colado por cima do plano (ou a câmera do rosto do
+    streamer): a descrição do plano leva isso, e o texto da tela vai inteiro (o @ no fim do post decidia)."""
+    from studio.media import clips
+    from studio.providers import vision
+
+    answers = [
+        {"material": "gameplay", "on_screen_text": "RIP Rudi - C U in heaven, cuz. Posted by @YoMammaJammer today",
+         "has_overlay": True, "overlay_kind": "logo"},
+        {"material": "facecam", "on_screen_text": None, "has_overlay": False, "overlay_kind": None},
+        {"material": "gameplay", "on_screen_text": None, "has_overlay": True, "overlay_kind": "arrow"},
+    ]
+    monkeypatch.setattr(clips, "_is_mock_vision", lambda: False)
+    monkeypatch.setattr(vision, "classify_frames", lambda posters, schema: answers)
+    out = [d for d, _ in clips.describe([tmp_path / f"{i}.jpg" for i in range(3)], "Vídeo")]
+    assert '@YoMammaJammer' in out[0] and 'sobreposição "logo"' in out[0]
+    assert 'sobreposição "facecam"' in out[1]
+    assert "sobreposição" not in out[2]  # seta é edição comum
+    assert foreign_overlay(out[1], "fala qualquer") and not foreign_overlay(out[2], "fala qualquer")
 
 
 def test_planner_cutaway_skips_the_frame_with_someone_elses_overlay():
@@ -178,7 +217,7 @@ SITE_POOL = Pool(items=[
     PoolItem(id="p20", tier="capture", media="capture", path="uploads/prj_mc/pool/p20.jpg",
              desc='Grand Theft Auto VI – Rockstar Games — "Rockstar Games – Grand Theft Auto VI (site oficial)"',
              url="https://www.rockstargames.com/VI", page_url="https://www.rockstargames.com/VI",
-             credit="rockstargames.com"),
+             credit="rockstargames.com", rects=[[0.1, 0.3, 0.6, 0.06]]),
     PoolItem(id="p21", tier="capture", media="capture", path="uploads/prj_mc/pool/p21.jpg",
              desc="GTA 6 PC release — GamesBeat", page_url="https://gamesbeat.com/gta-6-pc/", credit="gamesbeat.com"),
 ])
@@ -191,6 +230,12 @@ def test_official_site_in_the_speech_shows_the_site_capture():
     edit_plan.plan(doc, get_style(LONG), SITE_POOL, recent=set())
     shots = [(s.at, s.source, s.pool_id) for s in doc.scenes[0].shots]
     assert ("site", "pool", "p20") in shots
+    # a captura sem trecho marcado não prova que mostra a página (pode ser só o rodapé): não entra pelo "site"
+    bare = Pool(items=[SITE_POOL.items[0].model_copy(update={"rects": []}), SITE_POOL.items[1]])
+    doc = _doc(["Mas só no PlayStation 5 e no Xbox Series X e Series S, e isso tá no site oficial da Rockstar."],
+               media=[xbox])
+    edit_plan.plan(doc, get_style(LONG), bare, recent=set())
+    assert all(s.pool_id != "p20" for s in doc.scenes[0].shots)
     # "site oficial do fabricante" não diz de quem: nenhuma captura entra por ele
     doc = _doc(["Passa um antivírus confiável, baixado só do site oficial do fabricante, e pronto."], media=[xbox])
     edit_plan.plan(doc, get_style(LONG), SITE_POOL, recent=set())
@@ -214,6 +259,13 @@ def test_ai_prompt_opens_with_the_device_the_speech_cites():
     assert storyboard_check.device_mismatch("Troca a senha pelo celular, nunca do computador.",
                                             "A hand holding a smartphone next to a desktop PC.") is None
     assert storyboard_check.device_mismatch("Calma, mas age rápido.", "A desktop PC in a dark room.") is None
+    # TV é a tela de qualquer aparelho e "notebook" em inglês é o caderno: não trocam o aparelho (a revisão grave
+    # pediria outro storyboard pago à toa)
+    assert storyboard_check.device_mismatch(speech, "A cozy living room, a TV glowing above a game console.") is None
+    assert storyboard_check.device_mismatch("Vai sair no PlayStation 5.",
+                                            "A television showing a racing game, a controller on the couch.") is None
+    assert storyboard_check.device_mismatch("Anota tudo antes de comprar o console.",
+                                            "A hand writing a checklist in a paper notebook.") is None
     doc = _doc([speech], prompts=[prompt])
     issues = storyboard_check._check_prompts(doc, [_beat(0, speech)])
     assert [(i.code, i.severity) for i in issues] == [("aparelho_trocado", storyboard_check.GRAVE)]
@@ -233,6 +285,23 @@ def test_every_ai_image_of_the_video_keeps_the_treatment():
     lit = Visual(prompt="A game console on a shelf at sunset", language="key_art")
     art_lit = art.model_copy(update={"treatment": "painterly gradients, neon glow"})
     assert "neon glow" not in build.compose_directed_prompt(style, art_lit, lit, lean=True)
+
+
+def test_another_image_keeps_the_ai_style_of_the_video():
+    """"Outra imagem" girava a linguagem entre as da direção (key_art → render_3d): no storyboard novo a variação muda
+    plano e composição e fica na técnica das outras imagens; o prompt de antes (com o giro) só acha o cache."""
+    from studio.core.styles.visual import language_prefix
+
+    style = get_style(LONG)
+    art = ArtDirection(treatment="smooth painterly gradients", languages=["key_art", "editorial", "render_3d"])
+    for variation in range(6):
+        visual = Visual(prompt="A game console on a shelf", language="key_art", variation=variation)
+        assert build.directed_variant(art, visual, one_language=True)[2] == "key_art"
+        assert language_prefix("key_art") in build.compose_directed_prompt(style, art, visual, lean=True)
+    rotated = Visual(prompt="A game console on a shelf", language="key_art", variation=2)
+    assert build.directed_variant(art, rotated)[2] != "key_art"  # o documento antigo continua igual
+    assert language_prefix("key_art") not in build.compose_directed_prompt(style, art, rotated, lean=True,
+                                                                           treatment=False)
 
 
 def test_presenter_never_shares_the_frame_with_an_ai_face():
@@ -279,6 +348,7 @@ def _find(tmp_path: Path, body: str, phrase: str) -> dict:
     probe = f"""window.addEventListener('load', () => setTimeout(() => {{
       const res = {{found: {find}}};
       res.rects = {page_capture.RECTS_JS};
+      res.boiler = {page_capture.BOILER_JS};
       const pre = document.createElement('pre'); pre.id = 'RES'; pre.textContent = JSON.stringify(res);
       document.documentElement.appendChild(pre); }}, 200));"""
     html = tmp_path / "page.html"
@@ -318,6 +388,13 @@ def test_capture_headline_fallback_ignores_the_footer(tmp_path):
     res = _find(tmp_path, body, title)
     assert res["found"] == [True]
     assert res["rects"][0] and res["rects"][0][0][1] < 0.9  # o trecho do corpo, não o do rodapé
+    from studio.media import page_capture
+
+    assert res["boiler"] < page_capture.BOILER_MAX_SHARE  # a página montou: o rodapé não domina o quadro
+    # o site em JS pesado que não montou o conteúdo: o quadro é o rodapé com a newsletter, e a captura é recusada
+    empty = FOOTER_SITE.replace("height:900px", "height:40px").replace("<footer>", '<footer style="height:640px">')
+    res = _find(tmp_path, empty, title)
+    assert res["boiler"] > page_capture.BOILER_MAX_SHARE
 
 
 # --- a mesma captura de novo, cedo demais, só onde a fala é sobre ela ------------------------------------------------
@@ -349,4 +426,28 @@ def test_capture_back_too_soon_only_where_the_speech_cites_it(isolated_settings,
     assert calm.kind == "text" and calm.visual.media is None  # papel de parede: sai
     assert again.visual.media is not None and again.visual.media.pool_id == "p232"  # a fala é sobre ela
     assert any("cartão tipográfico" in w and "cedo demais" in w for w in warnings)
+
+
+def test_any_media_back_too_soon_only_where_the_speech_is_about_it(isolated_settings, monkeypatch):
+    """O limite vale para qualquer mídia, não só a captura: a mesma imagem do site falso volta cedo demais numa fala
+    que não é sobre ela e vira cartão tipográfico; na fala sobre o site falso, fica."""
+    from tests.test_captura_reuso import _attach_doc, _fake_materialize
+
+    shot = PoolItem(id="p247", tier="official", media="image", desc="Site falso de GTA 6 nos resultados do Google",
+                    topic="Malwarebytes", path="uploads/prj/media/g.jpg")
+    filler = "Enquanto isso, a imagem de IA mostra outra coisa por um tempo, sem nada daquilo."
+    doc = _attach_doc(["O site falso aparece no topo do Google, pago como anúncio.", filler,
+                       "E se você já baixou? Calma, mas age rápido.", filler,
+                       "Desconfie do site que aparece primeiro nos resultados do Google."],
+                      ["image"] * 5)
+    for scene in doc.scenes[::2]:
+        scene.visual.media = media_pool.pending_ref(shot)
+    monkeypatch.setattr(media_pool, "materialize", _fake_materialize(doc))
+    media_pool.attach_chosen(doc, Pool(items=[shot]))
+    first, calm, again = doc.ordered_scenes()[::2]
+    assert first.visual.media is not None and first.visual.media.pool_id == "p247"
+    assert calm.kind == "text" and calm.visual.media is None
+    assert again.visual.media is not None and again.visual.media.pool_id == "p247"
+    assert media_pool.line_about(shot, "Desconfie do site que aparece no Google")
+    assert not media_pool.line_about(shot, "Calma, mas age rápido.")
 

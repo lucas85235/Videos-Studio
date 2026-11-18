@@ -406,6 +406,35 @@ def test_blank_page_capture_is_refused(isolated_settings, monkeypatch):
     assert not list((get_settings().data_dir / "uploads" / "prj_blank").glob("captures/pool-*"))
 
 
+def test_footer_only_capture_is_refused_and_the_old_one_does_not_come_back(isolated_settings, monkeypatch):
+    """O site oficial que não montou o conteúdo saía só com o rodapé e a caixa de newsletter ("Inscreva-se para receber
+    muito mais da Rockstar Games"): a captura é recusada, a antiga do cache (do mesmo jeito) não volta no lugar e a
+    coleta rápida do storyboard também não a acha mais."""
+    import json as _json
+
+    page = Image.new("RGB", (1280, 720), "white")
+    page.paste((0, 0, 0), (100, 500, 900, 560))
+    png = io.BytesIO()
+    page.save(png, format="PNG")
+    shot = page_capture.CaptureResult(url="https://r.example/VI", domain="r.example", title="VI", png=png.getvalue(),
+                                      text="", rects=[[[0.1, 0.7, 0.5, 0.05]]], found=[True], boiler_share=0.8)
+    assert shot.boilerplate_only
+    monkeypatch.setattr(page_capture, "capture", lambda *a, **k: shot)
+    pid, url, texts = "prj_rodape", "https://r.example/VI", ["Rockstar Games – Grand Theft Auto VI"]
+    done = proofs._pool_capture_file(pid, url, texts, 16 / 9)
+    done.parent.mkdir(parents=True)
+    old = f"uploads/{pid}/captures/old.png"
+    page.save(get_settings().data_dir / old)
+    done.write_text(_json.dumps({"asset": old, "rects": [[0.1, 0.7, 0.5, 0.05]], "headline": True}), encoding="utf-8")
+    with pytest.raises(proofs.BoilerplateOnly, match="rodapé"):
+        proofs.capture_clean(pid, url, texts, 16 / 9)
+    assert proofs.cached_capture_clean(pid, url, texts, 16 / 9) is None
+    ok = page_capture.CaptureResult(url=url, domain="r.example", title="VI", png=png.getvalue(), text="",
+                                    rects=[[[0.1, 0.3, 0.5, 0.05]]], found=[True], boiler_share=0.1)
+    monkeypatch.setattr(page_capture, "capture", lambda *a, **k: ok)
+    assert proofs.capture_clean(pid, url, texts, 16 / 9)["asset"] != old  # a página montou: a captura volta
+
+
 def test_source_capture_marks_the_headline_and_redoes_old_captures_without_it(isolated_settings, monkeypatch):
     """A fonte do roteiro é capturada pelo título dela, que quase nunca está igual na página: a captura pede a
     manchete (`headline=True`) e sai com o retângulo dela. A captura antiga sem retângulo (de antes disto) é refeita
@@ -438,9 +467,13 @@ def test_source_capture_marks_the_headline_and_redoes_old_captures_without_it(is
     assert 0 < x and x + w < 1 and 0 < y and y + h < 1  # a manchete inteira no recorte limpo
     assert proofs.capture_clean(pid, url, texts, 16 / 9) == entry and len(calls) == 1  # agora vem do cache
 
-    kept = {"asset": old, "rects": [[0.1, 0.1, 0.5, 0.1]]}  # captura antiga que achou o trecho: fica
+    kept = {"asset": old, "rects": [[0.1, 0.1, 0.5, 0.1]], "find": page_capture.FIND_VERSION}  # achou o trecho: fica
     done.write_text(_json.dumps(kept), encoding="utf-8")
     assert proofs.capture_clean(pid, url, texts, 16 / 9) == kept and len(calls) == 1
+    # a da busca antiga (que marcava o título achado na caixa de newsletter do rodapé) é refeita
+    done.write_text(_json.dumps({"asset": old, "rects": [[0.1, 0.8, 0.5, 0.1]]}), encoding="utf-8")
+    again = proofs.capture_clean(pid, url, texts, 16 / 9)
+    assert len(calls) == 2 and again["asset"] != old and again["find"] == page_capture.FIND_VERSION
 
     def offline(*a, **k):
         raise page_capture.CaptureError("A página não abriu")
@@ -1282,7 +1315,12 @@ def test_attach_reserve_skips_stock_that_does_not_match_the_scene(isolated_setti
     ("Sleek gaming desk with a gaming PC and glowing fans", "se alguém te oferece uma versão de PC", False),
     ("Sleek gaming desk with a gaming PC and glowing fans", "o PC gamer em cima da mesa (desk)", True),
     # o One vem de carona no fim da frase: o principal é o Series (QA r3, 1:48)
-    ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S e no velho Xbox One", False),
+    ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S, e até no velho Xbox One",
+     False),
+    # sem "até"/"inclusive" nada vem de carona: a negação e a comparação têm os dois modelos como assunto
+    ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S e no velho Xbox One", True),
+    ("Xbox Series X console", "Não roda no Xbox One, só no Xbox Series X", True),
+    ("Sony PS5 console", "Do PS4 pro PS5 a diferença é enorme", True),
     ("an xbox one console blinking light", "No velho Xbox One e também no Xbox Series S", True),
     ("White Xbox Series S console on a desk", "e até no velho Xbox One, sem nuvem", False),
     ("White Xbox Series S console on a desk", "O Series X tem mais potência", False),

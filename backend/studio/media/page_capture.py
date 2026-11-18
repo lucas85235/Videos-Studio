@@ -220,6 +220,30 @@ IMAGE_WAIT_S = 0.5
 
 TEXT_JS = "(() => (document.body && document.body.innerText) || '')()"
 
+FIND_VERSION = 2
+"""Versão da busca do trecho (`FIND_JS`). A 2 não marca o título achado no rodapé, no menu ou na caixa de newsletter;
+a captura guardada com a 1 é refeita na próxima coleta completa (`proofs.capture_clean`)."""
+
+# Quanto da tela (0 a 1) o rodapé, a caixa de newsletter ou o formulário de inscrição ocupam no quadro fotografado. A
+# página que não montou o conteúdo (site em JS pesado) sai só com o rodapé: "Inscreva-se para receber muito mais da
+# Rockstar Games" no lugar do site oficial (QA do prj_gq4krrs11w, 0:30 e 1:33).
+BOILER_JS = r"""(() => {
+  const SEL = 'footer, [role=contentinfo], [class*=footer i], [id*=footer i], [class*=newsletter i], ' +
+    '[id*=newsletter i], [class*=subscribe i], [class*=signup i]';
+  const W = innerWidth, H = innerHeight;
+  let area = 0;
+  for (const el of document.querySelectorAll(SEL)) {
+    if (el.parentElement && el.parentElement.closest(SEL)) continue;  // só o bloco de fora
+    const b = el.getBoundingClientRect();
+    const w = Math.max(0, Math.min(W, b.right) - Math.max(0, b.left));
+    const h = Math.max(0, Math.min(H, b.bottom) - Math.max(0, b.top));
+    area += w * h;
+  }
+  return Math.min(1, area / Math.max(1, W * H));
+})()"""
+BOILER_MAX_SHARE = 0.5
+"""Acima disto o quadro é o rodapé da página, não a página."""
+
 
 class CaptureError(RuntimeError):
     """Captura recusada ou falha (navegador ausente, página não abriu): mensagem em português."""
@@ -251,6 +275,13 @@ class CaptureResult:
     rects: list[list[list[float]] | None] = field(default_factory=list)
     width: int = 0
     height: int = 0
+    boiler_share: float = 0.0
+    """Quanto do quadro é rodapé ou caixa de newsletter (`BOILER_JS`; 0 quando a página não respondeu)."""
+
+    @property
+    def boilerplate_only(self) -> bool:
+        """O quadro é o rodapé da página (o conteúdo não montou)."""
+        return self.boiler_share > BOILER_MAX_SHARE
 
 
 # --------------------------------------------------------------------------------------------
@@ -374,6 +405,7 @@ def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: Open
             page.sleep(0.8)
             rects = page.js(RECTS_JS)
         page.js(BROKEN_JS)
+        share = page.js(BOILER_JS)
         png = page.screenshot()
         title = page.title()
         text = page.js(TEXT_JS) or ""
@@ -382,7 +414,9 @@ def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: Open
     found = [bool(f) for f in (found or [])] + [False] * max(0, len(phrases) - len(found or []))
     return CaptureResult(url=url, domain=domain_of(url), title=" ".join(str(title).split())[:300], png=png,
                          text=str(text), found=found[: len(phrases)], rects=rects[: len(phrases)],
-                         width=width * dpr, height=height * dpr)
+                         width=width * dpr, height=height * dpr,
+                         boiler_share=float(share) if isinstance(share, (int, float)) and not isinstance(share, bool)
+                         else 0.0)
 
 
 # --------------------------------------------------------------------------------------------

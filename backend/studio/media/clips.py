@@ -597,6 +597,19 @@ def plain_desc(label: str, k: int, a: float) -> str:
     return " · ".join(p for p in (label, f"plano {k}, {_clock(a)}") if p)
 
 
+# Sobreposição que denuncia vídeo de outro criador (`vision.SHOT_SCHEMA`: overlay_kind) e o material "facecam" (o
+# rosto do streamer no canto). Seta, círculo e destaque são edição comum e não contam.
+FOREIGN_OVERLAY_KINDS = frozenset({"logo", "mascot", "meme", "print"})
+
+
+def _foreign_overlay_kind(answer: dict[str, Any]) -> str:
+    """O tipo da sobreposição alheia que a visão viu no plano ("logo", "facecam"...), ou vazio."""
+    if str(answer.get("material") or "") == "facecam":
+        return "facecam"
+    kind = str(answer.get("overlay_kind") or "")
+    return kind if answer.get("has_overlay") and kind in FOREIGN_OVERLAY_KINDS else ""
+
+
 def describe(posters: list[Path], label: str = "", marks: list[tuple[int, float]] | None = None
              ) -> list[tuple[str, str]]:
     """(descrição curta, material) de cada pôster pelo provedor de visão. Com o `MockVision` (o único até o
@@ -618,7 +631,11 @@ def describe(posters: list[Path], label: str = "", marks: list[tuple[int, float]
         text = str(answer.get("on_screen_text") or "").strip()
         parts = [p for p in (label, ", ".join(w for w in words if w)) if p]
         if text and text != "TEXTO":
-            parts.append(f'texto "{text[:40]}"')
+            # inteiro (a visão já corta em 80): o @ do usuário ou o fim da frase do post decidem `foreign_overlay`
+            parts.append(f'texto "{text[:80]}"')
+        overlay = _foreign_overlay_kind(answer)
+        if overlay:
+            parts.append(f'sobreposição "{overlay}"')
         out.append((" · ".join(parts) or plain_desc(label, k, a), material))
     return out
 

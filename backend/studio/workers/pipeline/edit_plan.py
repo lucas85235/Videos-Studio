@@ -77,10 +77,10 @@ from studio.core.project.document import (
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.project.presenter import fold, trigger_index, word_key
 from studio.core.sources import (
-    foreign_overlay,
     item_is_synthetic,
     item_tokens,
     media_tokens,
+    overlay_blocks,
     prov_of_scene,
     reuse_problem,
 )
@@ -1035,7 +1035,9 @@ class _Planner:
         prj_gq4krrs11w, 0:30: a foto do console ficava sob "e isso tá no site oficial"). A captura é a do site que a
         frase nomeia depois de "site" (o endereço começa com o nome: "da Rockstar" → rockstargames.com), de preferência
         a que o coletor marcou como site oficial. Nada quando a fala não diz de quem é o site ("do fabricante"), quando
-        a cena já mostra uma captura ou quando o acervo não tem a captura dele."""
+        a cena já mostra uma captura ou quando o acervo não tem a captura dele com o trecho marcado (`rects`: a busca
+        achou o título no conteúdo da página; a página que só mostrou o rodapé fica fora do acervo,
+        `proofs.BoilerplateOnly`)."""
         if self.pool is None or beat.page or not beat.editable:
             return None
         keys = [w.key for w in beat.words]
@@ -1046,8 +1048,8 @@ class _Planner:
         rest = set(keys[at:])
         best: tuple[int, PoolItem] | None = None
         for item in self.pool.items:
-            if item.tier != "capture" or not (item.path or item.poster):
-                continue
+            if item.tier != "capture" or not (item.path or item.poster) or not item.rects:
+                continue  # sem o trecho marcado a captura não prova que mostra a página (pode ser só o rodapé)
             if beat.item is not None and item.id == beat.item.id:
                 return None
             marked = bool(_OFFICIAL_NOTE_RE.search(fold(item.desc or "")))
@@ -1214,7 +1216,7 @@ class _Planner:
                 continue  # arte de fã ou de IA da web não é subplano real
             if beat.item is not None and item.id == beat.item.id:
                 continue
-            if foreign_overlay(item.desc, " ".join(beat.spoken)):
+            if overlay_blocks(item, " ".join(beat.spoken), cutaway=True):
                 continue  # post, legenda de usuário ou slate por cima do plano: cara de vídeo de outro criador
             if item.id in recent_ids or self.pool_uses[item.id] >= 2:
                 continue

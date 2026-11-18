@@ -56,10 +56,10 @@ from studio.core.sources import (
     ITEM_REUSE_GAP_S,
     OWN_SOURCE_PREFIXES,
     REAL_TIERS,
-    foreign_overlay,
     item_tokens,
     looks_synthetic,
     media_tokens,
+    overlay_blocks,
     prov_of_scene,
     reuse_problem,
 )
@@ -401,19 +401,31 @@ def _hardware_marks(*texts: object) -> dict[str, set[str]]:
     return out
 
 
-def _lead_models(*texts: object) -> dict[str, str]:
-    """O primeiro modelo citado de cada marca de aparelho, na ordem dos textos ("Funciona nos Xbox Series X e Series
-    S, e até no velho Xbox One" → {"xbox": "series"}): é o assunto da fala; os outros vêm de carona."""
-    out: dict[str, str] = {}
+# Palavra que pendura um modelo de carona no fim da frase ("e até no velho Xbox One", "inclusive no PS4").
+_TAG_ON = frozenset("ate inclusive incluindo tambem even including also".split())
+_TAG_ON_WINDOW = 4
+
+
+def _tagged_models(*texts: object) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """(modelos de carona, modelos principais) de cada marca de aparelho. De carona é o modelo que só aparece logo
+    depois de "até", "inclusive", "também" ("Funciona nos Xbox Series X e Series S, e até no velho Xbox One" → o One);
+    principal é o citado ao menos uma vez sem isso. Negação e comparação ("Não roda no Xbox One, só no Series X", "do
+    PS4 pro PS5") não penduram nada: os dois modelos são o assunto."""
+    plain: dict[str, set[str]] = {}
+    tagged: dict[str, set[str]] = {}
     for text in texts:
         if not isinstance(text, str):
             continue
         words = _model_words(text)
-        for head, nxt in zip(words, words[1:], strict=False):
+        for i, (head, nxt) in enumerate(zip(words, words[1:], strict=False)):
             brand = _HARDWARE_ALIAS.get(head, head)
-            if brand in _HARDWARE and brand not in out and _is_model(nxt):
-                out[brand] = _ROMAN.get(nxt, nxt)
-    return out
+            if brand not in _HARDWARE or not _is_model(nxt):
+                continue
+            model = _ROMAN.get(nxt, nxt)
+            on = any(w in _TAG_ON for w in words[max(0, i - _TAG_ON_WINDOW):i])
+            (tagged if on else plain).setdefault(brand, set()).add(model)
+    return ({b: m - plain.get(b, set()) for b, m in tagged.items() if m - plain.get(b, set())},
+            {b: m for b, m in plain.items() if m})
 
 
 class ScenePrompt(str):
@@ -475,13 +487,13 @@ def fits_text(tier: str, desc: str, tags: Iterable[str] = (), topic: str = "", *
         return False
     cited_hw = _hardware_marks(*texts)
     shown_hw = _hardware_marks(shown_text)
-    lead = _lead_models(*(t for t in texts if not isinstance(t, ScenePrompt)))
+    carona, principal = _tagged_models(*(t for t in texts if not isinstance(t, ScenePrompt)))
     for brand, models in shown_hw.items():
         if not models & cited_hw.get(brand, set()):
             return False
-        # A fala cita vários modelos da marca e a foto é de um que não é o principal: o Xbox One branco na tela
-        # enquanto a fala diz "Series X e Series S" (o One só vem de carona no fim da frase).
-        if len(cited_hw.get(brand, set())) > 1 and brand in lead and lead[brand] not in models:
+        # A foto é só do modelo que a fala pendura de carona e a fala tem outro como assunto: o Xbox One branco na tela
+        # enquanto a fala diz "Series X e Series S, e até no velho Xbox One".
+        if principal.get(brand) and models & cited_hw.get(brand, set()) <= carona.get(brand, set()):
             return False
     # A cena cita o modelo ("Xbox Series S", "PS5") e a foto mostra um aparelho sem dizer qual: não prova que é ele
     # (os "joysticks on a video game console" eram um Series S).
@@ -659,6 +671,22 @@ def capture_fits(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> 
     return bool(names & _names(item.desc, *item.entities)) and len(around) <= CAPTURE_NAME_MAX
 
 
+def line_about(item: PoolItem, spoken: str, common: Iterable[str] = ()) -> bool:
+    """A fala da cena (só a fala: não a faixa, o crédito do cartão nem o prompt) é sobre este item? Captura: cita a
+    fonte (`outlet_keys`). Outro item: cita o assunto da busca que o achou (`topic`: "Malwarebytes", "Xbox") ou divide
+    com a descrição uma palavra de conteúdo fora do assunto do vídeo inteiro (`common`: "GTA", "PC"). É o que separa a
+    prova do papel de parede quando a mesma mídia volta cedo (`attach_chosen`)."""
+    if not spoken.strip():
+        return False
+    if is_source_capture(item):
+        return _mentions(outlet_keys(item), [spoken])
+    topic = fold(item.topic or "").replace(" ", "")
+    if topic and _mentions({topic}, [spoken]):
+        return True
+    mine = content_terms(_NOTE.sub(" ", item.desc or ""), *item.tags, *item.entities) - set(common)
+    return bool(mine & content_terms(spoken))
+
+
 _SENTENCE_END = re.compile(r"[.!?…]+[\"”')\]]*(?=\s|$)")
 
 
@@ -704,19 +732,20 @@ def fits_scene(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> bo
       próprio solto e a sigla da fala não provam, o banco acha o homônimo ("Rockstar in the woods" para a Rockstar
       Games, "ISO 1600" para a ISO do jogo, `common_terms`);
     - o modelo do produto da descrição não contradiz o da cena (foto de "Xbox Series S" não ilustra "Xbox One") e, com
-      vários modelos da marca na fala, é o primeiro citado (`_lead_models`: o Xbox One não ilustra "Series X e Series
-      S, e até no velho Xbox One");
+      vários modelos da marca na fala, não é só o pendurado de carona (`_tagged_models`: o Xbox One não ilustra
+      "Series X e Series S, e até no velho Xbox One"; ilustra "Não roda no Xbox One, só no Series X");
     - aparelho de marca (console, celular, placa) só com a marca citada na cena e, se a descrição diz o modelo, o
       mesmo modelo (foto de Xbox 360 não ilustra "Steam, PlayStation e Xbox").
 
     Captura de página (`is_source_capture`) só no trecho que fala daquele fato ou daquela fonte (`capture_fits`, com
     `common`: as palavras do assunto do vídeo inteiro, `video_terms`).
 
-    Em todo nível, o plano com texto de outra pessoa por cima (post, legenda de usuário, faixa de notícia, slate:
-    `sources.foreign_overlay`) só entra na cena que fala dele.
+    Fora o material do usuário e o oficial (`sources.overlay_blocks`), o plano com texto ou sobreposição de outra
+    pessoa por cima (post, legenda de usuário, logo de canal, câmera do streamer, slate: `sources.foreign_overlay`)
+    só entra na cena que fala dele.
 
     Os outros níveis sempre podem: são a própria fonte ou a escolha do usuário."""
-    if foreign_overlay(item.desc, *texts):
+    if overlay_blocks(item, *texts):
         return False
     if is_source_capture(item):
         return capture_fits(item, *texts, common=common)
@@ -1945,11 +1974,13 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         # sempre (o item e a reserva de download).
         around = spread.around(scene) if spread is not None else None
         pre = around.problem(item_tokens(item)) if around is not None else None
-        # Papel de parede: a captura volta cedo demais numa cena cuja fala não cita a fonte dela (só a faixa ou o
-        # crédito do cartão, ou palavras em comum). Repetir a matéria ali é fundo, não prova (QA do prj_gq4krrs11w:
-        # a matéria da Malwarebytes 4 vezes em 12 s nos passos práticos); só fica na cena que fala dela.
-        wallpaper = (pre is not None and not off_topic and is_source_capture(item)
-                     and not _mentions(outlet_keys(item), [scene_text(doc, scene)]))
+        # Papel de parede: a mesma mídia volta cedo demais numa cena de imagem cuja fala não é sobre ela (a captura sem
+        # a fala citar a fonte; a foto ou o quadro sem a fala citar o assunto dela: `line_about`). Repetir ali é
+        # fundo, não prova (QA do prj_gq4krrs11w: a matéria da Malwarebytes 4 vezes em 12 s nos passos práticos); só
+        # fica na cena que fala dela. O material do usuário fica (a escolha é dele).
+        wallpaper = (pre is not None and not off_topic and scene.kind == "image" and item.tier != "own"
+                     and not item.source_id.startswith(OWN_SOURCE_PREFIXES)
+                     and not line_about(item, scene_text(doc, scene), common))
         if pre is None and not off_topic:
             reserve = [c for c in fallbacks(pool, item, used) if fits_scene(c, *texts, common=common)]
             order = [item, *reserve[:MAX_FALLBACK_TRIES]]
@@ -2007,9 +2038,9 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             plain.append(_label(doc, scene))
             continue
         if (chosen is None or source is None) and (off_topic or wallpaper) and scene.kind == "image":
-            # Cena de imagem com a captura de outro assunto e sem material real do assunto na reserva: vira cartão
-            # tipográfico (a fala grande sobre o fundo do estilo), nunca a IA de reserva (mais tempo de IA, sem
-            # conferir o teto) nem a repetição da mídia vizinha.
+            # Cena de imagem com a captura de outro assunto (ou a mídia de papel de parede) e sem material real do
+            # assunto na reserva: vira cartão tipográfico (a fala grande sobre o fundo do estilo), nunca a IA de
+            # reserva (mais tempo de IA, sem conferir o teto) nem a repetição da mídia vizinha.
             scene.visual.media = None
             scene.visual.reuse_of = None
             scene.visual.type = "none"
@@ -2047,8 +2078,8 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     if typographic:
         verb = "virou" if len(typographic) == 1 else "viraram"
         warnings.append(f"{_scene_list(typographic)} {verb} cartão tipográfico (a fala na tela, fundo do estilo): a "
-                        "captura do acervo era de outro assunto (ou voltava cedo demais numa fala que não cita a fonte) "
-                        "e o acervo não tem material real que caiba ali.")
+                        "captura do acervo era de outro assunto (ou a mídia voltava cedo demais numa fala que não é "
+                        "sobre ela) e o acervo não tem material real que caiba ali.")
     if kept:
         verb = "repete" if len(kept) == 1 else "repetem"
         warnings.append(f"{_scene_list(kept)} {verb} material do acervo cedo demais ({rule}) e o acervo não tem outro "

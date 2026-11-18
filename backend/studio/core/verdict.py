@@ -38,9 +38,16 @@ NEGATIVE_VERDICTS = frozenset({
 
 # Material que é do mundo real e de quem não aplica golpe: o carimbo negativo sobre ele acusa a fonte.
 TRUE_MATERIAL_TIERS = frozenset({"official", "capture"})
-# Foto do mundo real achada por palavra-chave (banco, foto livre): mostra um produto, um lugar, uma pessoa de verdade.
-# O carimbo negativo sobre ela só cabe quando a foto é do tema do golpe (`shows_scam_theme`).
+# Foto do mundo real achada por palavra-chave (banco, foto livre). Quase sempre é ilustração (a mulher com o celular, o
+# copo d'água) e aceita o veredito; só a foto de um produto de marca (`shows_branded_product`) não aceita, salvo quando
+# mostra o tema do golpe (`shows_scam_theme`).
 PHOTO_TIERS = frozenset({"stock", "free"})
+# Produto de marca na descrição, no título ou no assunto da busca da foto (sem acento, minúsculo): o console, o
+# celular, a placa de vídeo de um fabricante. "GOLPE" sobre ele acusa o fabricante.
+_BRANDED_PRODUCT_RE = re.compile(
+    r"\b(xbox|playstation|ps[1-5]|nintendo|wii|game ?boy|steam deck|iphone|ipad|macbook|imac|airpods|apple watch|"
+    r"galaxy s\d+|pixel \d+|geforce|rtx|gtx|radeon|ryzen)\b"
+)
 # Tiers que a conferência do veredito precisa olhar (o resto sempre aceita).
 CHECKED_TIERS = TRUE_MATERIAL_TIERS | PHOTO_TIERS
 # Tema do golpe na descrição da foto de banco (sem acento, minúsculo).
@@ -176,15 +183,26 @@ def shows_scam_theme(text: str) -> bool:
     return bool(_SCAM_THEME_RE.search(_plain(text))) or describes_scam(text)
 
 
-def allows_negative(prov: str, material: MediaRef | PoolItem | None, extra: str = "") -> bool:
+def shows_branded_product(text: str) -> bool:
+    """O texto (descrição, título ou assunto da busca da foto) nomeia um produto de marca: console, celular, placa."""
+    return bool(_BRANDED_PRODUCT_RE.search(_plain(text)))
+
+
+def allows_negative(prov: str, material: MediaRef | PoolItem | None, extra: str = "", topic: str = "") -> bool:
     """O veredito negativo pode ficar sobre este material? Ilustração de IA, desenho do app e arquivo do usuário, sim.
-    Oficial e captura só quando a descrição diz que é o artefato do golpe. Foto de banco ou livre (`PHOTO_TIERS`) só
-    quando mostra o tema do golpe (`shows_scam_theme`): "GOLPE" sobre a foto de um console branco diz que o console é
-    que é golpe (QA do prj_gq4krrs11w, 6:33).
-    `extra`: descrição do item do acervo de onde a mídia veio (a `MediaRef` não guarda a descrição)."""
+    Oficial e captura só quando a descrição diz que é o artefato do golpe. Foto de banco ou livre (`PHOTO_TIERS`) sim,
+    menos a de um produto de marca (`shows_branded_product` na descrição, no título ou no assunto da busca) que não
+    mostra o tema do golpe (`shows_scam_theme`): "GOLPE" sobre os controles de um Xbox achados pela busca "Xbox" diz que
+    o console é que é golpe (QA do prj_gq4krrs11w, 6:33); "GOLPE" sobre a mulher com o celular ou "FALSO" sobre o copo
+    d'água continuam.
+    `extra`: descrição do item do acervo de onde a mídia veio (a `MediaRef` não guarda a descrição); `topic`: o assunto
+    da busca que achou o item."""
     if prov in PHOTO_TIERS:
         texts = [extra, getattr(material, "desc", "") if material is not None else "",
                  getattr(material, "title", "") if material is not None else ""]
+        topics = [topic, getattr(material, "topic", "") if material is not None else ""]
+        if not any(shows_branded_product(t or "") for t in (*texts, *topics)):
+            return True
         return any(shows_scam_theme(t or "") for t in texts)
     if prov not in TRUE_MATERIAL_TIERS:
         return True

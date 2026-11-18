@@ -1268,15 +1268,15 @@ def _check_numbers(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     return issues
 
 
-# Aparelho que a fala cita e o que a imagem de IA põe em primeiro lugar (sem acento, minúsculo). "Tela" e "monitor"
-# servem a qualquer um: não contam.
+# Aparelho que a fala cita e o que a imagem de IA põe em primeiro lugar (sem acento, minúsculo). "Tela", "monitor" e
+# TV servem a qualquer um (o console joga na TV, o celular espelha nela): não contam. "Notebook" também não (em inglês
+# é o caderno de papel).
 DEVICE_CLASSES: dict[str, frozenset[str]] = {
     "pc": frozenset({"pc", "pcs", "computer", "computers", "computador", "computadores", "desktop", "desktops",
-                     "laptop", "laptops", "notebook", "notebooks"}),
+                     "laptop", "laptops"}),
     "console": frozenset({"console", "consoles", "playstation", "ps5", "ps4", "xbox", "nintendo"}),
     "celular": frozenset({"phone", "phones", "smartphone", "smartphones", "cellphone", "celular", "celulares",
                           "iphone", "telefone"}),
-    "tv": frozenset({"tv", "tvs", "television", "televisao", "televisor", "televisores"}),
 }  # fmt: skip
 _DEVICE_OF = {word: name for name, words in DEVICE_CLASSES.items() for word in words}
 

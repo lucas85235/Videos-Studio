@@ -914,11 +914,21 @@ def scene_owners(doc: ProjectDoc, scene: Scene, pool: Pool | None) -> list[tuple
     return [own, *(_shot_owner(doc, scene, shot, pool, own) for shot in scene.shots)]
 
 
+def _pool_item_of(material: MediaRef | PoolItem | None, pool: Pool | None) -> PoolItem | None:
+    pool_id = getattr(material, "pool_id", "") if material is not None else ""
+    return pool.item(pool_id) if pool is not None and isinstance(pool_id, str) and pool_id else None
+
+
 def _pool_desc(material: MediaRef | PoolItem | None, pool: Pool | None) -> str:
     """Descrição do item do acervo de onde a mídia veio (a `MediaRef` não guarda a descrição)."""
-    pool_id = getattr(material, "pool_id", "") if material is not None else ""
-    item = pool.item(pool_id) if pool is not None and isinstance(pool_id, str) and pool_id else None
+    item = _pool_item_of(material, pool)
     return item.desc if item is not None else ""
+
+
+def _pool_topic(material: MediaRef | PoolItem | None, pool: Pool | None) -> str:
+    """Assunto da busca que achou o item do acervo de onde a mídia veio ("Xbox" na foto de banco dos controles)."""
+    item = _pool_item_of(material, pool)
+    return item.topic if item is not None else ""
 
 
 def false_verdict_on_true_material(doc: ProjectDoc, scene: Scene, stamp: str | None,
@@ -937,7 +947,8 @@ def false_verdict_on_true_material(doc: ProjectDoc, scene: Scene, stamp: str | N
     if callable(pool):
         pool = pool()
         owners = scene_owners(doc, scene, pool)
-    return not all(verdict.allows_negative(prov, material, _pool_desc(material, pool)) for prov, material in owners)
+    return not all(verdict.allows_negative(prov, material, _pool_desc(material, pool), _pool_topic(material, pool))
+                   for prov, material in owners)
 
 
 def project_pool(doc: ProjectDoc) -> Pool | None:

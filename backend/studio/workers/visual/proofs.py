@@ -32,6 +32,11 @@ class ProofError(ValueError):
     """Prova recusada (cena travada, sem trecho, captura não encontrada): mensagem em português."""
 
 
+class BoilerplateOnly(ProofError):
+    """A captura da página só mostrou o rodapé ou a caixa de newsletter (`CaptureResult.boilerplate_only`): nem a
+    captura antiga do cache serve no lugar (ela é do mesmo jeito)."""
+
+
 def capture_dict(row: PageCapture) -> dict[str, Any]:
     return {
         "id": row.id, "project_id": row.project_id, "scene_id": row.scene_id, "url": row.url, "domain": row.domain,
@@ -238,6 +243,8 @@ def cached_capture_clean(project_id: str, url: str, phrases: Sequence[str], aspe
         return None
     try:
         cached = json.loads(done.read_text(encoding="utf-8"))
+        if cached.get("rejected"):
+            return None  # a página só mostrou o rodapé: fora do acervo até uma coleta completa conseguir a página
         path = get_settings().data_dir / cached["asset"]
         if path.is_file():
             with Image.open(path) as im:
@@ -272,16 +279,25 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
     done = _pool_capture_file(project_id, url, texts, aspect)
     folder, key = done.parent, done.stem.removeprefix("pool-")
     cached = cached_capture_clean(project_id, url, texts, aspect)
-    if cached is not None and (cached.get("rects") or cached.get("headline")):
+    if (cached is not None and (cached.get("rects") or cached.get("headline"))
+            and int(cached.get("find") or 1) >= page_capture.FIND_VERSION):
         return cached
-    # Sem retângulo e de antes da busca pela manchete: captura de novo (sem ele a edição não sabe onde está o texto).
-    # Se a nova falhar, a antiga ainda serve melhor que nenhuma prova.
+    # Sem retângulo, de antes da busca pela manchete ou de uma busca antiga (a 1 marcava o título achado na caixa de
+    # newsletter do rodapé): captura de novo (sem o retângulo certo a edição não sabe onde está o texto). Se a nova
+    # falhar, a antiga ainda serve melhor que nenhuma prova; a que só mostra o rodapé, não.
     try:
         shot = page_capture.capture(url, texts, 0, open_page=open_page, headline=True)
+        if shot.boilerplate_only:
+            folder.mkdir(parents=True, exist_ok=True)
+            done.write_text(json.dumps({"rejected": "rodapé", "find": page_capture.FIND_VERSION}), encoding="utf-8")
+            raise BoilerplateOnly("A página só mostrou o rodapé (o conteúdo não carregou): envie um print ou tente de "
+                                  "novo.")
         with Image.open(io.BytesIO(shot.png)) as im:
             img = im.convert("RGB")
         if is_blank_page(img):
             raise ProofError("A página saiu em branco (não carregou a tempo): envie um print ou tente de novo.")
+    except BoilerplateOnly:
+        raise
     except Exception:
         if cached is not None:
             return cached
@@ -293,6 +309,7 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
             "view": None, "lock": False, "focus": i == 0} for i, t in enumerate(texts)]
     entry = _clean_entry(img, compute_views(img, raw), project_id, aspect, url=shot.url, domain=shot.domain,
                          title=shot.title, text=texts[0], headline=True)
+    entry["find"] = page_capture.FIND_VERSION
     done.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
     return entry
 

@@ -204,9 +204,13 @@ def compose_image_prompt(style: StyleSpec, prompt: str) -> str:
 ORIGINAL_ONLY = "Original designs only: no logos, no brand typography, no official characters, no game interface"
 
 
-def directed_variant(art: ArtDirection, visual: Visual) -> tuple[str | None, str | None, str | None]:
-    """Plano, composição e linguagem da imagem dirigida: "Outra imagem" (variation) gira os três."""
-    return rotate_variant(visual.shot, visual.composition, visual.language, art.languages, visual.variation)
+def directed_variant(art: ArtDirection, visual: Visual, *, one_language: bool = False
+                     ) -> tuple[str | None, str | None, str | None]:
+    """Plano, composição e linguagem da imagem dirigida: "Outra imagem" (variation) gira os três. Com `one_language`
+    (storyboard novo: um estilo de IA por vídeo) a linguagem não gira: a variação muda plano e composição e fica na
+    técnica das outras imagens (girar levava a imagem de "key_art" para "render_3d" no meio do vídeo)."""
+    languages = [] if one_language else art.languages
+    return rotate_variant(visual.shot, visual.composition, visual.language, languages, visual.variation)
 
 
 def media_pending(media: MediaRef | None) -> bool:
@@ -244,10 +248,11 @@ def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual,
     A direção definida pelo usuário fica como ele escreveu. Com `lean` (documento do storyboard novo,
     `lean_prompts`), mundo e cores só entram quando `wants_world`; o tratamento entra sempre: é o estilo de IA do
     vídeo (um só, o do canal), e sem ele o gerador escolhia uma técnica por imagem (QA do prj_gq4krrs11w). Sem `lean`,
-    o prompt de antes do ADR 0004. `treatment=False` só remonta o prompt enxuto de antes desta regra, para achar no
-    cache a imagem já gerada com ele (`Builder.image_keys`).
+    o prompt de antes do ADR 0004. Com `lean` a linguagem também não gira nas variações (`directed_variant`).
+    `treatment=False` só remonta o prompt enxuto de antes desta regra (sem tratamento e com a linguagem girando), para
+    achar no cache a imagem já gerada com ele (`Builder.image_keys`).
     """
-    shot, composition, language = directed_variant(art, visual)
+    shot, composition, language = directed_variant(art, visual, one_language=lean and treatment)
     if lean and not wants_world(art, visual):
         art = art.model_copy(update={"world": "", "palette": [], "treatment": art.treatment if treatment else ""})
     framing = ", ".join(t for t in (shot_text(shot), composition_text(composition)) if t)
