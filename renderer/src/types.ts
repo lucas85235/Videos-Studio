@@ -72,6 +72,11 @@ export type TimelineShot = {
   framing: ShotFraming;
   motion: string;
   easing?: ShotEasing;
+  /**
+   * Onde há letras no arquivo do plano (`src`, já no tamanho do vídeo): [x, y, w, h] de 0 a 1, detectadas pelo build
+   * (`media/text_regions.py`). O carimbo e a faixa do topo desviam delas. Ausente: sem letras conhecidas.
+   */
+  text_rects?: number[][];
 };
 
 /** Evento dentro da cena já resolvido (quadros relativos ao início da cena); `params` depende do tipo. */
@@ -219,6 +224,12 @@ export type TimelineScene = {
   shots?: TimelineShot[];
   /** Eventos presos a palavras (punch, texto que pula, meme, marca-texto...). Ausente: nenhum. */
   fx?: TimelineFx[];
+  /**
+   * Onde há letras na imagem da cena (`src`): manchete da captura, logo, letreiro. [x, y, w, h] de 0 a 1 do arquivo,
+   * detectadas pelo build (`media/text_regions.py`). Carimbo, faixa do topo e tarja da legenda levam em conta.
+   * Ausente: sem letras conhecidas (como antes).
+   */
+  text_rects?: number[][];
 };
 
 /**

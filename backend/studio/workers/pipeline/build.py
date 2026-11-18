@@ -63,7 +63,7 @@ from studio.core.timeline import (
 )
 from studio.db import session_scope
 from studio.media import audio as audio_mod
-from studio.media import audio_check, music_library, sfx_library
+from studio.media import audio_check, music_library, sfx_library, text_regions
 from studio.media import depth as depth_mod
 from studio.media import lut as lut_mod
 from studio.media.ffmpeg import read_wav
@@ -1790,6 +1790,7 @@ class Builder:
                 self._tick("Alinhamento das palavras")
             timeline = self.timeline(lang, narration, timeline_images, layers, videos)
             self._lut_news_photos(timeline)
+            text_regions.annotate_timeline(timeline, self.store.abs)
             self.warnings += timeline.pop("warnings", [])  # ex.: manchete do cartão de notícia sem tempo de leitura
             mix_rel = self.mix(lang, timeline, hashes)
             self._tick("Áudio mixado")
@@ -1999,6 +2000,7 @@ class Builder:
             self._tick("Alinhamento das palavras")
         timeline = self.timeline(primary, clips, images, layers, videos)
         self._lut_news_photos(timeline)
+        text_regions.annotate_timeline(timeline, self.store.abs)
         self.warnings += timeline.pop("warnings", [])
         starts = {n["segment_id"]: n["start"] for n in timeline["narration"]}
         placed = [

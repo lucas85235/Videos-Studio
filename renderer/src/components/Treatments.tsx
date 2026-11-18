@@ -14,6 +14,7 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { hasEffect, imageFilter } from '../look';
+import { type PxRect, screenFrame } from './fx/math';
 import { type EffectSpec, FOCUS_ORIGIN, type FocusPoint, type SceneTreatment, type TextCardStyle, type TimelineScene } from '../types';
 
 export type TreatmentProps = {
@@ -34,7 +35,7 @@ export const isTreatment = (value: unknown): value is SceneTreatment =>
   typeof value === 'string' && (TREATMENT_IDS as readonly string[]).includes(value);
 
 /** Foco da cena em fração (0..1) do quadro da imagem. */
-const focusXY = (focus: string | undefined): [number, number] => {
+export const focusXY = (focus: string | undefined): [number, number] => {
   const origin = focus && Object.prototype.hasOwnProperty.call(FOCUS_ORIGIN, focus) ? FOCUS_ORIGIN[focus as FocusPoint] : FOCUS_ORIGIN.center;
   const [x, y] = origin.split(' ').map((v) => parseFloat(v) / 100);
   return [x, y];
@@ -344,7 +345,11 @@ export const screenVariant = (seed: number, width: number, height: number, page 
   return pool[Math.floor(random(`${seed}-screen`) * pool.length) % pool.length];
 };
 
-type Rect = { x: number; y: number; w: number; h: number };
+/** A moldura que a cena usa de fato (a mesma semente do `Screen`). */
+export const sceneScreenVariant = (scene: TimelineScene, width: number, height: number) =>
+  screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture');
+
+type Rect = PxRect;
 
 /** Linha cinza no lugar de texto (a interface nunca tem texto legível). */
 const Bar: React.FC<{ w: number | string; h: number; color?: string; style?: React.CSSProperties }> = ({ w, h, color = 'rgba(255,255,255,0.22)', style }) => (
@@ -416,37 +421,11 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const enter = cont ? 1 : spring({ frame, fps, config: { damping: 16, stiffness: 120, mass: 0.8 } });
   const [fx, fy] = focusXY(scene.focus);
 
-  // Moldura do aparelho e retângulo do conteúdo (a imagem).
-  let device: Rect;
-  let content: Rect;
-  let radius: number;
-  let contentRadius: number;
-  if (variant === 'window') {
-    const w = vertical ? width * 0.9 : width * 0.74;
-    const h = vertical ? w * 0.82 : height * 0.78;
-    device = { x: (width - w) / 2, y: (height - h) / 2 - (vertical ? height * 0.06 : 0), w, h };
-    const bar = unit * 0.062;
-    content = { x: device.x, y: device.y + bar, w, h: h - bar };
-    radius = unit * 0.022;
-    contentRadius = 0;
-  } else {
-    // Celular (também moldura do feed): ocupa a altura no horizontal e ~80% no vertical.
-    const h = vertical ? height * 0.78 : height * 0.88;
-    const w = h * 0.49;
-    device = { x: (width - w) / 2, y: (height - h) / 2 - (vertical ? height * 0.05 : 0), w, h };
-    const bezel = w * 0.035;
-    content = { x: device.x + bezel, y: device.y + bezel, w: w - 2 * bezel, h: h - 2 * bezel };
-    radius = w * 0.13;
-    contentRadius = w * 0.1;
-  }
-
-  // Área da imagem dentro do conteúdo (no feed, o post fica entre o cabeçalho e as ações).
-  let media: Rect = content;
-  if (variant === 'feed') {
-    const header = content.h * 0.12;
-    const mediaH = Math.min(content.w * 1.1, content.h * 0.58);
-    media = { x: content.x, y: content.y + header + content.h * 0.035, w: content.w, h: mediaH };
-  }
+  // Moldura do aparelho, retângulo do conteúdo e área da imagem (no feed, o post fica entre o cabeçalho e as ações):
+  // a mesma conta que leva as letras da imagem para a tela (`screenFrame`, para o carimbo desviar delas).
+  const { device, content, media } = screenFrame(variant, width, height);
+  const radius = variant === 'window' ? unit * 0.022 : device.w * 0.13;
+  const contentRadius = variant === 'window' ? 0 : device.w * 0.1;
 
   // Cursor: aponta o foco da imagem (no feed, vai até o coração e curte).
   const dur = Math.max(1, scene.durationInFrames - 1);

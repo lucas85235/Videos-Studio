@@ -312,7 +312,7 @@ export const linesOf = (text: string, font: string, size: number, maxWidth: numb
 const headlineCenter = (portrait: boolean) => (portrait ? 0.13 : 0.1);
 
 /** Tamanho e altura da faixa do topo (mesma conta do `Headline`), para o painel ficar embaixo dela. */
-export const headlineBox = (text: string, style: TextCardStyle, lang: string, width: number, height: number) => {
+export const headlineBox = (text: string, style: TextCardStyle, lang: string, width: number, height: number, centerY?: number) => {
   const { portrait, u } = layoutOf(width, height);
   const label = upper(text.trim(), lang);
   const maxW = width * (portrait ? 0.86 : 0.7);
@@ -320,13 +320,13 @@ export const headlineBox = (text: string, style: TextCardStyle, lang: string, wi
   const size = fitLines(label, style.font, maxW - padX * 2, u * (portrait ? 0.068 : 0.06), u * 0.04, 2);
   const lines = linesOf(label, style.font, size, maxW - padX * 2, 2);
   const boxH = lines * size * 1.05 + size * 0.34;
-  const center = height * headlineCenter(portrait);
+  const center = height * (centerY ?? headlineCenter(portrait));
   return { label, maxW, padX, size, top: center, bottom: center + boxH / 2 };
 };
 
 /** Caixa [x, y, w, h] (fração da tela) da faixa do topo, para o carimbo desviar dela. */
-export const headlineRect = (text: string, style: TextCardStyle, lang: string, width: number, height: number): Rect => {
-  const { label, maxW, padX, size, top: center, bottom } = headlineBox(text, style, lang, width, height);
+export const headlineRect = (text: string, style: TextCardStyle, lang: string, width: number, height: number, centerY?: number): Rect => {
+  const { label, maxW, padX, size, top: center, bottom } = headlineBox(text, style, lang, width, height, centerY);
   const w = Math.min(maxW, label.length * charEm(style.font) * size * 1.02 + padX * 2) / width;
   const half = bottom - center;
   return [0.5 - w / 2, (center - half) / height, w, (half * 2) / height];
@@ -779,12 +779,19 @@ const VsBadge: React.FC<{ style: TextCardStyle; size: number; across: boolean }>
 
 /** Faixa no topo (centro a 13% da altura no vertical, 10% no horizontal): fundo na cor de destaque, texto na cor de
  *  fundo, desce ao entrar. */
-export const Headline: React.FC<{ text: string; style: TextCardStyle; lang: string }> = ({ text, style, lang }) => {
+export const Headline: React.FC<{
+  text: string;
+  style: TextCardStyle;
+  lang: string;
+  /** Centro (fração da altura) fora do topo: a faixa desceu porque no topo ela cobriria a manchete ou o logo da
+   * imagem (`placeBand`). Ausente: o topo de sempre. */
+  y?: number;
+}> = ({ text, style, lang, y }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, u } = useLayout();
   const s = spring({ frame, fps, config: { damping: 16, stiffness: 170, mass: 0.6 } });
-  const { label, maxW, padX, size, top } = headlineBox(text, style, lang, width, height);
+  const { label, maxW, padX, size, top } = headlineBox(text, style, lang, width, height, y);
   return (
     <div
       style={{
@@ -871,7 +878,9 @@ export const Stamp: React.FC<{
   maxWidth?: number;
   /** Lugar sem `anchor` (ver `stampPreferred` e `placeStamp`); padrão: à direita, a 30% da altura. */
   spot?: StampSpot;
-}> = ({ text, style, lang, delay = 6, anchor, maxWidth, spot = { side: 'right', y: 0.3 } }) => {
+  /** Escala em que o carimbo entra (encolhe até 1); perto da borda, só o que cabe na tela (`stampEntryScale`). */
+  entryScale?: number;
+}> = ({ text, style, lang, delay = 6, anchor, maxWidth, spot = { side: 'right', y: 0.3 }, entryScale = 2.2 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, portrait, u } = useLayout();
@@ -882,7 +891,7 @@ export const Stamp: React.FC<{
   const border = Math.max(3, u * 0.007);
   const place: React.CSSProperties = anchor ?? stampPlace(spot, width, height);
   return (
-    <div style={{ ...place, transform: `${anchor ? '' : 'translateY(-50%) '}rotate(-${STAMP_ROT}deg) scale(${interpolate(s, [0, 1], [2.2, 1])})`, opacity: Math.min(1, s * 2) }}>
+    <div style={{ ...place, transform: `${anchor ? '' : 'translateY(-50%) '}rotate(-${STAMP_ROT}deg) scale(${interpolate(s, [0, 1], [entryScale, 1])})`, opacity: Math.min(1, s * 2) }}>
       <div
         style={{
           padding: `${size * 0.16}px ${size * 0.34}px ${size * 0.1}px`,

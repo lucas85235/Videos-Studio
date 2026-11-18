@@ -6,7 +6,13 @@ import { charEm, mix } from './DataCards';
 
 /** `topOverride`: altura do centro da linha em fração da tela (ex.: 0.76 abaixo dos cartões); `lang`: idioma do vídeo
  *  (palavras que não fecham a 1ª fileira). */
-type Props = { lines: CaptionLine[]; style: CaptionStyle; topOverride?: number; lang?: string };
+type Props = { lines: CaptionLine[]; style: CaptionStyle; topOverride?: number; lang?: string; reserve?: CaptionReserve };
+
+/**
+ * Faixa lateral da tela que a legenda não usa entre `from` e `to` (quadros da cena): o avatar fica ali. `width` em
+ * fração da largura, a partir da borda `side`. A legenda centra no que sobra, sem encostar no recorte dele.
+ */
+export type CaptionReserve = { side: 'left' | 'right'; width: number; from: number; to: number };
 
 export const captionTop = (position: CaptionStyle['position']) => (position === 'top' ? 0.16 : position === 'center' ? 0.56 : 0.8);
 
@@ -166,20 +172,39 @@ export const captionRows = (
   return { size: Math.max(fallback.size, top * MIN_ROW_SCALE), split: fallback.split };
 };
 
+/**
+ * Margens da legenda com a faixa do avatar: a linha que fica na tela junto com ele (qualquer quadro em comum) deixa a
+ * faixa dele livre, para a ponta da legenda não encostar no recorte. Sem avatar, as margens de sempre.
+ */
+export const captionSides = (base: { left: number; right: number }, reserve: CaptionReserve | undefined, from: number, to: number) => {
+  if (!reserve || !(reserve.width > 0) || to <= reserve.from || from >= reserve.to) return base;
+  return reserve.side === 'left'
+    ? { left: Math.max(base.left, reserve.width), right: base.right }
+    : { left: base.left, right: Math.max(base.right, reserve.width) };
+};
+
 /** Quanto a tarja passa da meia altura da legenda (de 2 linhas), para cima e para baixo; e o escuro no meio dela. */
 const SCRIM_REACH = 1.7;
 const SCRIM_ALPHA = 0.6;
+/** Escuro da tarja quando a legenda passa sobre letras da imagem (logo, corpo de matéria): 60% ainda deixava as
+ * letras de trás se misturarem com as da legenda. */
+export const SCRIM_ALPHA_TEXT = 0.85;
 
 /**
  * Tarja escura atrás da legenda (degradê que some nas pontas), sobre fundo de imagem em brilho cheio: com logo, texto
  * de matéria ou foto carregada atrás, as letras da legenda deixam de se misturar com as da imagem. `center` e `half`
  * em fração da altura (os da legenda); `opacity` some com a tarja quando o fundo escurece (cartão de dado entrando).
  */
-export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: number }> = ({ center, half, opacity = 1 }) => {
+export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: number; alpha?: number }> = ({
+  center,
+  half,
+  opacity = 1,
+  alpha = SCRIM_ALPHA,
+}) => {
   const { height } = useVideoConfig();
   const top = Math.max(0, center - half * SCRIM_REACH);
   const bottom = Math.min(1, center + half * SCRIM_REACH);
-  const shade = `rgba(0,0,0,${SCRIM_ALPHA})`;
+  const shade = `rgba(0,0,0,${alpha})`;
   return (
     <div
       style={{
@@ -197,7 +222,7 @@ export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: nu
 };
 
 /** Legendas queimadas: karaokê (palavra ativa destacada), palavra a palavra ou linha. */
-export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) => {
+export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang, reserve }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   if (style.style === 'none') return null;
@@ -205,7 +230,7 @@ export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) =
   const line = lines[index];
   if (!line) return null;
   const scale = width / 1080;
-  const side = height > width ? SIDE : SIDE_WIDE;
+  const side = captionSides(height > width ? SIDE : SIDE_WIDE, reserve, line.from, line.to);
   const room = width * (1 - side.left - side.right);
   const stroke = style.stroke * scale;
   // Palavra comprida não vaza para a coluna de botões; linha que quase cabe numa fileira encolhe um pouco em vez

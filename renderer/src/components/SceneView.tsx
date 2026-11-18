@@ -2,9 +2,9 @@ import React from 'react';
 import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from 'remotion';
 import { sceneImageBox } from '../frame';
 import { imageFilter } from '../look';
-import type { RenderStyle, SceneKind, ShotEasing, TimelineScene } from '../types';
+import type { RenderStyle, SceneKind, SceneTreatment, ShotEasing, ShotFraming, TimelineScene } from '../types';
 import { CameraRig, TimeWarp } from './CameraRig';
-import { CaptionScrim, Captions, captionCenter, captionHalfHeight, captionTop } from './Captions';
+import { type CaptionReserve, CaptionScrim, Captions, captionCenter, captionHalfHeight, captionTop, SCRIM_ALPHA_TEXT } from './Captions';
 import { ChartCard, chartRows } from './ChartCard';
 import {
   type CardBand,
@@ -23,17 +23,29 @@ import { EffectsLayer } from './EffectsLayer';
 import { counterRect, FxAnchored, FxLayer } from './fx/FxLayer';
 import {
   ANCHORED_FX,
+  bandOverlap,
   cameraFx,
   cutsOf,
   entryFrames,
   fxRects,
   type ImageBox,
+  placeBand,
   placeStamp,
+  pRects,
   type Rect,
   rectThroughFraming,
+  screenFrame,
+  screenInnerMax,
+  type ShotSlot,
   shotSlots,
   spaceAt,
+  STAMP_GAP,
+  STAMP_SAFE,
+  stampEntryScale,
   type StampSpot,
+  textInScreen,
+  type TextLayer,
+  textOnScreen,
 } from './fx/math';
 import { MapCard, mapItems } from './MapCard';
 import { PresenterLayer, presenterRect } from './PresenterLayer';
@@ -43,7 +55,7 @@ import { textCardRects } from './TextBoxes';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
 import { ShotStack } from './ShotStack';
-import { isTreatment, TreatmentLayer } from './Treatments';
+import { focusXY, isTreatment, sceneScreenVariant, TreatmentLayer } from './Treatments';
 import { VisualLayer } from './VisualLayer';
 
 type Props = {
@@ -155,6 +167,59 @@ const titleEchoesSpeech = (scene: TimelineScene) => {
   const inTitle = new Set(title);
   const said = new Set(spoken);
   return title.every((t) => said.has(t)) && spoken.filter((t) => inTitle.has(t)).length >= spoken.length * 0.75;
+};
+
+type ImageTextContext = {
+  kind: SceneKind;
+  news: boolean;
+  clip: boolean;
+  treatment: SceneTreatment | undefined;
+  slots: ShotSlot[];
+  sceneBox: ImageBox | null;
+  zoom: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * Letras da imagem da cena na tela (fração), na cena inteira: `text_rects` da cena e dos planos com imagem própria,
+ * pelo recorte, pelo movimento de câmera e pelo enquadramento de cada plano; no tratamento "tela", pela área da
+ * imagem dentro da janela/celular. Documento, cartão de notícia (fundo escuro atrás do cartão) e clipe: nada.
+ */
+const imageTextOnScreen = (scene: TimelineScene, ctx: ImageTextContext): Rect[] => {
+  const { kind, slots, sceneBox, zoom, width, height } = ctx;
+  if (kind === 'document' || ctx.news || ctx.clip) return [];
+  const own = pRects({ rects: scene.text_rects });
+  const hasShotText = slots.some((s) => s.shot?.src && !s.shot.video && s.shot.text_rects?.length);
+  if (!own.length && !hasShotText) return [];
+  const aspect = width / height;
+  const focus = focusXY(scene.focus);
+  // Visual da própria cena num trecho: no tratamento "tela" a imagem fica dentro da moldura; senão, com câmera.
+  const selfRects = (framing: ShotFraming | null, motion: string) => {
+    if (ctx.treatment === 'screen') {
+      const variant = sceneScreenVariant(scene, width, height);
+      const { media } = screenFrame(variant, width, height);
+      const smax = screenInnerMax(scene.motion, zoom, variant === 'feed');
+      return textInScreen(own, sceneBox?.aspect ?? aspect, media, focus, smax, width, height)
+        .map((r) => rectThroughFraming(r, framing))
+        .filter((r): r is Rect => r !== null);
+    }
+    return textOnScreen([{ rects: own, box: sceneBox, framing, motion }], zoom, focus, aspect);
+  };
+  if (!slots.length) return selfRects(null, scene.motion);
+  const out: Rect[] = [];
+  for (const slot of slots) {
+    const shot = slot.shot;
+    if (shot?.video) continue;
+    if (shot?.src) {
+      // Imagem de outra origem: já vem no tamanho do vídeo, com o foco no centro.
+      const layer: TextLayer = { rects: pRects({ rects: shot.text_rects }), box: null, framing: shot.framing ?? null, motion: shot.motion || scene.motion };
+      out.push(...textOnScreen([layer], zoom, [0.5, 0.5], aspect));
+    } else {
+      out.push(...selfRects(shot?.framing ?? null, shot?.motion || scene.motion));
+    }
+  }
+  return out;
 };
 
 /** Uma cena: fundo com câmera + texturas + cartão + sobreposições + legendas + transição de entrada. */
@@ -291,20 +356,59 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
   const captionsShown = !hideCaptions && style.captions.style !== 'none';
 
+  // Letras da própria imagem na tela (manchete da captura, logo, letreiro: `text_rects` do build), pelo mesmo caminho
+  // da imagem (recorte, câmera, enquadramento do plano, janela do tratamento "tela"). O carimbo e a faixa do topo
+  // desviam delas e a tarja da legenda escurece mais sobre elas.
+  const imageText = imageTextOnScreen(scene, {
+    kind,
+    news: Boolean(news),
+    clip: Boolean(clipUrl),
+    treatment: treatment && url ? treatment : undefined,
+    slots,
+    sceneBox,
+    zoom: style.zoomStrength,
+    width,
+    height,
+  });
+  const avatarRect = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
+
+  // Faixa do topo na cena de imagem: desce para a altura livre mais perto quando no topo ela cobriria a manchete ou o
+  // logo da imagem (nunca sobre a legenda nem o avatar). Cartões e notícia ficam como sempre (o painel mora embaixo).
+  let headY: number | undefined;
+  if (headline && kind === 'image' && !news && position !== 'top' && imageText.length) {
+    const top = headlineRect(headline, cards, lang, width, height);
+    const half = top[3] / 2;
+    const hard: Rect[] = captionsShown ? [[0, captionMid - captionHalf, 1, captionHalf * 2]] : [];
+    if (avatarRect) hard.push(avatarRect);
+    const lo = STAMP_SAFE + half;
+    const hi = (captionsShown ? captionMid - captionHalf - STAMP_GAP : 1 - STAMP_SAFE) - half;
+    const y = placeBand(top[1] + half, top[2], half, hard, imageText, lo, hi);
+    if (Math.abs(y - (top[1] + half)) > 1e-6) {
+      headY = y;
+      band.top = 0.06; // a faixa saiu do topo: o avatar e o contador voltam a poder subir
+    }
+  }
+
   // Carimbo solto: no lugar da composição da imagem quando está livre; senão, desvia de todo texto conhecido na tela
-  // (o do cartão de texto, a faixa do topo, o cartão de notícia, a legenda, o avatar, o contador e o trecho marcado
-  // da captura).
+  // (o do cartão de texto, a faixa do topo, o cartão de notícia, a legenda, o avatar, o contador, a fonte e o trecho
+  // marcado da captura) e, quando há lugar, das letras da própria imagem.
   let stampSpot: StampSpot | undefined;
+  let stampScale: number | undefined;
   if (stamp && !inPanel) {
     const obstacles: Rect[] = textCardRects(kind, scene, cards, style.captions.uppercase, width, height);
-    if (headline) obstacles.push(headlineRect(headline, cards, lang, width, height));
+    if (headline) obstacles.push(headlineRect(headline, cards, lang, width, height, headY));
+    if (sourceChip) {
+      const chipFont = sourceChipFont(width, height);
+      const chipW = Math.min(0.7, ((source ?? '').length + 8) * chipFont * 0.56 / width + (chipFont * 1.4) / width);
+      const chipHalf = sourceChipHalf(width, height);
+      obstacles.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);
+    }
     if (news) {
       const newsW = width > height ? 0.52 : 0.86;
       obstacles.push([(1 - newsW) / 2, band.top, newsW, Math.max(0, band.bottom - band.top)]);
     }
     if (captionsShown) obstacles.push([0, captionMid - captionHalf, 1, captionHalf * 2]);
-    const avatar = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
-    if (avatar) obstacles.push(avatar);
+    if (avatarRect) obstacles.push(avatarRect);
     for (const e of fx ?? []) {
       const counter = e.type === 'counter' ? counterRect(e.params ?? {}, width, height, band.top) : null;
       if (counter) obstacles.push(counter);
@@ -315,14 +419,28 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         if (onScreen) obstacles.push(onScreen);
       }
     }
-    stampSpot = placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), stampGeom(stamp, cards, lang, width, height), obstacles);
+    const geom = stampGeom(stamp, cards, lang, width, height);
+    stampSpot = placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), geom, obstacles, imageText);
+    stampScale = stampEntryScale(stampSpot, geom);
   }
+  // A legenda deixa livre a faixa do avatar enquanto ele está na tela (a ponta dela encostava no recorte).
+  const captionReserve: CaptionReserve | undefined =
+    avatarRect && scene.presenter
+      ? {
+          side: scene.presenter.side === 'left' ? 'left' : 'right',
+          width: avatarRect[2] + 0.02,
+          from: Math.round(scene.presenter.from),
+          to: Math.round(scene.presenter.from + scene.presenter.dur),
+        }
+      : undefined;
   // Fundo de imagem em brilho cheio (foto, captura, logo, tratamento): a legenda ganha uma tarja escura por baixo, para
   // as letras não se misturarem com o texto e o logo da imagem. Cartões já escurecem o fundo; estilo com caixa própria
   // (`captions.background`) já tem a dele. O cartão que entra depois do corte deixa o fundo nítido até chegar: a tarja
   // fica até lá e some junto com o escurecimento (`backdrop`), sem pular de um quadro para o outro.
   const scrimOpacity = news ? 0 : (DIM[kind] ?? 0) === 0 ? 1 : 1 - backdrop;
   const scrim = captionsShown && !style.captions.background && scrimOpacity > 0 && Boolean(url || clipUrl);
+  // Legenda sobre letras da imagem (logo, corpo de matéria): a tarja escurece mais, as letras de trás somem.
+  const scrimAlpha = bandOverlap(captionMid - captionHalf, captionMid + captionHalf, imageText) > 0.002 ? SCRIM_ALPHA_TEXT : undefined;
 
   const background = slots.length ? (
     <ShotStack
@@ -369,9 +487,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         card
       )}
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
-      {headline ? <Headline text={headline} style={cards} lang={lang} /> : null}
-      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} opacity={scrimOpacity} /> : null}
-      {stamp && stampSpot ? <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} spot={stampSpot} /> : null}
+      {headline ? <Headline text={headline} style={cards} lang={lang} y={headY} /> : null}
+      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} opacity={scrimOpacity} alpha={scrimAlpha} /> : null}
+      {stamp && stampSpot ? <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} spot={stampSpot} entryScale={stampScale} /> : null}
       {sourceChip && sourceFrom > 0 ? (
         <Sequence from={sourceFrom} layout="none" name="Fonte">
           {sourceChip}
@@ -384,7 +502,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       ) : null}
       {/* A transição de entrada (flash, fade, luz) passa por baixo da legenda: a legenda fica sempre opaca. */}
       <TransitionIn type={scene.transition} frames={entry} seed={scene.seed} />
-      {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} />}
+      {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} reserve={captionReserve} />}
     </AbsoluteFill>
   );
 };

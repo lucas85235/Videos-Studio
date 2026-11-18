@@ -317,6 +317,34 @@ out.rectMarked = m.stampRect(out.stampMarked, geom);
 out.rectWall = m.stampRect(out.stampWall, geom);
 // Preferido fora da área segura (carimbo embaixo, colado na borda): entra na área.
 out.stampClamped = m.placeStamp([{ side: 'left', y: 0.97 }], geom, []);
+// Letras da IMAGEM (manchete da captura, logo): o carimbo desvia quando há lugar; sem lugar livre de letra, nunca
+// troca a letra da imagem pela legenda ou pelo título da tela.
+const logo = [[0.55, 0.05, 0.4, 0.7]];
+out.stampLogo = m.placeStamp(right, geom, [caption], logo);
+out.rectLogo = m.stampRect(out.stampLogo, geom);
+out.stampLogoSoft = logo;
+const page = [[0.0, 0.05, 1.0, 0.62]];
+out.stampPage = m.placeStamp(right, geom, [caption], page);
+out.rectPage = m.stampRect(out.stampPage, geom);
+// Entrada do carimbo (2,2 → 1): no lugar perto da borda, só o que cabe; longe da borda, a de sempre.
+out.entryLow = m.stampEntryScale({ side: 'right', y: 1 - m.STAMP_SAFE - geom.halfH }, geom);
+out.entryMid = m.stampEntryScale({ side: 'right', y: 0.5 }, geom);
+// Faixa do topo sobre a manchete da captura (topo 0,11-0,47): desce para a altura livre mais perto, acima da legenda.
+out.bandFree = m.placeBand(0.1, 0.5, 0.035, [caption], [[0.0, 0.3, 1, 0.1]], 0.085, 0.65);
+out.bandMoved = m.placeBand(0.1, 0.5, 0.035, [caption], [[0.02, 0.03, 0.1, 0.03], [0.02, 0.11, 0.8, 0.36]], 0.085, 0.65);
+out.bandStuck = m.placeBand(0.1, 0.5, 0.035, [caption], [[0, 0, 1, 0.7]], 0.085, 0.65);
+// Letras da imagem na tela: parada, com pan para baixo (o envelope cobre todo o caminho) e no plano ampliado.
+const head = [[0.1, 0.2, 0.6, 0.1]];
+out.textStatic = m.textOnScreen([{ rects: head, box: null, framing: null, motion: 'none' }], 0.14, [0.5, 0.5], 16 / 9);
+out.textPan = m.textOnScreen([{ rects: head, box: null, framing: null, motion: 'pan_down' }], 0.14, [0.5, 0.5], 16 / 9);
+out.textFramed = m.textOnScreen(
+  [{ rects: head, box: null, framing: { scale: 2, x: 0.25, y: 0.25 }, motion: 'none' }], 0.14, [0.5, 0.5], 16 / 9);
+// Tratamento "tela" (janela da captura): a manchete fica dentro da janela, não onde estaria a tela cheia.
+const win = m.screenFrame('window', 1920, 1080);
+out.screenMedia = win.media;
+out.textScreen = m.textInScreen(head, 16 / 9, win.media, [0.5, 0.5], 1, 1920, 1080);
+out.textScreenZoom = m.textInScreen(head, 16 / 9, win.media, [0.5, 0.5], m.screenInnerMax('ken_burns_in', 0.14, false), 1920, 1080);
+out.bandOverlap = [m.bandOverlap(0.7, 0.9, [[0, 0.8, 1, 0.05]]), m.bandOverlap(0.7, 0.9, [[0, 0.2, 1, 0.1]])];
 out.flow = m.flowRows([300, 200, 900, 100, 100], 40, 1000);
 out.entry = [9, 12, 30, 60, 0].map((f) => m.entryFrames(f, 30));
 out.entryMax = m.ENTRY_MAX_S;
@@ -554,6 +582,80 @@ def test_stamp_keeps_its_place_when_free_and_dodges_known_text(fx_math: dict) ->
     assert cost(wall) < cost(fx_math["stampWallPreferredRect"])
     clamped = fx_math["stampClamped"]
     assert clamped["side"] == "left" and clamped["y"] == pytest.approx(1 - safe - fx_math["stampGeom"]["halfH"])
+
+
+def test_stamp_dodges_image_letters_but_never_trades_them_for_screen_text(fx_math: dict) -> None:
+    """QA do prj_gq4krrs11w: "NÃO CONFIRMADO" sobre as letras do logo GTA VI, "BOATO" sobre o "C" de "PC". Com lugar
+    livre das letras da imagem, o carimbo vai para lá; sem lugar (a página inteira é texto), ele fica sobre a imagem,
+    nunca sobre a legenda."""
+    assert fx_math["stampLogo"] == {"side": "left", "y": 0.3}
+    assert all(_overlap(fx_math["rectLogo"], o) == 0 for o in fx_math["stampLogoSoft"])
+    page = fx_math["rectPage"]
+    assert _overlap(page, [0, 0.7, 1, 0.2]) == 0
+    assert page[1] >= fx_math["stampSafe"] - 1e-9
+
+
+def test_stamp_entry_never_overflows_the_screen(fx_math: dict) -> None:
+    """QA: "CONFIRMADO" cortado na borda de baixo (1:57): ele entrava em escala 2,2 colado na área segura."""
+    low, mid = fx_math["entryLow"], fx_math["entryMid"]
+    geom = fx_math["stampGeom"]
+    # No meio da altura, só a borda do lado limita (a caixa grande não passa da direita da tela).
+    assert mid == pytest.approx((1 - geom["cx"]["right"]) / geom["halfW"])
+    assert 0.8 + geom["halfW"] * mid <= 1 + 1e-9
+    assert 1 <= low <= mid
+    y = 1 - fx_math["stampSafe"] - geom["halfH"]
+    assert y + geom["halfH"] * low <= 1 + 1e-9
+
+
+def test_headline_band_leaves_the_capture_headline(fx_math: dict) -> None:
+    """QA: "PRÓXIMOS GOLPES, SEGUNDO ESET" e "ALERTA ESET" sobre o H1 da captura. Livre, a faixa fica no topo; sobre a
+    manchete, desce para logo abaixo dela (acima da legenda); sem lugar livre, fica no topo de sempre."""
+    assert fx_math["bandFree"] == pytest.approx(0.1)
+    assert fx_math["bandMoved"] == pytest.approx(0.47 + 0.035 + 0.015)
+    assert fx_math["bandStuck"] == pytest.approx(0.1)
+
+
+def test_image_letters_follow_camera_framing_and_screen_window(fx_math: dict) -> None:
+    """As caixas do backend (fração do arquivo) vão para a tela pelo mesmo caminho da imagem."""
+    (static,) = fx_math["textStatic"]
+    assert static == pytest.approx([0.1, 0.2, 0.6, 0.1])
+    (pan,) = fx_math["textPan"]
+    # O pan para baixo mexe a imagem na vertical: a caixa cobre o caminho todo (mais alta, contém a parada).
+    assert pan[1] < 0.2 and pan[1] + pan[3] > 0.3 and pan[3] > 0.1
+    (framed,) = fx_math["textFramed"]
+    # Plano 2x na janela do canto de cima à esquerda: (0,1-0)·2 = 0,2; (0,2-0)·2 = 0,4; o resto sai do quadro.
+    assert framed[0] == pytest.approx(0.2) and framed[1] == pytest.approx(0.4)
+    assert framed[0] + framed[2] == pytest.approx(1.0)
+    media = fx_math["screenMedia"]
+    (inside,) = fx_math["textScreen"]
+    x0, y0 = media["x"] / 1920, media["y"] / 1080
+    assert inside[0] >= x0 - 1e-6 and inside[1] >= y0 - 1e-6
+    assert inside[0] + inside[2] <= (media["x"] + media["w"]) / 1920 + 1e-6
+    assert inside[2] < 0.6  # a janela é menor que a tela
+    (zoomed,) = fx_math["textScreenZoom"]
+    assert zoomed[2] > inside[2]  # o zoom lento e o do clique aumentam a caixa
+    hit, miss = fx_math["bandOverlap"]
+    assert hit == pytest.approx(0.05) and miss == 0
+
+
+def test_sceneview_feeds_image_letters_to_stamp_band_and_scrim() -> None:
+    """A cena leva as letras da imagem (`text_rects`) para o carimbo, a faixa do topo e a tarja; a fonte solta e o
+    avatar entram como texto da tela; a legenda deixa a faixa do avatar livre."""
+    src = _read(COMP / "SceneView.tsx")
+    assert "const imageText = imageTextOnScreen(scene, {" in src
+    assert "placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), geom, obstacles, imageText)" in src
+    assert "placeBand(top[1] + half, top[2], half, hard, imageText, lo, hi)" in src
+    assert "<Headline text={headline} style={cards} lang={lang} y={headY} />" in src
+    assert "entryScale={stampScale}" in src and "alpha={scrimAlpha}" in src
+    assert "reserve={captionReserve}" in src
+    assert "obstacles.push([0.06, sourceY - chipHalf, chipW, chipHalf * 2]);" in src
+    captions = _read(COMP / "Captions.tsx")
+    assert "const side = captionSides(height > width ? SIDE : SIDE_WIDE, reserve, line.from, line.to);" in captions
+    assert "export const SCRIM_ALPHA_TEXT = 0.85;" in captions
+    # A moldura do tratamento "tela" é a mesma conta da que leva as letras para a tela.
+    assert "screenFrame(variant, width, height)" in _read(COMP / "Treatments.tsx")
+    types = _read(RD / "types.ts")
+    assert types.count("text_rects?: number[][];") == 2
 
 
 def test_flow_rows_wrap_like_flex(fx_math: dict) -> None:

@@ -442,20 +442,34 @@ const overlapArea = (a: Rect, b: Rect) => {
   return w > 1e-6 && h > 1e-6 ? w * h : 0;
 };
 
+/** Custo de uma caixa: sobreposição com texto da TELA (título, legenda, avatar: nunca) pesa muito mais que com letra
+ * da IMAGEM (manchete da captura, logo: evita quando dá; a detecção pode errar e a tela pode não ter lugar livre). */
+export const HARD_WEIGHT = 1000;
+
+/** Peso da letra da imagem pela altura do bloco: cobrir a manchete ou o logo (bloco alto, letra grande) é pior que
+ * cobrir uma linha do corpo da matéria. */
+const softWeight = (o: Rect) => 1 + Math.min(3, o[3] * 10);
+
+const boxCost = (box: Rect, hard: Rect[], soft: Rect[]) =>
+  hard.reduce((sum, o) => sum + overlapArea(box, o), 0) * HARD_WEIGHT +
+  soft.reduce((sum, o) => sum + overlapArea(box, o) * softWeight(o), 0);
+
 /**
  * Onde o carimbo solto fica: o primeiro lugar de `preferred` (o da composição da imagem, como antes) que não toca
- * nenhum texto conhecido (`obstacles`, caixas em fração da tela) e cabe na área segura; senão, o lugar livre mais
- * perto da altura preferida, logo acima ou abaixo de algum texto, de qualquer lado (o lado preferido primeiro).
- * Sem lugar livre, o de menor sobreposição. Sem texto no caminho, o lugar de sempre (o quadro não muda).
+ * nenhum texto conhecido e cabe na área segura; senão, o lugar livre mais perto da altura preferida, logo acima ou
+ * abaixo de algum texto, de qualquer lado (o lado preferido primeiro). Sem lugar livre, o de menor sobreposição.
+ * `obstacles`: texto desenhado pela tela (título, legenda, faixa, avatar, contador, fonte), nunca coberto quando há
+ * outra saída; `soft`: letras da própria imagem (manchete da captura, logo, letreiro: `text_rects` da timeline), que o
+ * carimbo evita sempre que há lugar. Sem texto no caminho, o lugar de sempre (o quadro não muda).
  */
-export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect[]): StampSpot => {
+export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect[], soft: Rect[] = []): StampSpot => {
   const lo = STAMP_SAFE + g.halfH;
   const hi = 1 - STAMP_SAFE - g.halfH;
   const fit = (y: number) => (lo <= hi ? clamp(y, lo, hi) : 0.5);
   const first = preferred[0] ?? { side: 'right' as StampSide, y: 0.3 };
   const other: StampSide = first.side === 'right' ? 'left' : 'right';
   const ys = [first.y, lo, hi];
-  for (const o of obstacles) ys.push(o[1] - g.halfH - STAMP_GAP, o[1] + o[3] + g.halfH + STAMP_GAP);
+  for (const o of [...obstacles, ...soft]) ys.push(o[1] - g.halfH - STAMP_GAP, o[1] + o[3] + g.halfH + STAMP_GAP);
   const near = [...new Set(ys.map(fit))].sort((a, b) => Math.abs(a - first.y) - Math.abs(b - first.y));
   const candidates: StampSpot[] = [
     ...preferred.map((p) => ({ side: p.side, y: fit(p.y) })),
@@ -464,14 +478,10 @@ export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect
       { side: other, y },
     ]),
   ];
-  const cost = (spot: StampSpot) => {
-    const box = stampRect(spot, g);
-    return obstacles.reduce((sum, o) => sum + overlapArea(box, o), 0);
-  };
   let best = candidates[0];
   let bestCost = Infinity;
   for (const spot of candidates) {
-    const c = cost(spot);
+    const c = boxCost(stampRect(spot, g), obstacles, soft);
     if (c === 0) return spot;
     if (c < bestCost - 1e-9) {
       best = spot;
@@ -479,6 +489,209 @@ export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect
     }
   }
   return best;
+};
+
+/** Escala de entrada do carimbo (ele entra grande, 2,2 → 1). No lugar perto da borda, só o que cabe na tela: o
+ * carimbo nunca sai cortado na borda enquanto encolhe. */
+export const STAMP_ENTRY_SCALE = 2.2;
+export const stampEntryScale = (spot: StampSpot, g: StampGeom) => {
+  const cx = g.cx[spot.side];
+  const room = Math.min(cx / g.halfW, (1 - cx) / g.halfW, spot.y / g.halfH, (1 - spot.y) / g.halfH);
+  return clamp(room, 1, STAMP_ENTRY_SCALE);
+};
+
+/**
+ * Altura (centro, fração da tela) de uma faixa centrada na horizontal (a faixa do topo, "GAMESBEAT · 13/10/2026"):
+ * a de sempre (`preferred`) quando ela não toca letra da imagem (`soft`) nem texto da tela (`hard`); senão, a altura
+ * livre mais perto dela entre `lo` e `hi` (centro); sem altura livre, a de menor sobreposição. `w`/`half`: largura e
+ * meia altura da faixa.
+ */
+export const placeBand = (preferred: number, w: number, half: number, hard: Rect[], soft: Rect[], lo: number, hi: number): number => {
+  const x = 0.5 - w / 2;
+  const box = (y: number): Rect => [x, y - half, w, half * 2];
+  const first = clamp(preferred, lo, Math.max(lo, hi));
+  if (boxCost(box(first), hard, soft) === 0 || hi <= lo) return first;
+  const ys = [first, lo, hi];
+  for (const o of [...hard, ...soft]) ys.push(o[1] - half - STAMP_GAP, o[1] + o[3] + half + STAMP_GAP);
+  const candidates = [...new Set(ys.filter((y) => y >= lo - 1e-9 && y <= hi + 1e-9))].sort(
+    (a, b) => Math.abs(a - first) - Math.abs(b - first),
+  );
+  let best = first;
+  let bestCost = boxCost(box(first), hard, soft);
+  for (const y of candidates) {
+    const c = boxCost(box(y), hard, soft);
+    if (c === 0) return y;
+    if (c < bestCost - 1e-9) {
+      best = y;
+      bestCost = c;
+    }
+  }
+  return best;
+};
+
+/** Área (fração da tela) das caixas `rects` coberta pela faixa horizontal [top, bottom]. */
+export const bandOverlap = (top: number, bottom: number, rects: Rect[]) =>
+  rects.reduce((sum, r) => sum + overlapArea([0, top, 1, bottom - top], r), 0);
+
+// --- letras da imagem na tela -------------------------------------------------------------------------------------
+//
+// O backend detecta onde há letras no arquivo que o renderer recebe (`text_rects`: manchete da captura, logo, letreiro)
+// em fração da imagem. Aqui elas vão para a TELA pelo mesmo caminho da imagem: recorte (`rectToContainer`), movimento
+// de câmera do `VisualLayer` (a caixa vira o envelope de todo o movimento: o carimbo fica parado enquanto a imagem
+// anda) e enquadramento do plano; no tratamento "tela", pela janela ou celular onde a imagem aparece.
+
+export type MotionEnvelope = { smin: number; smax: number; dx: number; dy: number };
+
+/** Movimento do `VisualLayer` (mesma tabela de lá) resumido: escala mínima e máxima e o deslocamento máximo (% do
+ * quadro) em x e y. Só para o envelope; não desenha nada. */
+export const motionEnvelope = (motion: string | undefined, z: number): MotionEnvelope => {
+  const zz = Math.max(0, num(z, 0));
+  switch (motion) {
+    case 'parallax':
+    case 'ken_burns_in':
+    case 'ken_burns_out':
+      return { smin: 1 + zz * 0.15, smax: 1 + zz, dx: zz * 12, dy: zz * 10 };
+    case 'pan_left':
+    case 'pan_right':
+      return { smin: 1 + zz, smax: 1 + zz, dx: zz * 30, dy: 0 };
+    case 'pan_up':
+    case 'pan_down':
+      return { smin: 1 + zz, smax: 1 + zz, dx: 0, dy: zz * 30 };
+    case 'punch_zoom':
+      return { smin: 1 + zz * 0.1, smax: 1 + zz * 0.85, dx: 0, dy: 0 };
+    case 'drift':
+      return { smin: 1 + zz * 0.55, smax: 1 + zz * 0.55, dx: zz * 14, dy: zz * 10 };
+    case 'zoom_to':
+      return { smin: 1 + zz * 0.2, smax: 1 + Math.min(0.35, 2.5 * zz), dx: 0, dy: 0 };
+    case 'push':
+      return { smin: 1 + zz * 0.1, smax: 1 + zz * 0.75, dx: 0, dy: 0 };
+    case 'none':
+      return { smin: 1, smax: 1, dx: 0, dy: 0 };
+    default:
+      return { smin: 1 + zz * 0.1, smax: 1 + zz * 0.1, dx: 0, dy: 0 };
+  }
+};
+
+const boundsOf = (points: [number, number][]): Rect | null => {
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  return clipRect(x0, y0, Math.max(...xs) - x0, Math.max(...ys) - y0);
+};
+
+/** Caixa que cobre o retângulo `r` (contêiner) em todo o movimento: escala na origem `origin` e deslocamento dentro da
+ * sobra da escala (como o `VisualLayer`, que nunca mostra a borda). */
+export const rectThroughMotion = (r: Rect, env: MotionEnvelope, origin: [number, number]): Rect | null => {
+  const [ox, oy] = origin;
+  const points: [number, number][] = [];
+  for (const s of [env.smin, env.smax]) {
+    const room = ((Math.max(1, s) - 1) / Math.max(1, s)) * 100;
+    const tx = Math.min(env.dx, room) / 100;
+    const ty = Math.min(env.dy, room) / 100;
+    for (const dx of [-tx, tx]) {
+      for (const dy of [-ty, ty]) {
+        points.push([ox + s * (r[0] - ox + dx), oy + s * (r[1] - oy + dy)]);
+        points.push([ox + s * (r[0] + r[2] - ox + dx), oy + s * (r[1] + r[3] - oy + dy)]);
+      }
+    }
+  }
+  return boundsOf(points);
+};
+
+/** Uma fonte de letras da imagem num trecho da cena: caixas no arquivo, a caixa da imagem (recorte), o enquadramento
+ * do plano e o movimento dele. */
+export type TextLayer = { rects: Rect[]; box: ImageBox | null; framing: ShotFraming | null; motion: string | undefined };
+
+/** Letras da imagem na tela (fração), somando todos os trechos: o carimbo e a faixa ficam a cena inteira. */
+export const textOnScreen = (layers: TextLayer[], z: number, origin: [number, number], videoAspect: number): Rect[] => {
+  const out: Rect[] = [];
+  for (const layer of layers) {
+    const env = motionEnvelope(layer.motion, z);
+    for (const r of layer.rects) {
+      const inBox = rectToContainer(r, layer.box, videoAspect);
+      const moved = inBox ? rectThroughMotion(inBox, env, origin) : null;
+      const shown = moved ? rectThroughFraming(moved, layer.framing) : null;
+      if (shown) out.push(shown);
+    }
+  }
+  return out;
+};
+
+/** Moldura do tratamento "tela" (px): o aparelho, o conteúdo e a área da imagem (no feed, o post). */
+export type ScreenVariantId = 'window' | 'phone' | 'feed';
+export type PxRect = { x: number; y: number; w: number; h: number };
+export const screenFrame = (variant: ScreenVariantId, width: number, height: number) => {
+  const unit = Math.min(width, height);
+  const vertical = height > width;
+  let device: PxRect;
+  let content: PxRect;
+  if (variant === 'window') {
+    const w = vertical ? width * 0.9 : width * 0.74;
+    const h = vertical ? w * 0.82 : height * 0.78;
+    device = { x: (width - w) / 2, y: (height - h) / 2 - (vertical ? height * 0.06 : 0), w, h };
+    const bar = unit * 0.062;
+    content = { x: device.x, y: device.y + bar, w, h: h - bar };
+  } else {
+    // Celular (também moldura do feed): ocupa a altura no horizontal e ~80% no vertical.
+    const h = vertical ? height * 0.78 : height * 0.88;
+    const w = h * 0.49;
+    device = { x: (width - w) / 2, y: (height - h) / 2 - (vertical ? height * 0.05 : 0), w, h };
+    const bezel = w * 0.035;
+    content = { x: device.x + bezel, y: device.y + bezel, w: w - 2 * bezel, h: h - 2 * bezel };
+  }
+  let media = content;
+  if (variant === 'feed') {
+    const header = content.h * 0.12;
+    const mediaH = Math.min(content.w * 1.1, content.h * 0.58);
+    media = { x: content.x, y: content.y + header + content.h * 0.035, w: content.w, h: mediaH };
+  }
+  return { device, content, media };
+};
+
+/** Escala máxima da imagem dentro da tela: o movimento lento (`innerScale` do `Screen`) e o zoom depois do clique. */
+export const screenInnerMax = (motion: string | undefined, z: number, feed: boolean) => {
+  const zz = Math.max(0, num(z, 0)) * 0.6;
+  return (motion === 'static' ? 1 + zz * 0.1 : 1 + zz) * (feed ? 1 : 1.12);
+};
+
+/** Letras da imagem (fração do arquivo, proporção `aspect`) na tela, dentro da área `media` (px) do tratamento
+ * "tela": `cover` com o foco `focus` e escala de 1 a `smax` no foco. */
+export const textInScreen = (
+  rects: Rect[],
+  aspect: number,
+  media: PxRect,
+  focus: [number, number],
+  smax: number,
+  width: number,
+  height: number,
+): Rect[] => {
+  if (!(media.w > 0) || !(media.h > 0)) return [];
+  const boxAspect = media.w / media.h;
+  const a = aspect > 0 ? aspect : width / height;
+  const dispW = a > boxAspect ? media.h * a : media.w;
+  const dispH = a > boxAspect ? media.h : media.w / a;
+  const offX = (media.w - dispW) * focus[0];
+  const offY = (media.h - dispH) * focus[1];
+  const ox = media.w * focus[0];
+  const oy = media.h * focus[1];
+  const out: Rect[] = [];
+  for (const r of rects) {
+    const points: [number, number][] = [];
+    for (const s of [1, Math.max(1, smax)]) {
+      points.push([ox + s * (offX + r[0] * dispW - ox), oy + s * (offY + r[1] * dispH - oy)]);
+      points.push([ox + s * (offX + (r[0] + r[2]) * dispW - ox), oy + s * (offY + (r[1] + r[3]) * dispH - oy)]);
+    }
+    // Só o que fica dentro da área da imagem aparece.
+    const x0 = Math.max(0, Math.min(...points.map((p) => p[0])));
+    const y0 = Math.max(0, Math.min(...points.map((p) => p[1])));
+    const x1 = Math.min(media.w, Math.max(...points.map((p) => p[0])));
+    const y1 = Math.min(media.h, Math.max(...points.map((p) => p[1])));
+    if (x1 - x0 < 1 || y1 - y0 < 1) continue;
+    const shown = clipRect((media.x + x0) / width, (media.y + y0) / height, (x1 - x0) / width, (y1 - y0) / height);
+    if (shown) out.push(shown);
+  }
+  return out;
 };
 
 // --- transição de entrada --------------------------------------------------------------------------------------------
