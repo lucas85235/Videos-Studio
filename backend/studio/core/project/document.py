@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from studio.core.styles.schema import SCENE_KINDS, THUMB_TEMPLATES
+from studio.core.styles.schema import SCENE_KINDS, SOURCE_TIERS, THUMB_TEMPLATES
 from studio.ids import new_id
 
 SceneKind = Literal["image", "text", "title", "count", "document", "quote", "video", "stat", "compare", "chart", "map"]
@@ -26,8 +26,17 @@ ChartType = Literal["bar", "line", "pie", "donut"]
 # Mídia real: foto de licença livre, cartão de notícia ou material oficial (arte, trailer, foto de imprensa).
 RealKind = Literal["photo", "news", "official"]
 REAL_KINDS: tuple[str, ...] = ("photo", "news", "official")
-MediaSource = Literal["commons", "openverse", "pexels", "link", "upload"]
-MEDIA_SOURCES: tuple[str, ...] = ("commons", "openverse", "pexels", "link", "upload")
+# Tipo da mídia anexada (`MediaRef.kind`): os de `RealKind` mais clipe de vídeo real (trecho de trailer/gameplay com
+# proxy mudo), captura de página (com os retângulos do trecho) e meme (biblioteca do usuário). ADR 0004 §3.0.
+MediaKind = Literal["photo", "news", "official", "clip", "capture", "meme"]
+MEDIA_KINDS: tuple[str, ...] = ("photo", "news", "official", "clip", "capture", "meme")
+MediaSource = Literal["commons", "openverse", "pexels", "link", "upload", "youtube", "library", "capture"]
+MEDIA_SOURCES: tuple[str, ...] = ("commons", "openverse", "pexels", "link", "upload", "youtube", "library", "capture")
+# Nível (origem) do material na tela, do mais real ao gerado: a hierarquia T0-T7 do ADR 0004. `core.sources` decide
+# o nível de cada cena (`prov_of_scene`), a fonte única usada pela timeline e pelas métricas.
+Prov = Literal["own", "official", "capture", "free", "stock", "graphic", "meme", "ai"]
+PROVS: tuple[str, ...] = SOURCE_TIERS
+assert Prov.__args__ == SOURCE_TIERS  # type: ignore[attr-defined]
 MediaFit = Literal["cover", "contain"]
 # Enquadramento da imagem deitada no Short em pé: recorte em volta do foco ou imagem inteira sobre ela desfocada.
 FrameMode = Literal["crop", "blur"]
@@ -49,7 +58,9 @@ class MediaRef(BaseModel):
     """Mídia real anexada pelo usuário: a cena mostra este arquivo no lugar da imagem de IA (o prompt fica de reserva
     e volta a valer quando a mídia sai). Guarda a origem e a licença para o crédito na descrição."""
 
-    kind: RealKind = "photo"
+    kind: MediaKind = "photo"
+    """photo | news | official (imagem) ou clip | capture | meme (ADR 0004). Clipe e meme em vídeo tocam `video`;
+    `asset` continua sendo o pôster JPEG."""
     source: MediaSource = "upload"
     asset: str | None = None
     """Original normalizado (JPEG), relativo a VS_DATA_DIR: `uploads/<projeto>/media/<sha256[:16]>.jpg`. None só no
@@ -84,8 +95,25 @@ class MediaRef(BaseModel):
     """Manchete curta por idioma (citação, até ~14 palavras, sem as aspas)."""
     candidate_id: str = ""
     """Id do candidato da busca ("commons:File:X.jpg", "openverse:<uuid>", "pexels:<id>"); vazio em link e arquivo."""
+    # --- ADR 0004 (material real como padrão). Todos opcionais: mídia antiga valida e sai igual na timeline. ---------
+    video: str | None = None
+    """Proxy de vídeo (mp4 h264 mudo), relativo a VS_DATA_DIR, para `clip` e meme animado. None: só a imagem."""
+    start_s: float = Field(default=0.0, ge=0)
+    """Ponto de entrada no `video`, em segundos."""
+    dur_s: float | None = Field(default=None, gt=0)
+    """Duração útil do trecho do `video` (None: até o fim)."""
+    hold: bool = False
+    """Congela no último quadro quando o trecho acaba antes da cena."""
+    mute: bool = True
+    """O som do `video` fica de fora (o padrão: material oficial sempre mudo)."""
+    rects: list[list[float]] = []
+    """Retângulos de destaque na imagem (captura de página): `[x, y, w, h]` em fração (0 a 1) da largura/altura."""
+    tier: Prov | None = None
+    """Nível do material (`Prov`); None: deduzido do `kind`/`source` por `core.sources.prov_of_scene`."""
+    pool_id: str = ""
+    """Id do item do acervo do projeto (`pool.json`) de onde a mídia veio; vazio: anexada à mão."""
 
-    @field_validator("asset")
+    @field_validator("asset", "video")
     @classmethod
     def _relative_asset(cls, value: str | None) -> str | None:
         """Só caminho relativo dentro da pasta de dados (nada de "..", unidade ou barra inicial)."""
@@ -95,6 +123,11 @@ class MediaRef(BaseModel):
         if not clean or clean.startswith("/") or ":" in clean or any(p in ("", ".", "..") for p in clean.split("/")):
             raise ValueError("caminho de mídia inválido")
         return clean
+
+    @field_validator("rects")
+    @classmethod
+    def _rects(cls, value: list[list[float]]) -> list[list[float]]:
+        return [_unit_rect(r) for r in value]
 
     def credit_line(self, lang: str) -> str:
         """Crédito na tela no idioma do vídeo ("Foto: Fulano / Wikimedia Commons · CC BY-SA 4.0"); vazio sem crédito."""
@@ -109,6 +142,16 @@ class MediaRef(BaseModel):
     def headline_for(self, lang: str, fallback: str | None = None) -> str:
         """Manchete da notícia no idioma (reserva: `fallback`, depois o título)."""
         return _pick_text(self.headline, lang, fallback) or " ".join(self.title.split())
+
+
+def _unit_rect(rect: list[float]) -> list[float]:
+    """`[x, y, w, h]` em fração do quadro (0 a 1), com largura e altura positivas e dentro da imagem."""
+    if len(rect) != 4:
+        raise ValueError("retângulo precisa de 4 números: x, y, w, h")
+    x, y, w, h = (float(v) for v in rect)
+    if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1) or x + w > 1.0001 or y + h > 1.0001:
+        raise ValueError(f"retângulo fora da imagem (frações de 0 a 1): {rect}")
+    return [x, y, w, h]
 
 
 class FoundMedia(BaseModel):
@@ -342,6 +385,127 @@ class ScenePresenter(BaseModel):
         return value
 
 
+# --- Camada de edição (ADR 0004 §3.0): subplanos, eventos e marcas da batida ---------------------------------------
+# Gatilhos usam a mesma sintaxe do avatar (`PRESENTER_AT_RE`): "palavra", "palavra#2" ou "@1200" (ms na cena). A
+# timeline resolve com `presenter.parse_at`/`trigger_index`; gatilho que não bate cai no início da cena.
+FxType = Literal["punch", "shake", "zoom_rect", "freeze", "flash", "text_pop", "meme", "sfx", "highlight", "arrow",
+                 "circle", "counter", "music_drop", "speed", "whip", "pip"]
+FX_TYPES: tuple[str, ...] = FxType.__args__  # type: ignore[attr-defined]
+FxParam = str | float | bool | list[float]
+ShotSource = Literal["self", "pool", "media", "reuse", "ai"]
+ShotMotion = Literal["static", "push", "drift", "pan_left", "pan_right", "ken_burns_in", "ken_burns_out", "none"]
+BeatRole = Literal["hook", "reveal", "joke", "aside", "list", "number", "tension", "breath", "cta"]
+BEAT_ROLES: tuple[str, ...] = BeatRole.__args__  # type: ignore[attr-defined]
+GagPayoff = Literal["meme", "freeze", "zoom", "sfx", "text"]
+GAG_PAYOFFS: tuple[str, ...] = GagPayoff.__args__  # type: ignore[attr-defined]
+EditOrigin = Literal["planner", "llm", "user"]
+
+
+def _check_at(value: str | None, *, required: bool) -> str | None:
+    if value is None:
+        if required:
+            raise ValueError("gatilho obrigatório (use palavra, palavra#2 ou @1200)")
+        return None
+    value = value.strip()
+    if not value:
+        if required:
+            raise ValueError("gatilho obrigatório (use palavra, palavra#2 ou @1200)")
+        return None
+    if not PRESENTER_AT_RE.match(value):
+        raise ValueError(f"gatilho inválido: {value!r} (use palavra, palavra#2 ou @1200)")
+    return value
+
+
+class FxEvent(BaseModel):
+    """Evento dentro da cena preso a uma palavra (punch, texto que pula, SFX, meme, marca-texto...). Escrito pelo
+    planejador (`edit_plan`), pelo LLM ou pelo usuário (`origin`); o planejador não troca o que está `locked` ou é do
+    usuário."""
+
+    type: FxType
+    at: str
+    """Gatilho: "palavra", "palavra#2" (2ª ocorrência na cena) ou "@1200" (ms desde o início da cena)."""
+    dur_ms: int | None = Field(default=None, ge=40, le=8000)
+    """Duração; None: a padrão do tipo (no renderer)."""
+    params: dict[str, FxParam] = {}
+    """Parâmetros por tipo: text, scale, color, emoji, rect ([x, y, w, h] de 0 a 1), lib_id, side, payoff..."""
+    origin: EditOrigin = "planner"
+    locked: bool = False
+
+    @field_validator("at")
+    @classmethod
+    def _at(cls, value: str) -> str:
+        return _check_at(value, required=True) or ""
+
+
+class ShotFraming(BaseModel):
+    """Enquadramento do subplano: escala (1 = quadro inteiro) e centro (0 a 1)."""
+
+    scale: float = Field(default=1.0, ge=1.0, le=1.8)
+    x: float = Field(default=0.5, ge=0, le=1)
+    y: float = Field(default=0.5, ge=0, le=1)
+
+
+class SubShot(BaseModel):
+    """Plano dentro da cena (vários por batida: jump cut, B-roll do acervo, reenquadramento). Sem `shots`, a cena é
+    um plano só, como antes."""
+
+    at: str | None = None
+    """Gatilho do corte (sintaxe de `FxEvent.at`); None: o início da cena."""
+    source: ShotSource = "self"
+    """self: o visual da própria cena; pool: item do acervo (`pool_id`); media: `media`; reuse: a imagem de outra cena
+    (`reuse_of`); ai: imagem de IA da cena."""
+    pool_id: str | None = None
+    media: MediaRef | None = None
+    reuse_of: str | None = None
+    framing: ShotFraming | None = None
+    motion: ShotMotion | None = None
+    """None: o planejador/a timeline escolhe."""
+    clip_in: float | None = Field(default=None, ge=0)
+    """Entrada no vídeo do plano (s), vale mais que `MediaRef.start_s`."""
+    speed: float = Field(default=1.0, ge=0.25, le=2.0)
+    hold: bool = False
+    origin: Literal["planner", "user"] = "planner"
+    locked: bool = False
+
+    @field_validator("at")
+    @classmethod
+    def _at(cls, value: str | None) -> str | None:
+        return _check_at(value, required=False)
+
+
+class GagHint(BaseModel):
+    """Piada da batida: onde cai (`at`), como paga (`payoff`) e a frase do "meme sem meme" (`line`)."""
+
+    at: str | None = None
+    payoff: GagPayoff = "freeze"
+    tag: str = ""
+    """Etiqueta para achar meme na biblioteca do usuário ("contradição", "choque")."""
+    line: str = ""
+    """Texto curto que entra com o `text_pop` quando não há meme."""
+
+    @field_validator("at")
+    @classmethod
+    def _at(cls, value: str | None) -> str | None:
+        return _check_at(value, required=False)
+
+
+class BeatMark(BaseModel):
+    """Marcas de edição da batida (vêm do storyboard, achatadas no esquema do LLM): papel, palavras de ênfase,
+    energia, se é séria (nada cômico) e a piada."""
+
+    role: BeatRole = "breath"
+    emphasis: list[str] = Field(default_factory=list, max_length=3)
+    """Até 3 palavras faladas na batida (ênfase de legenda, texto que pula, ponto de corte)."""
+    energy: int = Field(default=1, ge=0, le=3)
+    serious: bool = False
+    gag: GagHint | None = None
+
+    @field_validator("emphasis")
+    @classmethod
+    def _emphasis(cls, value: list[str]) -> list[str]:
+        return [w for w in dict.fromkeys(" ".join(v.split()) for v in value) if w]
+
+
 class Scene(BaseModel):
     id: str = Field(default_factory=lambda: new_id("scn", 8))
     segment_id: str
@@ -374,6 +538,12 @@ class Scene(BaseModel):
     presenter: ScenePresenter | None = None
     """Avatar do apresentador nesta cena (pose, palavra-gatilho, modo). None: a cena não tem avatar (ou ainda não
     passou pela distribuição automática)."""
+    shots: list[SubShot] = []
+    """Subplanos da cena (ADR 0004). Vazio: um plano só, como antes."""
+    fx: list[FxEvent] = []
+    """Eventos presos a palavras (punch, texto, SFX, meme...). Vazio: nenhum, como antes."""
+    mark: BeatMark | None = None
+    """Marcas de edição da batida (papel, ênfase, piada). None: cena antiga ou sem marca."""
 
 
 class Entity(BaseModel):

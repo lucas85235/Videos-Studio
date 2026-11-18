@@ -1,0 +1,656 @@
+{
+ "doc": {
+  "schema_version": 1,
+  "id": "prj_old",
+  "title": "Projeto antigo",
+  "topic": "",
+  "brief": "",
+  "channel_id": null,
+  "style_id": "misterios-short",
+  "style_overrides": {},
+  "primary_language": "pt-BR",
+  "languages": [
+   "pt-BR"
+  ],
+  "seed": 7,
+  "segments": [
+   {
+    "id": "seg_old0",
+    "speaker": "narrator",
+    "role": "hook",
+    "chapter": null,
+    "text": {
+     "pt-BR": "Em 2013 um jogo vendeu 475 milhões de cópias e ninguém esperava isso."
+    },
+    "locked": false
+   },
+   {
+    "id": "seg_old1",
+    "speaker": "narrator",
+    "role": "body",
+    "chapter": null,
+    "text": {
+     "pt-BR": "A cidade inteira foi desenhada a partir de fotos reais de Los Angeles e de Miami."
+    },
+    "locked": false
+   },
+   {
+    "id": "seg_old2",
+    "speaker": "narrator",
+    "role": "chapter",
+    "chapter": null,
+    "text": {
+     "pt-BR": "Capítulo dois: o segredo do mapa que ninguém percebeu na primeira vez."
+    },
+    "locked": false
+   },
+   {
+    "id": "seg_old3",
+    "speaker": "narrator",
+    "role": "body",
+    "chapter": null,
+    "text": {
+     "pt-BR": "Os jogadores acharam 3 cidades escondidas e uma delas tinha 12 prédios iguais."
+    },
+    "locked": false
+   },
+   {
+    "id": "seg_old4",
+    "speaker": "narrator",
+    "role": "cta",
+    "chapter": null,
+    "text": {
+     "pt-BR": "Se você gostou, se inscreva e conta nos comentários qual é o próximo jogo."
+    },
+    "locked": false
+   }
+  ],
+  "scenes": [
+   {
+    "id": "scn_o00",
+    "segment_id": "seg_old0",
+    "part": 0,
+    "parts": 2,
+    "kind": "image",
+    "visual": {
+     "type": "ai_image",
+     "prompt": "a crowded game store at night",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": "editorial",
+     "shot": "wide",
+     "composition": null,
+     "entities": [],
+     "reuse_of": null,
+     "media": null
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": "ken_burns_in",
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 7,
+    "card": {
+     "value": {},
+     "label": {},
+     "items": [],
+     "highlight": null,
+     "chart": null,
+     "headline": {
+      "pt-BR": "475 MILHÕES"
+     },
+     "stamp": {},
+     "source": null
+    },
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o01",
+    "segment_id": "seg_old0",
+    "part": 1,
+    "parts": 2,
+    "kind": "stat",
+    "visual": {
+     "type": "none",
+     "prompt": "",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": "scn_o00",
+     "media": null
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": null,
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 6,
+    "card": {
+     "value": {
+      "pt-BR": "475 MI"
+     },
+     "label": {
+      "pt-BR": "cópias vendidas"
+     },
+     "items": [],
+     "highlight": null,
+     "chart": null,
+     "headline": {},
+     "stamp": {},
+     "source": "Take-Two"
+    },
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o10",
+    "segment_id": "seg_old1",
+    "part": 0,
+    "parts": 3,
+    "kind": "image",
+    "visual": {
+     "type": "ai_image",
+     "prompt": "fallback",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": null,
+     "media": {
+      "kind": "photo",
+      "source": "commons",
+      "asset": "uploads/prj_old/media/0123456789abcdef.jpg",
+      "url": "https://upload.wikimedia.org/x.jpg",
+      "page_url": "https://commons.wikimedia.org/wiki/File:X.jpg",
+      "title": "Los Angeles",
+      "author": "Fulano",
+      "license": "CC BY-SA 4.0",
+      "license_url": "",
+      "credit": "Fulano / Commons",
+      "editorial": false,
+      "width": 1920,
+      "height": 1080,
+      "focus": "top_left",
+      "fit": null,
+      "outlet": "",
+      "published": "",
+      "headline": {},
+      "candidate_id": ""
+     }
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": null,
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 6,
+    "card": null,
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o11",
+    "segment_id": "seg_old1",
+    "part": 1,
+    "parts": 3,
+    "kind": "image",
+    "visual": {
+     "type": "ai_image",
+     "prompt": "fallback",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": null,
+     "media": {
+      "kind": "news",
+      "source": "link",
+      "asset": "uploads/prj_old/media/fedcba9876543210.jpg",
+      "url": "",
+      "page_url": "https://news.example.com/a",
+      "title": "Jogo bate recorde",
+      "author": "",
+      "license": "",
+      "license_url": "",
+      "credit": "",
+      "editorial": true,
+      "width": 1280,
+      "height": 720,
+      "focus": null,
+      "fit": null,
+      "outlet": "Jornal Exemplo",
+      "published": "2013-09-20",
+      "headline": {
+       "pt-BR": "Jogo bate recorde de vendas"
+      },
+      "candidate_id": ""
+     }
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": null,
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 5,
+    "card": null,
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o12",
+    "segment_id": "seg_old1",
+    "part": 2,
+    "parts": 3,
+    "kind": "image",
+    "visual": {
+     "type": "ai_image",
+     "prompt": "a skyline at dusk",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": "scn_o00",
+     "media": null
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": "zoom_to",
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 4,
+    "card": null,
+    "focus": "right",
+    "real": {
+     "kind": "photo",
+     "query": "miami skyline",
+     "note": "Foto real de Miami",
+     "source_ref": null,
+     "found": [],
+     "searched": false,
+     "searched_at": ""
+    },
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o20",
+    "segment_id": "seg_old2",
+    "part": 0,
+    "parts": 1,
+    "kind": "title",
+    "visual": {
+     "type": "none",
+     "prompt": "",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": null,
+     "media": null
+    },
+    "overlay_text": {
+     "pt-BR": "O SEGREDO DO MAPA"
+    },
+    "number": null,
+    "motion": null,
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": null,
+    "card": null,
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o30",
+    "segment_id": "seg_old3",
+    "part": 0,
+    "parts": 2,
+    "kind": "image",
+    "visual": {
+     "type": "ai_image",
+     "prompt": "fallback",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": null,
+     "media": {
+      "kind": "official",
+      "source": "link",
+      "asset": "uploads/prj_old/media/00112233445566aa.jpg",
+      "url": "",
+      "page_url": "https://www.rockstargames.com/",
+      "title": "",
+      "author": "",
+      "license": "",
+      "license_url": "",
+      "credit": "Rockstar Games",
+      "editorial": true,
+      "width": 1920,
+      "height": 1080,
+      "focus": null,
+      "fit": null,
+      "outlet": "",
+      "published": "",
+      "headline": {},
+      "candidate_id": ""
+     }
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": null,
+    "transition_in": "flash",
+    "look": {
+     "brightness": 0.1,
+     "contrast": 0.0,
+     "saturation": -0.2,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 7,
+    "card": null,
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o31",
+    "segment_id": "seg_old3",
+    "part": 1,
+    "parts": 2,
+    "kind": "compare",
+    "visual": {
+     "type": "none",
+     "prompt": "",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": "scn_o30",
+     "media": null
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": null,
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": 6,
+    "card": {
+     "value": {},
+     "label": {},
+     "items": [
+      {
+       "label": {
+        "pt-BR": "cidades"
+       },
+       "value": {
+        "pt-BR": "3"
+       },
+       "region": null
+      },
+      {
+       "label": {
+        "pt-BR": "prédios iguais"
+       },
+       "value": {
+        "pt-BR": "12"
+       },
+       "region": null
+      }
+     ],
+     "highlight": 1,
+     "chart": null,
+     "headline": {},
+     "stamp": {},
+     "source": null
+    },
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   },
+   {
+    "id": "scn_o40",
+    "segment_id": "seg_old4",
+    "part": 0,
+    "parts": 1,
+    "kind": "image",
+    "visual": {
+     "type": "ai_image",
+     "prompt": "x",
+     "query": null,
+     "asset": null,
+     "seed": 0,
+     "variation": 0,
+     "language": null,
+     "shot": null,
+     "composition": null,
+     "entities": [],
+     "reuse_of": "scn_o00",
+     "media": null
+    },
+    "overlay_text": {},
+    "number": null,
+    "motion": null,
+    "transition_in": null,
+    "look": {
+     "brightness": 0.0,
+     "contrast": 0.0,
+     "saturation": 0.0,
+     "warmth": 0.0,
+     "blur": 0.0,
+     "grade": null
+    },
+    "sfx": null,
+    "locked": false,
+    "notes": "",
+    "span": null,
+    "card": {
+     "value": {},
+     "label": {},
+     "items": [],
+     "highlight": null,
+     "chart": null,
+     "headline": {},
+     "stamp": {
+      "pt-BR": "INSCREVA-SE"
+     },
+     "source": null
+    },
+    "focus": null,
+    "real": null,
+    "frame": null,
+    "clip": null,
+    "video_hint": null,
+    "presenter": null
+   }
+  ],
+  "music": [
+   {
+    "id": "mus_wmbqsy",
+    "start_segment": null,
+    "mood": null,
+    "volume_db": null,
+    "enabled": true,
+    "track": null,
+    "loop": false
+   }
+  ],
+  "thumbnail": {
+   "text": {},
+   "scene_id": null,
+   "prompt": null,
+   "variation": 0
+  },
+  "metadata": {},
+  "sources": [],
+  "script_approved": false,
+  "preview_approved": false,
+  "art": null,
+  "characters": [],
+  "storyboard_approved": false,
+  "frame_mode": "crop",
+  "package": {
+   "candidates": [],
+   "chosen_id": null,
+   "locked": false,
+   "references": [],
+   "generated_at": null
+  },
+  "presenter": {
+   "enabled": null,
+   "thumb": null,
+   "video": null,
+   "poses_off": []
+  }
+ },
+ "expected": {
+  "misterios-short": {
+   "timeline": "e90cbbf58c6fe94d2204fb6c40b8d3dc4cd397c0fc56d2849336e2048250f09e",
+   "chunks": [
+    "ce7f085e1a8006835d6cca76a6e02505bd74b62356758cf308d51300b1158069",
+    "eeb5acb279c2ab06bc8e5fc643c4705ed21dcc4e4c6fb1e1b92ae5874de1dc6b"
+   ]
+  },
+  "curiosidades-longo": {
+   "timeline": "15db447203a9a74033f5b6d7427585c70dcd3bed8b58e73f8f7ac67df5f4ca13",
+   "chunks": [
+    "fbfefbe183eb80e838877714e882e3b45146468ae17f73b76f35ab24eb1d7328",
+    "6f1ba06b0e98bbdbadd8aa04bd2c01d49bf542fe9e07f4bdd0e009ad2ebbc350"
+   ]
+  }
+ }
+}
