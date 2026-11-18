@@ -134,6 +134,52 @@ def _hamming(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
+def _mirror_layers(layers: Any) -> Any | None:
+    """O molde espelhado (texto do outro lado, avatar e figuras trocam de lado); None quando o template não espelha
+    ou o texto não está numa lateral."""
+    from studio.media import thumb_templates as T
+
+    if layers.template not in T.MIRRORABLE or not layers.text or layers.text.pos not in ("left", "right"):
+        return None
+    out = layers.model_copy(deep=True)
+    out.text.pos = "right" if layers.text.pos == "left" else "left"
+    if out.presenter is not None:
+        out.presenter.side = "left" if out.presenter.side == "right" else "right"
+    for c in out.characters:
+        c.x = round(1 - c.x, 3)
+    return out
+
+
+FILL_FIX_CONTRAST = 2.0
+"""Contraste (WCAG) medido no render abaixo do qual a cor escolhida pelo gerador é trocada."""
+
+
+def _better_fill(layers: Any, text_bg: Any, recent: Any, batch: Any) -> str | None:
+    """Outra cor para o texto quando a escolhida mede menos de `FILL_FIX_CONTRAST` contra o fundo de verdade (a
+    média atrás do texto que o compositor mediu); None quando ela já basta ou nenhuma outra é melhor."""
+    from studio.media import thumb_variety
+    from studio.media.thumb_check import contrast_ratio
+
+    if not text_bg:
+        return None
+    current = layers.text.fill
+    now = contrast_ratio(thumb_variety.color_rgb(current), text_bg)
+    if now >= FILL_FIX_CONTRAST:
+        return None
+    options = [c for c in thumb_variety.TEXT_COLORS if c != current]
+    pick = thumb_variety.pick_fill(text_bg, recent, batch, options=options)
+    return pick if contrast_ratio(thumb_variety.color_rgb(pick), text_bg) > now + 0.5 else None
+
+
+def _recent_hash(img: Any) -> int:
+    """O hash da comparação com as thumbs recentes do canal (o mesmo de `thumb_history`, numa cópia pequena)."""
+    from studio.media.thumb_check import dhash
+
+    small = img.convert("RGB").copy()
+    small.thumbnail((320, 320))
+    return dhash(small)
+
+
 def _rgb(color: str) -> tuple[int, int, int]:
     return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
 
@@ -216,14 +262,42 @@ def _check(img: Any, candidate: Any, is_long: bool) -> dict[str, Any]:
     return score
 
 
+def _swap_frame(layers: Any, frames: list[dict[str, Any]], index: int, cost: Any = None) -> tuple[Any, str] | None:
+    """As camadas com outro quadro de fundo: o do mesmo assunto (tags fora as genéricas como "claro"; o menos usado,
+    com `cost`) ou, sem assunto em comum, o próximo. Atrás de um personagem recortado não entra quadro de personagem
+    (gente atrás de gente). Foco e zoom do quadro novo, como na geração. None quando não há outro quadro."""
+    ref_id = (layers.background.ref or "").removeprefix("frame:")  # id puro ou "frame:<id>"
+    current = next((f for f in frames if str(f["id"]) == ref_id), None)
+    tags = authoring._subject_tags(current)
+    others = [f for f in frames if str(f["id"]) != ref_id]
+    if any(not c.asset.startswith(("logo:", "object:")) for c in layers.characters):
+        others = [f for f in others if not {"personagem", "keyart"} & set(f.get("tags") or [])] or others
+    options = [f for f in others if tags & authoring._subject_tags(f)] or others
+    if not options:
+        return None
+    swap = min(options, key=lambda f: cost(str(f["id"]))) if cost else options[index % len(options)]
+    layers = layers.model_copy(deep=True)
+    fresh = authoring._frame_layer(swap, layers.template)
+    layers.background.ref = str(swap["id"])
+    layers.background.t = fresh.get("t")
+    layers.background.focus_x = float(fresh["focus_x"])
+    layers.background.zoom = float(fresh["zoom"])
+    return layers, str(swap["id"])
+
+
 def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = None,
-                          progress: Any = None) -> dict[str, Any]:
+                          progress: Any = None, *, demote: bool = False, history: Any = None) -> dict[str, Any]:
     """Prévia (1280×720 no longo, 1080×1920 no Short) e checagem de cada candidato (ou só de `candidate_ids`). Não
     depende de cenas. Diversidade: se dois candidatos saem iguais (dHash < 10), o segundo troca o fundo pelo próximo
-    quadro da biblioteca com a mesma tag e renderiza de novo. Grava `image` e `score` só nos candidatos cujas camadas
-    não mudaram durante o render (a edição feita em paralelo vence; ela enfileira a própria prévia)."""
+    quadro da biblioteca com a mesma tag e renderiza de novo. Contra as thumbs recentes do canal
+    (`thumb_history.channel_history`): candidata parecida demais (dHash < `RECENT_MIN_DISTANCE`) troca o fundo pelo
+    quadro menos usado do mesmo assunto; se ainda ficar parecida, ganha o aviso e, com `demote` (geração do pacote),
+    vai para o fim da lista. Grava `image` e `score` só nos candidatos cujas camadas não mudaram durante o render (a
+    edição feita em paralelo vence; ela enfileira a própria prévia)."""
     from PIL import Image
 
+    from studio.media import thumb_variety
+    from studio.workers.visual import thumb_history
     from studio.workers.visual import thumbs as visual_thumbs
 
     doc = service.get_doc(project_id)
@@ -240,6 +314,17 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
     out_dir = get_settings().outputs_dir / project_id / "package"
     out_dir.mkdir(parents=True, exist_ok=True)
     frames = [i for i in authoring.thumbkit_manifest(doc.channel_id) if (i.get("kind") or "frame") == "frame"]
+    if history is None:
+        history = thumb_history.channel_history(doc.channel_id, project_id)
+    batch = thumb_variety.Usage()
+    for other in doc.package.candidates:
+        if other.id not in target_ids:
+            batch.add_layers(other.layers)
+
+    def frame_cost(fid: str) -> float:
+        return thumb_variety.penalty("background", fid, history.usage, batch)
+
+    landscape = size[0] >= size[1]
     hashes: dict[str, int] = {}
     for other in doc.package.candidates:  # as prévias que não vão ser refeitas entram na comparação
         if other.id in target_ids or not other.image:
@@ -258,29 +343,66 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
         digest = _dhash(img)
         dup = min((_hamming(digest, h) for h in hashes.values()), default=64)
         if dup < DUP_MIN_DISTANCE and layers.background.kind == "frame" and frames:
-            ref_id = (layers.background.ref or "").removeprefix("frame:")  # id puro ou "frame:<id>"
-            current = next((f for f in frames if str(f["id"]) == ref_id), None)
-            tags = set((current or {}).get("tags") or [])
-            others = [f for f in frames if str(f["id"]) != ref_id]
-            options = [f for f in others if tags & set(f.get("tags") or [])] or others
-            if options:
-                swap = options[index % len(options)]
-                layers = layers.model_copy(deep=True)
-                fresh = authoring._frame_layer(swap, layers.template)  # foco e zoom do quadro novo, como na geração
-                layers.background.ref = str(swap["id"])
-                layers.background.t = fresh.get("t")
-                layers.background.focus_x = float(fresh["focus_x"])
-                layers.background.zoom = float(fresh["zoom"])
+            swapped = _swap_frame(layers, frames, index)
+            if swapped:
+                layers, swap_id = swapped
                 img, notes = _compose(layers, size, resolver=resolver, palette=palette, logo_asset=logo)
                 digest = _dhash(img)
                 dup = min((_hamming(digest, h) for h in hashes.values()), default=64)
-                notes = [*notes, f"CORRIGIDO: fundo trocado por {swap['id']} (a thumb saía igual a outro candidato)"]
+                notes = [*notes, f"CORRIGIDO: fundo trocado por {swap_id} (a thumb saía igual a outro candidato)"]
+        recent, like = history.nearest(_recent_hash(img), landscape=landscape)
+        if recent < thumb_history.RECENT_MIN_DISTANCE and layers.background.kind == "frame" and frames:
+            swapped = _swap_frame(layers, frames, index, frame_cost)
+            if swapped:
+                alt_layers, swap_id = swapped
+                alt_img, alt_notes = _compose(alt_layers, size, resolver=resolver, palette=palette, logo_asset=logo)
+                alt_recent, alt_like = history.nearest(_recent_hash(alt_img), landscape=landscape)
+                alt_digest = _dhash(alt_img)
+                alt_dup = min((_hamming(alt_digest, h) for h in hashes.values()), default=64)
+                if alt_recent > recent and alt_dup >= min(dup, DUP_MIN_DISTANCE):
+                    was = thumb_history.describe(like)
+                    layers, img, digest, dup, recent, like = alt_layers, alt_img, alt_digest, alt_dup, alt_recent, alt_like
+                    notes = [*alt_notes, f"CORRIGIDO: fundo trocado por {swap_id} (a thumb saía parecida com uma "
+                                         f"recente do canal: {was})"]
+        mirrored = _mirror_layers(layers) if cand.source == "auto" else None
+        if recent < thumb_history.RECENT_MIN_DISTANCE and mirrored is not None:
+            # ainda parecida (o avatar e a coluna de texto pesam mais que o fundo): o molde espelhado
+            alt_img, alt_notes = _compose(mirrored, size, resolver=resolver, palette=palette, logo_asset=logo)
+            alt_recent, alt_like = history.nearest(_recent_hash(alt_img), landscape=landscape)
+            alt_digest = _dhash(alt_img)
+            alt_dup = min((_hamming(alt_digest, h) for h in hashes.values()), default=64)
+            if alt_recent > recent and alt_dup >= min(dup, DUP_MIN_DISTANCE):
+                was = thumb_history.describe(like)
+                layers, img, digest, dup, recent, like = mirrored, alt_img, alt_digest, alt_dup, alt_recent, alt_like
+                notes = [*alt_notes, f"CORRIGIDO: molde espelhado (a thumb saía parecida com uma recente do canal: "
+                                     f"{was})"]
+        if cand.source == "auto" and layers.text and layers.text.words.strip() and layers.text.fill != "vice":
+            # cor escolhida pelo gerador que, medida no render, quase some no fundo: troca pela de melhor custo
+            text_bg = (img.info.get("layout") or {}).get("text_bg")
+            fixed = _better_fill(layers, text_bg, history.usage, batch)
+            if fixed is not None:
+                alt_layers = layers.model_copy(deep=True)
+                alt_layers.text.fill = fixed  # type: ignore[union-attr]
+                alt_img, alt_notes = _compose(alt_layers, size, resolver=resolver, palette=palette, logo_asset=logo)
+                notes = [*alt_notes, f"CORRIGIDO: cor do texto trocada para {thumb_variety.COLOR_NAMES[fixed]} "
+                                     "(contraste com o fundo)"]
+                layers, img = alt_layers, alt_img
+                digest = _dhash(img)
+                dup = min((_hamming(digest, h) for h in hashes.values()), default=64)
+                recent, like = history.nearest(_recent_hash(img), landscape=landscape)
+        batch.add_layers(layers)
         hashes[cand.id] = digest
         probe = cand.model_copy(update={"layers": layers})
         score = _check(img, probe, is_long)
         score["dup"] = dup
         if dup < DUP_MIN_DISTANCE:
             score["warnings"].append("thumb quase igual a outro candidato")
+        score["recent_dup"] = recent
+        if recent < thumb_history.RECENT_MIN_DISTANCE and like is not None:
+            score["recent_like"] = {"project_id": like.get("project_id"), "candidate_id": like.get("candidate_id"),
+                                    "image": like.get("image")}
+            score["warnings"].append(f"parecida demais com uma thumb recente do canal "
+                                     f"({thumb_history.describe(like)}): troque fundo, figura ou cor")
         cand_notes = [str(n) for n in cand.score.get("notes") or []]
         score["warnings"] = list(dict.fromkeys([*score["warnings"], *notes, *cand_notes]))
         if cand_notes:
@@ -302,6 +424,13 @@ def render_package_thumbs(project_id: str, candidate_ids: list[str] | None = Non
             continue
         cand.layers, cand.image, cand.score = layers, rel, score
         changed += 1
+    if demote and changed:
+        # parecida com uma thumb recente do canal: a candidata automática (não escolhida nem aprovada) vai para o fim
+        def similar(c: Any) -> bool:
+            return (c.id in results and c.source == "auto" and not c.approved and c.id != current.package.chosen_id
+                    and int((c.score or {}).get("recent_dup", 64)) < thumb_history.RECENT_MIN_DISTANCE)
+
+        current.package.candidates = sorted(current.package.candidates, key=similar)
     version = (service.commit(project_id, current, f"Prévias das thumbs do pacote ({changed})", author="ai")
                if changed else None)
     return {"version": version, "rendered": changed, "candidates": list(results)}
@@ -341,6 +470,9 @@ def generate_package(project_id: str, payload: dict[str, Any], *, job_id: str | 
     channel = _channel_info(doc.channel_id)
     lessons = _project_lessons(doc, style)
     references = authoring.package_references(doc.channel_id, doc.topic or doc.title)
+    from studio.workers.visual import thumb_history
+
+    history = thumb_history.channel_history(doc.channel_id, project_id)
     n_titles = int(payload.get("n_titles") or style.thumbnail.title_candidates)
     n_thumbs = int(payload.get("n_thumbs") or style.thumbnail.thumb_candidates)
     keep_manual = payload.get("keep_manual", True)
@@ -353,7 +485,7 @@ def generate_package(project_id: str, payload: dict[str, Any], *, job_id: str | 
     candidates, provider = authoring.package_ideas(
         doc, channel, style, max(1, min(n_titles, 8)), max(1, min(n_thumbs, 4)), references=references,
         lessons=lessons, existing_titles=[c.title for c in kept if c.title], project_id=project_id, job_id=job_id,
-        publish_date=_planned_publish_date(project_id, payload.get("publish_date")))
+        publish_date=_planned_publish_date(project_id, payload.get("publish_date")), history=history.usage)
     current = service.get_doc(project_id)  # o documento pode ter mudado enquanto o LLM pensava
     if current.package.locked:
         raise PackageLocked("o pacote foi aprovado enquanto os candidatos eram gerados")
@@ -369,7 +501,7 @@ def generate_package(project_id: str, payload: dict[str, Any], *, job_id: str | 
     if progress:
         progress(0.5, "Renderizando as thumbs")
     thumbs = render_package_thumbs(project_id, [c.id for c in candidates] + [c.id for c in kept if not c.image],
-                                   progress=sub)
+                                   progress=sub, demote=True, history=history)
     return {"version": thumbs["version"] or version, "provider": provider, "candidates": len(candidates),
             "kept": len(kept), "references": len(references)}
 

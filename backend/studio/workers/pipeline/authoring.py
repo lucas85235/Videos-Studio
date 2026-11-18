@@ -77,6 +77,7 @@ from studio.core.styles.visual import (
     pick,
 )
 from studio.core.text import estimate_seconds, normalize_token, split_beats
+from studio.media import thumb_variety
 from studio.providers import registry
 from studio.providers.base import LLMResult
 from studio.workers.analytics.lessons import lessons_block, lessons_key
@@ -2389,6 +2390,9 @@ THUMB_RULES = """Regras de thumb (vêm dos vídeos que estouram no nicho: metade
 - Logo no canto quando houver logo na lista de ativos.
 - O avatar do apresentador ajuda quando é grande e expressivo junto de um elemento do tema; pequeno, perde.
 - Cada candidato é uma variante real: template, fundo, pose ou palavra diferentes. Nunca dois iguais.
+- Fuja das thumbs recentes do canal (a lista vem no pedido): outro fundo, outra figura, outra pose, outro template.
+- Vídeo com prova no acervo (captura de matéria, site falso, print): pelo menos 1 candidato usa o template prova com
+  o id da captura em background_hint (o print grande com X ou círculo vermelho vende a denúncia melhor que um quadro).
 - Personagens oficiais (de jogo, filme ou série) nunca são desenhados por IA: só aparecem em quadros oficiais da lista."""
 
 TITLE_RULES = f"""Regras de título (medidas no nicho: os vídeos que estouram têm títulos de ~38 caracteres; os medianos, ~54):
@@ -2415,7 +2419,8 @@ tem de ser cumprível com o tema.
 Templates de thumb: heroi-palavra (quadro com personagem/rosto grande + 1 palavra), avatar-reage (avatar do
 apresentador grande reagindo + objeto do tema, 0 a 2 palavras), lugar-mapa (quadro aéreo de um lugar + 1-2 palavras),
 numero-lista (número gigante + 1 palavra, sem cartões), versus (dois lados comparados), livre (Short vertical: 2-3
-palavras no centro).
+palavras no centro), prova (captura/print do próprio vídeo grande com marcação vermelha + 1 palavra + avatar pequeno;
+background_hint = id do acervo), objeto (o item-chave em close + 1 palavra).
 Use só os templates e ativos (ids) que o pedido lista; para o que não existir, use null.
 
 """ + TITLE_RULES + "\n\n" + THUMB_RULES
@@ -2441,6 +2446,10 @@ class PackageAssets:
     presenter_height: float = 1.5
     presenter_crop: str = "busto"
     presenter_outline: int = 10
+    proofs: list[dict[str, Any]] = field(default_factory=list)
+    """Material do próprio vídeo para a thumb (`project_proofs`): capturas de matéria, prints, imagens do acervo."""
+    kit_dir: Any = None
+    """Pasta da biblioteca do canal (para medir a cor do fundo atrás do texto)."""
 
     def ids(self, kind: str) -> set[str]:
         return {str(item.get("id")) for item in getattr(self, kind) if item.get("id")}
@@ -2454,6 +2463,10 @@ class PackageAssets:
                 f"Objetos: {line(self.objects)}"]
         rows.append(f"Poses do avatar (com emoções): {line(self.poses, 'emotions')}" if self.poses
                     else "Avatar do apresentador: não usar nesta thumb.")
+        if self.proofs:
+            rows.append("Material do próprio vídeo (acervo do projeto; para o template prova, o id em background_hint): "
+                        + "; ".join(f"{p['id']} ({p['kind']}{' · ' + p['credit'] if p.get('credit') else ''}: "
+                                    f"{p['desc']})" for p in self.proofs[:10]))
         if not self.allow_editorial:
             rows.append("Material oficial (quadros de trailer, capa, logos) não está liberado neste canal.")
         return "\n".join(rows)
@@ -2498,7 +2511,55 @@ def package_assets(doc: ProjectDoc, style: StyleSpec, bible: dict[str, Any] | No
     return PackageAssets(frames=by_kind["frame"], cutouts=by_kind["cutout"], logos=by_kind["logo"],
                          objects=by_kind["object"], poses=poses, allow_editorial=allow,
                          presenter_height=presenter.thumb_height, presenter_crop=presenter.thumb_crop,
-                         presenter_outline=presenter.thumb_outline_px)
+                         presenter_outline=presenter.thumb_outline_px, proofs=project_proofs(doc, allow),
+                         kit_dir=kit_dir)
+
+
+PROOF_TIERS = ("own", "capture", "official", "free")
+PROOF_MAX = 10
+
+
+def project_proofs(doc: ProjectDoc, allow_editorial: bool, limit: int = PROOF_MAX) -> list[dict[str, Any]]:
+    """O material do PRÓPRIO vídeo que pode virar fundo/prova da thumb: imagens e capturas do acervo do projeto
+    (`uploads/<projeto>/pool.json`) que já estão na pasta de dados, sem os quadros da biblioteca do canal (esses já
+    são fundos do kit) e sem material de terceiros quando o canal não libera. As capturas (matéria, site falso,
+    print) vêm antes; dentro de cada grupo, as que mais falam do tema. Nunca derruba o pacote."""
+    if not doc.id:
+        return []
+    try:
+        pool = load_pool(doc.id)
+    except Exception:  # noqa: BLE001 - id fora do padrão ou acervo ilegível: sem prova
+        return []
+    data_dir = get_settings().data_dir
+    topic = _topic_words(" ".join([doc.topic or "", doc.title or "", doc.brief or ""]))
+    out: list[dict[str, Any]] = []
+    for it in pool.items:
+        if it.media == "clip" or not it.path or it.path.startswith("library/thumbkit/"):
+            continue
+        if it.tier not in PROOF_TIERS or (it.editorial and not allow_editorial):
+            continue
+        if not (data_dir / it.path).is_file():
+            continue
+        capture = it.media == "capture" or it.tier == "capture"
+        desc = " ".join(it.desc.replace("\u2022", " ").split())
+        out.append({"id": it.id, "file": it.path, "kind": "captura" if capture else "imagem", "credit": it.credit,
+                    "desc": desc[:110], "editorial": it.editorial, "relevance": len(_topic_words(desc) & topic)})
+    out.sort(key=lambda p: (p["kind"] != "captura", -p["relevance"]))
+    return out[:limit]
+
+
+def thumb_templates_for(style: StyleSpec, assets: PackageAssets) -> list[str]:
+    """Templates que o pacote deste projeto oferece: os do estilo, sem `avatar-reage` quando não há avatar, mais
+    `prova` (e `objeto`) quando o projeto tem material próprio para mostrar ou a biblioteca tem objetos. Short: só
+    `livre`."""
+    if style.format.type == "short":
+        return ["livre"]
+    templates = [t for t in style.thumbnail.templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses]
+    if assets.proofs and "prova" not in templates:
+        templates.append("prova")
+    if (assets.objects or len(assets.proofs) >= 2) and "objeto" not in templates:
+        templates.append("objeto")
+    return templates or ["heroi-palavra"]
 
 
 def _topic_words(text: str) -> set[str]:
@@ -2579,10 +2640,16 @@ def _title_overlap(thumb_text: str, title: str) -> tuple[str, list[str]]:
     return " ".join(kept), removed
 
 
-def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str]) -> str | None:
-    """Pose citada (id, apelido ou emoção) que existe; senão a 1ª ainda não usada; senão None."""
+def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent: Any = None) -> str | None:
+    """Pose citada (id, apelido ou emoção) que existe; senão a ainda não usada que o canal menos usou nas thumbs
+    recentes (`recent`: `thumb_variety.Usage`); senão None. A citada que o canal já usou nas thumbs recentes dá
+    lugar a outra com a mesma emoção e menos uso, quando houver."""
     if not poses:
         return None
+
+    def seen(pid: str) -> float:
+        return recent.n("pose", pid) if recent is not None else 0.0
+
     name = normalize_token(str(hint or ""))
     if name:
         for key in ("id", "aliases", "emotions"):
@@ -2590,9 +2657,18 @@ def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str]) -> str
                 values = pose.get(key)
                 names = [values] if isinstance(values, str) else list(values or [])
                 if any(normalize_token(v) == name for v in names) and pose["id"] not in used:
+                    if seen(pose["id"]) >= 1:
+                        emotions = {normalize_token(e) for e in pose.get("emotions") or []}
+                        alt = [p for p in poses if p["id"] not in used and p["id"] != pose["id"]
+                               and emotions & {normalize_token(e) for e in p.get("emotions") or []}
+                               and seen(p["id"]) < seen(pose["id"])]
+                        if alt:
+                            return min(alt, key=lambda p: seen(p["id"]))["id"]
                     return pose["id"]
-    free = [p["id"] for p in poses if p["id"] not in used]
-    return free[0] if free else poses[0]["id"]
+    free = [p for p in poses if p["id"] not in used]
+    if not free:
+        return poses[0]["id"]
+    return min(free, key=lambda p: seen(p["id"]))["id"]
 
 
 def _frame_layer(frame: dict[str, Any] | None, template: str) -> dict[str, Any]:
@@ -2698,29 +2774,149 @@ def thumb_visible_words(text: str | None, pill: str | None = None, cards: list[A
     return sum(len(str(t or "").split()) for t in [text, pill, *labels])
 
 
+_GENERIC_TAGS = {"claro", "dia", "noite", "keyart", "rosto", "corpo"}
+"""Tags que não dizem o assunto do quadro (não contam para achar um fundo "do mesmo tipo")."""
+
+
+def _subject_tags(item: dict[str, Any] | None) -> set[str]:
+    return {str(t) for t in (item or {}).get("tags") or []} - _GENERIC_TAGS
+
+
+def _pick_frame(hint_frame: dict[str, Any] | None, frames: list[dict[str, Any]], template: str, turn: int,
+                recent: Any, batch: Any, need_face: bool,
+                has_figure: bool = False) -> tuple[dict[str, Any] | None, str | None]:
+    """O quadro de fundo: o citado pelo LLM quando ele não repete as thumbs recentes do canal nem outro candidato;
+    senão o menos usado com o mesmo assunto (tags); sem citação, o menos usado da biblioteca (o de rosto quando o
+    template precisa de rosto e não tem recorte). Devolve (quadro, nota)."""
+    if not frames:
+        return None, None
+
+    def cost(f: dict[str, Any]) -> float:
+        return thumb_variety.penalty("background", str(f["id"]), recent, batch)
+
+    k = turn % len(frames)
+    ordered = frames[k:] + frames[:k]
+    if hint_frame is not None:
+        if cost(hint_frame) < 1:
+            return hint_frame, None
+        tags = _subject_tags(hint_frame)
+        same = [f for f in ordered if f is not hint_frame and tags & _subject_tags(f) and cost(f) < cost(hint_frame)
+                and not (has_figure and {"personagem", "keyart"} & set(f.get("tags") or []))]
+        if same:
+            pick = min(same, key=cost)
+            return pick, (f"CORRIGIDO: fundo {hint_frame['id']} repetia as thumbs recentes (ou outro candidato); "
+                          f"usei {pick['id']}")
+        return hint_frame, None
+    pool = [f for f in ordered if f.get("face_box")] if need_face else []
+    if not need_face and has_figure:  # atrás de um personagem recortado, lugar e não outro personagem
+        pool = [f for f in ordered if not {"personagem", "keyart"} & set(f.get("tags") or [])]
+    return min(pool or ordered, key=cost), None
+
+
+def _pick_characters(chars: list[str], cutouts: list[dict[str, Any]], recent: Any, batch: Any,
+                     notes: list[str]) -> list[str]:
+    """Troca a figura que o canal acabou de usar (ou que já está em outro candidato) por outra do mesmo personagem
+    (mesma tag de nome) e menos usada, quando houver."""
+    by_id = {str(c["id"]): c for c in cutouts}
+    out: list[str] = []
+    for cid in chars:
+        cost = thumb_variety.penalty("character", cid, recent, batch)
+        if cost >= 1:
+            tags = _subject_tags(by_id.get(cid)) - {"personagem"}
+            alt = [str(c["id"]) for c in cutouts if str(c["id"]) not in (cid, *out)
+                   and tags & (_subject_tags(c) - {"personagem"})
+                   and thumb_variety.penalty("character", str(c["id"]), recent, batch) < cost]
+            if alt:
+                pick = min(alt, key=lambda a: thumb_variety.penalty("character", a, recent, batch))
+                notes.append(f"CORRIGIDO: figura {cid} repetia as thumbs recentes (ou outro candidato); usei {pick}")
+                cid = pick
+        out.append(cid)
+    return out
+
+
+def _text_side(template: str, recent: Any, batch: Any, turn: int) -> str:
+    """Onde vai o texto: o lado que o canal e o pacote menos usaram entre os que o template aceita (o molde inteiro
+    espelha: texto à direita, figura e avatar à esquerda)."""
+    from studio.media import thumb_templates as T
+
+    default = {"livre": "center", "lugar-mapa": "center", "heroi-palavra": "top"}.get(template, "left")
+    if template not in T.MIRRORABLE:
+        return default
+    options = ["top", "left", "right"] if template == "heroi-palavra" else ["left", "right"]
+    options.remove(default)
+    options.insert(0, default)
+    return thumb_variety.least_used("side", options, recent, batch, turn) or default
+
+
+def _fill_for(frame: dict[str, Any] | None, kit_dir: Any, template: str, side: str, recent: Any, batch: Any,
+              turn: int, palette: dict[str, str] | None) -> str:
+    """Cor do texto pela novidade e pelo contraste com o fundo atrás dele (a região do texto no quadro; na prova, o
+    degradê do canal)."""
+    from studio.media import thumb_templates as T
+
+    bg_rgb = None
+    if template in thumb_variety.CARD_TEMPLATES:
+        bg_rgb = (90, 24, 110)  # o topo do degradê vice (atrás da coluna de texto)
+    elif frame is not None and kit_dir is not None and frame.get("file"):
+        box = (T.spec(template)["text"].get(side) or T.spec(template)["text"]["left"])
+        bg_rgb = thumb_variety.region_rgb(kit_dir / str(frame["file"]), _visible_box(frame, template, side, box))
+    return thumb_variety.pick_fill(bg_rgb, recent, batch, turn=turn, palette=palette)
+
+
+def _visible_box(frame: dict[str, Any], template: str, side: str,
+                 box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """A caixa do texto (x, y, w, h no canvas 16:9) em fração do quadro original, com o enquadramento do compositor
+    (cover × zoom, o foco do quadro no alvo do template, espelhado com o texto à direita): é ali que a cor do texto
+    precisa de contraste."""
+    from studio.media import thumb_templates as T
+
+    layer = _frame_layer(frame, template)
+    iw, ih = (frame.get("size") or [1920, 1080])[:2]
+    W, H = 1280, 720
+    geo = T.spec(template)["bg"]
+    tx = geo.get("target_x", 0.5)
+    tx = 1 - tx if side == "right" else tx
+    scale = max(W / iw, H / ih) * max(1.0, float(layer.get("zoom") or 1.0))
+    cw, ch = W / scale, H / scale
+    left = min(max(0.0, float(layer.get("focus_x", 0.5)) * iw - tx * cw), iw - cw)
+    top = min(max(0.0, float(frame.get("focus_y", 0.42)) * ih - geo.get("target_y", 0.42) * ch), ih - ch)
+    x, y, w, h = box
+    return ((left + x * cw) / iw, (top + y * ch) / ih, (left + (x + w) * cw) / iw, (top + (y + h) * ch) / ih)
+
+
 def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list[str], is_long: bool,
                           title_max: int = PACKAGE_TITLE_GEN_MAX,
                           existing_titles: list[str] | None = None,
                           rejected: list[str] | None = None,
                           used_poses: set[str] | None = None,
-                          publish_date: date | None = None) -> list[PackageCandidate]:
+                          publish_date: date | None = None,
+                          history: Any = None, batch: Any = None,
+                          palette: dict[str, str] | None = None) -> list[PackageCandidate]:
     """Pós-processamento determinístico dos candidatos do LLM: título curto (`normalize_generated_title`; o que passa
     de `title_max` é descartado e vai para `rejected`, nunca é cortado), texto da thumb até 3 palavras e no máximo 1
     palavra do título, pílula e cartões só quando cabem nas 3 palavras do texto total visível (selo de verificação
-    nunca), template permitido, ativos que existem (o que não existe vira o fallback do template: o próximo quadro da
-    biblioteca, ou o degradê), uma pose diferente por candidato e ids `pkc_`. Os avisos ficam em `score["notes"]`.
-    Com `publish_date`, título com prazo ("SOME dia 20") anterior à publicação ganha AVISO e vai para o fim da lista
-    (o vídeo sairia com o título vencido)."""
+    nunca), template permitido, ativos que existem (o que não existe vira o fallback do template: o quadro menos
+    usado da biblioteca, ou o degradê), uma pose diferente por candidato e ids `pkc_`. Os avisos ficam em
+    `score["notes"]`. Com `publish_date`, título com prazo ("SOME dia 20") anterior à publicação ganha AVISO e vai
+    para o fim da lista (o vídeo sairia com o título vencido).
+
+    Variedade (`history`: `thumb_variety.Usage` das thumbs recentes do canal; `batch`: o que este pacote já usou):
+    fundo, figura e pose que o canal acabou de usar dão lugar a outros do mesmo assunto; a cor do texto sai da
+    paleta de alto contraste (contraste com o fundo + novidade, não só amarelo) e o lado do texto alterna (o molde
+    espelha). Captura do próprio vídeo citada em `background_hint` vira o template `prova` (print grande com X ou
+    círculo vermelho)."""
     allowed = [t for t in templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses] or ["heroi-palavra"]
     if not is_long:
         allowed = ["livre"]
     frames = assets.frames
     frame_ids = {str(f["id"]): f for f in frames}
     cutouts, objects = assets.ids("cutouts"), assets.ids("objects") | assets.ids("cutouts")
+    proofs = {str(p["id"]): p for p in assets.proofs} if is_long else {}
     seen_titles = {normalize_token(t) for t in existing_titles or []}
     used_poses = used_poses if used_poses is not None else set()
+    recent = history
+    batch = batch if batch is not None else thumb_variety.Usage()
     out: list[PackageCandidate] = []
-    frame_turn = 0
     for item in _list(raw):
         if not isinstance(item, dict):
             continue
@@ -2746,25 +2942,49 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         thumb_text, removed = _title_overlap(thumb_text, title)
         if removed:
             notes.append(f"CORRIGIDO: o texto da thumb repetia o título ({', '.join(removed)} saiu)")
+        turn = len(out)
         template = str(item.get("template") or "")
         if template not in allowed:
             if template:
-                notes.append(f"CORRIGIDO: template {template} indisponível, usei {allowed[len(out) % len(allowed)]}")
-            template = allowed[len(out) % len(allowed)]
+                notes.append(f"CORRIGIDO: template {template} indisponível, usei {allowed[turn % len(allowed)]}")
+            template = allowed[turn % len(allowed)]
         hint = str(item.get("background_hint") or "").strip()
-        frame = frame_ids.get(hint)
-        if frame is None and frames:
-            if hint:
-                notes.append(f"CORRIGIDO: fundo {hint} não existe na biblioteca")
-            frame = frames[frame_turn % len(frames)]
-            frame_turn += 1
+        proof = proofs.get(hint)
+        if proof is not None and template not in thumb_variety.CARD_TEMPLATES:
+            if "prova" in allowed:  # a captura do próprio vídeo não vira fundo de tela cheia: vira a prova
+                notes.append(f"CORRIGIDO: a captura {hint} entrou como prova (template prova)")
+                template = "prova"
+            else:
+                proof = None
+        if template in thumb_variety.CARD_TEMPLATES and proof is None:
+            if proofs:  # sem citação: a captura mais ligada ao tema que este pacote ainda não usou
+                proof = min(proofs.values(), key=lambda p: (
+                    batch.n("background", "media:" + p["file"].rsplit("/", 1)[-1]), -p.get("relevance", 0)))
+            elif template == "prova" or not assets.objects:
+                fallback = [t for t in allowed if t not in thumb_variety.CARD_TEMPLATES] or ["heroi-palavra"]
+                notes.append(f"CORRIGIDO: {template} sem material do próprio vídeo; usei {fallback[turn % len(fallback)]}")
+                template = fallback[turn % len(fallback)]
+        card = template in thumb_variety.CARD_TEMPLATES
         chars = [str(c) for c in _list(item.get("characters_hint")) if str(c) in cutouts][:2]
         missing = [str(c) for c in _list(item.get("characters_hint")) if str(c) not in cutouts]
         if missing:
             notes.append(f"CORRIGIDO: sem recorte de {', '.join(missing[:3])} (o personagem fica no fundo)")
+        if card:
+            chars = []
+        chars = _pick_characters(chars, assets.cutouts, recent, batch, notes)
+        frame = None
+        if not card:
+            hint_frame = frame_ids.get(hint)
+            if hint_frame is None and hint and hint not in proofs:
+                notes.append(f"CORRIGIDO: fundo {hint} não existe na biblioteca")
+            frame, note = _pick_frame(hint_frame, frames, template, turn, recent, batch,
+                                      need_face=template == "heroi-palavra" and not chars, has_figure=bool(chars))
+            if note:
+                notes.append(note)
         pose_id = None
-        if is_long and assets.poses and (template in ("avatar-reage", "numero-lista") or item.get("presenter_pose")):
-            pose_id = _pick_pose(item.get("presenter_pose"), assets.poses, used_poses)
+        wants_pose = template in ("avatar-reage", "numero-lista", "prova") or item.get("presenter_pose")
+        if is_long and assets.poses and wants_pose and template != "objeto":
+            pose_id = _pick_pose(item.get("presenter_pose"), assets.poses, used_poses, recent)
             if pose_id:
                 used_poses.add(pose_id)
         if pose_id and chars and template != "versus":
@@ -2790,29 +3010,59 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         if cards and thumb_visible_words(thumb_text, pill, cards) > THUMB_TOTAL_WORDS_MAX:
             notes.append(f"CORRIGIDO: os cartões saíram (texto total acima de {THUMB_TOTAL_WORDS_MAX} palavras)")
             cards = []
+        side = _text_side(template, recent, batch, turn) if is_long else "center"
+        mirrored = side == "right"
+        fill = _fill_for(frame, assets.kit_dir, template, side, recent, batch, turn, palette) if is_long else "yellow"
+        if card:
+            background = BgLayer(kind="media", ref=f"media:{proof['file']}").model_dump() if proof else \
+                BgLayer(kind="gradient", ref="noite").model_dump()
+        else:
+            background = _frame_layer(frame, template)
+        figures = [{"asset": c, "x": 0.72 - 0.18 * i, "y": 1.0, "h": 0.95} for i, c in enumerate(chars)]
+        if template == "objeto" and proof is None:
+            obj = next((str(c) for c in _list(item.get("characters_hint")) if str(c) in assets.ids("objects")),
+                       next(iter(sorted(assets.ids("objects"))), None))
+            if obj:
+                figures = [{"asset": f"object:{obj}", "x": 0.70, "y": 0.96, "h": 0.86}]
+        if mirrored:
+            figures = [{**f, "x": round(1 - f["x"], 3)} for f in figures]
         layers: dict[str, Any] = {
             "template": template,
-            "background": _frame_layer(frame, template),
+            "background": background,
             "big_vi": bool(chars) and template in ("heroi-palavra", "lugar-mapa") and assets.allow_editorial,
-            "characters": [{"asset": c, "x": 0.72 - 0.18 * i, "y": 1.0, "h": 0.95} for i, c in enumerate(chars)],
-            "text": ({"words": thumb_text, "fill": "yellow",
-                      "pos": {"livre": "center", "lugar-mapa": "center", "heroi-palavra": "top"}.get(template, "left"),
-                      "size": 0.6 if template == "numero-lista" else 0.3} if thumb_text else None),
+            "characters": figures,
+            "text": ({"words": thumb_text, "fill": fill, "pos": side,
+                      "size": 0.6 if template == "numero-lista" else 0.26 if template == "prova" else 0.3}
+                     if thumb_text else None),
             "pill": pill,
             "cards": cards,
             "logo": "corner" if assets.logos and assets.allow_editorial else "none",
+            # prova: X no que é falso/perigoso, círculo no resto; objeto em close: círculo (destaca o item)
+            "mark": (thumb_variety.mark_for(thumb_text) if template == "prova" else "circle")
+            if card and (proof or figures) else None,
         }
         if pose_id:
-            # Busto à direita em todos, menos no heroi-palavra (avatar pequeno de corpo à esquerda, embaixo do texto
-            # de cima): à esquerda, o busto ficaria embaixo da coluna de texto.
-            busto = template != "heroi-palavra"
-            layers["presenter"] = {"pose": pose_id, "side": "right" if busto else "left",
-                                   "crop": assets.presenter_crop if busto else "meio",
-                                   "h": assets.presenter_height if busto else 0.9,
-                                   "outline_px": assets.presenter_outline}
+            if template == "prova":
+                # avatar pequeno de corpo embaixo da coluna de texto (o foco é a captura)
+                layers["presenter"] = {"pose": pose_id, "side": "left", "crop": "meio", "h": 0.52,
+                                       "outline_px": assets.presenter_outline}
+            else:
+                # Busto do lado oposto ao texto em todos, menos no heroi-palavra (avatar pequeno de corpo embaixo do
+                # texto): do lado do texto, o busto ficaria embaixo da coluna.
+                busto = template != "heroi-palavra"
+                side_p = ("left" if mirrored else "right") if busto else ("right" if mirrored else "left")
+                layers["presenter"] = {"pose": pose_id, "side": side_p,
+                                       "crop": assets.presenter_crop if busto else "meio",
+                                       "h": assets.presenter_height if busto else 0.9,
+                                       "outline_px": assets.presenter_outline}
+        thumb_layers = ThumbLayers.model_validate(layers)
+        repeats = thumb_variety.repeated(thumb_layers, recent)
+        if repeats:
+            notes.append("AVISO: repete as thumbs recentes do canal: " + ", ".join(repeats))
+        batch.add_layers(thumb_layers)
         candidate = PackageCandidate(
             title=title, thumb_text=thumb_text, promise=str(item.get("promise") or ""),
-            concept=str(item.get("concept") or ""), layers=ThumbLayers.model_validate(layers), source="auto",
+            concept=str(item.get("concept") or ""), layers=thumb_layers, source="auto",
             score={"notes": notes} if notes else {},
         )
         out.append(candidate)
@@ -2822,8 +3072,9 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
     return out
 
 
-def _offline_candidates(doc: ProjectDoc, n: int, templates: list[str]) -> dict[str, Any]:
-    """Candidatos por regra (modo offline/testes, sem LLM): variações curtas do tema."""
+def _offline_candidates(doc: ProjectDoc, n: int, templates: list[str],
+                        proofs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Candidatos por regra (modo offline/testes, sem LLM): variações curtas do tema (a prova usa a 1ª captura)."""
     base = " ".join((doc.topic or doc.title).split()) or "Vídeo"
     base = base if len(base) <= 30 else (base[:30].rsplit(" ", 1)[0] or base[:30])
     words = ["TUDO", "SEGREDO", "ANTES", "VALE?", "ERRO", "NOVO", "7 DIAS", "FINAL"]
@@ -2832,7 +3083,9 @@ def _offline_candidates(doc: ProjectDoc, n: int, templates: list[str]) -> dict[s
     return {"candidates": [
         {"title": shapes[i % len(shapes)].format(b=base), "thumb_text": words[i % len(words)],
          "promise": f"Entender {base} sem perder tempo.", "concept": "palavra gigante sobre quadro claro",
-         "template": templates[i % len(templates)], "background_hint": None, "characters_hint": [],
+         "template": templates[i % len(templates)],
+         "background_hint": (proofs[0]["id"] if proofs and templates[i % len(templates)] in ("prova", "objeto")
+                             else None), "characters_hint": [],
          "presenter_pose": None, "pill": None, "cards": []}
         for i in range(n)]}
 
@@ -2847,19 +3100,21 @@ def package_ideas(doc: ProjectDoc, channel: dict[str, Any], style: StyleSpec, n_
                   assets: PackageAssets | None = None, references: list[dict[str, Any]] | None = None,
                   lessons: list[dict[str, Any]] | None = None, existing_titles: list[str] | None = None,
                   today: date | None = None, project_id: str | None = None,
-                  job_id: str | None = None, publish_date: date | None = None) -> tuple[list[PackageCandidate], str]:
+                  job_id: str | None = None, publish_date: date | None = None,
+                  history: Any = None) -> tuple[list[PackageCandidate], str]:
     """Candidatos do pacote (título + thumb), já normalizados, e o provedor usado. Pede `max(n_titles, n_thumbs)`
     pares com pelo menos `n_thumbs` conceitos de thumb diferentes. Título gerado acima do teto é descartado e o LLM
     refaz os que faltam uma vez; o que ainda passar fica de fora, com aviso no 1º candidato. No Short: só título e
     texto da capa, template `livre`. `channel` é o de `_channel_info` (nome, nicho, persona, style_bible).
     `publish_date`: publicação prevista (o prompt pede para não prometer prazo que vença antes dela; sem ela, vale
-    hoje). Se a 2ª chamada falhar, seguem os candidatos da 1ª (com o aviso dos descartados)."""
+    hoje). Se a 2ª chamada falhar, seguem os candidatos da 1ª (com o aviso dos descartados). `history`
+    (`thumb_variety.Usage` das thumbs recentes do canal) entra no pedido e no pós-processamento (fundo, figura, pose,
+    cor e lado do texto fogem do que o canal acabou de usar)."""
     today = today or date.today()
     publish_date = publish_date or today
     is_long = style.format.type != "short"
     assets = assets or package_assets(doc, style, channel.get("style_bible"))
-    templates = list(style.thumbnail.templates) if is_long else ["livre"]
-    templates = [t for t in templates if t not in _TEMPLATE_NEEDS_PRESENTER or assets.poses] or ["heroi-palavra"]
+    templates = thumb_templates_for(style, assets)
     if not is_long:
         templates, n_thumbs = ["livre"], 1
     n = max(1, n_titles, n_thumbs)
@@ -2884,21 +3139,27 @@ Títulos que estouraram no nicho (referência de forma, não copie):
 {ref_lines}
 Ativos disponíveis (cite só estes ids):
 {assets.prompt_lines()}"""
+    recent_line = history.prompt_line() if history is not None and is_long else ""
+    if recent_line:
+        prompt += ("\n\nThumbs recentes do canal (o que o público já viu; NÃO repita, varie fundo, figura, pose e "
+                   f"template): {recent_line}")
     if lessons:
         prompt += "\n\n" + lessons_block(lessons, stage="título, descrição e miniatura")
     context = {"topic": doc.topic or doc.title, "title": doc.title, "n": n, "templates": templates,
                "is_long": is_long, "lessons_key": lessons_key(lessons or [])}
     offline = get_settings().offline
     if offline:
-        data, provider_id = _offline_candidates(doc, n, templates), "offline"
+        data, provider_id = _offline_candidates(doc, n, templates, assets.proofs), "offline"
     else:
         result, provider_id = _llm("package", PACKAGE_SYSTEM, prompt, PACKAGE_SCHEMA, context, project_id, job_id)
         data = result.data
     rejected: list[str] = []
     used_poses: set[str] = set()
+    batch = thumb_variety.Usage()
     candidates = _normalize_candidates(data.get("candidates"), assets=assets, templates=templates, is_long=is_long,
                                        existing_titles=existing_titles, rejected=rejected, used_poses=used_poses,
-                                       publish_date=publish_date)
+                                       publish_date=publish_date, history=history, batch=batch,
+                                       palette=dict(style.thumbnail.palette))
     if rejected and len(candidates) < n and not offline:
         missing = n - len(candidates)
         kept = [c.title for c in candidates]
@@ -2908,7 +3169,9 @@ Ativos disponíveis (cite só estes ids):
             still: list[str] = []
             extra = _normalize_candidates(retry.data.get("candidates"), assets=assets, templates=templates,
                                           is_long=is_long, existing_titles=[*(existing_titles or []), *kept],
-                                          rejected=still, used_poses=used_poses, publish_date=publish_date)[:missing]
+                                          rejected=still, used_poses=used_poses, publish_date=publish_date,
+                                          history=history, batch=batch,
+                                          palette=dict(style.thumbnail.palette))[:missing]
         except Exception as exc:  # noqa: BLE001 - a 2ª rodada é bônus: falhou, seguem os bons da 1ª com o aviso
             if not candidates:
                 raise

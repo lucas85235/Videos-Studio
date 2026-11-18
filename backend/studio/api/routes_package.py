@@ -136,9 +136,7 @@ def package_view(project_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"estilo não encontrado: {exc}") from exc
     assets = authoring.package_assets(doc, style, _bible(doc.channel_id))
     is_long = style.format.type != "short"
-    templates = list(style.thumbnail.templates) if is_long else ["livre"]
-    if not assets.poses:
-        templates = [t for t in templates if t != "avatar-reage"]
+    templates = authoring.thumb_templates_for(style, assets)
     data = doc.package.model_dump(mode="json")
     for cand in data["candidates"]:
         cand["image_url"] = f"/files/{cand['image']}" if cand.get("image") else None
@@ -158,7 +156,7 @@ def package_view(project_id: str) -> dict[str, Any]:
         "editorial_notice": EDITORIAL_NOTICE if assets.allow_editorial else None,
         "presenter": {"enabled": bool(assets.poses), "poses": assets.poses},
         "assets": {"frames": assets.frames, "cutouts": assets.cutouts, "logos": assets.logos,
-                   "objects": assets.objects},
+                   "objects": assets.objects, "proofs": assets.proofs},
     }
 
 
@@ -366,9 +364,10 @@ def upload_thumbkit(channel_id: str, file: Annotated[UploadFile, File()],
             "source": {"upload": file.filename or item_id}}
     if kind == "cutout":
         # lados cortados e qualidade medidos já no envio: o seletor do pacote e o compositor usam a mesma medida
-        from studio.media.thumb_assets import cut_edges_of, cutout_quality
+        from studio.media.thumb_assets import cut_edges_of, cutout_quality, straight_cuts_of
 
         item["cut_edges"] = cut_edges_of(folder / item["file"])
+        item["straight_cuts"] = straight_cuts_of(folder / item["file"])
         item["quality"] = cutout_quality(item)
     items.append(item)
     out = {**raw, "items": items} if isinstance(raw, dict) else {"items": items}
