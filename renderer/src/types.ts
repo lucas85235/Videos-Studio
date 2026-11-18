@@ -245,6 +245,11 @@ export type TimelineScene = {
    * (`cardDim`), e o fundo nunca vira preto liso. Ausente: o escurecimento do tipo, como antes.
    */
   bg_luma?: number;
+  /**
+   * Cartão sobre imagem: detalhe (0 a 1, bordas da imagem reduzida) da imagem de fundo. Abaixo de
+   * `CARD_BG_MIN_DETAIL`, a imagem é lisa e o cartão fica com o fundo do estilo (`cardBackdropOff`).
+   */
+  bg_detail?: number;
 };
 
 /**

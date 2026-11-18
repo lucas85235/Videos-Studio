@@ -230,8 +230,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const { fps, width, height } = useVideoConfig();
   // Quadro real da cena (fora do TimeWarp): o relógio das anotações presas à imagem.
   const frame = useCurrentFrame();
-  // Fundo de cartão escuro demais (`bg_luma`): o fundo do estilo no lugar da imagem (nunca preto liso atrás do texto).
-  const url = cardBackdropOff(scene.bg_luma) ? null : assetUrl(scene.src, assetBaseUrl);
+  // Fundo de cartão preto ou liso demais (`bg_luma`, `bg_detail`): o fundo do estilo no lugar da imagem (nunca preto
+  // liso nem mancha cinza atrás do texto).
+  const url = cardBackdropOff(scene.bg_luma, scene.bg_detail) ? null : assetUrl(scene.src, assetBaseUrl);
   const layers = (scene.parallax?.layers ?? []).map((rel) => assetUrl(rel, assetBaseUrl)).filter((u): u is string => Boolean(u));
   // Vídeo IA só na cena-chave (kind video) com clipe pronto; sem ele, a imagem com câmera, como as outras. Clipe REAL
   // da cena (timeline com `prov` de nível real): o build manda o proxy já cortado na entrada em `scene.video` (com

@@ -500,8 +500,10 @@ def fits_text(tier: str, desc: str, tags: Iterable[str] = (), topic: str = "", *
 
 
 CAPTURE_SHARED_MIN = 2
-"""Palavras de conteúdo em comum (fora as do assunto do vídeo inteiro) para a captura entrar numa cena que não cita
-o veículo dela."""
+"""Palavras de conteúdo diferentes em comum (fora as do assunto do vídeo inteiro) para a captura entrar numa cena que
+não cita o veículo dela."""
+CAPTURE_NAME_MAX = 3
+"""Nomes próprios no trecho para o nome do título da página dizer que o trecho é dela: com mais, é uma lista."""
 _DOMAIN_SUFFIXES = frozenset("com br net org co uk io gg tv info news pt es fr de it us ca au jp me app".split())
 _OUTLET_SPLIT = re.compile(r"\s+[·•|—–-]\s+")
 
@@ -523,7 +525,8 @@ def _host_label(url: str) -> str:
 def outlet_keys(item: PoolItem) -> set[str]:
     """Como a fala cita a fonte da captura, sem acento, caixa nem espaço: o nome do site no endereço e no crédito
     ("gamesbeat", "welivesecurity"), o veículo que abre o título da página ("Windows Central" → "windowscentral", e a
-    1ª palavra longa: "rockstar"), e o que vem entre parênteses ("WeLiveSecurity (ESET)" → "eset")."""
+    1ª palavra longa: "rockstar"), e o nome que vem entre parênteses ("WeLiveSecurity (ESET)" → "eset"; a nota em
+    minúscula, "(site oficial)", não é nome: "site oficial do fabricante" não cita a Rockstar)."""
     keys = {_host_label(item.page_url), _host_label(item.url)}
     credit = (item.credit or "").strip()
     keys.add(_host_label(credit) if "." in credit and " " not in credit else fold(credit).replace(" ", ""))
@@ -533,7 +536,8 @@ def outlet_keys(item: PoolItem) -> set[str]:
         phrases.append(_OUTLET_SPLIT.split(item.desc)[-1])
     for phrase in phrases:
         for inner in re.findall(r"\(([^)]+)\)", phrase):
-            keys.add(fold(inner).replace(" ", ""))
+            if inner.strip()[:1].isupper():
+                keys.add(fold(inner).replace(" ", ""))
         bare = fold(re.sub(r"\([^)]*\)", " ", phrase))
         if bare and len(bare.split()) <= 4:
             keys.add(bare.replace(" ", ""))
@@ -562,32 +566,107 @@ def video_terms(doc: ProjectDoc) -> frozenset[str]:
 
 
 def _names(*texts: object) -> set[str]:
-    """Nomes próprios e siglas dos textos (palavra que começa em maiúscula, com 3 letras ou mais), sem acento nem
-    caixa: "Xbox", "PlayStation", "Huntress"."""
+    """Nomes próprios e siglas dos textos, sem acento nem caixa: "Xbox", "PlayStation", "Huntress", "ESET". Fica de fora
+    a palavra que só está em maiúscula por abrir a frase ("Funciona", "Segunda") e a de faixa em caixa alta ("ATIVE A
+    VERIFICAÇÃO" não tem nome nenhum; a sigla curta, de até 5 letras, conta)."""
     out: set[str] = set()
     for text in texts:
         if not isinstance(text, str):
             continue
-        for word in re.findall(r"[^\W\d_][\w'’]*", text):
-            if word[0].isupper() and len(word) >= 3:
-                out.add(fold(word.split("'")[0].split("’")[0]).replace(" ", ""))
+        for match in re.finditer(r"[^\W\d_][\w'’]*", text):
+            word = match.group(0).split("'")[0].split("’")[0]
+            if len(word) < 3 or not word[0].isupper():
+                continue
+            if word.isupper() and len(word) > 5:
+                continue  # caixa alta de faixa, não sigla
+            before = text[:match.start()].rstrip()
+            if not before or before[-1] in ".!?:…—–-\"“":
+                continue  # abre a frase
+            out.add(fold(word).replace(" ", ""))
     return out
 
 
+def _in_outlet(term: str, keys: set[str]) -> bool:
+    """A palavra é o complemento do nome do veículo ("games" em "rockstargames", "central" em "windowscentral"): não
+    diz nada do assunto. A que abre o nome ("rockstar") é o próprio veículo e conta."""
+    return len(term) >= 4 and any(term in key and not key.startswith(term) for key in keys)
+
+
+_NOTE = re.compile(r"\((?=\s*[a-zà-ÿ])[^)]*\)")
+"""Nota do coletor entre parênteses e em minúscula ("(site oficial)"): não é o assunto da página."""
+
+
+class Sentence(str):
+    """A frase inteira que a cena corta (`sentence_context`), junto dos textos da cena: a captura confere nela se a
+    fonte é citada e se o nome próprio do trecho é item de uma lista; as palavras em comum e a foto de banco ficam só
+    com os textos da cena (a frase longa daria palavra em comum a quase tudo)."""
+
+    __slots__ = ()
+
+
 def capture_fits(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> bool:
-    """A captura de página entra na cena só quando o trecho fala daquele fato ou daquela fonte: a cena cita o veículo
-    (`outlet_keys`), um nome próprio do título da página ("Xbox" na matéria do Xbox Cloud) ou divide com a página pelo
-    menos `CAPTURE_SHARED_MIN` palavras de conteúdo; nos dois últimos, fora as do assunto do vídeo inteiro (`common`).
-    Captura não é papel de parede: a página da GamesBeat sobre a data do PC não ilustra "ative a verificação em duas
-    etapas", e a da ESET sobre golpes não ilustra "pra quem tá no PC"."""
+    """A captura de página entra na cena só quando o trecho fala daquele fato ou daquela fonte:
+
+    - a cena cita o veículo (`outlet_keys`: o site, o título da página, a fonte do cartão);
+    - ou divide com a página pelo menos `CAPTURE_SHARED_MIN` palavras de conteúdo diferentes ("golpe" e "golpes"
+      contam uma vez);
+    - ou cita um nome próprio do título da página ("Xbox" na matéria do Xbox Cloud) que é o assunto do trecho, não um
+      item de lista: o trecho tem no máximo `CAPTURE_NAME_MAX` nomes ("encerra as sessões do Google, Discord, Steam,
+      PSN e Xbox" não é sobre o Xbox).
+
+    Nos dois últimos, as palavras do assunto do vídeo inteiro (`common`) e as do nome do veículo não contam. A frase
+    inteira do trecho (`Sentence`, de `sentence_context`) vale para a citação do veículo e para contar os nomes: a cena
+    corta a frase no meio ("e Xbox. Isso derruba os" fecha a lista de contas). Captura não é papel de parede: a página da GamesBeat sobre a data do PC não ilustra "ative a verificação em
+    duas etapas", e a da ESET sobre golpes não ilustra "pra quem tá no PC"."""
     keys = outlet_keys(item)
     if _mentions(keys, texts):
         return True
+    context = [t for t in texts if isinstance(t, Sentence)]
+    texts = tuple(t for t in texts if not isinstance(t, Sentence))
     skip = set(common) | keys
-    if (_names(item.desc, *item.entities) & _names(*texts)) - skip:
+    here = content_terms(*texts)
+    shared: set[str] = set()
+    for word in re.findall(r"[^\W_]+", " ".join(t for t in (_NOTE.sub(" ", item.desc or ""), *item.tags,
+                                                               *item.entities) if t)):
+        forms = content_terms(word)
+        if forms & here and not forms & skip and not any(_in_outlet(f, keys) for f in forms):
+            shared.add(min(forms, key=len))
+    if len(shared) >= CAPTURE_SHARED_MIN:
         return True
-    shared = content_terms(item.desc, *item.tags, *item.entities) & content_terms(*texts)
-    return len(shared - skip) >= CAPTURE_SHARED_MIN
+    names = {n for n in _names(*texts) if n not in skip and not _in_outlet(n, keys)}
+    around = names | {n for n in _names(*context) if n not in skip and not _in_outlet(n, keys)}
+    return bool(names & _names(item.desc, *item.entities)) and len(around) <= CAPTURE_NAME_MAX
+
+
+_SENTENCE_END = re.compile(r"[.!?…]+[\"”')\]]*(?=\s|$)")
+
+
+def sentence_context(fragments: list[str], index: int, reach: int = 3) -> Sentence:
+    """A frase (ou as frases) que o trecho `fragments[index]` corta, juntando os trechos vizinhos (até `reach` de cada
+    lado): a cena "e Xbox. Isso derruba os" é o fim de "Depois encerra todas as sessões abertas: Google, Discord,
+    Steam, PSN e Xbox." e o começo de "Isso derruba os cookies roubados.". Vazio quando o trecho já é a frase inteira
+    (ou não há vizinho)."""
+    if not 0 <= index < len(fragments):
+        return Sentence("")
+
+    def ends(text: str) -> bool:
+        return not text.strip() or bool(re.search(r"[.!?…][\"”')\]]*$", text.strip()))
+
+    a = index
+    while a > 0 and index - a < reach and not ends(fragments[a - 1]):
+        a -= 1
+    b = index
+    while b < len(fragments) - 1 and b - index < reach and not ends(fragments[b]):
+        b += 1
+    if a == b:
+        return Sentence("")
+    parts = [f.strip() for f in fragments[a:b + 1]]
+    start = sum(len(p) + 1 for p in parts[:index - a])
+    stop = start + len(parts[index - a])
+    joined = " ".join(parts)
+    bounds = [0, *(m.end() for m in _SENTENCE_END.finditer(joined)), len(joined)]
+    picked = [joined[x:y].strip() for x, y in zip(bounds, bounds[1:], strict=False) if y > x and x < stop and y > start]
+    return Sentence(" ".join(p for p in picked if p))
 
 
 def fits_scene(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> bool:
@@ -613,6 +692,7 @@ def fits_scene(item: PoolItem, *texts: object, common: Iterable[str] = ()) -> bo
     Os outros níveis sempre podem: são a própria fonte ou a escolha do usuário."""
     if is_source_capture(item):
         return capture_fits(item, *texts, common=common)
+    texts = tuple(t for t in texts if not isinstance(t, Sentence))  # a frase inteira é só para a captura
     return fits_text(item.tier, item.desc, [*item.tags, *item.entities], item.topic, *texts)
 
 
@@ -1662,8 +1742,12 @@ def _scene_texts(doc: ProjectDoc, scene: Scene) -> tuple[str, ...]:
     headline = scene.card.headline.get(lang, "") if scene.card is not None else ""
     # A fonte do cartão ("GamesBeat") diz de onde vem o fato da cena: a captura daquela fonte cabe nela.
     source = (scene.card.source or "") if scene.card is not None else ""
+    # A frase inteira que a cena corta: "e Xbox. Isso derruba os" é o fim de uma lista de contas (`capture_fits`).
+    ordered = doc.ordered_scenes()
+    at = next((i for i, s in enumerate(ordered) if s.id == scene.id), -1)
+    sentence = sentence_context([scene_text(doc, s) for s in ordered], at)
     return tuple(t for t in (scene_text(doc, scene), ScenePrompt(scene.visual.prompt or ""), headline,
-                             scene.overlay_text.get(lang, ""), source) if t)
+                             scene.overlay_text.get(lang, ""), source, sentence) if t)
 
 
 def _media_fits(pool: Pool, media: MediaRef | None, texts: tuple[str, ...], common: Iterable[str]) -> bool:
@@ -1767,10 +1851,10 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     e o cartão fica com o fundo do estilo (cartão tipográfico): o fundo do cartão não repete a mesma imagem.
 
     Assunto: a captura de página só entra na cena que fala daquele fato ou daquela fonte (`fits_scene`, com as
-    palavras do assunto do vídeo em `video_terms`). Fora dele, troca pela reserva que caiba; sem nenhuma, o cartão
-    fica com o fundo do estilo e a cena de imagem segue a falta de mídia (a IA de reserva, a mídia real vizinha que
-    caiba ou o fundo do estilo). A cena travada e a mídia que o usuário escolheu não passam por aqui: contam como
-    aparição e nunca trocam. Devolve os avisos, dizendo o que de fato aconteceu."""
+    palavras do assunto do vídeo em `video_terms`). Fora dele, troca pela reserva que caiba (outro material real do
+    assunto); sem nenhuma, o cartão fica com o fundo do estilo e a cena de imagem vira cartão tipográfico (`text`: a
+    fala na tela sobre o fundo do estilo), nunca a IA de reserva. A cena travada e a mídia que o usuário escolheu não
+    passam por aqui: contam como aparição e nunca trocam. Devolve os avisos, dizendo o que de fato aconteceu."""
     from studio.core.styles.library import get_style
 
     warnings: list[str] = []
@@ -1787,6 +1871,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     budget = attach_download_budget(sum(1 for s in doc.scenes if not s.locked and needs_attach(s.visual.media, doc.id)))
     failed: list[tuple[Scene, str]] = []
     plain: list[str] = []  # cartões que ficaram com o fundo do estilo (o fundo não cabia ali)
+    typographic: list[str] = []  # cenas de imagem com captura de outro assunto que viraram cartão tipográfico
     refused: dict[str, str] = {}  # item de banco recusado pela imagem (`refuse_empty_screen`) → motivo
     frame = _frame_of(style)
     common = video_terms(doc)
@@ -1817,9 +1902,9 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         if pre is None and not off_topic:
             reserve = [c for c in fallbacks(pool, item, used) if fits_scene(c, *texts, common=common)]
             order = [item, *reserve[:MAX_FALLBACK_TRIES]]
-        elif off_topic and card:
-            order = []  # a captura era só o fundo, e de outro assunto: o cartão fica tipográfico (fundo do estilo)
         else:
+            # A reserva que cabe na cena (outro material real do assunto); o item só fica quando não é de outro
+            # assunto e a cena não é cartão (o fundo do cartão não repete).
             fit_reserve = (_spread_reserve(pool, item, used | cited, around, texts, common) if around is not None else
                            [c for c in fallbacks(pool, item, used) if c.tier in REAL_TIERS and c.media != "meme"
                             and (c.tier != "official" or item.tier == "official")
@@ -1870,6 +1955,16 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             scene.visual.type = "none"
             plain.append(_label(doc, scene))
             continue
+        if (chosen is None or source is None) and off_topic and scene.kind == "image":
+            # Cena de imagem com a captura de outro assunto e sem material real do assunto na reserva: vira cartão
+            # tipográfico (a fala grande sobre o fundo do estilo), nunca a IA de reserva (mais tempo de IA, sem
+            # conferir o teto) nem a repetição da mídia vizinha.
+            scene.visual.media = None
+            scene.visual.reuse_of = None
+            scene.visual.type = "none"
+            scene.kind = "text"
+            typographic.append(_label(doc, scene))
+            continue
         if chosen is None or source is None:
             scene.visual.media = None
             if off_topic:
@@ -1898,6 +1993,10 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         verb = "ficou" if len(plain) == 1 else "ficaram"
         warnings.append(f"{_scene_list(plain)} {verb} com o fundo do estilo: a imagem do acervo era de outro assunto ou "
                         f"já aparecia demais ({rule}).")
+    if typographic:
+        verb = "virou" if len(typographic) == 1 else "viraram"
+        warnings.append(f"{_scene_list(typographic)} {verb} cartão tipográfico (a fala na tela, fundo do estilo): a "
+                        "captura do acervo era de outro assunto e o acervo não tem material real que caiba ali.")
     if kept:
         verb = "repete" if len(kept) == 1 else "repetem"
         warnings.append(f"{_scene_list(kept)} {verb} material do acervo cedo demais ({rule}) e o acervo não tem outro "

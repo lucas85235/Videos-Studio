@@ -1529,6 +1529,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     hook = 0 if beats and storyboard_check.is_hook_beat(doc, beats[0]) else None
     data_style = is_data_style(style)
     common = media_pool.video_terms(doc)
+    fragments = [beat.text for beat in beats]
 
     picks: list[_Pick] = []
     early: list[Issue] = []
@@ -1564,11 +1565,13 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         ahead = None
         topic = _match_tokens(beat.text, data.get("prompt"), data.get("real_query"), data.get("real_note"),
                               data.get("headline"), data.get("overlay_text"))
+        # Com a frase inteira que a batida corta (`media_pool.sentence_context`): a captura confere o trecho dito.
         # O prompt de IA vai marcado: na prova de `fits_scene` só vale o assunto dele, não o cenário.
         prompt = data.get("prompt")
         texts = tuple(t for t in (beat.text, data.get("headline"), data.get("overlay_text"),
                                   media_pool.ScenePrompt(prompt) if isinstance(prompt, str) else None,
-                                  data.get("real_query"), card.source if card is not None else None)
+                                  data.get("real_query"), card.source if card is not None else None,
+                                  media_pool.sentence_context(fragments, i))
                       if isinstance(t, str) and t.strip())
         chosen_item: PoolItem | None = None
         plain = False

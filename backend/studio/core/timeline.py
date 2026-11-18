@@ -1062,49 +1062,55 @@ def _presenter_side(scene_side: str, facing: str, resolved: dict[str, Any]) -> s
     return "right"
 
 
-CARD_BG_MIN_LUMA = 0.18
-"""Brilho médio (0 a 1) mínimo da imagem de fundo de um cartão (`sources.CARD_BACKDROP_KINDS`). O cartão escurece o
-fundo (`DIM` no renderer, 55% a 62%): a página da Rockstar, quase toda preta (brilho 0,08), virava preto liso atrás do
-texto, e a palavra que entra em fade aparecia como um fantasma sobre o nada. Abaixo disto, o cartão fica com o fundo do
-estilo (cartão tipográfico); acima, o renderer só escurece até o brilho de `CARD_BG_FLOOR` (`fx/math.ts`), pelo
-`bg_luma` que vai na cena. Espelho de `CARD_BG_MIN_LUMA` em `fx/math.ts` (o teste confere os dois)."""
+CARD_BG_MIN_LUMA = 0.05
+"""Brilho médio (0 a 1) abaixo do qual a imagem de fundo de um cartão (`sources.CARD_BACKDROP_KINDS`) é preta: o
+cartão fica com o fundo do estilo (cartão tipográfico). Espelho de `CARD_BG_MIN_LUMA` em `fx/math.ts`."""
+CARD_BG_MIN_DETAIL = 0.09
+"""Detalhe mínimo (média das bordas da imagem reduzida a 64x36, 0 a 1) do fundo do cartão. O cartão escurece e desfoca
+o fundo (`DIM`/`BLUR` no renderer): a imagem lisa vira uma mancha sem nada. A página da Rockstar quase toda preta
+(detalhe 0,056) virava preto liso atrás do texto, com a palavra em fade de fantasma sobre o nada; a foto do canto de um
+Xbox One (0,074) virava cinza liso com o logo apagado. A arte em neon do VI, escura (brilho 0,095) mas cheia de forma
+(0,107), fica: o renderer só escurece menos (`cardDim`). Abaixo disto, o fundo do estilo (`cardBackdropOff`, pelo
+`bg_detail` que vai na cena). Espelho de `CARD_BG_MIN_DETAIL` em `fx/math.ts` (o teste confere os dois)."""
 
 
 @functools.lru_cache(maxsize=512)
-def _luma_of(path: str, rev: str) -> float | None:
-    from PIL import Image, ImageStat
+def _backdrop_of(path: str, rev: str) -> tuple[float, float] | None:
+    from PIL import Image, ImageFilter, ImageStat
 
     try:
         with Image.open(path) as image:
-            small = image.convert("L").resize((64, 36))
-            return round(ImageStat.Stat(small).mean[0] / 255, 3)
+            small = image.convert("L").resize((64, 36), Image.Resampling.BILINEAR)
     except (OSError, ValueError):
         return None
+    luma = ImageStat.Stat(small).mean[0] / 255
+    detail = ImageStat.Stat(small.filter(ImageFilter.FIND_EDGES)).mean[0] / 255
+    return round(luma, 3), round(detail, 3)
 
 
-def image_luma(rel: str | None) -> float | None:
-    """Brilho médio (0 a 1) da imagem (caminho relativo à pasta de dados); None quando o arquivo não abre. Em cache
-    pelo tamanho e pela data do arquivo."""
+def image_backdrop(rel: str | None) -> tuple[float, float] | None:
+    """Brilho médio e detalhe (bordas) da imagem, de 0 a 1 (caminho relativo à pasta de dados); None quando o arquivo
+    não abre. Em cache pelo tamanho e pela data do arquivo."""
     rev = _file_rev(rel)
     if not rev or not rel:
         return None
     from studio.config import get_settings
 
-    return _luma_of(str(get_settings().data_dir / rel), rev)
+    return _backdrop_of(str(get_settings().data_dir / rel), rev)
 
 
 def card_backdrop(resolved: dict[str, Any]) -> None:
-    """O fundo do cartão nunca vira preto liso: a cena leva o brilho da imagem (`bg_luma`), e o renderer desenha o
-    fundo do estilo no lugar da imagem escura demais (abaixo de `CARD_BG_MIN_LUMA`, `cardBackdropOff`) e só escurece
-    as outras até o brilho mínimo (`cardDim`). O `src` fica (o derivado do Short e a conferência leem a imagem da
-    cena). Fora dos cartões de fundo (`CARD_BACKDROP_KINDS`), com clipe, ou sem arquivo que abra: nada muda (o mesmo
-    dict de antes)."""
+    """O fundo do cartão nunca vira preto liso nem mancha lisa: a cena leva o brilho (`bg_luma`) e o detalhe
+    (`bg_detail`) da imagem, e o renderer desenha o fundo do estilo no lugar da imagem preta ou lisa demais (abaixo de
+    `CARD_BG_MIN_LUMA` ou de `CARD_BG_MIN_DETAIL`, `cardBackdropOff`) e só escurece as outras até o brilho mínimo
+    (`cardDim`). O `src` fica (o derivado do Short e a conferência leem a imagem da cena). Fora dos cartões de fundo
+    (`CARD_BACKDROP_KINDS`), com clipe, ou sem arquivo que abra: nada muda (o mesmo dict de antes)."""
     if resolved.get("kind") not in CARD_BACKDROP_KINDS or not resolved.get("src") or resolved.get("video"):
         return
-    luma = image_luma(resolved["src"])
-    if luma is None:
+    stats = image_backdrop(resolved["src"])
+    if stats is None:
         return
-    resolved["bg_luma"] = round(luma, 3)
+    resolved["bg_luma"], resolved["bg_detail"] = stats
 
 
 def _file_rev(rel: str | None) -> str:

@@ -55,7 +55,7 @@ WINDOWS = PoolItem(
     desc="Grand Theft Auto 6 will be playable on Xbox Cloud Gaming · \"Windows Central · GTA 6 will be playable\"",
     page_url="https://www.windowscentral.com/gaming/xbox/gta-6-xbox-cloud", credit="windowscentral.com",
     path="uploads/prj/media/wc.jpg")
-COMMON = frozenset({"gta", "pc", "nao", "baixe", "download"})  # `common_terms` do título "GTA 6 no PC: ..."
+COMMON = frozenset({"gta", "pc", "nao", "baixe", "download"})  # `video_terms` do título "GTA 6 no PC: ..."
 
 
 # --- captura só no trecho daquele fato ou daquela fonte -------------------------------------------------------------
@@ -78,9 +78,50 @@ def test_outlet_keys_come_from_the_site_the_title_and_the_parentheses():
     (WINDOWS, "O cookie é o pior: com ele, o golpista pode entrar na sua conta", False),
     (WINDOWS, "E se você já baixou? Calma, mas age rápido.", False),
     (WINDOWS, "Primeira: no lançamento, a nuvem é só pra consoles Xbox", True),  # nome próprio do título
+    # nome do título num trecho que é uma lista de contas: não é sobre o Xbox
+    (WINDOWS, "Depois encerra todas as sessões abertas: Google, Discord, Steam, PSN e Xbox.", False),
+    # duas palavras do título da matéria (o plural conta uma vez só: "golpes" e "golpe" são uma)
+    (ESET, "Os golpes com instalador falso se espalham antes do lançamento", True),
+    (ESET, "Como reconhecer esse golpe antes de perder suas contas", False),
+    # faixa em caixa alta não tem nome próprio
+    (WINDOWS, "XBOX CLOUD? NÃO NO PC", True),
+    (GAMESBEAT, "ATIVE A VERIFICAÇÃO EM 2 ETAPAS", False),
 ])
 def test_capture_fits_only_the_stretch_about_its_fact_or_source(item, text, fits):
     assert media_pool.fits_scene(item, text, common=COMMON) is fits
+
+
+ROCKSTAR = PoolItem(
+    id="p228", tier="capture", media="capture",
+    desc="Grand Theft Auto VI – Rockstar Games — \"Rockstar Games – Grand Theft Auto VI (site oficial)\"",
+    page_url="https://www.rockstargames.com/VI", credit="rockstargames.com", path="uploads/prj/media/r.jpg")
+
+
+def test_collector_note_in_parentheses_is_not_the_outlet_nor_the_subject():
+    """"(site oficial)" é nota do coletor: "site oficial do fabricante" não cita a Rockstar; "(ESET)" é o veículo."""
+    assert "siteoficial" not in media_pool.outlet_keys(ROCKSTAR)
+    assert not media_pool.fits_scene(ROCKSTAR, "passa um antivírus baixado só do site oficial do fabricante",
+                                     common=COMMON)
+    assert media_pool.fits_scene(ROCKSTAR, "e isso tá no site oficial da Rockstar", common=COMMON)
+    # "Games" é parte do nome do veículo, não um nome do assunto
+    assert not media_pool.fits_scene(ROCKSTAR, "Isso vale pra Epic Games e pra qualquer loja", common=COMMON)
+
+
+def test_sentence_context_joins_the_fragments_the_scene_cuts():
+    fragments = ["principal, que recupera todo o resto. Depois encerra todas as",
+                 "sessões abertas, inclusive no Discord e nas contas de jogos, como Steam, PlayStation",
+                 "e Xbox. Isso derruba os", "cookies roubados.", "Frase inteira."]
+    ctx = media_pool.sentence_context(fragments, 2)
+    assert isinstance(ctx, media_pool.Sentence)
+    assert ctx == ("Depois encerra todas as sessões abertas, inclusive no Discord e nas contas de jogos, como Steam, "
+                   "PlayStation e Xbox. Isso derruba os cookies roubados.")
+    assert media_pool.sentence_context(fragments, 4) == ""  # já é a frase inteira
+    # o "Xbox" do fim da lista não chama a matéria do Xbox Cloud; sem a frase, o trecho parecia ser sobre ele
+    assert media_pool.fits_scene(WINDOWS, fragments[2], common=COMMON)
+    assert not media_pool.fits_scene(WINDOWS, fragments[2], ctx, common=COMMON)
+    # a frase serve só à captura: a foto de banco confere a fala da cena, não a frase toda
+    stock = PoolItem(id="p9", tier="stock", desc="Discord app on a phone", path="uploads/prj/media/d.jpg")
+    assert not media_pool.fits_scene(stock, fragments[2], ctx, common=COMMON)
 
 
 def test_card_source_counts_as_citing_the_outlet():
@@ -150,11 +191,37 @@ def test_attach_keeps_a_capture_out_of_scenes_about_something_else(isolated_sett
     warnings = media_pool.attach_chosen(doc, Pool(items=[GAMESBEAT]))
     first, card, image = doc.ordered_scenes()
     assert first.visual.media is not None and first.visual.media.pool_id == "p225"
-    # o cartão fica com o fundo do estilo; a cena de imagem volta à IA de reserva (tem prompt), nunca à captura
+    # o cartão fica com o fundo do estilo; a cena de imagem vira cartão tipográfico (nunca a captura, nem a IA de
+    # reserva, que somaria tempo de IA sem conferir o teto, nem a repetição da mídia vizinha)
     assert card.visual.media is None and card.visual.type == "none" and card.visual.reuse_of is None
-    assert image.visual.media is None and image.visual.reuse_of is None
+    assert image.kind == "text" and image.visual.media is None and image.visual.reuse_of is None
+    assert image.visual.type == "none"
     assert any("fundo do estilo" in w for w in warnings)
-    assert any("outro assunto" in w and "IA de reserva" in w for w in warnings)
+    assert any("cartão tipográfico" in w for w in warnings)
+    assert not any("IA de reserva" in w for w in warnings)
+
+
+def test_attach_swaps_an_off_topic_capture_for_real_material_of_the_scene(isolated_settings, monkeypatch):
+    """Com material real do assunto na reserva (a foto do banco que fala do Pix), a cena de imagem e o cartão ficam
+    com ele: o cartão tipográfico é só o último recurso."""
+    doc = _attach_doc(["No dia treze de outubro, a GamesBeat publicou a data do PC.",
+                       "E se pagou com cartão ou Pix, fala com o seu banco o quanto antes.",
+                       "Muita coisa mudou desde então no mercado de jogos e na comunidade de fãs pelo mundo afora.",
+                       "Muita coisa mudou de novo no mercado de jogos e na comunidade de fãs pelo mundo afora.",
+                       "Guarda o comprovante do Pix e fala com o banco."],
+                      ["image", "image", "image", "image", "text"])
+    pix = PoolItem(id="p30", tier="stock", desc="Pagamento por Pix no celular, banco", path="uploads/prj/media/pix.jpg")
+    pix2 = PoolItem(id="p31", tier="stock", desc="Comprovante de Pix do banco na tela", path="uploads/prj/media/p2.jpg")
+    doc.scenes[0].visual.media = media_pool.pending_ref(GAMESBEAT)
+    doc.scenes[1].visual.media = media_pool.pending_ref(GAMESBEAT)
+    doc.scenes[4].visual.media = media_pool.pending_ref(GAMESBEAT)
+    monkeypatch.setattr(media_pool, "materialize", _fake_materialize(doc))
+    media_pool.attach_chosen(doc, Pool(items=[GAMESBEAT, pix, pix2]))
+    scenes = doc.ordered_scenes()
+    assert scenes[1].kind == "image" and scenes[1].visual.media is not None
+    assert scenes[1].visual.media.pool_id in ("p30", "p31")
+    assert scenes[4].visual.media is not None and scenes[4].visual.media.pool_id in ("p30", "p31")
+    assert scenes[4].visual.media.pool_id != scenes[1].visual.media.pool_id
 
 
 def test_attach_never_repeats_a_capture_as_card_background(isolated_settings, monkeypatch):
@@ -233,6 +300,12 @@ out.cardDark = m.cardDim(0.62, 0.3);
 out.cardBright = m.cardDim(0.62, 0.9);
 out.cardNone = m.cardDim(0.62, undefined);
 out.floor = m.CARD_BG_FLOOR;
+// Rockstar quase preta e lisa, canto cinza do Xbox: fundo do estilo; arte em neon do VI (escura, cheia de forma): fica.
+out.offRockstar = m.cardBackdropOff(0.081, 0.056);
+out.offXbox = m.cardBackdropOff(0.519, 0.074);
+out.offNeon = m.cardBackdropOff(0.095, 0.107);
+out.offBlack = m.cardBackdropOff(0.02, undefined);
+out.offOld = m.cardBackdropOff(undefined, undefined);
 out.margin = m.KEEP_MARGIN;
 console.log(JSON.stringify(out));
 """
@@ -280,26 +353,42 @@ def test_card_dim_stops_at_the_floor(keep_math):
     assert 0.3 * (1 - keep_math["cardDark"]) >= keep_math["floor"] - 1e-6
 
 
-def _image(rel: str, value: int) -> None:
+def test_flat_or_black_card_background_goes_but_dark_detailed_art_stays(keep_math):
+    """Valores medidos nos fundos reais do prj_gq4krrs11w (brilho, detalhe)."""
+    assert keep_math["offRockstar"] and keep_math["offXbox"] and keep_math["offBlack"]
+    assert not keep_math["offNeon"] and not keep_math["offOld"]
+
+
+def _image(rel: str, value: int, *, stripes: bool = False) -> None:
     path = get_settings().data_dir / rel
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (160, 90), (value, value, value)).save(path)
+    image = Image.new("RGB", (160, 90), (value, value, value))
+    if stripes:  # forma: listras claras (a arte escura cheia de detalhe)
+        for x in range(0, 160, 10):
+            image.paste((value + 120,) * 3, (x, 0, x + 4, 90))
+    image.save(path)
 
 
 def test_dark_card_background_falls_back_to_the_style_background(isolated_settings):
     _image("cache/media/dark.jpg", 20)
     _image("cache/media/light.jpg", 200)
+    _image("cache/media/neon.jpg", 15, stripes=True)
     dark = {"kind": "text", "src": "cache/media/dark.jpg", "keep": [0.1, 0.1, 0.5, 0.1]}
     timeline.card_backdrop(dark)
-    # o `src` fica (o Short derivado e a conferência leem a imagem); o renderer troca pelo fundo do estilo
-    assert dark["src"] == "cache/media/dark.jpg" and dark["bg_luma"] < timeline.CARD_BG_MIN_LUMA
+    # o `src` fica (o Short derivado e a conferência leem a imagem); o renderer troca pelo fundo do estilo (lisa)
+    assert dark["src"] == "cache/media/dark.jpg" and dark["bg_detail"] < timeline.CARD_BG_MIN_DETAIL
     math = _read(MATH)
     assert f"export const CARD_BG_MIN_LUMA = {timeline.CARD_BG_MIN_LUMA};" in math
-    assert "cardBackdropOff(scene.bg_luma) ? null : assetUrl(scene.src" in _read(COMP / "SceneView.tsx")
+    assert f"export const CARD_BG_MIN_DETAIL = {timeline.CARD_BG_MIN_DETAIL};" in math
+    assert "cardBackdropOff(scene.bg_luma, scene.bg_detail) ? null : assetUrl(scene.src" in _read(COMP / "SceneView.tsx")
     light = {"kind": "title", "src": "cache/media/light.jpg"}
     timeline.card_backdrop(light)
     assert light["src"] == "cache/media/light.jpg" and light["bg_luma"] == pytest.approx(200 / 255, abs=0.01)
     assert light["bg_luma"] >= timeline.CARD_BG_MIN_LUMA
+    # escura, mas com forma: fica (o renderer só escurece menos)
+    neon = {"kind": "text", "src": "cache/media/neon.jpg"}
+    timeline.card_backdrop(neon)
+    assert neon["bg_luma"] < 0.4 and neon["bg_detail"] >= timeline.CARD_BG_MIN_DETAIL
     image = {"kind": "image", "src": "cache/media/dark.jpg"}
     timeline.card_backdrop(image)
     assert image == {"kind": "image", "src": "cache/media/dark.jpg"}  # a cena de imagem não muda
