@@ -129,7 +129,7 @@ def _shot_material(
     images: dict[str, str | None],
     scene_prov: str,
 ) -> tuple[dict[str, Any], str | None]:
-    """Origem do plano: ({prov, src?, video?, clipIn?, hold?}, aviso). Origem que falta cai no visual da cena."""
+    """Origem do plano: ({prov, src?, video?, clipIn?, seconds?, hold?}, aviso). Origem que falta cai no visual da cena."""
     own: dict[str, Any] = {"prov": scene_prov}
     if shot.source == "media":
         media = shot.media
@@ -143,6 +143,8 @@ def _shot_material(
             clip_in = shot.clip_in if shot.clip_in is not None else media.start_s
             if clip_in:
                 out["clipIn"] = round(float(clip_in), 3)
+            if media.dur_s:
+                out["seconds"] = round(float(media.dur_s), 3)
         if shot.hold or media.hold:
             out["hold"] = True
         return out, None
@@ -162,6 +164,8 @@ def _shot_material(
             clip_in = shot.clip_in if shot.clip_in is not None else item.start_s
             if clip_in:
                 out["clipIn"] = round(float(clip_in), 3)
+            if item.dur_s:
+                out["seconds"] = round(float(item.dur_s), 3)
         else:
             out["src"] = path
         if shot.hold:

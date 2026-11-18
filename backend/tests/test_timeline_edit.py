@@ -297,6 +297,20 @@ def test_shots_resolve_to_frames_covering_the_scene():
         assert {"from", "dur", "prov", "framing", "motion"} <= set(shot)
 
 
+def test_shot_clip_carries_its_useful_seconds_for_the_renderer():
+    # `seconds` (TimelineShot no renderer): com ele o plano com `hold` congela quando o trecho acaba.
+    pool = Pool(items=[PoolItem(id="p1", tier="official", media="clip", path="uploads/prj_tl/pool/p1.mp4",
+                                start_s=2.0, dur_s=1.25)])
+    media = MediaRef(kind="clip", source="upload", asset="uploads/prj_tl/media/a.jpg",
+                     video="uploads/prj_tl/media/a.mp4", dur_s=0.8, hold=True)
+    doc = _doc(_scene(0, shots=[SubShot(at="chocante", source="pool", pool_id="p1", hold=True),
+                                SubShot(at="pessoal", source="media", media=media)]), _scene(1))
+    pool_shot, media_shot = _timeline(doc, pool=pool)["scenes"][0]["shots"][1:]
+    assert pool_shot["seconds"] == 1.25 and pool_shot["hold"] is True and pool_shot["clipIn"] == 2.0
+    assert media_shot["seconds"] == 0.8 and media_shot["hold"] is True
+    assert "seconds" not in _timeline(_shots_doc(), pool=_pool())["scenes"][0]["shots"][1]  # sem dur_s: até o fim
+
+
 def test_shots_read_the_pool_file_when_not_given(isolated_settings):
     save_pool("prj_tl", _pool())
     shots = _timeline(_shots_doc())["scenes"][0]["shots"]
