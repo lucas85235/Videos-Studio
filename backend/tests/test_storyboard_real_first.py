@@ -308,9 +308,10 @@ def test_review_flags_same_tier_run_with_readable_labels(monkeypatch):
     doc = base_doc()
     beats = authoring.plan_beats(doc, STYLE)
     # tudo na mesma foto livre: o mesmo tipo de material muito tempo seguido (a foto livre não tem teto próprio); as
-    # etiquetas dela cobrem a fala de todas as batidas (foto de banco que não tem a ver com a fala não entra)
+    # etiquetas dela cobrem a fala de todas as batidas com palavras comuns (foto de banco que não tem a ver com a fala
+    # não entra, e nome próprio solto, "Rockstar", "Lucia", não prova nada)
     pool = make_pool()
-    pool.item("p4").tags = ["trailer", "rockstar", "views", "lucia", "mapa", "celular", "games"]
+    pool.item("p4").tags = ["trailer", "notícia", "milhões", "ponte", "mapa", "celular", "games"]
     extra = {i: {"source": "pool", "pool_id": "p4"} for i in range(len(beats))}
     _, review, _, _ = run(monkeypatch, doc, extra, pool=pool)
     found = {i["code"]: i for i in review["issues"]}
@@ -580,7 +581,7 @@ def test_redoing_the_storyboard_keeps_the_new_pool_choice_and_only_hand_attached
     news = next(i for i, b in enumerate(beats) if b.text.startswith("A Rockstar"))
     phone = next(i for i, b in enumerate(beats) if b.text.startswith("Muita gente"))
     pool = make_pool()
-    pool.item("p4").tags.append("rockstar")  # a foto livre tem a ver com a batida (senão ela não entra)
+    pool.item("p4").tags.append("notícia")  # a foto livre tem a ver com a batida (senão ela não entra)
     first, _, beats, _ = run(monkeypatch, doc, {news: {"source": "pool", "pool_id": "p4"}}, pool=pool)
     assert by_key(first, beats)[news].visual.media.pool_id == "p4"
     # o usuário anexa à mão uma foto numa cena (sem `pool_id`)

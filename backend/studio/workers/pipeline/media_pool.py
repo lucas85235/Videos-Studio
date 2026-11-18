@@ -11,7 +11,9 @@ independente: a falha de um vira aviso em `Pool.warnings` e os outros seguem.
 3. Trechos de links oficiais dados pelo usuário (`settings.pool_links`), cortados em planos por `media/clips.py`.
 4. Fotos livres (`media_search`: Commons, Openverse, Pexels) e vídeos do Pexels, por tópico do roteiro (só online).
    O mockup com a tela vazia (chroma crua, branca ou desligada) fica de fora: pela descrição na coleta (`is_mockup`)
-   e pela imagem baixada no anexo (`media/empty_screen.py`), que passa para a reserva.
+   e pela imagem baixada no anexo (`media/empty_screen.py`), que passa para a reserva. Também a prévia de banco pago
+   com marca d'água, a arte de fã e a proporção que pediria laterais desfocadas (`bank_misfit`, na coleta) e a foto
+   de portfólio com moldura (`media/stock_frame.py`, no anexo). Se a foto tem a ver com a cena é com `fits_scene`.
 5. Arte oficial e notícias (`media_find`): uma chamada por vídeo, até 15 tópicos (só com o Claude Code buscando na web).
 6. Anti-repetição: item parecido (dHash) ou o mesmo (`source_id`; numa imagem, também o endereço do arquivo) usado
    nos últimos 10 vídeos do canal perde nota. Trecho de vídeo conta pelo plano, nunca pelo link inteiro.
@@ -259,6 +261,19 @@ _TERM_STOP = frozenset(
 _MODEL_WORDS = frozenset("one series pro max mini lite slim plus ultra".split())
 # Palavras curtas de ligação que não são marca ("pacote de 3", "pack of 3").
 _HEAD_STOP = frozenset("de da do em no na of in on at to by and the com por".split())
+# Palavras de conteúdo que não dizem o assunto da foto: o "vídeo" da fala ("vídeo curto") não é o "video" da legenda de
+# banco ("close up video of a man"), "digital" e "online" servem a qualquer coisa, pessoa e adjetivo de luz e tamanho
+# descrevem a pose, não o assunto.
+_WEAK_TERMS = frozenset(
+    "video videos clip footage stock real digital online internet live show total normal final original simple "
+    "person people young group hand hands playing play using large small glowing bright colorful concept scene "
+    "style design room backdrop setting indoor indoors outdoor outdoors".split()
+)
+# Marcas de aparelho: na foto, só com a marca citada na cena (e o mesmo modelo, se a foto diz o modelo).
+_HARDWARE = frozenset(
+    "xbox ps nintendo wii gameboy iphone ipad macbook geforce rtx gtx radeon ryzen".split()
+)
+_HARDWARE_ALIAS = {"playstation": "ps", "psn": "ps"}
 _ROMAN = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9"}
 _YEAR = re.compile(r"(?:19|20)\d\d")
 
@@ -275,12 +290,39 @@ def content_terms(*texts: object) -> set[str]:
             if not token or token in _TERM_STOP:
                 continue
             if len(token) >= _TERM_MIN_LEN:
+                single = token[:-1] if token.endswith("s") and len(token) > _TERM_MIN_LEN else ""
+                if single in _TERM_STOP:
+                    continue  # "lights" é "light"
                 out.add(token)
-                if token.endswith("s") and len(token) > _TERM_MIN_LEN:
-                    out.add(token[:-1])
+                if single:
+                    out.add(single)
             elif len(token) >= 2 and (word.isupper() or any(ch.isdigit() for ch in word)):
                 out.add(token)
     return out
+
+
+def common_terms(*texts: object) -> set[str]:
+    """`content_terms` só das palavras comuns da cena: sem os nomes próprios (maiúscula no meio da frase, sigla, sigla
+    com número: "Rockstar", "Xbox Cloud Gaming", "ISO", "PC") e sem o texto todo em maiúscula (faixa, título: ali
+    não dá para saber o que é nome). Nome próprio na fala não prova que a foto de banco é dele: o banco acha a palavra
+    em qualquer sentido."""
+    words: list[tuple[str, bool, bool]] = []  # (palavra, nome próprio pela caixa, abre a frase)
+    for text in texts:
+        if not isinstance(text, str) or not any(ch.islower() for ch in text):
+            continue
+        start = True
+        for token in _TOKEN.findall(text):
+            if token in ".!?;:":
+                start = True
+                continue
+            proper = ((token[:1].isupper() and not start) or (len(token) > 1 and token.isupper())
+                      or (any(ch.isdigit() for ch in token) and any(ch.isalpha() for ch in token)))
+            words.append((token, proper, start))
+            start = False
+    # No começo da frase a maiúscula não diz nada: vale o que a mesma palavra é no resto ("Xbox. O Xbox confirmou").
+    names = {fold(w) for w, proper, _ in words if proper}
+    return content_terms(" ".join(w for w, proper, at_start in words
+                                  if not proper and not (at_start and w[:1].isupper() and fold(w) in names)))
 
 
 def _model_words(text: str) -> list[str]:
@@ -312,20 +354,84 @@ def model_marks(*texts: object) -> dict[str, set[str]]:
     return out
 
 
-def fits_scene(item: PoolItem, *texts: object) -> bool:
-    """O item do acervo pode ilustrar a cena de `texts` (a fala, a faixa, o prompt de reserva)? Material de busca por
-    palavra-chave (`KEYWORD_TIERS`) só quando a descrição (ou as etiquetas) divide pelo menos uma palavra de conteúdo
-    com a cena e, se a descrição traz o modelo do produto, ele não contradiz o modelo que a cena cita (foto de "Xbox
-    Series S" não ilustra "Xbox One"). Os outros níveis sempre podem: são a própria fonte ou a escolha do usuário."""
-    if item.tier not in KEYWORD_TIERS:
+def _hardware_brands(*texts: object) -> set[str]:
+    """Marcas de aparelho citadas nos textos ("PlayStation" e "PS" contam como a mesma)."""
+    out: set[str] = set()
+    for text in texts:
+        if isinstance(text, str):
+            out |= {_HARDWARE_ALIAS.get(w, w) for w in _model_words(text)} & _HARDWARE
+    return out
+
+
+def _hardware_marks(*texts: object) -> dict[str, set[str]]:
+    """`model_marks` só das marcas de aparelho, com os apelidos juntos ("PS5" e "PlayStation 5" dão {"ps": {"5"}})."""
+    out: dict[str, set[str]] = {}
+    for head, models in model_marks(*texts).items():
+        brand = _HARDWARE_ALIAS.get(head, head)
+        if brand in _HARDWARE:
+            out.setdefault(brand, set()).update(models)
+    return out
+
+
+def fits_text(tier: str, desc: str, tags: Iterable[str] = (), topic: str = "", *texts: object) -> bool:
+    """`fits_scene` pelos campos do item (nível, descrição, etiquetas e tópico da busca), sem precisar do `PoolItem`."""
+    if tier not in KEYWORD_TIERS:
         return True
-    if not content_terms(item.desc, *item.tags, *item.entities) & content_terms(*texts):
+    tags = [t for t in tags if isinstance(t, str)]
+    scene = " ".join(t for t in texts if isinstance(t, str))
+    if topic.strip():
+        key = fold(topic)
+        # A busca foi por outro assunto: o que a foto divide com a cena é acaso ("console" de uma busca por "Xbox"
+        # numa fala sobre o PC; "vídeo" de uma busca por "Rockstar" numa fala sobre vídeo curto).
+        if key and f" {key} " not in f" {fold(scene)} ":
+            return False
+    # Aparelho com marca: a cena cita a marca e, se a foto diz o modelo, o mesmo modelo (Xbox 360 não ilustra "Steam,
+    # PlayStation e Xbox"; Xbox One não ilustra "os consoles de 2013").
+    cited_brands = _hardware_brands(*texts)
+    if _hardware_brands(desc, *tags) - cited_brands:
         return False
+    cited_hw = _hardware_marks(*texts)
+    for brand, models in _hardware_marks(desc, *tags).items():
+        if not models & cited_hw.get(brand, set()):
+            return False
     cited = model_marks(*texts)
-    for head, models in model_marks(item.desc, *item.tags).items():
+    shown = model_marks(desc, *tags)
+    for head, models in shown.items():
         if cited.get(head) and not models & cited[head]:
             return False
-    return True
+    # O nome próprio solto da fala não prova nada: o banco devolve o que tem a palavra em qualquer sentido ("Rockstar"
+    # é a estrela do rock, "ISO" é a sensibilidade da câmera, "Gaming" do "Xbox Cloud Gaming" vira controle qualquer).
+    # A prova é uma palavra comum em comum ("o farol" na fala, "lighthouse farol" na foto), o nome inteiro de duas ou
+    # mais palavras que não é a busca ("Farol da Ilha Rasa" na foto e na fala) ou a marca com o mesmo modelo dos dois
+    # lados ("GTA 6").
+    if (content_terms(desc, *tags) - _WEAK_TERMS) & (common_terms(*texts) - _WEAK_TERMS):
+        return True
+    shown_blob = f" {fold(' '.join([desc, *tags]))} "
+    for text in texts:
+        if not isinstance(text, str) or not any(ch.islower() for ch in text):
+            continue
+        for run, _ in _proper_runs(text):
+            name = fold(run)
+            if len(name.split()) >= 2 and name != fold(topic) and f" {name} " in shown_blob:
+                return True
+    return any(models & cited.get(head, set()) for head, models in shown.items())
+
+
+def fits_scene(item: PoolItem, *texts: object) -> bool:
+    """O item do acervo pode ilustrar a cena de `texts` (a fala, a faixa, o prompt de reserva)? Material de busca por
+    palavra-chave (`KEYWORD_TIERS`) só quando:
+
+    - a cena fala do assunto que foi buscado (`item.topic`): o resto é acaso de palavra;
+    - a descrição (ou as etiquetas) divide com a cena uma palavra comum que não é genérica (`_WEAK_TERMS`), o nome
+      inteiro de duas palavras ou mais ("Farol da Ilha Rasa") ou a mesma marca com o mesmo modelo ("GTA 6"): o nome
+      próprio solto e a sigla da fala não provam, o banco acha o homônimo ("Rockstar in the woods" para a Rockstar
+      Games, "ISO 1600" para a ISO do jogo, `common_terms`);
+    - o modelo do produto da descrição não contradiz o da cena (foto de "Xbox Series S" não ilustra "Xbox One");
+    - aparelho de marca (console, celular, placa) só com a marca citada na cena e, se a descrição diz o modelo, o
+      mesmo modelo (foto de Xbox 360 não ilustra "Steam, PlayStation e Xbox").
+
+    Os outros níveis sempre podem: são a própria fonte ou a escolha do usuário."""
+    return fits_text(item.tier, item.desc, [*item.tags, *item.entities], item.topic, *texts)
 
 
 def _topic_for(texts: Iterable[str], topics: list[Topic], default: str) -> str:
@@ -754,6 +860,23 @@ def is_synthetic(item: dict[str, Any] | PoolItem) -> bool:
     return looks_synthetic(get("desc"), get("credit"))
 
 
+def bank_misfit(item: dict[str, Any], ctx: _Ctx) -> str | None:
+    """Por que a foto ou o vídeo de banco (`MOCKUP_TIERS`) não entra no acervo, ou None. Na coleta, antes de baixar:
+    prévia de banco pago com marca d'água ou arte de fã (`stock_frame.describes_watermark`), ou proporção que pede
+    laterais desfocadas no quadro do vídeo (foto quadrada ou em pé num vídeo deitado). Se tem a ver com a cena é com
+    `fits_scene`, no storyboard e no anexo (onde o prompt de reserva da cena também conta). A mídia anexada à mão
+    (`file:`) é escolha do usuário e fica."""
+    if item.get("tier") not in MOCKUP_TIERS or str(item.get("source_id") or "").startswith("file:"):
+        return None
+    from studio.media import stock_frame
+
+    why = stock_frame.describes_watermark(str(item.get("desc") or ""), str(item.get("url") or ""),
+                                          str(item.get("page_url") or ""))
+    if why is None:
+        why = stock_frame.pillarboxed(int(item.get("w") or 0), int(item.get("h") or 0), ctx.width, ctx.height)
+    return why
+
+
 def base_score(item: dict[str, Any]) -> float:
     """Nível primeiro (o mais real ganha); depois arquivo já local e resolução."""
     score = TIER_SCORE.get(str(item.get("tier")), 0.0)
@@ -959,6 +1082,7 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
     mockups = synthetic = 0
+    misfits: dict[str, int] = {}
     for item in raw:
         sid = str(item.get("source_id") or "")
         if not sid or sid in seen:
@@ -970,6 +1094,10 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
         if is_synthetic(item):
             synthetic += 1
             continue
+        misfit = bank_misfit(item, ctx)
+        if misfit is not None:
+            misfits[misfit] = misfits.get(misfit, 0) + 1
+            continue
         item["dhash"] = _hash_local(item)
         item["score"] = base_score(item)
         items.append(item)
@@ -979,6 +1107,9 @@ def gather(doc: ProjectDoc, style: StyleSpec, *, http: Any = None, open_page: An
     if synthetic:
         warnings.append(f"{synthetic} item(ns) de arte de fã ou gerada por IA ficaram fora do acervo (não são "
                         "material real).")
+    if misfits:
+        told = "; ".join(f"{n} por {why}" for why, n in sorted(misfits.items(), key=lambda kv: -kv[1]))
+        warnings.append(f"Fotos e vídeos de banco que ficaram fora do acervo: {told}.")
     try:
         hashes, refs = history_marks(doc)
         apply_novelty(items, hashes, refs)
@@ -1201,19 +1332,38 @@ def _materialize_file(item: PoolItem, doc: ProjectDoc) -> MediaRef:
 
 
 class EmptyScreenError(ValueError):
-    """Item de banco cuja imagem baixada tem a tela vazia (chroma crua, branca ou desligada): o anexo tenta a reserva."""
+    """Item de banco cuja imagem baixada não serve de cena (tela vazia, moldura, proporção que pede laterais
+    desfocadas): o anexo tenta a reserva."""
 
 
-def refuse_empty_screen(item: PoolItem, media: MediaRef) -> None:
-    """`EmptyScreenError` quando o item de banco (`MOCKUP_TIERS`) anexado mostra uma tela vazia: a foto, ou o pôster
-    do trecho. Só o anexo automático pergunta; o item que o usuário escolhe à mão no Acervo entra como está."""
+def refuse_empty_screen(item: PoolItem, media: MediaRef, frame: tuple[int, int] | None = None) -> None:
+    """`EmptyScreenError` quando o item de banco (`MOCKUP_TIERS`) anexado mostra uma tela vazia (a foto, ou o pôster
+    do trecho), tem moldura lisa em volta (foto de portfólio com título e assinatura, tarja de cinema) ou, com o
+    quadro do vídeo `frame` (largura, altura), é foto com proporção que só entra com as laterais desfocadas (o tamanho
+    que a busca não deu, o arquivo baixado dá). Só o anexo automático pergunta; o item que o usuário escolhe à mão no
+    Acervo entra como está."""
     if item.tier not in MOCKUP_TIERS or item.source_id.startswith("file:") or not media.asset:
         return
+    from studio.media import stock_frame
     from studio.media.empty_screen import empty_screen_file
 
-    why = empty_screen_file(get_settings().data_dir / media.asset)
+    path = get_settings().data_dir / media.asset
+    why = empty_screen_file(path) or stock_frame.framed_file(path)
+    if why is None and frame is not None and not media.video:
+        why = stock_frame.pillarboxed(media.width or 0, media.height or 0, *frame)
     if why is not None:
         raise EmptyScreenError(f"é foto de banco com {why}")
+
+
+def _frame_of(style: StyleSpec | None) -> tuple[int, int] | None:
+    """(largura, altura) do quadro do vídeo pelo estilo; None sem estilo ou com resolução torta."""
+    if style is None:
+        return None
+    try:
+        w, h = (int(x) for x in style.format.resolution.lower().split("x"))
+    except ValueError:
+        return None
+    return (w, h) if w and h else None
 
 
 def materialize(item: PoolItem, doc: ProjectDoc, style: StyleSpec | None = None, *, http: Any = None,
@@ -1440,7 +1590,8 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     downloads = 0
     budget = attach_download_budget(sum(1 for s in doc.scenes if not s.locked and needs_attach(s.visual.media, doc.id)))
     failed: list[tuple[Scene, str]] = []
-    refused: dict[str, str] = {}  # item de banco recusado por tela vazia (`refuse_empty_screen`) → motivo
+    refused: dict[str, str] = {}  # item de banco recusado pela imagem (`refuse_empty_screen`) → motivo
+    frame = _frame_of(style)
     for scene in doc.ordered_scenes():
         media = scene.visual.media
         if scene.locked or not needs_attach(media, doc.id):
@@ -1480,7 +1631,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             downloads += int(remote)
             try:
                 got = materialize(candidate, doc, style, http=http, base=media)
-                refuse_empty_screen(candidate, got)
+                refuse_empty_screen(candidate, got, frame)
             except Exception as exc:  # noqa: BLE001 - tenta a reserva
                 log.warning("item %s do acervo não anexou: %s", candidate.id, exc)
                 if isinstance(exc, EmptyScreenError):

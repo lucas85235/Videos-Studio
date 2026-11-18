@@ -1277,7 +1277,9 @@ def test_attach_reserve_skips_stock_that_does_not_match_the_scene(isolated_setti
 @pytest.mark.parametrize(("desc", "spoken", "fits"), [
     ("Close-up of a humanoid robot with LED eyes", "Terceiro: o acesso antecipado pago.", False),
     ("Fujicolor Superia film roll on a wooden table", "em Bitcoin, USDT ou Ethereum pra entrar antes.", False),
-    ("Sleek gaming desk with a gaming PC and glowing fans", "se alguém te oferece uma versão de PC", True),
+    # "PC" sozinho é nome (sigla), não prova: a mesa gamer de banco virava papel de parede de qualquer fala com "PC"
+    ("Sleek gaming desk with a gaming PC and glowing fans", "se alguém te oferece uma versão de PC", False),
+    ("Sleek gaming desk with a gaming PC and glowing fans", "o PC gamer em cima da mesa (desk)", True),
     ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S e no velho Xbox One", True),
     ("White Xbox Series S console on a desk", "e até no velho Xbox One, sem nuvem", False),
     ("White Xbox Series S console on a desk", "O Series X tem mais potência", False),
@@ -1291,3 +1293,132 @@ def test_stock_fits_only_the_scene_it_talks_about(desc, spoken, fits):
     assert media_pool.fits_scene(item, spoken) is fits
     # material que não vem de busca por palavra-chave (oficial, captura, próprio) não passa por esse filtro
     assert media_pool.fits_scene(item.model_copy(update={"tier": "capture"}), spoken)
+
+
+# Os casos do vídeo real (prj_gq4krrs11w, "GTA 6 no PC"): descrição e tópico de busca do pool.json, e o que a cena
+# dizia (fala, faixa). Todos entraram no vídeo; nenhum tem a ver com a fala.
+REAL_MISFITS = [
+    ("Rockstar in the woods", "Rockstar", ("A Rockstar não detalhou os aparelhos, mas esses apps já existem pra PC.",)),
+    ("Rockstar Fan", "Rockstar",
+     ("na Rockstar Store ou em loja grande e conhecida, digitando o endereço você mesmo.",)),
+    ("Retro Rockstar #2", "Rockstar", ("Se inscreve pra eu te avisar no dia que a Rockstar anunciar o PC.",)),
+    ("Retro Rockstar #2", "Rockstar", ("Três: pediu cripto, cartão-presente ou doação, fuja. Quatro: site que imita a "
+                                       "Rockstar com botão de jogar agora.",)),
+    ("close up video of a man playing guitar", "Rockstar", ("Nada de link de anúncio, de vídeo curto ou de grupo.",)),
+    ("Sony A7s High ISO Test #A7s #HongKong #hk #victoriaharbour #harbour #night #sony #leica", "ISO",
+     ("Segundo: a ISO vazada. Aqui é o contrário: em vez de um arquivo pequeno, um gigante, pra parecer real.",)),
+    ("FUJI X-E1 ISO 1600", "ISO",
+     ("E lembra daquela ISO gigante? Dentro dela tinha coisa pior: o Chaos.", "RANSOMWARE CHAOS")),
+    ("Close-up shot of a vintage camera with ISO chart, emphasizing its classic design.", "ISO",
+     ("Segundo: a ISO vazada. Aqui é o contrário: em vez de um arquivo pequeno, um gigante.",)),
+    ("an xbox one console blinking light", "Xbox",
+     ("Pra comparar: o GTA 5 saiu nos consoles em dois mil e treze e só", "GTA 5 · CONSOLES 2013")),
+    ("Xbox 360", "Xbox", ("sessões abertas, inclusive no Discord e nas contas de jogos, como Steam, PlayStation",
+                          "Depois encerra todas as sessões abertas: Google, Discord, Steam, PSN e Xbox.")),
+    ("close up of wireless joysticks on a video game console", "Xbox",
+     ("Me conta nos comentários: você vai esperar o PC ou já comprou num console?",)),
+    ("High-tech gaming setup featuring a curved monitor, RGB keyboard, and vibrant lighting.", "PC",
+     ("No dia dez de novembro, a própria Rockstar anunciou que o GTA 6 roda no Xbox Cloud Gaming.",
+      "ANÚNCIO ROCKSTAR · 10/11/2026")),
+    ("Closeup of a black gaming controller on a dark backdrop, perfect for tech themes.", "Xbox",
+     ("Xbox. O Xbox confirmou que PC fica de fora, e o anúncio oficial só cita os consoles.",)),
+]
+
+
+@pytest.mark.parametrize(("desc", "topic", "texts"), REAL_MISFITS)
+def test_stock_by_literal_word_does_not_fit_the_real_scenes(desc, topic, texts):
+    """Busca por nome próprio devolve o homônimo ("Rockstar" é estrela do rock, "ISO" é a sensibilidade da câmera), a
+    palavra comum de outra busca é acaso ("vídeo curto" e "video of a man playing guitar") e o console com modelo
+    tem de ser o que a cena cita."""
+    for tier in ("stock", "free"):
+        item = PoolItem(id="p1", tier=tier, media="image", desc=desc, topic=topic)
+        assert media_pool.fits_scene(item, *texts) is False
+
+
+@pytest.mark.parametrize(("desc", "topic", "texts"), [
+    # a cena cita o console pelo modelo e a palavra comum ("consoles") bate
+    ("an xbox one console blinking light", "Xbox",
+     ("Funciona nos consoles Xbox Series X e Series S, e até no velho Xbox One.",)),
+    ("close up of wireless joysticks on a video game console", "Xbox",
+     ("Nuvem: só em console Xbox. Download de PC, grátis ou pago: golpe.",)),
+    # o nome inteiro, de duas palavras ou mais, que não é a busca: é o lugar mesmo
+    ("Farol da Ilha Rasa ao entardecer", "Farol", ("O Farol da Ilha Rasa voltou a acender.",)),
+    # a palavra comum da busca ("o farol") prova; o prompt de reserva em inglês também conta
+    ("old lighthouse farol on an island", "Farol", ("O farol da ilha voltou a acender.",)),
+    ("Sleek gaming desk setup featuring RGB lighting, large monitor, and gaming PC with glowing fans.", "PC",
+     ("Já já você vai ver o que vem dentro do PC.",
+      "A sealed cardboard parcel sitting on a gaming desk next to the PC tower.")),
+])
+def test_stock_that_shows_what_the_scene_says_still_fits(desc, topic, texts):
+    item = PoolItem(id="p1", tier="stock", media="image", desc=desc, topic=topic)
+    assert media_pool.fits_scene(item, *texts) is True
+
+
+def test_stock_hardware_needs_the_brand_and_model_the_scene_cites():
+    """Console com marca na foto: a cena cita a marca e, se a foto diz o modelo, o mesmo ("PS5" e "PlayStation 5" são
+    o mesmo)."""
+    ps5 = PoolItem(id="p1", tier="stock", media="image", desc="White PlayStation 5 console on a desk", topic="PS5")
+    assert media_pool.fits_scene(ps5, "Saiu no PS5 e no Xbox: o console mais vendido.")
+    assert not media_pool.fits_scene(ps5.model_copy(update={"topic": ""}), "o console da Nintendo vendeu mais")
+    assert not media_pool.fits_scene(ps5.model_copy(update={"topic": ""}), "Só no PS4, o console antigo.")
+
+
+def test_gather_drops_stock_with_watermark_fan_art_or_pillarbox_shape(isolated_settings, monkeypatch):
+    """Na coleta: a prévia do Shutterstock (marca d'água), a capa de fã do Flickr e a foto quadrada ou o vídeo em pé
+    (no vídeo deitado, entrariam com as laterais desfocadas) ficam fora do acervo, com aviso; a foto deitada e o
+    material oficial ficam."""
+    doc = _project()
+    raw = [
+        {"tier": "free", "media": "image", "desc": "Retro Rockstar #2", "url": "https://x.example/sq.jpg", "w": 1024,
+         "h": 1024, "source_id": "openverse:sq", "topic": "Farol"},
+        {"tier": "free", "media": "image", "desc": "GTA 6 Fan Cover", "url": "https://x.example/fan.jpg", "w": 1024,
+         "h": 618, "source_id": "openverse:fan", "topic": "Farol"},
+        {"tier": "stock", "media": "image", "desc": "Lighthouse at dusk",
+         "url": "https://www.shutterstock.com/image-photo/lighthouse-123.jpg", "w": 1500, "h": 1000,
+         "source_id": "pexels:wm", "topic": "Farol"},
+        {"tier": "stock", "media": "clip", "desc": "farol vertical", "url": "https://x.example/v.mp4", "w": 1080,
+         "h": 1920, "source_id": "pexels-video:v", "topic": "Farol"},
+        {"tier": "free", "media": "image", "desc": "Farol da Ilha Rasa ao entardecer", "url": "https://x.example/f.jpg",
+         "w": 1024, "h": 683, "source_id": "commons:File:farol.jpg", "topic": "Farol"},
+        {"tier": "official", "media": "image", "desc": "Capa oficial", "url": "https://x.example/o.jpg", "w": 1000,
+         "h": 1000, "source_id": "found:https://x.example/o.jpg", "topic": "Farol"},
+    ]
+    monkeypatch.setattr(media_pool, "COLLECTORS", [("teste", lambda ctx: [dict(r) for r in raw])])
+    pool = media_pool.gather(doc, get_style(STYLE))
+    assert {i.source_id for i in pool.items} == {"commons:File:farol.jpg", "found:https://x.example/o.jpg"}
+    told = next(w for w in pool.warnings if w.startswith("Fotos e vídeos de banco que ficaram fora do acervo"))
+    assert "2 por proporção que pede laterais desfocadas" in told and "1 por arte de fã" in told
+    assert "1 por marca d'água de banco" in told
+
+
+def test_attach_skips_stock_photo_with_a_portfolio_frame_or_square_shape(isolated_settings, monkeypatch):
+    """A busca não deu o tamanho; o arquivo baixado mostra a moldura preta com título (a foto do CTA do vídeo real)
+    ou a proporção quadrada: a cena fica com a reserva deitada, sem moldura, e o aviso diz por quê."""
+    from test_stock_frame import portfolio_frame
+
+    from studio.media import real_media
+
+    doc = _project()
+    items = [PoolItem(id=f"p{n}", tier="free", media="image", url=f"https://x.example/{n}.jpg", topic="Farol",
+                      desc="farol na ilha", source_id=f"openverse:{n}") for n in (1, 2, 3)]
+    with Image.open(ACERVO / "farol.jpg") as im:
+        photo = im.convert("RGB")
+    pictures = {"openverse:1": portfolio_frame().resize((1024, 683)), "openverse:2": photo.resize((800, 800)),
+                "openverse:3": photo}
+    tried: list[str] = []
+
+    def fake(candidate_id, project_id, *, kind="photo", http=None):
+        tried.append(candidate_id)
+        buf = io.BytesIO()
+        pictures[candidate_id].save(buf, "JPEG", quality=92)
+        stored = real_media.store_image(buf.getvalue(), project_id)
+        return MediaRef(kind=kind, source="openverse", asset=stored.rel, width=stored.width, height=stored.height,
+                        candidate_id=candidate_id), []
+
+    monkeypatch.setattr(real_media, "media_from_candidate", fake)
+    scene = doc.ordered_scenes()[0]
+    scene.visual.media = media_pool.pending_ref(items[0])
+    warnings = media_pool.attach_chosen(doc, Pool(items=items))
+    assert tried == ["openverse:1", "openverse:2", "openverse:3"]
+    assert scene.visual.media is not None and scene.visual.media.pool_id == "p3"
+    assert any("o item p1 é foto de banco com moldura lisa em volta da foto; entrou p3" in w for w in warnings)

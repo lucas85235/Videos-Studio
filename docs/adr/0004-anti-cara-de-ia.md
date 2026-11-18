@@ -503,7 +503,7 @@ Outros arquivos:
    - planos de até `official_max_clip_s`;
    - descrição de cada plano por `providers/vision.py`;
    - cache por sha.
-4. Fotos do `media_search` (`providers/media_search.py:491`) e **vídeos Pexels** (`/v1/videos/search`, nova `search_videos`; cache pelo `_cache_key` de `:461`; 200 req/h). Mockup de banco com a tela vazia (chroma crua, branca ou desligada) não entra: a descrição/endereço barra na coleta e a imagem baixada (`media/empty_screen.py`: retângulo liso dentro da foto, de cor de chroma ou extrema) manda o anexo para a reserva.
+4. Fotos do `media_search` (`providers/media_search.py:491`) e **vídeos Pexels** (`/v1/videos/search`, nova `search_videos`; cache pelo `_cache_key` de `:461`; 200 req/h). Mockup de banco com a tela vazia (chroma crua, branca ou desligada) não entra: a descrição/endereço barra na coleta e a imagem baixada (`media/empty_screen.py`: retângulo liso dentro da foto, de cor de chroma ou extrema) manda o anexo para a reserva. Também ficam fora a prévia de banco pago com marca d'água e a arte de fã (pela descrição/endereço), o item cuja proporção pediria laterais desfocadas no quadro do vídeo (foto quadrada ou em pé num vídeo deitado: pelo tamanho da busca na coleta, pelo arquivo no anexo) e a foto de portfólio com moldura lisa, título e assinatura (`media/stock_frame.py`, no anexo).
 5. `media_find` (`workers/pipeline/media_find.py`) para `official`/`news`: uma chamada por vídeo, com até 15 tópicos extraídos do roteiro (o limite atual é de 8 cenas, `:40`).
 6. Anti-repetição: `media/novelty.py` (dHash) penaliza item usado nos últimos 10 vídeos do canal.
 
@@ -576,7 +576,7 @@ Outros arquivos:
 **Emenda "Coerência" (QA do `prj_gq4krrs11w`, 18/11/2026).** Variar a linguagem por cena deixou cada imagem de IA num estilo (vetor, retícula, clay 3D, papel recortado, aquarela), e isso denuncia o gerador mais que a pintura limpa. Fica:
 - **um estilo só**: toda imagem de IA do storyboard usa `house_language` (`core/styles/visual.py`), a dominante da direção sem foto (sem `ai_photo`) e nunca `ui_mockup`; a linguagem pedida por cena é ignorada. As outras da direção só valem no "Outra imagem";
 - **sem clichê de país nem interface falsa**: o pedido não dá país de exemplo no `world` e proíbe bandeira e cartão-postal sem pedido do roteiro; a direção nova leva no `avoid` "fake browser window or app frame" e "mouse cursor" e, sem entidade real, "national flags" e "postcard landmarks";
-- **banco só com assunto em comum**: item `stock`/`free` (busca por palavra-chave) só ilustra a batida quando a descrição divide uma palavra de conteúdo com a fala e não contradiz o modelo de produto citado (`media_pool.fits_scene`); sem item que sirva, a reserva é o real do assunto ou o cartão, nunca banco aleatório (também na reserva do anexo).
+- **banco só com assunto em comum**: item `stock`/`free` (busca por palavra-chave) só ilustra a batida quando a cena fala do assunto buscado, a descrição divide com ela uma palavra COMUM (nome próprio solto e sigla da fala não provam: "Rockstar" acha estrela do rock, "ISO" acha câmera; vale o nome inteiro de duas palavras ou mais, ou a marca com o mesmo modelo), não contradiz o modelo de produto citado e, se mostra aparelho de marca (console, celular, placa), a cena cita a marca e o mesmo modelo (`media_pool.fits_scene`); sem item que sirva, a reserva é o real do assunto ou o cartão, nunca banco aleatório (também na reserva do anexo).
 
 **Testes:**
 - `backend/tests/test_storyboard_real_first.py`:
