@@ -235,6 +235,39 @@ def reset_engine() -> None:
         _session_factory = None
 
 
+def _configure_readonly(dbapi_connection, _record) -> None:  # pragma: no cover - trivial
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA query_only=ON")
+    cursor.execute("PRAGMA busy_timeout=10000")
+    cursor.close()
+
+
+@contextmanager
+def readonly_engine() -> Iterator[Engine]:
+    """Durante o bloco, todo `session_scope` lê o banco SQLite em modo só leitura (`mode=ro` e `query_only`): nada
+    é gravado (nem migração, nem checkpoint do WAL). Para comandos que só consultam, como `studio edit-metrics`.
+    O banco precisa existir."""
+    global _engine, _session_factory
+    path = get_settings().data_dir / "studio.db"
+    if not path.is_file():
+        raise FileNotFoundError(f"banco não encontrado: {path}")
+    # Sem o arquivo -wal (banco fechado e com checkpoint), `mode=ro` ainda criaria um -wal vazio: `immutable` lê o
+    # arquivo como está, sem criar nada. Com o -wal (app aberto), `mode=ro` lê também o que ainda está nele.
+    flag = "mode=ro" if path.with_name(path.name + "-wal").is_file() else "immutable=1"
+    url = f"sqlite:///file:{path.resolve().as_posix()}?{flag}&uri=true"
+    engine = create_engine(url, future=True, connect_args={"check_same_thread": False, "timeout": 30})
+    event.listen(engine, "connect", _configure_readonly)
+    with _lock:
+        saved = (_engine, _session_factory)
+        _engine, _session_factory = engine, sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        yield engine
+    finally:
+        with _lock:
+            _engine, _session_factory = saved
+        engine.dispose()
+
+
 @contextmanager
 def session_scope() -> Iterator[Session]:
     get_engine()

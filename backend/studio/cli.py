@@ -13,7 +13,7 @@ from types import ModuleType
 #   register(sub: argparse._SubParsersAction) -> None  cria o parser do subcomando (com os sub-subcomandos)
 #   run(args: argparse.Namespace) -> int | None        executa; um inteiro diferente de 0 vira o código de saída
 # O import é tolerante: módulo ainda inexistente (fase em andamento) ou quebrado não derruba os outros comandos.
-PLUGIN_MODULES = ("studio.cli_thumbkit", "studio.cli_presenter", "studio.cli_references")
+PLUGIN_MODULES = ("studio.cli_thumbkit", "studio.cli_presenter", "studio.cli_references", "studio.cli_edit_metrics")
 
 
 def _load_plugins() -> dict[str, ModuleType]:
