@@ -710,6 +710,7 @@ def build_timeline(
                 event_sfx = _edit_layer(doc, style, grammar, scene, resolved, raw_words, scene_words, f0, frame, fps,
                                         images, pool, script[k] if script else None, music_drops, edit_warnings,
                                         shot_files)
+                drop_false_verdict_fx(doc, scene, resolved, pool if pool is not None else verdict_pool)
                 if style.audio.sfx.auto:
                     cut_sfx = edit_resolve.drop_stacked_sfx(cut_sfx, event_sfx, scene, SFX_LEAD, SFX_LEAD_DEFAULT)
                 cut_sfx = sorted(cut_sfx + event_sfx, key=lambda e: e["start"])
@@ -931,7 +932,7 @@ def false_verdict_on_true_material(doc: ProjectDoc, scene: Scene, stamp: str | N
         return False
     owners = scene_owners(doc, scene, None if callable(pool) else pool)
     from_pool = any(shot.source == "pool" for shot in scene.shots)
-    if all(prov not in verdict.TRUE_MATERIAL_TIERS for prov, _ in owners) and not (callable(pool) and from_pool):
+    if all(prov not in verdict.CHECKED_TIERS for prov, _ in owners) and not (callable(pool) and from_pool):
         return False
     if callable(pool):
         pool = pool()
@@ -1001,6 +1002,23 @@ def drop_ambiguous_verdict(scene: Scene, resolved: dict[str, Any], lang: str) ->
         card.pop(key, None)
     if not card:
         resolved.pop("card")
+
+
+def drop_false_verdict_fx(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
+                          pool: Pool | Callable[[], Pool | None] | None) -> None:
+    """O texto que pula (`text_pop`) com o veredito ("golpe" amarelo gigante sobre a foto de um console) acusa o que
+    está na tela do mesmo jeito que o carimbo: sai da tela pela mesma regra (`false_verdict_on_true_material`). Roda
+    depois da camada de edição, que é quem resolve os eventos da cena."""
+    fx = resolved.get("fx")
+    if isinstance(fx, list) and fx:
+        kept = [e for e in fx if not (isinstance(e, dict) and e.get("type") == "text_pop"
+                                      and false_verdict_on_true_material(doc, scene, str((e.get("params") or {})
+                                                                                          .get("text") or ""), pool))]
+        if len(kept) != len(fx):
+            if kept:
+                resolved["fx"] = kept
+            else:
+                resolved.pop("fx")
 
 
 def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any], pool: Pool | None) -> None:

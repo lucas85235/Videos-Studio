@@ -1281,7 +1281,9 @@ def test_attach_reserve_skips_stock_that_does_not_match_the_scene(isolated_setti
     # "PC" sozinho é nome (sigla), não prova: a mesa gamer de banco virava papel de parede de qualquer fala com "PC"
     ("Sleek gaming desk with a gaming PC and glowing fans", "se alguém te oferece uma versão de PC", False),
     ("Sleek gaming desk with a gaming PC and glowing fans", "o PC gamer em cima da mesa (desk)", True),
-    ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S e no velho Xbox One", True),
+    # o One vem de carona no fim da frase: o principal é o Series (QA r3, 1:48)
+    ("an xbox one console blinking light", "Funciona nos consoles Xbox Series X e Series S e no velho Xbox One", False),
+    ("an xbox one console blinking light", "No velho Xbox One e também no Xbox Series S", True),
     ("White Xbox Series S console on a desk", "e até no velho Xbox One, sem nuvem", False),
     ("White Xbox Series S console on a desk", "O Series X tem mais potência", False),
     ("White Xbox Series S console on a desk", "Funciona no Xbox Series S", True),
@@ -1341,7 +1343,7 @@ def test_stock_by_literal_word_does_not_fit_the_real_scenes(desc, topic, texts):
 @pytest.mark.parametrize(("desc", "topic", "texts"), [
     # a cena cita o console pelo modelo e a palavra comum ("consoles") bate
     ("an xbox one console blinking light", "Xbox",
-     ("Funciona nos consoles Xbox Series X e Series S, e até no velho Xbox One.",)),
+     ("Funciona até no velho Xbox One, nos mesmos consoles de antes.",)),
     ("close up of wireless joysticks on a video game console", "Xbox",
      ("Nuvem: só em console Xbox. Download de PC, grátis ou pago: golpe.",)),
     # o nome inteiro, de duas palavras ou mais, que não é a busca: é o lugar mesmo

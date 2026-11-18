@@ -98,6 +98,41 @@ OWN_SOURCE_PREFIXES = ("file:", "acervo:", "kit:", "kitvideo:")
 """Itens do acervo que o usuário pôs (arquivo anexado, pasta do projeto, biblioteca do canal): ficam como estão."""
 
 
+# Texto na tela do plano que a visão leu (`clips.describe`: 'texto "RIP Rudi - C U in heaven, cuz."').
+_ON_SCREEN_RE = re.compile(r'\btexto\s+"([^"]+)"?')
+OVERLAY_MAX_CAPS_WORDS = 4
+"""Letreiro em caixa alta ou em título ("THRILLBILLY MUD CLUB", "Grand Theft Auto VI") é cenário; acima disso é aviso,
+faixa de notícia ou slate de classificação ("MAY CONTAIN CONTENT INAPPROPRIATE FOR CHILDREN")."""
+
+
+def on_screen_text(desc: str | None) -> str:
+    """O texto que a visão leu no quadro do plano (vazio quando não há)."""
+    found = _ON_SCREEN_RE.search(desc or "")
+    return found.group(1).strip() if found else ""
+
+
+def foreign_overlay(desc: str | None, *texts: object) -> bool:
+    """O plano mostra texto de outra pessoa por cima da imagem: post de rede social, legenda de usuário, nome de
+    canal, faixa de notícia ou slate ("YoMammaJammer… RIP Rudi - C U in heaven, cuz." no trailer, QA do
+    prj_gq4krrs11w, 4:57). Na tela ele parece vídeo reaproveitado de outro criador e briga com a legenda. Conta como
+    alheio o texto de 3 palavras ou mais em frase (com minúscula: "Stay Alert VC! Remember to check"), o de mais de
+    `OVERLAY_MAX_CAPS_WORDS` palavras, e o que tem @, # ou endereço; letreiro curto em caixa alta ou em título é
+    cenário. Vale quando a fala (`texts`) não divide uma palavra de 4 letras ou mais com ele (a cena que fala daquele
+    post pode mostrá-lo)."""
+    text = on_screen_text(desc)
+    if not text:
+        return False
+    words = [w for w in re.findall(r"[^\W\d_][\w'’]*", text)]
+    handle = bool(re.search(r"[@#]|https?:|www\.", text))
+    sentence = len(words) >= 3 and any(w[:1].islower() for w in words)
+    if not (handle or sentence or len(words) > OVERLAY_MAX_CAPS_WORDS):
+        return False
+    mine = {normalize_token(w) for w in words if len(w) >= 4}
+    spoken = {normalize_token(w) for t in texts if isinstance(t, str) for w in re.findall(r"[^\W\d_][\w'’]*", t)
+              if len(w) >= 4}
+    return not mine & spoken
+
+
 def item_is_synthetic(item: PoolItem) -> bool:
     """Item do acervo que a própria fonte diz ser arte de fã ou de IA (`looks_synthetic`); o do usuário e a captura de
     página (o print da notícia) ficam."""

@@ -4,7 +4,8 @@
 (as do `plantao-vice/playbook.md`, seção "Avatar nos vídeos longos"):
   1. o manual vence (`source="manual"`, inclusive o "sem avatar" da cena);
   2. nunca em cena séria (vítima, menor de idade, morte, crise, racismo, maus-tratos);
-  3. nunca nos tipos de `hide_on_kinds` (documento, citação, gráfico, mapa, notícia) nem na 1ª cena;
+  3. nunca nos tipos de `hide_on_kinds` (documento, citação, gráfico, mapa, notícia), nem na 1ª cena, nem sobre imagem
+     de IA com gente de frente (`storyboard_check.ai_face`);
   4. uma aparição a cada 60 a 90 s (`video.every_s`): a sugestão perto demais da anterior sai, o buraco longo ganha
      uma aparição pela fala da cena;
   5. nunca em cenas adjacentes (`video.min_gap_scenes`, no mínimo 2 de distância);
@@ -35,7 +36,7 @@ from studio.core.editing.serious import (  # noqa: F401 - os termos continuam im
 from studio.core.project.document import Presenter, ProjectDoc, Scene, ScenePresenter
 from studio.core.project.presenter import fold, pose_exists, resolve_pose, trigger_index, word_key
 from studio.core.sources import is_typographic
-from studio.workers.pipeline.storyboard_check import AVISO, CORRIGIDO, Issue
+from studio.workers.pipeline.storyboard_check import AVISO, CORRIGIDO, Issue, ai_face
 
 OPENING_POSE = "oculos"
 CTA_POSE = "feliz"
@@ -184,6 +185,8 @@ def _slots(doc: ProjectDoc, presenter: Presenter, words_by_scene: dict[str, Sequ
             blocked = f"cena de {media.kind if media is not None and media.kind in hide else scene.kind}"
         elif i == 0 and presenter.video.skip_first_scene:
             blocked = "primeira cena"
+        elif ai_face(doc, scene):
+            blocked = "imagem de IA com rosto"  # dois personagens no quadro, e o de IA denuncia o gerador
         cta = roles.get(scene.segment_id) == "cta" or _has(text, CTA_TERMS) is not None
         slots.append(_Slot(i, scene, start, end, text, texts, blocked, cta))
     return slots

@@ -77,9 +77,23 @@ FIND_JS = r"""
     r.setStart(map[i][0], map[i][1]); r.setEnd(map[i + q.length - 1][0], map[i + q.length - 1][1] + 1);
     return r;
   };
+  // pedaço do título achado fora do rodapé, do menu e de formulário: "Rockstar Games" do título casava com "muito mais
+  // da Rockstar Games" na caixa de newsletter do rodapé, e a captura do site oficial virava o rodapé
+  const BOILER = 'footer, nav, form, aside, [role=contentinfo], [role=navigation], [class*=footer i], [id*=footer i], ' +
+    '[class*=newsletter i], [id*=newsletter i], [class*=subscribe i], [class*=signup i]';
+  const rangeOutside = q => {
+    for (let i = q ? text.indexOf(q) : -1; i >= 0; i = text.indexOf(q, i + 1)) {
+      const el = map[i][0].parentElement;
+      if (el && el.closest(BOILER)) continue;
+      const r = document.createRange();
+      r.setStart(map[i][0], map[i][1]); r.setEnd(map[i + q.length - 1][0], map[i + q.length - 1][1] + 1);
+      return r;
+    }
+    return null;
+  };
   // manchete: o primeiro h1 visível com texto de título (h1 curto costuma ser o logo do site)
   const head = [...document.querySelectorAll('h1, [itemprop=headline]')].find(e =>
-    e.getClientRects().length && (e.innerText || '').trim().length >= 15);
+    e.getClientRects().length && (e.innerText || '').trim().length >= 15 && !e.closest(BOILER));
   window.__ranges = phrases.map(p => {
     const q = key(p);
     const exact = rangeOf(q);
@@ -87,7 +101,7 @@ FIND_JS = r"""
     if (head) { const r = document.createRange(); r.selectNodeContents(head); return r; }
     const parts = q.split(/\s+[-|·]\s+|:\s+/).map(s => s.trim()).filter(s => s.length >= 12)
       .sort((a, b) => b.length - a.length);
-    for (const part of parts) { const r = rangeOf(part); if (r) return r; }
+    for (const part of parts) { const r = rangeOutside(part); if (r) return r; }
     return null;
   });
   const f = window.__ranges[focus] || window.__ranges.find(Boolean);

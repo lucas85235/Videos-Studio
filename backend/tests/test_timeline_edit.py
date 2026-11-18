@@ -239,7 +239,7 @@ def _source_doc(*, edited: bool = True) -> ProjectDoc:
     eset = MediaRef(kind="capture", source="capture", asset="uploads/prj_tl/media/fedcba9876543210.jpg",
                     page_url="https://www.welivesecurity.com/pt/golpes/gta-6/")
     stock = MediaRef(kind="photo", source="pexels", asset="uploads/prj_tl/media/00112233445566aa.jpg",
-                     credit="Kindel Media / Pexels")
+                     credit="Kindel Media / Pexels", title="hacker stealing card data on a laptop")
     art = MediaRef(kind="official", source="link", asset="uploads/prj_tl/media/aabbccddeeff0011.jpg",
                    credit="Rockstar Games")
     head = {"pt-BR": "GOLPE 3 · PAGAMENTO"}

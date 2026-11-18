@@ -38,6 +38,18 @@ NEGATIVE_VERDICTS = frozenset({
 
 # Material que é do mundo real e de quem não aplica golpe: o carimbo negativo sobre ele acusa a fonte.
 TRUE_MATERIAL_TIERS = frozenset({"official", "capture"})
+# Foto do mundo real achada por palavra-chave (banco, foto livre): mostra um produto, um lugar, uma pessoa de verdade.
+# O carimbo negativo sobre ela só cabe quando a foto é do tema do golpe (`shows_scam_theme`).
+PHOTO_TIERS = frozenset({"stock", "free"})
+# Tiers que a conferência do veredito precisa olhar (o resto sempre aceita).
+CHECKED_TIERS = TRUE_MATERIAL_TIERS | PHOTO_TIERS
+# Tema do golpe na descrição da foto de banco (sem acento, minúsculo).
+_SCAM_THEME_RE = re.compile(
+    r"\b(hackers?|hacking|hacked|malware|ransomware|spyware|virus|trojan|phishing|scams?|scammers?|golpes?|"
+    r"golpistas?|fraud\w*|fraude\w*|cybercrim\w*|cyber ?attacks?|cyber ?security|ciberseguranca|crimin\w*|thie(f|ves)|"
+    r"theft|stolen|roubo|roubad[oa]s?|ladr(ao|oes)|identity theft|data breach|vazamento|infostealer|stealer|"
+    r"warning|alerta|danger|perigo|suspicious|suspeit[oa]s?|fake|fals[oa]s?|counterfeit|pirat\w*|bootleg)\b"
+)
 
 # Descrição de material que É o artefato do golpe: o site/página/botão/download/instalador/anúncio falso (singular ou
 # plural), o print do malware, a cópia do site oficial. Só o título de uma matéria SOBRE golpe ("GTA 6 vira isca para
@@ -158,10 +170,22 @@ def _describes_scam(material: MediaRef | PoolItem | None, extra: str = "") -> bo
     return any(describes_scam(t or "") for t in texts)
 
 
+def shows_scam_theme(text: str) -> bool:
+    """A descrição da foto de banco ou livre mostra o tema do golpe (hacker, malware, phishing, roubo de dados, alerta
+    de vírus), não um produto ou uma cena comum."""
+    return bool(_SCAM_THEME_RE.search(_plain(text))) or describes_scam(text)
+
+
 def allows_negative(prov: str, material: MediaRef | PoolItem | None, extra: str = "") -> bool:
-    """O veredito negativo pode ficar sobre este material? Fora do oficial e da imprensa, sim (ilustração, banco, foto
-    livre, desenho do app, arquivo do usuário). Oficial e captura só quando a descrição diz que é o artefato do golpe.
+    """O veredito negativo pode ficar sobre este material? Ilustração de IA, desenho do app e arquivo do usuário, sim.
+    Oficial e captura só quando a descrição diz que é o artefato do golpe. Foto de banco ou livre (`PHOTO_TIERS`) só
+    quando mostra o tema do golpe (`shows_scam_theme`): "GOLPE" sobre a foto de um console branco diz que o console é
+    que é golpe (QA do prj_gq4krrs11w, 6:33).
     `extra`: descrição do item do acervo de onde a mídia veio (a `MediaRef` não guarda a descrição)."""
+    if prov in PHOTO_TIERS:
+        texts = [extra, getattr(material, "desc", "") if material is not None else "",
+                 getattr(material, "title", "") if material is not None else ""]
+        return any(shows_scam_theme(t or "") for t in texts)
     if prov not in TRUE_MATERIAL_TIERS:
         return True
     if prov == "capture" and (material is None or getattr(material, "editorial", True)):

@@ -429,7 +429,8 @@ def test_world_and_treatment_only_enter_with_an_entity():
     bare = Visual(prompt="a folded paper map", language="ink_sketch", shot="wide")
     with_entity = bare.model_copy(update={"entities": ["lucia"]})
     plain = compose_directed_prompt(STYLE, art, bare, lean=True)
-    assert "World:" not in plain and "Accent colors" not in plain and "Treatment" not in plain
+    assert "World:" not in plain and "Accent colors" not in plain
+    assert "Treatment: grainy contrast" in plain  # a técnica do vídeo, em toda imagem (um estilo de IA só)
     assert plain.startswith("Wide establishing shot. loose ink sketch")
     full = compose_directed_prompt(STYLE, art, with_entity, lean=True)
     assert "World: neon coastal city" in full and "Treatment: grainy contrast" in full

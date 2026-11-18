@@ -1180,6 +1180,33 @@ def _with_faceless(prompt: str) -> str:
     return f"{text.rstrip(' .,;')}, {FACELESS}{end}" if text.strip(" .") else FACELESS
 
 
+# Gente na imagem de IA além dos substantivos de entidade: quem a cena de serviço costuma mostrar.
+_SCENE_PEOPLE = _PERSON_NOUNS | {
+    "gamer", "player", "user", "people", "family", "couple", "crowd", "friend", "student", "teen", "parent",
+    "mother", "father", "son", "daughter", "victim", "customer", "employee", "streamer", "youtuber",
+}  # fmt: skip
+_BACK_VIEW_RE = re.compile(r"\bover[- ]the[- ]shoulder\b|\bseen from behind\b|\brear view\b", re.IGNORECASE)
+
+
+def ai_face(doc: ProjectDoc, scene: Scene) -> bool:
+    """A cena mostra imagem de IA com gente de frente (rosto): o prompt da imagem que ela mostra (a dela ou a da cena
+    que ela reaproveita) cita pessoa ou personagem de entidade, sem pedir costas, silhueta ou ombro. O avatar do
+    apresentador ao lado de um rosto de IA vira dois personagens disputando o quadro, e o de IA denuncia o gerador
+    (QA do prj_gq4krrs11w, 4:24: o avatar ao lado do garoto anime)."""
+    if tiers.prov_of_scene(scene, doc) != "ai":
+        return False
+    owner = doc.reuse_root(scene) if scene.visual.reuse_of else scene
+    visual = (owner or scene).visual
+    prompt = visual.prompt or ""
+    if not prompt.strip() or visual.shot == "over_shoulder" or _FACELESS_RE.search(prompt) or _BACK_VIEW_RE.search(prompt):
+        return False
+    art = doc.art
+    entities = [e for e in (art.entity(i) for i in visual.entities) if e] if art else []
+    if any(_is_person(e.look, _split_entity_name(e.name)[1]) and not _FACELESS_RE.search(e.look) for e in entities):
+        return True
+    return any(_singular(w) in _SCENE_PEOPLE for w in re.findall(r"[a-z]+", prompt.lower()))
+
+
 def fix_real_reserve(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     """Batida que sugere material oficial (personagem, arte, foto de imprensa): a imagem de IA de reserva não mostra
     o rosto da pessoa (pareceria arte oficial ou vazada). O rosto real só entra pela mídia que o usuário anexar."""
@@ -1241,6 +1268,35 @@ def _check_numbers(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     return issues
 
 
+# Aparelho que a fala cita e o que a imagem de IA põe em primeiro lugar (sem acento, minúsculo). "Tela" e "monitor"
+# servem a qualquer um: não contam.
+DEVICE_CLASSES: dict[str, frozenset[str]] = {
+    "pc": frozenset({"pc", "pcs", "computer", "computers", "computador", "computadores", "desktop", "desktops",
+                     "laptop", "laptops", "notebook", "notebooks"}),
+    "console": frozenset({"console", "consoles", "playstation", "ps5", "ps4", "xbox", "nintendo"}),
+    "celular": frozenset({"phone", "phones", "smartphone", "smartphones", "cellphone", "celular", "celulares",
+                          "iphone", "telefone"}),
+    "tv": frozenset({"tv", "tvs", "television", "televisao", "televisor", "televisores"}),
+}  # fmt: skip
+_DEVICE_OF = {word: name for name, words in DEVICE_CLASSES.items() for word in words}
+
+
+def _device_words(text: str) -> list[str]:
+    """As classes de aparelho do texto, na ordem em que aparecem."""
+    return [_DEVICE_OF[w] for w in re.findall(r"[a-z0-9]+", _fold(text).lower()) if w in _DEVICE_OF]
+
+
+def device_mismatch(speech: str, prompt: str) -> tuple[str, list[str]] | None:
+    """A imagem de IA abre com um aparelho que a fala não cita, e a fala cita outro: "O jogo roda no seu console" com
+    o prompt "a gamer at a desktop PC" (QA do prj_gq4krrs11w, 2:21, o PC gamer ilustrava o console). Devolve (o
+    aparelho do prompt, os da fala) ou None."""
+    cited = list(dict.fromkeys(_device_words(speech)))
+    shown = _device_words(prompt)
+    if not cited or not shown or shown[0] in cited:
+        return None
+    return shown[0], cited
+
+
 def _check_prompts(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     avoid = list(doc.art.avoid) if doc.art else []
     issues: list[Issue] = []
@@ -1257,6 +1313,12 @@ def _check_prompts(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
             issues.append(Issue("estilo_no_prompt", GRAVE,
                                 f'O prompt descreve estilo ("{found[0]}"): o app já acrescenta a linguagem visual.',
                                 beat.key, scene.id))
+        mismatch = device_mismatch(beat.text, prompt)
+        if mismatch:
+            shown, cited = mismatch
+            issues.append(Issue("aparelho_trocado", GRAVE,
+                                f'A fala cita {" e ".join(cited)} e a imagem abre com {shown}: o sujeito da imagem é o '
+                                "aparelho que a fala diz.", beat.key, scene.id))
         brands = find_terms(prompt, BRAND_TERMS)
         if brands:
             issues.append(Issue("marca", GRAVE,
@@ -1338,7 +1400,7 @@ def _direction_light_text(doc: ProjectDoc, scene: Scene) -> str:
     if art is None:
         return ""
     if lean_prompts(doc) and not wants_world(art, scene.visual):
-        return ""  # storyboard novo, sem entidade (nem direção do usuário): o mundo e o tratamento não entram
+        return art.treatment  # storyboard novo, sem entidade (nem direção do usuário): só o tratamento entra
     looks = [e.look for e in (art.entity(i) for i in scene.visual.entities) if e]
     return ". ".join(t for t in (art.treatment, art.world, *looks, *art.palette) if t)
 

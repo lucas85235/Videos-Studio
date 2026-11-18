@@ -368,7 +368,10 @@ Regras:
 6. prompt (só imagem nova de IA): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. Cada imagem
    nova diz a própria hora e luz, e elas variam: no máximo 1 em cada 3 no mesmo momento (ex.: pôr do sol); siga o
    clima da narração (passado = luz fria ou de arquivo, revelação = escuro). Tela dentro da imagem (TV, celular,
-   telão) não repete o mesmo conteúdo. NÃO escreva estilo, técnica, paleta, "no text" nem "vertical": o app
+   telão) não repete o mesmo conteúdo. O sujeito da imagem é o que a fala diz: fala de console mostra o console, não
+   o PC; o aparelho que a fala cita vem primeiro no prompt, e o que ela nega ou contrapõe não aparece. Gente de frente
+   (rosto) só quando a batida pede a pessoa; no resto, mãos, objeto ou pessoa de costas.
+   NÃO escreva estilo, técnica, paleta, "no text" nem "vertical": o app
    acrescenta. Só no prompt de IA (o material real do acervo mostra o assunto de verdade): nada de logotipo,
    personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer;
    nome de personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no world, no hook nem no

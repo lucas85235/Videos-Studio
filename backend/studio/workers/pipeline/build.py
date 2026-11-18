@@ -224,14 +224,17 @@ def lean_prompts(doc: ProjectDoc) -> bool:
 
 
 def wants_world(art: ArtDirection, visual: Visual) -> bool:
-    """O mundo, as cores de destaque e o tratamento da direção entram no prompt desta imagem? Só quando a cena declara
-    entidade (o personagem ou o lugar que volta precisa do mesmo mundo) ou quando a direção é do usuário (ele pediu).
-    Fora disso, cada imagem de IA fica com a linguagem e o sujeito dela: o mesmo "World"/"Accent colors"/"Treatment" em
-    toda imagem é o que deixa as ilustrações coerentes demais entre si, a assinatura de IA (ADR 0004)."""
+    """O mundo e as cores de destaque da direção entram no prompt desta imagem? Só quando a cena declara entidade (o
+    personagem ou o lugar que volta precisa do mesmo mundo) ou quando a direção é do usuário (ele pediu). Fora disso,
+    cada imagem de IA fica com o sujeito dela: o mesmo "World"/"Accent colors" em toda imagem é o que deixa as
+    ilustrações iguais demais entre si, a assinatura de IA (ADR 0004). O tratamento (a técnica: pintura, traço, grão)
+    entra sempre (`compose_directed_prompt`): sem ele, cada imagem saía numa técnica (pintura, cozy, neon 3D, anime) no
+    mesmo vídeo."""
     return bool(visual.entities) or art.source == "user"
 
 
-def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual, *, lean: bool = False) -> str:
+def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual, *, lean: bool = False,
+                            treatment: bool = True) -> str:
     """Prompt em camadas da cena dirigida: enquadramento, linguagem, sujeito, entidades e o mundo do vídeo.
 
     A bible do estilo não entra (a direção já adaptou o tratamento ao assunto) e o "sem texto" vai no
@@ -239,11 +242,14 @@ def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual,
     prompt da cena já diz a hora, o clima ou a luz, a hora, o clima e o céu saem do mundo, das aparências e da
     paleta, e a luz sai também do tratamento (direção antiga com "golden hour" não pinta todas as imagens iguais).
     A direção definida pelo usuário fica como ele escreveu. Com `lean` (documento do storyboard novo,
-    `lean_prompts`), mundo, cores e tratamento só entram quando `wants_world`; sem ele, o prompt de antes do ADR 0004.
+    `lean_prompts`), mundo e cores só entram quando `wants_world`; o tratamento entra sempre: é o estilo de IA do
+    vídeo (um só, o do canal), e sem ele o gerador escolhia uma técnica por imagem (QA do prj_gq4krrs11w). Sem `lean`,
+    o prompt de antes do ADR 0004. `treatment=False` só remonta o prompt enxuto de antes desta regra, para achar no
+    cache a imagem já gerada com ele (`Builder.image_keys`).
     """
     shot, composition, language = directed_variant(art, visual)
     if lean and not wants_world(art, visual):
-        art = art.model_copy(update={"world": "", "palette": [], "treatment": ""})
+        art = art.model_copy(update={"world": "", "palette": [], "treatment": art.treatment if treatment else ""})
     framing = ", ".join(t for t in (shot_text(shot), composition_text(composition)) if t)
     own_light = art.source != "user" and names_light(visual.prompt)
 
@@ -848,7 +854,9 @@ class Builder:
             # a imagem já gerada com ele continua valendo (a prévia aprovada não muda e nada gasta cota de novo).
             before = compose_directed_prompt(self.style, art, current)
             old = legacy_directed_prompt(self.style, art, current)
-            for prompt in (before, old):
+            # O prompt enxuto de antes do tratamento fixo (cada imagem na técnica dela): a prévia aprovada não muda.
+            bare = compose_directed_prompt(self.style, art, current, lean=self.lean, treatment=False)
+            for prompt in (bare, before, old):
                 if all(prompt != v["prompt"] for v in variants):
                     variants.append({**inputs, "prompt": prompt})
         keys = [k for v in variants for k in (

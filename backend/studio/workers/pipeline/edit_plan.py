@@ -60,6 +60,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from studio.core import verdict
 from studio.core.hashing import seed_from
 from studio.core.numbers import merge_number_words, notable_number_runs
 from studio.core.project.document import (
@@ -75,11 +76,18 @@ from studio.core.project.document import (
 )
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.project.presenter import fold, trigger_index, word_key
-from studio.core.sources import item_is_synthetic, item_tokens, media_tokens, prov_of_scene, reuse_problem
+from studio.core.sources import (
+    foreign_overlay,
+    item_is_synthetic,
+    item_tokens,
+    media_tokens,
+    prov_of_scene,
+    reuse_problem,
+)
 from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sources_for
 from studio.core.text import _GOOD_CUT_BEFORE, _NO_CUT_AFTER
 from studio.core.text import words as split_words
-from studio.core.timeline import scene_word_ranges
+from studio.core.timeline import false_verdict_on_true_material, scene_word_ranges
 from studio.providers.base import Word
 
 log = logging.getLogger(__name__)
@@ -209,6 +217,28 @@ class _W:
     @property
     def dur(self) -> float:
         return self.end - self.start
+
+
+# "site oficial", "página oficial", "official website": a fala aponta para o site da fonte.
+_SITE_WORDS = frozenset({"site", "sites", "pagina", "paginas", "website", "page", "sitio", "portal"})
+_OFFICIAL_WORDS = frozenset({"oficial", "oficiais", "official"})
+# A nota do coletor na captura ("Rockstar Games – Grand Theft Auto VI (site oficial)"), sem acento (`fold`).
+_OFFICIAL_NOTE_RE = re.compile(r"\b(?:site|pagina|page|website) (?:oficial|official)\b|\bofficial (?:site|website|page)\b")
+
+
+def _host_label(url: str) -> str:
+    """O nome do site no endereço ("https://www.rockstargames.com/VI" → "rockstargames")."""
+    host = re.sub(r"^[a-z]+://", "", (url or "").strip().lower()).split("/", 1)[0].split(":", 1)[0]
+    labels = [p for p in host.split(".") if p and p != "www"]
+    while len(labels) > 1 and len(labels[-1]) <= 3:
+        labels.pop()  # ".com", ".br", ".co.uk"
+    return labels[-1] if labels else ""
+
+
+def _names_host(label: str, keys: Iterable[str]) -> bool:
+    """A fala cita o site pelo nome: uma palavra de 4 letras ou mais que abre o nome do endereço ("rockstar" em
+    "rockstargames", "malwarebytes" inteiro)."""
+    return bool(label) and any(len(k) >= 4 and label.startswith(k) for k in keys)
 
 
 @dataclass
@@ -935,6 +965,8 @@ class _Planner:
         breath_clip = role == "breath" and beat.clip and beat.prov != "official"
         max_clip = self.sources.official_max_clip_s
         forced: _W | None = self._reveal_word(beat) if role == "reveal" else None
+        # "e isso tá no site oficial da Rockstar": a fala cita o site, a tela mostra o site a partir de "site"
+        site = self._official_site_cue(beat) if anchor is None else None
         burst = 0
         if role in ("hook", "joke", "list") and rng.random() < self.g.burst_prob:
             burst = rng.randint(2, 4) - 1  # cortes da rajada (planos - 1)
@@ -963,9 +995,17 @@ class _Planner:
                     d = min(d, hard - t)
                 target_word = self._cut_word(beat, t, t + d, recent_durs + [s.dur for s in shots[:-1]],
                                              hard_end=hard)
+            if site is not None and site[0].start > t + MIN_SHOT_S and (
+                    target_word is None or target_word.start >= site[0].start - 1e-6):
+                # o corte do site vem antes de qualquer outro que passaria por cima dele (ou do fim da cena)
+                target_word = site[0] if site[0].start <= beat.end - MIN_SHOT_S else target_word
             if target_word is None:
                 break
-            shot = self._source_for(beat, shots, target_word, rng, prov_run)
+            if site is not None and target_word is site[0]:
+                shot: _Shot | None = self._site_shot(beat, target_word, site[1])
+                site = None
+            else:
+                shot = self._source_for(beat, shots, target_word, rng, prov_run)
             if shot is None:
                 t = target_word.start  # sem fonte: o plano segue (não corta), mas o ritmo anda
                 continue
@@ -988,6 +1028,43 @@ class _Planner:
                 if shot.motion is None:
                     self._camera(beat, shot, rng)
             beat.shots = shots
+
+    def _official_site_cue(self, beat: _Beat) -> tuple[_W, PoolItem] | None:
+        """A fala cita o site oficial ("tá no site oficial da Rockstar", "na página oficial") e o acervo tem a captura
+        dele: a palavra "site" e a captura, para o corte mostrar o site na hora em que a fala o cita (QA do
+        prj_gq4krrs11w, 0:30: a foto do console ficava sob "e isso tá no site oficial"). A captura é a do site que a
+        frase nomeia depois de "site" (o endereço começa com o nome: "da Rockstar" → rockstargames.com), de preferência
+        a que o coletor marcou como site oficial. Nada quando a fala não diz de quem é o site ("do fabricante"), quando
+        a cena já mostra uma captura ou quando o acervo não tem a captura dele."""
+        if self.pool is None or beat.page or not beat.editable:
+            return None
+        keys = [w.key for w in beat.words]
+        at = next((i for i, k in enumerate(keys) if i > 0 and k in _SITE_WORDS
+                   and any(x in _OFFICIAL_WORDS for x in keys[i + 1:i + 3])), None)
+        if at is None:
+            return None
+        rest = set(keys[at:])
+        best: tuple[int, PoolItem] | None = None
+        for item in self.pool.items:
+            if item.tier != "capture" or not (item.path or item.poster):
+                continue
+            if beat.item is not None and item.id == beat.item.id:
+                return None
+            marked = bool(_OFFICIAL_NOTE_RE.search(fold(item.desc or "")))
+            named = _names_host(_host_label(item.page_url or item.url), rest)
+            if not named:
+                continue  # "site oficial do fabricante" não diz de quem: nenhuma captura é ela
+            rank = int(marked)
+            if best is None or rank > best[0]:
+                best = (rank, item)
+        return (beat.words[at], best[1]) if best is not None else None
+
+    def _site_shot(self, beat: _Beat, word: _W, item: PoolItem) -> _Shot:
+        """O subplano da captura do site oficial a partir da palavra "site" (a fala é sobre ela: a distribuição do
+        acervo não tira, mas conta a aparição)."""
+        self.pool_uses[item.id] += 1
+        self.shown.append((item_tokens(item), word.start, beat.end))
+        return _Shot(t=word.start, word=word, prov=item.tier, source="pool", pool_id=item.id, motion="static")
 
     def _reveal_word(self, beat: _Beat) -> _W | None:
         for test in (lambda w: w.emph, lambda w: w.number, lambda w: w.content):
@@ -1137,6 +1214,8 @@ class _Planner:
                 continue  # arte de fã ou de IA da web não é subplano real
             if beat.item is not None and item.id == beat.item.id:
                 continue
+            if foreign_overlay(item.desc, " ".join(beat.spoken)):
+                continue  # post, legenda de usuário ou slate por cima do plano: cara de vídeo de outro criador
             if item.id in recent_ids or self.pool_uses[item.id] >= 2:
                 continue
             if not self._pool_ok(item, beat, word) or self._spread_problem(item, beat, word) is not None:
@@ -1247,6 +1326,9 @@ class _Planner:
             return False
         if beat.page and fx_type == "punch":
             return False  # a captura aproxima pelo `zoom_rect` (que enquadra o trecho); o punch cortaria o texto
+        if fx_type == "text_pop" and verdict.is_negative(word.text) and false_verdict_on_true_material(
+                self.doc, beat.scene, word.text, self.pool):
+            return False  # "golpe" gigante sobre a foto do console ou o trailer: acusaria o que está na tela
         group = {fx_type} if fx_type not in ANNOT_TYPES else set(ANNOT_TYPES)
         return all(abs(e.t - word.start) >= spacing for e in self.events if e.type in group)
 

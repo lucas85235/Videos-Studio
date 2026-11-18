@@ -578,6 +578,15 @@ Outros arquivos:
 - **sem clichê de país nem interface falsa**: o pedido não dá país de exemplo no `world` e proíbe bandeira e cartão-postal sem pedido do roteiro; a direção nova leva no `avoid` "fake browser window or app frame" e "mouse cursor" e, sem entidade real, "national flags" e "postcard landmarks";
 - **banco só com assunto em comum**: item `stock`/`free` (busca por palavra-chave) só ilustra a batida quando a cena cita pelo menos uma palavra do assunto buscado (com apelido de marca e sem número: "PS5" é "PlayStation 5", "GTA VI" é "GTA 6"; o rótulo longo do tema do vídeo também serve), a descrição divide com ela uma palavra COMUM (o nome buscado e a sigla da fala não provam: "Rockstar" acha estrela do rock, "ISO" acha câmera; vale outro nome próprio dos dois lados, "Colosseum" numa busca por "Coliseu", o nome inteiro de duas palavras ou mais, ou a marca com o mesmo modelo) e, do prompt de reserva, só o assunto conta (`ScenePrompt`: o cenário "on a gaming desk" não prova a mesa gamer de banco), não contradiz o modelo de produto citado e, se mostra aparelho (console, controle, celular, placa), a cena cita a marca e o mesmo modelo; com a geração citada ("Series S", "PS5"), aparelho sem modelo na descrição não serve. Arte de fã e prévia marcada nunca servem, nem no acervo já coletado (`media_pool.fits_scene`); sem item que sirva, a reserva é o real do assunto ou o cartão, nunca banco aleatório (também na reserva do anexo).
 
+**Emenda "Material certo" (QA r3 do `prj_gq4krrs11w`, 18/11/2026).** Tirar o tratamento de toda imagem de IA deixou o gerador escolher uma técnica por imagem (pintura, cozy, neon 3D, anime). Fica:
+- **um tratamento só**: no storyboard novo (`lean_prompts`) o `Treatment` da direção entra em toda imagem de IA (é o estilo de IA do vídeo, o do canal); `World` e `Accent colors` continuam só com entidade. A imagem já gerada com o prompt sem tratamento continua achada no cache (`Builder.image_keys`);
+- **o sujeito é o que a fala diz**: o aparelho que a imagem de IA põe primeiro no prompt é um dos que a fala cita (`storyboard_check.device_mismatch`, grave `aparelho_trocado`: "roda no seu console" com um PC gamer);
+- **avatar fora de rosto de IA**: o apresentador não entra na cena que mostra imagem de IA com gente de frente (`storyboard_check.ai_face`);
+- **veredito negativo** (carimbo e texto que pula) sobre foto de banco/livre só quando ela mostra o tema do golpe (`verdict.shows_scam_theme`);
+- **aparelho de vários modelos**: com mais de um modelo da marca na fala, a foto mostra o primeiro citado;
+- **texto alheio no plano** (post, legenda de usuário, slate: `sources.foreign_overlay`) só na cena que fala dele, nem como subplano;
+- **"site oficial da X"** na fala põe a captura do site de X a partir da palavra "site" (`edit_plan._official_site_cue`); a captura não foca o título achado no rodapé, menu ou formulário da página.
+
 **Testes:**
 - `backend/tests/test_storyboard_real_first.py`:
   - com acervo-fixture, o gancho não é IA;
