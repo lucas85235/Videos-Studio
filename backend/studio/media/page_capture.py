@@ -438,3 +438,30 @@ def crop_to_view(img: Image.Image, view: Sequence[float], aspect: float) -> Imag
     part = rgb.crop((max(0, ix0), max(0, iy0), min(W, ix0 + width), min(H, iy0 + height)))
     canvas.paste(part, (max(0, -ix0), max(0, -iy0)))
     return canvas
+
+
+def clean_crop(img: Image.Image, view: Sequence[float], rects: Sequence[Sequence[float]],
+               aspect: float) -> tuple[Image.Image, list[list[float]]]:
+    """O recorte da prova SEM o marca-texto queimado (o PNG limpo do acervo) e os retângulos dos trechos medidos na
+    captura, passados para o quadro recortado (`[x, y, w, h]` de 0 a 1): o destaque fica para o renderer animar.
+    Trecho fora do recorte sai; o que encosta na borda é aparado."""
+    out = crop_to_view(img, view, aspect)
+    W, H = img.size
+    x0, y0, _x1, _y1 = crop_box(W, H, view, aspect)
+    cw, ch = out.size
+    ix0, iy0 = round(x0), round(y0)
+    moved: list[list[float]] = []
+    for rect in rects:
+        if len(rect) != 4:
+            continue
+        x, y, w, h = (float(v) for v in rect)
+        a = min(1.0, max(0.0, (x * W - ix0) / cw))
+        b = min(1.0, max(0.0, (y * H - iy0) / ch))
+        c = min(1.0, max(0.0, ((x + w) * W - ix0) / cw))
+        d = min(1.0, max(0.0, ((y + h) * H - iy0) / ch))
+        a, b = round(a, 4), round(b, 4)
+        rw, rh = round(min(c - a, 1.0 - a), 4), round(min(d - b, 1.0 - b), 4)
+        if rw <= 0.001 or rh <= 0.001:
+            continue
+        moved.append([a, b, rw, rh])
+    return out, moved

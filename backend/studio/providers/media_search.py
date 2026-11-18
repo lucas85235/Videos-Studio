@@ -11,8 +11,10 @@ import html
 import logging
 import math
 import re
+import threading
 import time
 import unicodedata
+from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
@@ -526,6 +528,129 @@ def search(query: str, *, orientation: Orientation, refresh: bool = False,
         "fetched_at": datetime.now(UTC).isoformat(), "files": [],
     }, "media_search")  # fmt: skip
     return SearchResult(query=text, candidates=candidates, sources=sources, cached=False)
+
+
+# --- vídeos do Pexels (acervo, ADR 0004 §3.4) ------------------------------------------------------
+
+PEXELS_VIDEOS_API = "https://api.pexels.com/videos/search"
+VIDEO_CACHE_KIND = "media_search_video"
+PEXELS_HOURLY_LIMIT = 200
+"""Teto da API do Pexels: 200 pedidos por hora (contado neste processo; acima disso só o cache responde)."""
+VIDEO_MAX_CANDIDATES = 6
+VIDEO_TARGET_SIDE = 1920
+_pexels_calls: deque[float] = deque()
+_pexels_lock = threading.Lock()
+
+
+@dataclass
+class VideoCandidate:
+    id: str
+    """"pexels-video:<id>"."""
+    page_url: str
+    thumb: str
+    duration: float
+    width: int
+    height: int
+    author: str
+    credit: str
+    download_url: str
+    """O arquivo mp4 escolhido (o menor que ainda cobre o vídeo final)."""
+    license: str = "Pexels License"
+    license_url: str = PEXELS_LICENSE_URL
+    title: str = ""
+    """Descrição tirada do endereço da página ("/video/surfista-pegando-onda-123/")."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> VideoCandidate:
+        names = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in names})
+
+
+def _pexels_slot() -> bool:
+    """Reserva um pedido na janela de 1 hora; False quando o teto foi atingido."""
+    now = time.monotonic()
+    with _pexels_lock:
+        while _pexels_calls and now - _pexels_calls[0] > 3600:
+            _pexels_calls.popleft()
+        if len(_pexels_calls) >= PEXELS_HOURLY_LIMIT:
+            return False
+        _pexels_calls.append(now)
+        return True
+
+
+def _slug_title(page_url: str) -> str:
+    slug = page_url.rstrip("/").rsplit("/", 1)[-1]
+    words = [w for w in slug.split("-") if w and not w.isdigit()]
+    return " ".join(words)[:200]
+
+
+def _video_file(files: list[dict[str, Any]], target: int = VIDEO_TARGET_SIDE) -> dict[str, Any] | None:
+    """O mp4 com o menor lado maior que ainda chega a `target` no lado maior (ou o maior que houver)."""
+    mp4 = [f for f in files if isinstance(f, dict) and str(f.get("file_type") or "") == "video/mp4" and f.get("link")
+           and _int(f.get("width")) and _int(f.get("height"))]
+    if not mp4:
+        return None
+    big = [f for f in mp4 if max(_int(f["width"]), _int(f["height"])) >= target]
+    if big:
+        return min(big, key=lambda f: _int(f["width"]) * _int(f["height"]))
+    return max(mp4, key=lambda f: _int(f["width"]) * _int(f["height"]))
+
+
+def parse_pexels_videos(data: dict[str, Any], target: int = VIDEO_TARGET_SIDE) -> list[VideoCandidate]:
+    out: list[VideoCandidate] = []
+    for video in (data or {}).get("videos") or []:
+        if not isinstance(video, dict) or video.get("id") is None:
+            continue
+        chosen = _video_file(video.get("video_files") or [], target)
+        if chosen is None:
+            continue
+        author = " ".join(str((video.get("user") or {}).get("name") or "").split())[:120]
+        page = str(video.get("url") or "")
+        out.append(VideoCandidate(
+            id=f"pexels-video:{video['id']}", page_url=page, thumb=str(video.get("image") or ""),
+            duration=float(video.get("duration") or 0.0), width=_int(chosen.get("width")),
+            height=_int(chosen.get("height")), author=author, credit=default_credit("pexels", author=author),
+            download_url=str(chosen["link"]), title=_slug_title(page)))
+    return out[:VIDEO_MAX_CANDIDATES]
+
+
+def search_videos(query: str, *, orientation: Orientation, refresh: bool = False,
+                  http: httpx.Client | None = None) -> list[VideoCandidate]:
+    """Vídeos do Pexels para a busca (em inglês). Só com a chave do Pexels; offline (sem `http`), nada. Cache pelo
+    mesmo `_cache_key` das fotos, num tipo próprio (`media_search_video`), por `SEARCH_TTL`."""
+    text = " ".join((query or "").split())[:120]
+    if not text or (http is None and get_settings().offline):
+        return []
+    key = _pexels_key()
+    if not key:
+        return []
+    store = ArtifactStore()
+    input_hash = _cache_key(text, orientation, True, False)
+    cached = store.lookup(VIDEO_CACHE_KIND, input_hash)
+    if cached and not refresh and _fresh(cached):
+        return [VideoCandidate.from_dict(c) for c in cached.get("videos") or [] if isinstance(c, dict)]
+    stale = [VideoCandidate.from_dict(c) for c in (cached or {}).get("videos") or [] if isinstance(c, dict)]
+    if not _pexels_slot():
+        log.warning("limite de pedidos do Pexels nesta hora: vídeos só do cache")
+        return stale
+    client = http or new_client()
+    try:
+        data = _json(client.get(PEXELS_VIDEOS_API, params={"query": text, "orientation": orientation,
+                                                            "per_page": str(VIDEO_MAX_CANDIDATES)},
+                                headers={"Authorization": key}))
+    except httpx.HTTPError as exc:
+        log.warning("busca de vídeos no Pexels falhou: %s", exc)
+        return stale
+    finally:
+        if http is None:
+            client.close()
+    if data is None:
+        return stale
+    videos = parse_pexels_videos(data)
+    store.save(VIDEO_CACHE_KIND, input_hash, {"query": text, "videos": [asdict(v) for v in videos],
+                                              "sources": {"pexels": _status(videos)},  # type: ignore[arg-type]
+                                              "fetched_at": datetime.now(UTC).isoformat(), "files": []}, "pexels")
+    return videos
 
 
 # --- um candidato ------------------------------------------------------------------------------

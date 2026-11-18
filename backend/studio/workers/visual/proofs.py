@@ -174,6 +174,78 @@ def capture_proof(project_id: str, scene_id: str, url: str, phrases: Sequence[st
     return {**out, "version": version, "warnings": stored.warnings}
 
 
+# --------------------------------------------------------------------------------------------
+# Captura limpa para o acervo (ADR 0004 §3.4): sem marca-texto queimado, com os retângulos dos trechos
+# --------------------------------------------------------------------------------------------
+
+
+def clean_proof(img: Image.Image, phrases: list[dict[str, Any]], aspect: float) -> tuple[Image.Image, list[list[float]]]:
+    """O mesmo recorte da prova (`bake`), mas sem o marca-texto: a imagem limpa e os retângulos de todos os trechos
+    visíveis no quadro recortado (o renderer anima o destaque)."""
+    rects = [r for ph in phrases if page_capture.visible(ph.get("rects")) for r in ph["rects"]]
+    focus = _focus_index(phrases)
+    view = phrases[focus]["view"] if focus is not None else [0.0, 0.0, 1.0, 1.0]
+    return page_capture.clean_crop(img, view, rects, aspect)
+
+
+def _clean_entry(img: Image.Image, phrases: list[dict[str, Any]], project_id: str, aspect: float,
+                 **meta: Any) -> dict[str, Any]:
+    clean, rects = clean_proof(img, phrases, aspect)
+    stored = _store(clean, project_id)
+    return {"asset": stored.rel, "rects": rects, "width": stored.width, "height": stored.height, **meta}
+
+
+def clean_from_capture(data: dict[str, Any], aspect: float) -> dict[str, Any] | None:
+    """A captura gravada (`capture_dict`) em versão limpa para o acervo: `{asset, rects, width, height, url, domain,
+    title, text}`. None quando a página sumiu ou a captura falhou."""
+    if data.get("status") == "falhou" or not data.get("image") or not data.get("project_id"):
+        return None
+    path = get_settings().data_dir / data["image"]
+    if not path.is_file():
+        return None
+    with Image.open(path) as im:
+        img = im.convert("RGB")
+    phrases = [dict(p) for p in data.get("phrases") or []]
+    text = next((p.get("text") for p in phrases if p.get("focus")), None) or next(
+        (p.get("text") for p in phrases), "")
+    return _clean_entry(img, phrases, data["project_id"], aspect, url=data.get("url") or "",
+                        domain=data.get("domain") or "", title=data.get("title") or "", text=text or "")
+
+
+def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: float, *,
+                  open_page: OpenPage | None = None) -> dict[str, Any]:
+    """Captura uma página para o acervo (sem cena e sem marca-texto), com cache pelo endereço e pelos trechos:
+    `uploads/<projeto>/captures/pool-<chave>.png|.txt|.json`. Devolve o mesmo formato de `clean_from_capture`."""
+    import hashlib
+    import json
+
+    texts = [" ".join(p.split()) for p in phrases if p and p.strip()][: page_capture.MAX_PHRASES]
+    if not texts:
+        raise ProofError("Escreva pelo menos um trecho para marcar.")
+    key = hashlib.sha256(json.dumps([url, texts, round(aspect, 4)], ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    folder = get_settings().data_dir / "uploads" / project_id / "captures"
+    done = folder / f"pool-{key}.json"
+    if done.is_file():
+        try:
+            cached = json.loads(done.read_text(encoding="utf-8"))
+            if (get_settings().data_dir / cached["asset"]).is_file():
+                return cached
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    shot = page_capture.capture(url, texts, 0, open_page=open_page)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"pool-{key}.png").write_bytes(shot.png)
+    (folder / f"pool-{key}.txt").write_text(shot.text, encoding="utf-8")
+    with Image.open(io.BytesIO(shot.png)) as im:
+        img = im.convert("RGB")
+    raw = [{"text": t, "rects": shot.rects[i] or [], "found": bool(shot.found[i]) or bool(shot.rects[i]),
+            "view": None, "lock": False, "focus": i == 0} for i, t in enumerate(texts)]
+    entry = _clean_entry(img, compute_views(img, raw), project_id, aspect, url=shot.url, domain=shot.domain,
+                         title=shot.title, text=texts[0])
+    done.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+    return entry
+
+
 def get_capture(capture_id: str) -> dict[str, Any] | None:
     with session_scope() as s:
         row = s.get(PageCapture, capture_id)

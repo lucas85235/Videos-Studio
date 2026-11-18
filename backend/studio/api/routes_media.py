@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -17,11 +18,14 @@ from studio.api.routes_projects import _rebuild
 from studio.core.project import media_edit, service
 from studio.core.project.document import MediaRef, ProjectDoc, RealHint, RealKind, Scene
 from studio.core.project.ops import OpError
+from studio.core.project.pool import load_pool
 from studio.core.styles.library import get_style
 from studio.media import real_media
 from studio.media.real_media import SOURCE_LABELS, MediaError
 from studio.media.safe_http import BlockedUrl, FetchError, TooLarge
 from studio.providers import media_search
+from studio.workers.jobs import get_runner
+from studio.workers.pipeline import media_pool
 from studio.workers.publish.credits import media_credits
 
 router = APIRouter(prefix="/api/projects", tags=["mídia real"])
@@ -199,6 +203,69 @@ def put_real(project_id: str, scene_id: str, body: RealBody) -> dict[str, Any]:
     action = "dispensada" if body.real is None else "editada"
     version = service.commit(project_id, new_doc, f"{media_edit.scene_label(new_doc, scene_id)}: sugestão de mídia real {action}")
     return {"version": version}
+
+
+# --- acervo de material real (ADR 0004 §3.4) -----------------------------------------------------------------------
+
+
+class PoolLinkBody(BaseModel):
+    url: str = Field(min_length=8, max_length=2000)
+    label: str = Field(default="", max_length=120)
+    tier: Literal["official", "own"] = "official"
+    """Material oficial (trailer, gameplay, vídeo da empresa) ou do próprio canal."""
+
+
+class PoolLinksBody(BaseModel):
+    links: list[PoolLinkBody] = Field(default_factory=list, max_length=media_pool.MAX_LINKS)
+    replace: bool = False
+    """True troca a lista inteira (tirar um link); False junta aos que já existem."""
+
+
+def _project(project_id: str) -> None:
+    try:
+        service.get_project_row(project_id)
+    except service.ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="projeto não encontrado") from exc
+
+
+def _http_link(url: str) -> str:
+    text = " ".join(url.split())
+    parts = urlsplit(text)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise HTTPException(status_code=422, detail=f"Link inválido: {text[:120]} (use http ou https).")
+    return text
+
+
+@router.get("/{project_id}/pool")
+def get_pool(project_id: str) -> dict[str, Any]:
+    """O acervo gravado (`pool.json`), os links oficiais do projeto e o resumo por nível."""
+    _project(project_id)
+    pool = load_pool(project_id)
+    return {"pool": pool.model_dump(mode="json"), "links": media_pool.pool_links(project_id),
+            "summary": media_pool.summary(pool)}
+
+
+@router.post("/{project_id}/pool/links")
+def post_pool_links(project_id: str, body: PoolLinksBody) -> dict[str, Any]:
+    """Links oficiais dados pelo usuário (trailer, gameplay, vídeo do canal): a próxima coleta corta os planos."""
+    _project(project_id)
+    current = [] if body.replace else media_pool.pool_links(project_id)
+    merged: dict[str, dict[str, str]] = {link["url"]: link for link in current}
+    for link in body.links:
+        clean = media_pool.normalize_link({**link.model_dump(), "url": _http_link(link.url)})
+        merged[clean["url"]] = clean
+    links = list(merged.values())
+    if len(links) > media_pool.MAX_LINKS:
+        raise HTTPException(status_code=422, detail=f"No máximo {media_pool.MAX_LINKS} links por projeto.")
+    service.update_settings(project_id, {media_pool.LINKS_KEY: links})
+    return {"links": links}
+
+
+@router.post("/{project_id}/pool/refresh")
+def refresh_pool(project_id: str) -> dict[str, Any]:
+    """Coleta o acervo de novo (job `media_pool`): baixa os links novos, captura as fontes e busca por tópico."""
+    _project(project_id)
+    return get_runner().submit("media_pool", {}, project_id)
 
 
 @router.get("/{project_id}/media/credits")
