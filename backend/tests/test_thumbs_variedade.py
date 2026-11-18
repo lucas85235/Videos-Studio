@@ -302,6 +302,59 @@ def test_x_da_prova_vai_ao_lado_quando_a_manchete_enche_o_cartao():
     assert x0 > 900 and x1 <= 1260  # à direita da manchete
     x0, y0, x1, y1 = C._mark_spot(box, (510, 50, 1250, 560), H)
     assert y0 > 560 and x1 > x0  # sem lado livre: embaixo da manchete, saindo do cartão
+    # cartão inclinado: a borda de baixo sobe de um lado, então o X fica mais para dentro (as pontas no cartão)
+    flat = C._mark_spot(box, (520, 60, 1240, 300), H)
+    tilted = C._mark_spot(box, (520, 60, 1240, 300), H, -2.5)
+    assert tilted[3] <= flat[3] - 15 and tilted[1] > 300
+
+
+def test_circulo_da_prova_contorna_a_manchete_de_varias_linhas_sem_cortar_letra(tmp_path):
+    """Círculo da prova numa manchete de 4 linhas: o retângulo arredondado fica fora das letras, inclusive nos
+    cantos (o arco de um raio grande cortava a 1ª letra da 1ª linha e a última da última)."""
+    from studio.media.thumb_assets import AssetResolver
+
+    _manchete_colada().save(tmp_path / "cap.jpg")
+    r = AssetResolver(None, media=lambda ref: tmp_path / "cap.jpg")
+    prova = ThumbLayers.model_validate({"template": "prova", "logo": "none", "mark": "circle",
+                                        "background": {"kind": "media", "ref": "media:cap"},
+                                        "text": {"words": "GOLPE", "fill": "white", "pos": "left"}})
+    out = C.render(prova, T.CANVAS, r)
+    card = next(f for f in out.info["layout"]["figures"] if f["kind"] == "card")
+    hx0, hy0, hx1, hy1 = card["headline"]
+
+    def red(p: tuple[int, ...]) -> bool:
+        return p[0] > 180 and p[1] < 90 and p[2] < 120
+
+    assert not any(red(out.getpixel((x, y))) for x in range(hx0, hx1, 2) for y in range(hy0, hy1, 2))
+    assert any(red(out.getpixel((x, hy0 - 12))) for x in range(hx0, hx1, 3))  # o traço logo acima da manchete
+
+
+def test_janela_da_manchete_larga_no_pe_da_pagina_nao_vira_tira():
+    """Manchete quase da largura da captura (a janela fica larga demais para a proporção) e no pé da página: a
+    janela não começa na manchete e acaba numa tira fina; fica com pelo menos metade da altura pedida."""
+    img = Image.new("RGB", (2200, 1238), (250, 250, 250))
+    draw = ImageDraw.Draw(img)
+    for top in (915, 1010):
+        for x in range(60, 2140, 30):
+            draw.rectangle((x, top, x + 16, top + 70), fill=(20, 20, 20))
+    x0, y0, x1, y1 = C.page_window(img, 1.4)
+    assert x0 <= 60 and x1 >= 2140 and y1 == 1238 and y0 <= 915
+    assert y1 - y0 >= (x1 - x0) / 1.4 * C.PAGE_WINDOW_MIN_HEIGHT - 2
+
+
+def test_janela_da_pagina_nao_corta_o_selo_acima_da_manchete():
+    """Selo/categoria logo acima da manchete: o topo da janela não passa no meio dele (sobe e ele entra inteiro)."""
+    img = Image.new("RGB", (1600, 900), (250, 250, 250))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((100, 178, 330, 214), radius=8, fill=(200, 235, 225))  # o selo (fundo claro colorido)
+    for x in range(115, 310, 14):
+        draw.rectangle((x, 186, x + 7, 206), fill=(20, 110, 90))  # as letras do selo
+    for top in (240, 330):  # a manchete de 2 linhas
+        for x in range(100, 1300, 24):
+            draw.rectangle((x, top, x + 13, top + 70), fill=(30, 30, 40))
+    x0, y0, x1, y1 = C.page_window(img, 16 / 10)
+    assert y0 <= 178 or y0 >= 214  # o topo fora do selo
+    assert y0 <= 240 and y1 >= 400  # a manchete inteira na janela
 
 
 # --- histórico do canal e semelhança -----------------------------------------------------------------------------------

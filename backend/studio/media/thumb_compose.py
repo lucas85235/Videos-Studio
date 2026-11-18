@@ -1549,9 +1549,14 @@ def _page_window(im: Image.Image, aspect: float,
         if top + hh > h and (h - top >= hh * PAGE_WINDOW_MIN_HEIGHT or hh > h):
             # manchete perto do fim da captura (ou larga demais para a proporção): a janela começa nela e sai mais
             # baixa (o cartão encolhe na altura) em vez de subir e mostrar o que vem antes (anúncio, menu, faixa
-            # vazia) ou de cortar a manchete dos lados
-            return round(x0), round(top), round(x0 + ww), h
+            # vazia) ou de cortar a manchete dos lados. Nunca mais baixa que metade da pedida (ou a captura
+            # inteira, quando ela é menor): manchete larga no pé da página não vira uma tira fina
+            y0 = min(top, max(0.0, h - hh * PAGE_WINDOW_MIN_HEIGHT))
+            y0 = _calm_top(im, y0, (x0, x0 + ww), max(0.0, y0 - hh * 0.1), min(by0, y0 + hh * 0.1))
+            return round(x0), round(y0), round(x0 + ww), h
         y0 = max(0.0, min(top, h - hh))
+        # o topo da janela não corta uma linha no meio (o selo/sobretítulo logo acima da manchete sai inteiro)
+        y0 = _calm_top(im, y0, (x0, x0 + ww), max(0.0, y0 - hh * 0.1, by1 - hh), min(by0, y0 + hh * 0.1, h - hh))
         return round(x0), round(y0), round(x0 + ww), round(y0 + hh)
     ink = _ink(im)
     sh, sw = ink.shape
@@ -1577,9 +1582,38 @@ def _page_window(im: Image.Image, aspect: float,
     return (round(x0 * fx), round(best * fy), round(x1 * fx), round(min(h, (best + hh_i) * fy)))
 
 
-def _text_mask(photo: Image.Image, width: int) -> tuple[Any, Any]:
-    """(tinta de texto, fundo claro) numa cópia de `width` px, como máscaras numpy bool. Fotos e imagens da página
-    (manchas cheias, sem o fundo claro entre as letras) saem da tinta antes: só sobra a tinta de texto."""
+def _calm_top(im: Image.Image, top: float, cols: tuple[float, float], lo: float, hi: float) -> float:
+    """O topo da janela (`top`, px da captura) numa linha de pixels calma (sem tinta nas colunas `cols` da janela):
+    quando ele cai no meio de uma linha de texto ou de um selo, sobe até logo acima dela (ela entra inteira) ou, sem
+    lugar em cima, desce até logo abaixo; nunca sai de `lo`..`hi`. Sem linha calma ali, fica onde estava."""
+    import numpy as np
+
+    w, h = im.size
+    c0, c1 = max(0, int(cols[0])), min(w, math.ceil(cols[1]))
+    if c1 - c0 < 4 or h < 4 or lo > hi:
+        return top
+    sw = min(480, c1 - c0)
+    sh = max(4, round(sw * h / (c1 - c0)))
+    gray = im.crop((c0, 0, c1, h)).convert("L").resize((sw, sh), Image.Resampling.BOX)
+    busy = (np.asarray(gray, dtype=np.float32) < 225).mean(axis=1) > 0.004
+    f = sh / h
+    t, a, b = min(sh - 1, int(top * f)), max(0, math.ceil(lo * f)), min(sh - 1, int(hi * f))
+    if not busy[t] or a > b:
+        return top
+    for y in range(min(t, b), a - 1, -1):  # sobe: a linha cortada entra inteira
+        if not busy[y]:
+            return max(lo, y / f)
+    for y in range(max(t, a), b + 1):  # sem lugar em cima: desce até logo abaixo dela
+        if not busy[y]:
+            return min(hi, (y + 1) / f)
+    return top
+
+
+def _text_mask(photo: Image.Image, width: int) -> tuple[Any, Any, Any]:
+    """(tinta de texto, fundo claro, tinta fora do miolo das fotos) numa cópia de `width` px, como máscaras numpy
+    bool. Fotos e imagens da página (manchas cheias, sem o fundo claro entre as letras) saem da tinta antes, com uma
+    margem em volta: só sobra a tinta de texto. A 3ª máscara tira só o miolo das fotos, sem a margem (a ponta de uma
+    linha de texto que encosta numa foto ou num selo continua lá)."""
     import numpy as np
 
     w, h = photo.size
@@ -1594,9 +1628,13 @@ def _text_mask(photo: Image.Image, width: int) -> tuple[Any, Any]:
     padded = np.zeros((gh * bs, gw * bs), dtype=np.float32)
     padded[:solid.shape[0], :solid.shape[1]] = solid
     blocks = Image.fromarray(((padded.reshape(gh, bs, gw, bs).mean(axis=(1, 3)) > 0.9) * 255).astype(np.uint8))
-    blocks = np.asarray(blocks.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(7))) > 0
-    photo_mask = np.kron(blocks, np.ones((bs, bs), dtype=bool))[:solid.shape[0], :solid.shape[1]]
-    return (luma < 110) & ~photo_mask, luma > 225
+    opened = blocks.filter(ImageFilter.MinFilter(3))
+    cell = np.ones((bs, bs), dtype=bool)
+    photo_mask = np.kron(np.asarray(opened.filter(ImageFilter.MaxFilter(7))) > 0, cell)
+    core = np.kron(np.asarray(opened.filter(ImageFilter.MaxFilter(3))) > 0, cell)
+    dark = luma < 110
+    crop = (slice(0, solid.shape[0]), slice(0, solid.shape[1]))
+    return dark & ~photo_mask[crop], luma > 225, dark & ~core[crop]
 
 
 def _runs(on: Any, start: int = 0) -> list[tuple[int, int]]:
@@ -1642,17 +1680,36 @@ def _split_valleys(dens: Any, y0: int, y1: int, min_h: int) -> list[tuple[int, i
 
 def text_lines(photo: Image.Image, width: int = 480) -> tuple[list[dict[str, Any]], tuple[int, int]]:
     """As linhas de texto de uma página, de cima para baixo, na cópia de `width` px (devolvida junto, (w, h)). Cada
-    linha: `y0`/`y1`, as colunas `c0`/`c1` do bloco de palavras principal dela, `light` (fração de fundo claro no
+    linha: `y0`/`y1`, as colunas `c0`/`c1` do bloco de palavras principal dela, `x0`/`x1` (as mesmas, alargadas pelas
+    pontas da linha que a margem de uma foto vizinha escondeu: a caixa da manchete usa estas), `light` (fração de fundo claro no
     bloco) e `clear` (fundo claro sobre o que não é tinta: perto de 1 em letra sobre a página, mesmo grossa; baixo
     em letra dentro de foto). A faixa de linhas com tinta é recortada primeiro nas colunas do bloco principal (o
     selo/coluna lateral do site não gruda nas linhas da manchete) e depois nos vales de tinta (a manchete de
     entrelinha apertada vira as linhas dela, e não um bloco alto demais que sairia da conta)."""
     import numpy as np
 
-    ink, light = _text_mask(photo, width)
+    ink, light, near = _text_mask(photo, width)
     sh, sw = ink.shape
     gap = max(2, round(sw * 0.04))
     min_h = max(3, round(sh * LINE_MIN))
+
+    def reach(y0: int, y1: int, c: int, step: int) -> int:
+        """Até onde a linha y0..y1 continua a partir da coluna `c` (para a direita com step 1, para a esquerda com
+        -1) na tinta da margem das fotos (`near`): as letras do fim/começo da linha que a margem de uma foto ou selo
+        vizinho escondeu. Vãos de até metade do vão entre blocos (espaço entre palavras) e no máximo 32 px."""
+        cols = near[y0:y1].any(axis=0)
+        hop, last, x = max(2, gap // 2), c, c
+        for _ in range(32):
+            x += step
+            if x < 0 or x >= sw or abs(x - last) > hop:
+                break
+            if cols[x]:
+                last = x
+        return last
+
+    def wide(y0: int, y1: int, b: tuple[int, int]) -> tuple[int, int]:
+        """As colunas `b` da linha alargadas pelas pontas escondidas na margem das fotos (`reach`)."""
+        return reach(y0, y1, b[0], -1), reach(y0, y1, b[1] - 1, 1) + 1
 
     def main_block(y0: int, y1: int) -> tuple[int, int] | None:
         """As colunas do bloco de palavras com mais tinta nas linhas y0..y1 (vão maior que 4% da largura separa
@@ -1683,7 +1740,8 @@ def text_lines(photo: Image.Image, width: int = 480) -> tuple[list[dict[str, Any
                     continue
                 lt = float(light[p0:p1, b[0]:b[1]].mean())
                 ik = float(ink[p0:p1, b[0]:b[1]].mean())
-                lines.append({"y0": p0, "y1": p1, "c0": b[0], "c1": b[1], "light": lt,
+                x0, x1 = wide(p0, p1, b)
+                lines.append({"y0": p0, "y1": p1, "c0": b[0], "c1": b[1], "x0": x0, "x1": x1, "light": lt,
                               "clear": lt / max(1e-6, 1 - ik)})
     return lines, (sw, sh)
 
@@ -1727,7 +1785,7 @@ def headline_band(photo: Image.Image, width: int = 480) -> tuple[float, float, f
             break  # linha grande que não é da manchete (outra coluna, dentro de foto): a manchete acabou
         elif same and ln["y0"] - bottom <= tall * 0.3:
             bottom = ln["y1"]  # pedaço baixo colado (cedilha, pé do "g" solto da linha): fica dentro da caixa
-    x0, x1 = min(ln["c0"] for ln in group), max(ln["c1"] for ln in group)
+    x0, x1 = min(ln["x0"] for ln in group), max(ln["x1"] for ln in group)
     return x0 / sw, group[0]["y0"] / sh, x1 / sw, bottom / sh
 
 
@@ -1826,16 +1884,20 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     return canvas, box
 
 
-def _mark_spot(box: Sequence[int], headline: Sequence[int], H: int) -> tuple[int, int, int, int]:
+def _mark_spot(box: Sequence[int], headline: Sequence[int], H: int, tilt: float = 0.0) -> tuple[int, int, int, int]:
     """Onde vai o X de uma prova com manchete (`box`: o cartão; `headline`: a caixa da manchete, os dois em px do
-    canvas): o maior pedaço livre do cartão fora da manchete, nesta ordem de preferência: embaixo (a foto da
-    matéria), em cima, à direita, à esquerda. Um pedaço serve quando cabe um X de ~1/4 da altura do cartão. Sem
-    nenhum (a manchete enche o cartão), o X fica logo embaixo da manchete, saindo pela borda de baixo do cartão
-    (por cima do fundo, nunca das letras). A caixa devolvida é a do X (larga até 1,4× a altura)."""
+    canvas; `tilt`: a inclinação do cartão, em graus): o maior pedaço livre do cartão fora da manchete, nesta ordem
+    de preferência: embaixo (a foto da matéria), em cima, à direita, à esquerda. Um pedaço serve quando cabe um X
+    de ~1/4 da altura do cartão. Sem nenhum (a manchete enche o cartão), o X fica logo embaixo da manchete, saindo
+    pela borda de baixo do cartão (por cima do fundo, nunca das letras). A caixa devolvida é a do X (larga até 1,4×
+    a altura)."""
     hx0, hy0, hx1, hy1 = headline
     m = _px(10, H)
-    # a caixa do cartão girado sobra nos cantos: o X fica um pouco para dentro da borda
-    x0, y0, x1, y1 = box[0] + m, box[1] + m, box[2] - m, box[3] - m
+    # a caixa do cartão girado sobra nos cantos (a borda de baixo sobe até largura·sen(inclinação) de um lado ao
+    # outro): o X fica para dentro da borda o bastante para as pontas dele não saírem do cartão
+    s = abs(math.sin(math.radians(tilt)))
+    mx, my = m + round(s * (box[3] - box[1]) * 0.6), m + round(s * (box[2] - box[0]) * 0.6)
+    x0, y0, x1, y1 = box[0] + mx, box[1] + my, box[2] - mx, box[3] - my
     need = (y1 - y0) * 0.25
     spots = [(x0, hy1 + m, x1, y1), (x0, y0, x1, hy0 - m), (hx1 + m, y0, x1, y1), (x0, y0, hx0 - m, y1)]
     spot = next((s for s in spots if min(s[2] - s[0], s[3] - s[1]) >= need), None)
@@ -1852,7 +1914,7 @@ def _mark_spot(box: Sequence[int], headline: Sequence[int], H: int) -> tuple[int
 
 
 def _mark(canvas: Image.Image, kind: str | None, box: tuple[int, int, int, int] | Sequence[int],
-          pal: dict[str, tuple[int, int, int]], headline: Sequence[int] | None = None) -> None:
+          pal: dict[str, tuple[int, int, int]], headline: Sequence[int] | None = None, tilt: float = 0.0) -> None:
     """Marcação vermelha (com contorno escuro) sobre a prova. Com a manchete conhecida (`headline`), nunca em cima
     dela: o X vai no pedaço livre do cartão (`_mark_spot`: embaixo da manchete, na foto da matéria; senão em cima
     ou ao lado dela; sem nenhum, logo embaixo dela saindo do cartão), o círculo vira um retângulo arredondado em
@@ -1869,17 +1931,22 @@ def _mark(canvas: Image.Image, kind: str | None, box: tuple[int, int, int, int] 
     ink = (*pal["ink"], 255)
     red = (*RED, 255)
     if headline is not None and kind == "circle":
+        # o traço (desenhado para dentro do retângulo) fica todo fora da manchete, com uma folga `gap`; o canto
+        # arredondado também: com raio r, o arco passa a (r - traço)·(1 - 1/√2) do canto por dentro, então o raio
+        # vai até traço + gap·√2/(√2 - 1) (a manchete de muitas linhas não perde a letra do canto)
         hx0, hy0, hx1, hy1 = headline
-        m = _px(14, H)
-        rect = (max(x0 - m, hx0 - m), hy0 - m, min(x1 + m, hx1 + m), hy1 + m)
         th = _px(11, H)
-        r = round((rect[3] - rect[1]) * 0.35)
-        for width, color in ((th + _px(8, H), ink), (th, red)):
+        outer = th + _px(8, H)
+        gap = _px(6, H)
+        m = outer + gap
+        rect = (max(0, hx0 - m), max(0, hy0 - m), min(W, hx1 + m), min(H, hy1 + m))
+        r = min(round((rect[3] - rect[1]) * 0.35), round(outer + gap * math.sqrt(2) / (math.sqrt(2) - 1)))
+        for width, color in ((outer, ink), (th, red)):
             d.rounded_rectangle(tuple(v * ss for v in rect), radius=r * ss, outline=color, width=width * ss)
         canvas.alpha_composite(layer.resize((W, H), Image.Resampling.LANCZOS))
         return
     if headline is not None:
-        x0, y0, x1, y1 = _mark_spot(box, headline, H)
+        x0, y0, x1, y1 = _mark_spot(box, headline, H, tilt)
     bw, bh = x1 - x0, y1 - y0
     if kind == "x":
         th = _px(22 if headline is not None else 26, H)
@@ -1922,7 +1989,7 @@ def render(layers: ThumbLayers, size: tuple[int, int] = T.CANVAS, assets: AssetR
     _shade(canvas, tpl, pal, has_text, _mirrored(layers))
     if card is not None:
         item = next((f for f in layout.figures if f.get("kind") == "card"), {})
-        _mark(canvas, layers.mark, card, pal, item.get("headline"))
+        _mark(canvas, layers.mark, card, pal, item.get("headline"), float(tpl["card"].get("tilt", 0.0)))
     tconf = tpl["text"]
     text_box = tconf.get(layers.text.pos if layers.text else "left") or tconf["left"]
     # as figuras vão para uma camada própria antes do VI gigante: ele fica por baixo delas, mas a posição dele
