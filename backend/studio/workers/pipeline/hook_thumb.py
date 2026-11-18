@@ -1,4 +1,4 @@
-"""O gancho cumpre a thumb escolhida: o elemento central dela entra nos primeiros segundos do vídeo.
+"""O gancho cumpre a thumb escolhida (com o pacote travado): o elemento central dela entra nos primeiros segundos do vídeo.
 
 Quem clicou numa thumb espera ver nos primeiros 3 s o que ela prometeu. O elemento central depende do molde:
 
@@ -88,8 +88,9 @@ def _by_kit_file(pool: Pool, channel_id: str, file: str) -> PoolItem | None:
 
 
 def thumb_hook(doc: ProjectDoc, pool: Pool | None) -> ThumbHook | None:
-    """O que o gancho precisa mostrar da thumb escolhida (`doc.chosen_package`); None sem thumb escolhida."""
-    cand = doc.chosen_package()
+    """O que o gancho precisa mostrar da thumb do vídeo (`doc.locked_package`: a escolhida com o pacote travado, a
+    que sai na capa e no A/B; só clicada, sem aprovar, ainda não manda no vídeo); None sem ela."""
+    cand = doc.locked_package()
     if cand is None:
         return None
     layers = cand.layers

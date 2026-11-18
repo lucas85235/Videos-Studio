@@ -23,7 +23,7 @@ from studio.core.project.pool import load_pool
 from studio.core.project.presenter import trigger_index
 from studio.core.styles.library import StyleNotFound, deep_merge, get_style
 from studio.core.styles.schema import StyleSpec, grammar_for
-from studio.workers.pipeline import edit_plan
+from studio.workers.pipeline import edit_plan, storyboard_check
 
 router = APIRouter(prefix="/api", tags=["edição"])
 
@@ -51,6 +51,9 @@ def reedit(project_id: str, body: ReeditBody | None = None) -> dict[str, Any]:
     if grammar.editor == "off":
         return {"version": None, "changed": False, "editor": "off", "intensity": grammar.intensity,
                 "summary": edit_plan.summary(doc)}
+    # o projeto feito antes da regra: a fala em destaque sobre a imagem desfocada no gancho vira a imagem nítida
+    # (`storyboard_check.fix_hook_text`, que o storyboard novo já aplica)
+    storyboard_check.fix_hook_text_doc(doc)
     edit_plan.plan(doc, style, load_pool(project_id))
     changed = doc.model_dump(mode="json") != before
     version = (service.commit(project_id, doc, f"Edição refeita (intensidade {grammar.intensity})")

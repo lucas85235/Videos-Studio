@@ -105,8 +105,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     # um cartão menor e mais inclinado com a marcação vermelha (X ou círculo, fora da manchete). O print grande (meia
     # thumb de página branca) virava ruído branco a 168 px, com avatar minúsculo e cara de recorte de jornal. O fundo
     # é um quadro do jogo escurecido (`ThumbLayers.backdrop`), o próprio quadro desfocado (quando ele é colorido) ou
-    # o degradê do canal. `presenter.lock`: o molde manda no lugar e no tamanho do avatar (candidatos antigos, que
-    # gravaram o avatar pequeno de corpo, saem no desenho novo).
+    # o degradê do canal. `presenter.legacy`: o candidato gravado no desenho antigo (avatar pequeno de corpo à
+    # esquerda) sai no desenho novo; o que o dono ajustar no editor vale.
     "prova": {
         "bg": {"target_x": 0.5, "target_y": 0.42, "zoom": 1.0},
         "backdrop": "vice",
@@ -115,7 +115,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "text": {"left": (0.035, 0.07, 0.56, 0.33), "top": (0.035, 0.07, 0.56, 0.33),
                  "center": (0.035, 0.07, 0.56, 0.33), "right": (0.035, 0.07, 0.56, 0.33), "size": 0.30,
                  "sub": 0.62},  # não espelha: a palavra à direita cairia em cima do avatar
-        "presenter": {"side": "right", "crop": "busto", "h": 1.4, "head_x": 0.79, "lock": True},
+        "presenter": {"side": "right", "crop": "busto", "h": 1.4, "head_x": 0.79,
+                      "legacy": {"side": "left", "crop": "meio", "h_max": 0.64}},
         "logo": {"anchor": "none", "w": 0.12},
         "figure_min_face": 0.0,
     },

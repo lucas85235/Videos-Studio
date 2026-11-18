@@ -3309,7 +3309,7 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         if pose_id:
             facing = next((str(p.get("facing") or "center") for p in assets.poses if p["id"] == pose_id), "center")
             if template == "prova":
-                # avatar grande em busto à direita (o molde manda: `presenter.lock`); o print é o apoio embaixo da
+                # avatar grande em busto à direita (o lugar e o tamanho do molde); o print é o apoio embaixo da
                 # palavra, à esquerda
                 from studio.media import thumb_templates as T
 

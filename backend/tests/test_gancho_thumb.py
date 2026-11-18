@@ -38,7 +38,7 @@ from studio.media import thumb_templates as T
 from studio.providers.base import Word
 from studio.workers.pipeline import edit_plan, hook_thumb
 from studio.workers.pipeline import presenter as scenes_mod
-from studio.workers.pipeline.storyboard_check import Beat, fix_hook_text
+from studio.workers.pipeline.storyboard_check import Beat, _check_numbers, fix_hook_text, fix_hook_text_doc
 
 LONG = "curiosidades-longo"
 CID = "chn_gancho"
@@ -58,6 +58,7 @@ def _doc(layers: ThumbLayers, *, kinds: tuple[str, ...] = ("image", "image", "im
     cand = PackageCandidate(title="GTA 6 no PC", thumb_text="ESPERA?", layers=layers)
     doc.package.candidates = [cand]
     doc.package.chosen_id = cand.id
+    doc.package.locked = True
     return doc
 
 
@@ -115,6 +116,9 @@ def test_elemento_da_thumb_figura_prova_e_avatar():
     doc = _doc(HEROI)
     doc.package.chosen_id = None
     assert hook_thumb.thumb_hook(doc, pool) is None  # sem thumb escolhida, nada muda
+    doc = _doc(HEROI)
+    doc.package.locked = False
+    assert hook_thumb.thumb_hook(doc, pool) is None  # só clicada, sem travar o pacote, ainda não manda no vídeo
 
 
 def test_gancho_abre_com_o_elemento_da_thumb_e_volta_para_a_cena():
@@ -176,6 +180,36 @@ def test_fala_em_destaque_desfocada_no_gancho_vira_imagem():
     assert doc.scenes[2].kind == "text"  # fora do gancho o cartão de texto fica
 
 
+def test_fala_em_destaque_no_gancho_com_imagem_de_ia_ainda_por_gerar_vira_imagem():
+    doc = _doc(HEROI, kinds=("text", "image", "image"))
+    doc.scenes[0].visual = Visual(prompt="neon VI skyline")  # o build gera a imagem e o cartão a desfocaria
+    beats = [Beat(key="seg0:0", segment_id="seg0", part=0, parts=1, index=0, role="hook", words=HOOK.split(),
+                  seconds=6)]
+    assert [i.code for i in fix_hook_text(doc, beats)] == ["gancho_texto_desfocado"]
+    assert doc.scenes[0].kind == "image"
+    doc = _doc(HEROI, kinds=("text", "image", "image"))
+    doc.scenes[0].visual = Visual(type="none", prompt="")  # fundo liso do estilo: o cartão fica
+    assert fix_hook_text(doc, beats) == [] and doc.scenes[0].kind == "text"
+
+
+def test_fala_com_numero_no_gancho_mantem_o_cartao():
+    doc = _doc(HEROI, kinds=("text", "image", "image"))
+    doc.scenes[0].visual.media = MediaRef(kind="photo", source="upload", asset="uploads/x.jpg", tier="own")
+    words = "o arquivo tem só 1,1 MB e custa 300 reais".split()
+    beats = [Beat(key="seg0:0", segment_id="seg0", part=0, parts=1, index=0, role="hook", words=words, seconds=4)]
+    assert fix_hook_text(doc, beats) == [] and doc.scenes[0].kind == "text"
+    assert [i.code for i in _check_numbers(doc, beats)] == []  # o número continua na tela
+
+
+def test_reeditar_converte_o_gancho_de_projeto_antigo():
+    doc = _doc(HEROI, kinds=("text", "text", "image"))
+    for s in doc.scenes[:2]:
+        s.visual.media = MediaRef(kind="photo", source="upload", asset="uploads/x.jpg", tier="own")
+    issues = fix_hook_text_doc(doc)
+    assert [i.scene_id for i in issues] == ["scn0"] and doc.scenes[0].kind == "image"
+    assert doc.scenes[1].kind == "text"  # fora do gancho
+
+
 # --- molde prova ----------------------------------------------------------------------------------------------------
 def _pose(tmp_path: Path) -> Path:
     folder = tmp_path / "poses"
@@ -219,3 +253,14 @@ def test_prova_avatar_grande_e_print_de_apoio_mesmo_no_candidato_antigo(tmp_path
     # a janela da página fica na coluna da manchete: a foto/anúncio do lado não entra no cartão
     x0, _y0, x1, _y1 = C.page_window(Image.open(cap), 0.47 * W / (0.48 * H))
     assert x0 <= 30 and x1 < 940
+
+
+def test_prova_respeita_o_avatar_que_o_dono_ajustou(tmp_path):
+    cap = _pagina(tmp_path)
+    r = A.AssetResolver(None, pose_dirs=[_pose(tmp_path)], media=lambda ref: cap)
+    for side, crop in (("left", "busto"), ("right", "meio")):
+        layers = ThumbLayers(template="prova", logo="none", mark="x", background=BgLayer(kind="media", ref="media:cap"),
+                             presenter=PresenterThumbLayer(pose="surpreso", side=side, crop=crop, h=0.9),
+                             text={"words": "SENHAS", "fill": "white", "pos": "left", "size": 0.3})
+        avatar = next(f for f in C.render(layers, T.CANVAS, r).info["layout"]["figures"] if f["kind"] == "presenter")
+        assert avatar["side"] == side and avatar["crop"] == crop  # o editor manda: o desenho antigo é só o legado

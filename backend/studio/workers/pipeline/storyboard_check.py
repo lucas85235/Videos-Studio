@@ -479,27 +479,68 @@ def fix_hook(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool: Pool | 
                   beat.key, scene.id)]
 
 
+def _hook_text_image(scene: Scene) -> bool:
+    """A cena de fala em destaque (`text`) tem imagem atrás (que o renderer escurece e desfoca): mídia, asset fixo,
+    reaproveitada ou o prompt da imagem de IA que o build ainda vai gerar (a mesma regra de `scene_needs_image`)."""
+    visual = scene.visual
+    if visual.media is not None or visual.asset or visual.reuse_of:
+        return True
+    return bool(visual.prompt) and visual.type not in ("none", "upload")
+
+
+def _hook_text_to_image(doc: ProjectDoc, scenes: list[tuple[Scene, list[str], str | None]]) -> list[Issue]:
+    lang = doc.primary_language
+    out: list[Issue] = []
+    for scene, words, key in scenes:
+        if scene.locked or scene.kind != "text" or not _hook_text_image(scene):
+            continue
+        scene.kind = "image"
+        if notable_number_runs(words, lang) and not _shows_number(scene):
+            # a fala tem um número que só o cartão de texto mostrava: sem ele, o número sumiria da tela
+            # (`numero_sem_cartao`); o cartão fica
+            scene.kind = "text"
+            continue
+        out.append(Issue("gancho_texto_desfocado", CORRIGIDO, "No gancho, o cartão de texto sobre a imagem "
+                         "desfocada virou a própria imagem (nítida, com a legenda).", key, scene.id))
+    return out
+
+
+def _hook_segment_ids(doc: ProjectDoc) -> set[str]:
+    return {seg.id for seg in doc.segments if seg.role == "hook"} or {doc.segments[0].id}
+
+
 def fix_hook_text(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
     """No gancho, a fala em destaque (`text`) sobre a imagem da cena vira a própria imagem: o cartão de texto
     escurece e desfoca o fundo, e no gancho isso dava segundos de tela escura só com tipografia, sem nada nítido para
-    reconhecer (o que a thumb prometeu tem de aparecer). A legenda volta com a fala. Sem imagem na cena (fundo liso
-    do estilo) o cartão fica."""
+    reconhecer (o que a thumb prometeu tem de aparecer). A legenda volta com a fala. Fica o cartão: sem imagem na
+    cena (fundo liso do estilo), cena travada ou fala com um número que só o cartão mostra."""
     if not doc.segments:
         return []
-    hook_ids = {seg.id for seg in doc.segments if seg.role == "hook"} or {doc.segments[0].id}
-    out: list[Issue] = []
-    for beat in beats:
-        if beat.segment_id not in hook_ids:
-            continue
-        scene = scene_for(doc, beat)
-        if scene is None or scene.locked or scene.kind != "text":
-            continue
-        if scene.visual.media is None and not scene.visual.asset and not scene.visual.reuse_of:
-            continue
-        scene.kind = "image"
-        out.append(Issue("gancho_texto_desfocado", CORRIGIDO, "No gancho, o cartão de texto sobre a imagem "
-                         "desfocada virou a própria imagem (nítida, com a legenda).", beat.key, scene.id))
-    return out
+    hook_ids = _hook_segment_ids(doc)
+    scenes = [(scene, beat.words, beat.key) for beat in beats
+              if beat.segment_id in hook_ids and (scene := scene_for(doc, beat)) is not None]
+    return _hook_text_to_image(doc, scenes)
+
+
+def fix_hook_text_doc(doc: ProjectDoc) -> list[Issue]:
+    """`fix_hook_text` num documento já gravado (sem as batidas do storyboard: as palavras de cada cena saem da
+    divisão da narração do timeline). É o que o "Reeditar" usa, para o projeto feito antes da regra."""
+    if not doc.segments:
+        return []
+    from studio.core.timeline import scene_word_ranges  # import tardio: o timeline é pesado
+    from studio.providers.base import Word
+
+    lang = doc.primary_language
+    scenes: list[tuple[Scene, list[str], str | None]] = []
+    for seg_id in _hook_segment_ids(doc):
+        seg = next(s for s in doc.segments if s.id == seg_id)
+        tokens = split_words(seg.text_for(lang))
+        seg_scenes = doc.scenes_of(seg_id)
+        ranges = scene_word_ranges(seg_scenes, [Word(t, 0.0, 0.0) for t in tokens]) if seg_scenes else []
+        for k, scene in enumerate(seg_scenes):
+            a, b = ranges[k] if k < len(ranges) else (len(tokens), len(tokens))
+            scenes.append((scene, tokens[a:b], f"{seg_id}:{k}"))
+    return _hook_text_to_image(doc, scenes)
 
 
 def fix_repeated_shots(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:

@@ -486,9 +486,11 @@ def _presenter(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver
         return
     src = _trim(open_rgba(asset.path))
     pt = tpl.get("presenter", {})
-    if pt.get("lock"):
-        # o molde manda no avatar (prova): o candidato gravado com outro lugar/tamanho sai no desenho do molde; trocou
-        # de lado, troca o espelho (a pose que olhava para dentro da thumb continua olhando para dentro)
+    legacy = pt.get("legacy")
+    if legacy and p.side == legacy.get("side") and p.crop == legacy.get("crop") and p.h <= float(legacy.get("h_max", 0)):
+        # candidato gravado no desenho antigo do molde (prova: avatar pequeno de corpo) sai no desenho atual; trocou de
+        # lado, troca o espelho (a pose que olhava para dentro da thumb continua olhando para dentro). O que o dono
+        # mudou no editor (lado, recorte ou altura fora do antigo) fica como ele deixou.
         side = pt.get("side", p.side)
         p = p.model_copy(update={"side": side, "crop": pt.get("crop", p.crop), "h": float(pt.get("h", p.h)),
                                  "flip": p.flip if side == p.side else not p.flip})

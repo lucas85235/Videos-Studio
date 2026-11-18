@@ -11,7 +11,7 @@
   6. nunca a mesma pose duas vezes seguidas;
   7. pose inexistente vira a mais próxima pela emoção e depois a `default_pose`;
   8. fixas: abertura `oculos`, CTA (e pedido final) `feliz`;
-  9. a thumb escolhida tem o avatar: a mesma pose entra na 1ª cena do gancho, desde o começo dela (quem clicou na
+  9. a thumb escolhida (pacote travado) tem o avatar: a mesma pose entra na 1ª cena do gancho, desde o começo dela (quem clicou na
      thumb reconhece o apresentador nos primeiros segundos), por cima da regra "nem na primeira cena" e do tipo da
      cena; cena séria e o manual continuam valendo.
 Os avisos saem no formato do `storyboard_check` (`Issue` com AVISO/CORRIGIDO).
@@ -370,8 +370,8 @@ def assign(
 
 
 def _thumb_pose(doc: ProjectDoc) -> str | None:
-    """A pose do avatar na thumb escolhida (None: sem thumb escolhida ou thumb sem avatar)."""
-    cand = doc.chosen_package()
+    """A pose do avatar na thumb do vídeo (o pacote travado, como a capa; None: sem ela ou thumb sem avatar)."""
+    cand = doc.locked_package()
     layer = cand.layers.presenter if cand is not None else None
     return layer.pose if layer is not None and layer.pose else None
 
