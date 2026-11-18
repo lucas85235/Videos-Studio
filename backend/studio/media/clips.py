@@ -42,7 +42,7 @@ PROXY_GOP = 15
 PROXY_CRF = 20
 POSTER_WIDTH = 960
 SIGNATURE_BYTES = 4 << 20
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
 VIDEO_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
 
 # Material dito pela visão (`providers.vision.SHOT_SCHEMA`), em palavras para o pedido do storyboard.
@@ -141,9 +141,24 @@ def fetch(url: str, *, runner: Callable[..., subprocess.CompletedProcess] | None
 
 
 def detect_cuts(path: Path) -> list[float]:
-    """Instantes dos cortes do vídeo. PONTO ÚNICO de troca: hoje usa `reference_video.cuts` (limiar 0,30); quando o
-    `ref-perfil` entrar, passa a chamar `media/refprofile/cuts.py` (dois limiares, micro-planos mantidos)."""
-    return reference_video.cuts(path)
+    """Instantes dos cortes do vídeo pelo mesmo extrator da referência (`media/refprofile/cuts.py`): dois limiares
+    (duro e suave, para gameplay e trailer), rajadas coladas viradas num corte só e o candidato que é a mesma imagem
+    ampliada descartado (punch, não corte). O plano curto que sobra entre cortes sai em `cut` (`min_shot_s`)."""
+    from studio.media.refprofile import cuts as ref_cuts
+    from studio.media.refprofile import motion
+
+    scan = ref_cuts.scan(path)
+    cands = ref_cuts.merge_bursts(ref_cuts.candidates(scan.times, scan.mafd))
+    if not cands:
+        return []
+    try:
+        info = reference_video.probe(path)
+        frames, times = motion.decode_gray(path, int(info["w"]), int(info["h"]))
+    except (reference_video.ReferenceVideoError, FFmpegError, KeyError, ValueError) as exc:
+        log.warning("conferência dos cortes pelo movimento pulada: %s", exc)
+        return [c.t for c in cands]
+    found, _punches = motion.verify_cuts(cands, frames, times)
+    return found
 
 
 def cut(cut_times: list[float], dur: float, *, max_clip_s: float, min_shot_s: float = MIN_POOL_SHOT_S,

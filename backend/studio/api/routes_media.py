@@ -44,8 +44,10 @@ class FoundBody(BaseModel):
 
 
 class AttachBody(BaseModel):
-    via: Literal["candidate", "link"]
+    via: Literal["candidate", "link", "pool"]
     candidate_id: str | None = Field(default=None, max_length=400)
+    pool_id: str | None = Field(default=None, max_length=40)
+    """`via="pool"`: o item do acervo do projeto (`pool.json`) que a cena passa a mostrar (trocar candidato)."""
     url: str | None = Field(default=None, max_length=2000)
     kind: RealKind | None = None
     found: FoundBody | None = None
@@ -134,6 +136,8 @@ def attach_media(project_id: str, scene_id: str, body: AttachBody) -> dict[str, 
     """Anexa um candidato da busca ou o que um link aponta (página ou imagem)."""
     doc, scene = _load(project_id, scene_id)
     _editable(scene)
+    if body.via == "pool":
+        return _attach_pool(project_id, scene_id, doc, (body.pool_id or "").strip(), body.rebuild)
     with _errors():
         if body.via == "candidate":
             if not (body.candidate_id or "").strip():
@@ -148,6 +152,22 @@ def attach_media(project_id: str, scene_id: str, body: AttachBody) -> dict[str, 
             media, warnings = real_media.media_from_link(url, project_id, kind=kind, lang=doc.primary_language,
                                                          found=body.found.model_dump() if body.found else None)
     return _commit_media(project_id, scene_id, media, warnings, body.rebuild)
+
+
+def _attach_pool(project_id: str, scene_id: str, doc: ProjectDoc, pool_id: str, rebuild: bool) -> dict[str, Any]:
+    """Anexa um item do acervo à cena (baixa ou copia como o anexo automático, com `tier` e `pool_id`)."""
+    if not pool_id:
+        raise HTTPException(status_code=422, detail="Escolha um item do acervo.")
+    item = load_pool(project_id).item(pool_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"O item {pool_id} não está no acervo: colete de novo.")
+    style = get_style(doc.style_id, doc.style_overrides)
+    try:
+        media = media_pool.materialize(item, doc, style, base=doc.scene(scene_id).visual.media)
+    except (OSError, ValueError, MediaError, FetchError, BlockedUrl, TooLarge) as exc:
+        raise HTTPException(status_code=422, detail=f"O item {pool_id} não deu para anexar: {exc}") from exc
+    warnings = ["Material oficial: pode gerar reivindicação de Content ID."] if media.editorial else []
+    return _commit_media(project_id, scene_id, media, warnings, rebuild)
 
 
 @router.post("/{project_id}/scenes/{scene_id}/media/upload")

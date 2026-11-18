@@ -332,6 +332,42 @@ def timed_shots(doc: ProjectDoc, style: StyleSpec, pool: Pool | None = None) -> 
     return out
 
 
+def track(doc: ProjectDoc, style: StyleSpec, pool: Pool | None = None) -> list[dict[str, Any]]:
+    """A trilha de edição por cena (tela "Edição" da prévia): palavras faladas com o gatilho (`at`) que acha cada uma
+    e o tempo estimado, e os subplanos e eventos com o instante relativo ao início da cena. Só leitura; os tempos são
+    os do planejador (estimados pelo texto), a timeline mede com a narração real."""
+    pool = pool or Pool()
+    planner = _Planner(doc, style, grammar_for(style), pool, set())
+    out: list[dict[str, Any]] = []
+    for beat in planner.beats:
+        scene = beat.scene
+
+        def rel(at: str | None, beat: _Beat = beat) -> float:
+            return round(max(0.0, planner._time_of(beat, at) - beat.start), 3)
+
+        shots = []
+        for i, shot in enumerate(scene.shots):
+            item = pool.item(shot.pool_id) if shot.source == "pool" and shot.pool_id else None
+            shots.append({"i": i, "t": rel(shot.at) if shot.at else 0.0, "prov": item.tier if item else beat.prov,
+                          "desc": item.desc if item else "", **shot.model_dump(mode="json")})
+        fx = [{"i": i, "t": rel(event.at), **event.model_dump(mode="json")} for i, event in enumerate(scene.fx)]
+        out.append({
+            "scene_id": scene.id, "order": beat.order, "start_s": round(beat.start, 3), "dur_s": round(beat.dur, 3),
+            "prov": beat.prov, "locked": scene.locked, "kind": scene.kind,
+            "mark": beat.mark.model_dump(mode="json"),
+            "words": [{"text": w.text, "at": w.at, "t": round(w.start - beat.start, 3)} for w in beat.words],
+            "shots": shots, "fx": fx,
+        })
+    return out
+
+
+def scene_triggers(doc: ProjectDoc, style: StyleSpec, scene_id: str) -> list[str] | None:
+    """As palavras faladas da cena (para conferir um gatilho movido pelo usuário). None: cena sem fala."""
+    planner = _Planner(doc, style, grammar_for(style), Pool(), set())
+    beat = next((b for b in planner.beats if b.scene.id == scene_id), None)
+    return [w.text for w in beat.words] if beat is not None else None
+
+
 def recent_lib_ids(doc: ProjectDoc, limit: int = HISTORY_VIDEOS) -> set[str]:
     """Os `lib_id` de meme e SFX dos últimos `limit` projetos do mesmo canal (pelo `Scene.fx` da versão atual). Sem
     canal ou sem banco: vazio."""
@@ -362,17 +398,13 @@ def recent_lib_ids(doc: ProjectDoc, limit: int = HISTORY_VIDEOS) -> set[str]:
         return set()
 
 
-def _pick_meme(tag: str, seed: int, exclude: set[str]) -> Any | None:
-    """Meme da biblioteca do usuário com a etiqueta (`media.meme_library.pick`), quando o módulo existe."""
+def _pick_meme(tag: str, seed: int, exclude: set[str], presenter: Any | None = None) -> Any | None:
+    """Meme da biblioteca do usuário com a etiqueta, ou uma pose do avatar do canal como reação
+    (`media.meme_library.pick`)."""
+    from studio.media import meme_library
+
     try:
-        from studio.media import meme_library  # type: ignore[attr-defined]
-    except ImportError:
-        return None
-    pick = getattr(meme_library, "pick", None)
-    if pick is None:
-        return None
-    try:
-        return pick(tag, seed, exclude)
+        return meme_library.pick(tag, seed, exclude, presenter=presenter)
     except Exception as exc:  # noqa: BLE001 - biblioteca com problema: sai o "meme sem meme"
         log.warning("a biblioteca de memes falhou: %s", exc)
         return None
@@ -423,6 +455,20 @@ class _Planner:
         self.total = max((b.end for b in self.beats), default=0.0)
         self.budget = _Budget(grammar, self.scale, self.total)
         self.switch_left = int(math.floor(grammar.switch_per_min * self.scale * self.total / 60.0 + 1e-9))
+
+    def _presenter(self) -> Any | None:
+        """O avatar do canal (as poses viram reações), lido uma vez. None: sem canal, desligado ou sem banco."""
+        if not hasattr(self, "_presenter_cache"):
+            found = None
+            if self.doc.channel_id:
+                try:
+                    from studio.core.project.presenter import channel_presenter
+
+                    found = channel_presenter(self.doc.channel_id)
+                except Exception as exc:  # noqa: BLE001 - sem avatar, só a biblioteca de memes
+                    log.warning("avatar do canal indisponível para reações: %s", exc)
+            self._presenter_cache = found if found is not None and found.enabled else None
+        return self._presenter_cache
 
     def _rng(self, beat: _Beat, *purpose: Any) -> random.Random:
         return random.Random(seed_from(self.doc.seed, beat.scene.id, "edit", *purpose))
@@ -951,13 +997,19 @@ class _Planner:
         rng = self._rng(beat, "gag")
         item = None
         if gag.payoff == "meme" or gag.tag:
-            item = _pick_meme(gag.tag or gag.payoff, seed_from(self.doc.seed, beat.scene.id, "edit", "meme"),
-                              self.recent | self.used_lib)
+            pick_args: tuple[Any, ...] = (gag.tag or gag.payoff, seed_from(self.doc.seed, beat.scene.id, "edit", "meme"),
+                                          self.recent | self.used_lib)
+            presenter = self._presenter()
+            item = _pick_meme(*pick_args, presenter) if presenter is not None else _pick_meme(*pick_args)
         if item is not None:
             lib_id = str(getattr(item, "id", "") or "")
             max_ms = getattr(item, "max_ms", None) or 900
-            self._add(beat, word, "meme", dur_ms=int(min(1500, max(400, max_ms))),
-                      params={"lib_id": lib_id, "tag": gag.tag, "variant": "corner"})
+            params: dict[str, Any] = {"lib_id": lib_id, "tag": gag.tag, "variant": "corner"}
+            file = getattr(item, "file", None)
+            if isinstance(file, str) and file:
+                # o arquivo vai junto (relativo à pasta de dados): o renderer desenha `src` (png) ou `video` (webm)
+                params["video" if getattr(item, "media", "png") == "webm" else "src"] = file
+            self._add(beat, word, "meme", dur_ms=int(min(1500, max(400, max_ms))), params=params)
             self.used_lib.add(lib_id)
             sfx_id = getattr(item, "sfx_id", None)
             self._sfx(beat, word, "gag", rng, lib_id=str(sfx_id) if sfx_id else None)

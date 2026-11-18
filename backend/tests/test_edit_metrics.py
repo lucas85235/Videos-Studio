@@ -256,14 +256,22 @@ def test_run_edit_check_writes_edit_report_with_video_audit(isolated_settings, m
     assert body["source"] == "final" and body["report"]["id"] == report["id"]
 
 
-def test_measure_render_without_refprofile_is_none(tmp_path):
-    """Até o merge de `ref-perfil` não há extrator: a conferência fica só com a timeline."""
-    try:
-        import studio.media.refprofile  # noqa: F401
-    except ImportError:
-        assert profile_check.measure_render(tmp_path / "x.mp4") is None
-    else:
-        pytest.skip("refprofile já existe")
+def test_measure_render_uses_the_reference_extractor(isolated_settings, tmp_path):
+    """O MP4 final é medido pelo mesmo extrator da referência (`refprofile.measure_video`); arquivo que não mede
+    deixa a conferência só com a timeline."""
+    from studio.media.ffmpeg import run_ffmpeg
+
+    assert profile_check.measure_render(tmp_path / "nao-existe.mp4") is None
+    video = tmp_path / "final.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2",
+                "-f", "lavfi", "-i", "color=c=0x2060c0:size=320x180:rate=30:duration=2",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "-map", "2:a",
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                str(video)], timeout=120)
+    fp = profile_check.measure_render(video)
+    assert isinstance(fp, EditFingerprint) and fp.source == "video"
+    assert fp.pace.shots == 2 and fp.duration_s == pytest.approx(4.0, abs=0.2)
 
 
 def _digest(data_dir: Path) -> dict[str, str]:
