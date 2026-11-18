@@ -176,7 +176,7 @@ export const Section: React.FC<{
           <div className="flex min-w-0 items-start gap-2.5">
             {Icon ? <Icon size={16} strokeWidth={2} aria-hidden="true" className="mt-0.5 shrink-0 text-muted" /> : null}
             <div className="min-w-0">
-              <h2 id={headingId} className="font-display text-[15px] font-semibold leading-6 text-fg">
+              <h2 id={headingId} className="font-display text-[15px] font-semibold leading-6 text-fg [overflow-wrap:anywhere]">
                 {title}
               </h2>
               {description ? <div className="mt-0.5 text-[13px] leading-snug text-muted">{description}</div> : null}
@@ -246,7 +246,7 @@ export const PageHeader: React.FC<{
       ) : null}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1">
-          <h1 className="font-display text-2xl font-bold tracking-tight text-fg">{title}</h1>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-fg [overflow-wrap:anywhere]">{title}</h1>
           {description ? <div className="mt-1 max-w-prose text-sm text-muted">{description}</div> : null}
           {meta ? <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px] text-subtle">{meta}</div> : null}
         </div>

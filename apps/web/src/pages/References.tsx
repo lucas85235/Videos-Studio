@@ -1,7 +1,7 @@
 // Página Referências (ADR 0003, bloco I): vídeos para estudar ritmo, planos e cores. Envio do arquivo ou link
 // (yt-dlp, opcional), análise em planos, folhas de contato e paleta.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Film, Link2, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Check, Film, Link2, Pencil, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { visualApi, type ReferenceVideo } from '../apiVisual';
 import { isActiveJob, useJobs } from '../shell/data';
@@ -15,6 +15,58 @@ const STATUS: Record<ReferenceVideo['status'], { tone: 'neutral' | 'good' | 'bad
   falhou: { tone: 'bad', text: 'Falhou' },
 };
 
+/** Nome da referência editável no lugar do título: Enter salva, Esc cancela. Só controles em linha (o título é um h2). */
+const RenameTitle: React.FC<{ reference: ReferenceVideo; busy: boolean; onSave: (title: string) => void; onCancel: () => void }> = ({
+  reference,
+  busy,
+  onSave,
+  onCancel,
+}) => {
+  const [draft, setDraft] = useState(reference.title);
+  const inputId = useId();
+  useEffect(() => {
+    const input = document.getElementById(inputId);
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+      input.select();
+    }
+  }, [inputId]);
+  const clean = draft.trim();
+  const save = () => {
+    if (!clean || busy) return;
+    if (clean === reference.title) onCancel();
+    else onSave(clean);
+  };
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <Input
+        id={inputId}
+        aria-label="Novo nome da referência"
+        value={draft}
+        maxLength={300}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            save();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        className="min-w-0 flex-1 basis-56 py-1 font-sans font-normal"
+      />
+      <Button size="sm" variant="primary" icon={Check} busy={busy} disabled={!clean} onClick={save}>
+        Salvar
+      </Button>
+      <Button size="sm" variant="ghost" icon={X} disabled={busy} onClick={onCancel}>
+        Cancelar
+      </Button>
+    </span>
+  );
+};
+
 export const ReferencesPage: React.FC = () => {
   const client = useQueryClient();
   const { toast } = useToast();
@@ -25,6 +77,7 @@ export const ReferencesPage: React.FC = () => {
   const [link, setLink] = useState('');
   const [title, setTitle] = useState('');
   const [open, setOpen] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
 
   const caps = useQuery({ queryKey: ['visual-capabilities'], queryFn: visualApi.capabilities, staleTime: 60_000 });
   const jobs = useJobs();
@@ -65,6 +118,14 @@ export const ReferencesPage: React.FC = () => {
   });
   const analyze = useMutation({ mutationFn: (id: string) => visualApi.analyzeReference(id), onSuccess: () => refresh() });
   const remove = useMutation({ mutationFn: (id: string) => visualApi.deleteReference(id), onSuccess: () => refresh() });
+  const rename = useMutation({
+    mutationFn: (vars: { id: string; title: string }) => visualApi.renameReference(vars.id, vars.title),
+    onSuccess: async (ref) => {
+      setRenaming(null);
+      await refresh();
+      toast({ tone: 'good', title: 'Referência renomeada', description: `Agora se chama “${ref.title}”.` });
+    },
+  });
 
   const ytdlp = caps.data?.ytdlp;
   const runningFor = (id: string) => active.find((j) => j.payload?.reference_id === id);
@@ -129,7 +190,7 @@ export const ReferencesPage: React.FC = () => {
 
       <div className="mt-4 flex flex-col gap-3">
         {refs.isLoading ? <Skeleton className="h-24 rounded-xl" /> : null}
-        <ErrorBox error={refs.error ?? analyze.error ?? remove.error} title="Algo deu errado" onRetry={() => void refs.refetch()} />
+        <ErrorBox error={refs.error ?? analyze.error ?? remove.error ?? rename.error} title="Algo deu errado" onRetry={() => void refs.refetch()} />
         {refs.data && !refs.data.length ? (
           <Empty icon={Film} title="Nenhuma referência ainda">
             Envie um vídeo que você quer estudar: o app mostra os planos, o ritmo dos cortes e as cores.
@@ -141,7 +202,21 @@ export const ReferencesPage: React.FC = () => {
           return (
             <Section
               key={ref.id}
-              title={ref.title}
+              title={
+                renaming === ref.id ? (
+                  <RenameTitle
+                    reference={ref}
+                    busy={rename.isPending}
+                    onSave={(t) => rename.mutate({ id: ref.id, title: t })}
+                    onCancel={() => {
+                      setRenaming(null);
+                      rename.reset();
+                    }}
+                  />
+                ) : (
+                  ref.title
+                )
+              }
               icon={Film}
               description={
                 <span className="flex flex-wrap items-center gap-1.5">
@@ -160,6 +235,20 @@ export const ReferencesPage: React.FC = () => {
                       {open === ref.id ? 'Fechar' : 'Ver planos'}
                     </Button>
                   ) : null}
+                  {renaming === ref.id ? null : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={Pencil}
+                      aria-label={`Renomear “${ref.title}”`}
+                      onClick={() => {
+                        rename.reset();
+                        setRenaming(ref.id);
+                      }}
+                    >
+                      Renomear
+                    </Button>
+                  )}
                   <Button size="sm" icon={RefreshCw} disabled={Boolean(job)} busy={analyze.isPending && analyze.variables === ref.id} onClick={() => analyze.mutate(ref.id)}>
                     Analisar
                   </Button>

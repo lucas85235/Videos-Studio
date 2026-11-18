@@ -6,7 +6,7 @@ import { Palette, Wand2 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { visualApi, type RefStyleOrigin, type RefStyleResult, type ReferenceVideo } from '../../apiVisual';
-import { Button, Checkbox, ErrorBox, useToast } from '../../ui';
+import { Button, Checkbox, ErrorBox, Field, Input, useToast } from '../../ui';
 
 /** O que vai no estado da navegação para o editor de estilos. */
 type OriginsState = { fromReference?: { title: string; result: RefStyleResult } };
@@ -41,6 +41,13 @@ const FIELD_LABELS: Record<string, string> = {
   'edit.camera': 'Câmera',
   'art.bible': 'Direção de arte',
 };
+
+/** Limite do nome do estilo (o mesmo do campo Nome no editor e da API). */
+const STYLE_NAME_MAX = 120;
+const REF_SUFFIX = ' (referência)';
+
+/** Nome sugerido: "<título> (referência)", cortando o título (nunca o sufixo) para caber no limite. */
+export const defaultStyleName = (title: string) => `${title.slice(0, STYLE_NAME_MAX - REF_SUFFIX.length).trimEnd()}${REF_SUFFIX}`;
 
 const isColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
 
@@ -107,8 +114,11 @@ export const ReferenceStyleButton: React.FC<{ reference: ReferenceVideo }> = ({ 
   const navigate = useNavigate();
   const { toast } = useToast();
   const [useLlm, setUseLlm] = useState(true);
+  // null = ainda não mexeu: segue o título da referência (que pode ser renomeada enquanto a tela está aberta).
+  const [name, setName] = useState<string | null>(null);
+  const nameValue = name ?? defaultStyleName(reference.title);
   const create = useMutation({
-    mutationFn: () => visualApi.styleFromReference(reference.id, { use_llm: useLlm }),
+    mutationFn: () => visualApi.styleFromReference(reference.id, { use_llm: useLlm, name: nameValue.trim() || undefined }),
     onSuccess: (result) => {
       void client.invalidateQueries({ queryKey: ['styles'] });
       toast({ tone: 'good', title: 'Estilo criado', description: `“${result.style.name}” está em Meus estilos.` });
@@ -122,6 +132,9 @@ export const ReferenceStyleButton: React.FC<{ reference: ReferenceVideo }> = ({ 
         Vira um estilo novo em Meus estilos: parte do preset mais parecido e usa o ritmo dos cortes, a paleta e a proporção medidos. O material do vídeo
         não é usado.
       </p>
+      <Field label="Nome do estilo" hint="Dá para mudar depois no editor de estilos.">
+        <Input value={nameValue} maxLength={STYLE_NAME_MAX} onChange={(e) => setName(e.target.value)} className="max-w-md" />
+      </Field>
       <Checkbox
         label="Deixar a IA completar o que as medidas não dizem"
         description="Arte, câmera e trilha. As medidas não mudam. Sem IA disponível, o estilo sai só com as medidas e o preset."

@@ -159,6 +159,7 @@ export const visualApi = {
   uploadReference: (form: FormData) => api.upload<ReferenceUpload>('/api/references', form),
   referenceFromLink: (url: string, title?: string) => api.post<Job>('/api/references/link', { url, title }),
   reference: (id: string) => api.get<ReferenceVideo>(`/api/references/${id}`),
+  renameReference: (id: string, title: string) => api.patch<ReferenceVideo>(`/api/references/${id}`, { title }),
   deleteReference: (id: string) => api.del<{ ok: boolean }>(`/api/references/${id}`),
   analyzeReference: (id: string) => api.post<Job>(`/api/references/${id}/analyze`),
   styleFromReference: (id: string, body: { use_llm: boolean; name?: string }) =>

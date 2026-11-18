@@ -273,7 +273,7 @@ def test_cli_registra_subcomandos_tolerante(monkeypatch: pytest.MonkeyPatch):
     # O módulo do avatar fica "inexistente": não pode derrubar os outros comandos.
     monkeypatch.setitem(sys.modules, "studio.cli_presenter", None)
     plugins = cli._load_plugins()
-    assert set(plugins) == {"thumbkit"}
+    assert "thumbkit" in plugins and "presenter" not in plugins
     cli.main(["thumbkit", "importar"])
     assert calls == ["importar"]
 

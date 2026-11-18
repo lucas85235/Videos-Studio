@@ -18,6 +18,7 @@ from collections.abc import Callable
 from statistics import median
 from typing import Any
 
+from studio.core.media_title import clean_media_title
 from studio.core.styles.library import load_presets, set_path
 from studio.core.styles.schema import StyleSpec
 
@@ -349,6 +350,23 @@ def slugify(text: str) -> str:
     return re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9]+", "-", norm)).strip("-")[:50].strip("-")
 
 
+# Mesmo limite do campo Nome no editor de estilos: um nome automático maior só poderia ser apagado, não editado.
+NAME_MAX = 120
+
+
+def reference_title(reference: dict[str, Any]) -> str:
+    """Título limpo da referência (as antigas guardaram o nome do arquivo do downloader)."""
+    return clean_media_title(str(reference.get("title") or "")) or "Referência"
+
+
+REF_SUFFIX = " (referência)"
+
+
+def default_style_name(title: str) -> str:
+    """Nome padrão "<título> (referência)" em até NAME_MAX caracteres: corta o título, nunca o sufixo."""
+    return f"{title[: NAME_MAX - len(REF_SUFFIX)].rstrip()}{REF_SUFFIX}"
+
+
 def unique_id(base: str, taken: set[str]) -> str:
     candidate = base
     n = 2
@@ -392,7 +410,7 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     if any(ch["path"] == "edit.effects" for ch in changes):
         measured_grade = next((e for e in data["edit"]["effects"] if e.get("type") == "grade"), None)
 
-    title = str(reference.get("title") or "Referência")
+    title = reference_title(reference)
     llm_out = {"used": False, "provider": None, "summary": "", "message": ""}
     rejected: list[dict[str, Any]] = []
     if use_llm:
@@ -430,7 +448,7 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
 
     taken = set(presets)
     data["id"] = new_id or unique_id(f"ref-{slugify(title) or 'estilo'}", taken)
-    data["name"] = (name or f"{title} (referência)")[:200]
+    data["name"] = (name or default_style_name(title))[:NAME_MAX]
     med = stats.get("median_s")
     bits = [f"plano mediano de {med:g} s" if med else "", f"{stats['cuts_per_min']} cortes/min"
             if stats.get("cuts_per_min") else "", f"paleta {' '.join(stats['palette'][:5])}"
@@ -457,7 +475,7 @@ def create_from_reference(reference: dict[str, Any], *, llm: LLMCall | None = No
     from studio.models import Style
 
     presets = load_presets()
-    title = str(reference.get("title") or "Referência")
+    title = reference_title(reference)
     out = build_style(reference, presets=presets, llm=llm, use_llm=use_llm, name=name)
     base_slug = f"ref-{slugify(title) or 'estilo'}"
     for _ in range(20):
