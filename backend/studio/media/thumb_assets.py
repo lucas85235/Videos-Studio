@@ -205,6 +205,74 @@ def _rembg_session(model: str) -> Any:
     return _SESSIONS[model]
 
 
+PEOPLE_MODEL = "u2net_human_seg"
+"""Modelo do rembg que acha gente no quadro de fundo (só a máscara: o quadro não é recortado)."""
+PEOPLE_SIDE = 1280
+"""Largura da cópia em que a gente do fundo é medida: o quadro inteiro e 3×2 ladrilhos de metade da largura. O
+modelo acha o que é saliente: no quadro inteiro só os da frente; nos ladrilhos, também o grupo do meio da praia."""
+PEOPLE_VERSION = 1
+"""Versão da medida (entra no nome do cache em disco)."""
+
+
+def _people_measure(path: str) -> Image.Image:
+    import numpy as np
+
+    with Image.open(path) as im:
+        rgb = im.convert("RGB")
+    w = min(PEOPLE_SIDE, rgb.width)
+    h = max(2, round(rgb.height * w / rgb.width))
+    big = rgb.resize((w, h), Image.Resampling.BILINEAR)
+    session = _rembg_session(PEOPLE_MODEL)
+
+    def mask(im: Image.Image) -> Any:
+        m = session.predict(im)[0].convert("L")
+        return np.asarray(m.resize(im.size, Image.Resampling.BILINEAR) if m.size != im.size else m, dtype=np.uint8)
+
+    acc = mask(big).copy()
+    tw, th = w // 2, min(h, round(h * 0.56))
+    for x in (0, (w - tw) // 2, w - tw):
+        for y in (0, h - th):
+            tile = mask(big.crop((x, y, x + tw, y + th)))
+            acc[y:y + th, x:x + tw] = np.maximum(acc[y:y + th, x:x + tw], tile)
+    return Image.fromarray(acc, "L")
+
+
+@lru_cache(maxsize=16)
+def _people_cached(path: str, mtime: float, size: int, cache: str) -> Image.Image | None:
+    disk = Path(cache) / f"{hashlib.sha1(f'{path}|{size}|{mtime}|v{PEOPLE_VERSION}'.encode()).hexdigest()[:16]}.png"         if cache else None
+    if disk is not None and disk.is_file():
+        try:
+            with Image.open(disk) as im:
+                return im.convert("L")
+        except OSError:
+            pass
+    if not rembg_available():
+        return None
+    try:
+        out = _people_measure(path)
+    except Exception as exc:  # noqa: BLE001 - modelo ausente/quebrado: o fundo sai no enquadramento pedido
+        log.warning("gente no quadro %s: medida falhou (%s)", path, exc)
+        return None
+    if disk is not None:
+        try:
+            disk.parent.mkdir(parents=True, exist_ok=True)
+            out.save(disk)
+        except OSError as exc:
+            log.warning("gente no quadro %s: cache não gravou (%s)", path, exc)
+    return out
+
+
+def people_mask(path: Path, cache_dir: Path | None = None) -> Image.Image | None:
+    """Máscara (L, 0-255) de onde há gente no quadro, numa cópia de até `PEOPLE_SIDE` px de largura na mesma
+    proporção do arquivo, com cache por caminho+mtime (na memória e, com `cache_dir`, em disco). None sem o rembg
+    ou quando a medida falha."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return _people_cached(str(path), stat.st_mtime, stat.st_size, str(cache_dir) if cache_dir else "")
+
+
 def _edge_strip(a: Image.Image, side: str, band: int) -> Image.Image:
     """A linha/coluna da borda `side` com o máximo da faixa de `band` px junto dela (a máscara suave costuma chegar
     à borda com alfa caindo nos últimos 2 a 4 px: a figura cortada ali ainda é cortada)."""
@@ -992,6 +1060,7 @@ class AssetResolver:
         auto_cutout: bool = True,
         cutout_cache: Path | None = None,
         presenter_on: bool = True,
+        detect_people: bool = False,
     ) -> None:
         self.kit_dir = kit_dir
         self.manifest = load_manifest(kit_dir) if kit_dir else empty_manifest("")
@@ -1004,6 +1073,11 @@ class AssetResolver:
         self.cutout_cache = cutout_cache
         self.presenter_on = presenter_on
         """False: o avatar está desligado para a thumb deste projeto e a camada `presenter` não é desenhada."""
+        self.detect_people = detect_people
+        self.people_cache: Path | None = None
+        """Pasta do cache em disco da medida de gente (None: `frames/_people` do kit)."""
+        """Mede a gente nos quadros de lugar (`people_for`): o compositor re-enquadra o fundo para figurante não virar
+        o assunto. Ligado no kit do canal (`for_channel`); desligado por padrão (testes e prévias sem o rembg)."""
         self.used: list[str] = []
 
     # Construtores ----------------------------------------------------------------------------------------------------
@@ -1018,7 +1092,7 @@ class AssetResolver:
         for pose in getattr(presenter, "poses", None) or []:
             poses[pose.id] = data / pose.file
         return cls(thumbkit_dir(channel_id), poses=poses, media=media, allow_editorial=allow_editorial,
-                   presenter_on=presenter is not None)
+                   presenter_on=presenter is not None, detect_people=True)
 
     # Consultas -------------------------------------------------------------------------------------------------------
     def item(self, item_id: str) -> dict[str, Any] | None:
@@ -1070,6 +1144,14 @@ class AssetResolver:
         other = [i for i in ordered if i != cur_id and i not in skip]
         pick = (same or other or [None])[0]
         return f"frame:{pick}" if pick else None
+
+    def people_for(self, asset: Asset) -> Image.Image | None:
+        """Onde há gente no quadro `asset` (`people_mask`), quando a medida está ligada; senão None."""
+        if not self.detect_people:
+            return None
+        cache = self.people_cache if self.people_cache is not None else (
+            self.kit_dir / "frames" / "_people" if self.kit_dir else None)
+        return people_mask(asset.path, cache or None)
 
     def cutout_for(self, asset: Asset) -> Asset | None:
         """Versão recortada (alfa) de uma figura sem transparência, pelo rembg e com cache pelo conteúdo. None quando

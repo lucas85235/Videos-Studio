@@ -41,6 +41,7 @@ import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -1187,6 +1188,58 @@ def is_synthetic(item: dict[str, Any] | PoolItem) -> bool:
     if sid.startswith(OWN_SOURCE_PREFIXES) or get("tier") in ("own", "capture"):
         return False
     return looks_synthetic(get("desc"), get("credit"))
+
+
+TITLE_CARD_DARK = 0.75
+"""Fração do quadro quase preta acima da qual o quadro com texto na tela é cartela (logo, título, aviso de
+classificação sobre fundo preto: o "VI" em neon que abre e fecha o trailer, o "MAY CONTAIN CONTENT..." da ESRB). Cena
+de noite com placa fica abaixo (a do trailer com "NINE IN... VICE CITY": 70%)."""
+EMPTY_FRAME_DARK = 0.97
+"""Quadro preto (fade do trailer): nada para mostrar, com ou sem texto."""
+_SCREEN_TEXT_RE = re.compile(r'texto "([^"]*)"')
+
+
+def _dark_share(rel: str | None) -> float | None:
+    """Fração quase preta (luma < 28) da imagem `rel` (relativa à pasta de dados, ou absoluta); None sem arquivo."""
+    if not rel:
+        return None
+    path = Path(rel)
+    if not path.is_absolute():
+        path = get_settings().data_dir / rel
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return _dark_share_cached(str(path), stat.st_mtime, stat.st_size)
+
+
+@lru_cache(maxsize=512)
+def _dark_share_cached(path: str, mtime: float, size: int) -> float | None:
+    try:
+        with Image.open(path) as im:
+            small = im.convert("L").resize((160, 90), Image.Resampling.BOX)
+    except (OSError, ValueError):
+        return None
+    hist = small.histogram()
+    return sum(hist[:28]) / max(1, sum(hist))
+
+
+def is_title_card(item: PoolItem) -> bool:
+    """Cartela do vídeo de origem: logo, título ou aviso de classificação sobre fundo preto (texto na tela dito pela
+    visão e o quadro quase todo preto, `TITLE_CARD_DARK`), ou o quadro preto do fade (`EMPTY_FRAME_DARK`). Não
+    mostra o assunto: no gancho fechava o vídeo num "VI" em neon isolado (cara de logo estilizado), e o aviso da ESRB
+    entrava como imagem de "deve chegar no PC". Cartela com algarismo (data, número: "COMING MAY 26 2026") é dado e
+    fica; material próprio e captura também."""
+    if item.media not in ("clip", "image") or item.tier in ("own", "capture"):
+        return False
+    match = _SCREEN_TEXT_RE.search(item.desc or "")
+    text = match.group(1).strip() if match else ""
+    if any(ch.isdigit() for ch in text):
+        return False
+    dark = _dark_share(item.poster or item.path)
+    if dark is None:
+        return False
+    return dark >= EMPTY_FRAME_DARK or (bool(text) and dark >= TITLE_CARD_DARK)
 
 
 def bank_misfit(item: dict[str, Any], ctx: _Ctx) -> str | None:

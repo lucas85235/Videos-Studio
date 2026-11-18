@@ -39,7 +39,7 @@ from studio.media.thumbnail import load_font
 
 log = logging.getLogger(__name__)
 
-VERSION = 4
+VERSION = 5
 """Versão do desenho: muda quando o compositor passa a desenhar diferente (entra na chave do cache da capa)."""
 BASE_H = 720
 """Altura de referência: todos os px fixos (contornos, sombras) são a 720p e escalam com o canvas."""
@@ -201,6 +201,10 @@ class Layout:
         self.editorial = False
         self.big_vi = False
         """O VI gigante entrou: a marca já está grande na thumb e o logo pequeno sai."""
+        self.bg_people: float | None = None
+        """Gente na área livre do quadro de lugar (fração ponderada, `_people_window`); None sem medida."""
+        self.notes: list[str] = []
+        """O que o compositor ajustou sozinho (não é problema: não entra nos avisos)."""
         self.bg_tags: list[str] = []
         """Tags do quadro de fundo (`vi`/`logo`: o fundo já mostra a marca e o logo pequeno sai)."""
 
@@ -213,6 +217,7 @@ class Layout:
             "pill_bbox": list(self.pill_bbox) if self.pill_bbox else None,
             "cards_bbox": [list(b) for b in self.cards_bbox], "figures": self.figures, "objects": self.objects,
             "warnings": list(dict.fromkeys(self.warnings)), "assets": self.assets, "editorial": self.editorial,
+            "bg_people": self.bg_people, "notes": list(dict.fromkeys(self.notes)),
         }
 
 
@@ -251,20 +256,116 @@ def _gradient_bg(name: str | None, size: tuple[int, int], pal: dict[str, tuple[i
     return im
 
 
-def _cover(im: Image.Image, size: tuple[int, int], zoom: float, focus: tuple[float, float],
-           target: tuple[float, float]) -> tuple[Image.Image, tuple[float, float, float]]:
-    """Enquadra `im` no canvas (cover × zoom), pondo o ponto `focus` (fração da imagem) em `target` (fração do
-    canvas). Devolve a imagem e a transformação (escala, origem x, origem y) para mapear caixas."""
+def _cover_box(src: tuple[int, int], size: tuple[int, int], zoom: float, focus: tuple[float, float],
+               target: tuple[float, float]) -> tuple[float, float, float, float]:
+    """A janela (esquerda, topo, largura, altura em px de `src`) do enquadramento cover × zoom que põe o ponto
+    `focus` (fração da imagem) em `target` (fração do canvas)."""
     W, H = size
-    iw, ih = im.size
+    iw, ih = src
     scale = max(W / iw, H / ih) * max(1.0, zoom)
     cw, ch = W / scale, H / scale
-    left = focus[0] * iw - target[0] * cw
-    top = focus[1] * ih - target[1] * ch
-    left = min(max(0.0, left), iw - cw)
-    top = min(max(0.0, top), ih - ch)
-    out = im.resize((W, H), Image.Resampling.LANCZOS, box=(left, top, left + cw, top + ch))
-    return out, (scale, left, top)
+    left = min(max(0.0, focus[0] * iw - target[0] * cw), iw - cw)
+    top = min(max(0.0, focus[1] * ih - target[1] * ch), ih - ch)
+    return left, top, cw, ch
+
+
+def _cover(im: Image.Image, size: tuple[int, int], zoom: float, focus: tuple[float, float],
+           target: tuple[float, float], box: tuple[float, float, float, float] | None = None,
+           ) -> tuple[Image.Image, tuple[float, float, float]]:
+    """Enquadra `im` no canvas (cover × zoom), pondo o ponto `focus` (fração da imagem) em `target` (fração do
+    canvas); com `box` (`_cover_box`), usa essa janela. Devolve a imagem e a transformação (escala, origem x,
+    origem y) para mapear caixas."""
+    left, top, cw, ch = box or _cover_box(im.size, size, zoom, focus, target)
+    out = im.resize(size, Image.Resampling.LANCZOS, box=(left, top, left + cw, top + ch))
+    return out, (size[0] / cw, left, top)
+
+
+# --- Figurante no fundo ----------------------------------------------------------------------------------------------
+PEOPLE_FREE_MAX = 0.04
+"""Fração da área livre da thumb (fora das figuras e do cartão) coberta por gente acima da qual o quadro de lugar é
+re-enquadrado: figurante grande ali vira o assunto (a 168 px, corpo em close é uma mancha de pele que rouba o olhar
+do herói e da palavra)."""
+PEOPLE_ZOOMS = (1.0, 1.2, 1.4, 1.6)
+"""Zooms que o re-enquadramento tenta (além do pedido): até 1,6× um quadro 4K ainda sai nítido na exportação."""
+PEOPLE_GRID = (32, 18)
+PEOPLE_COVERED_WEIGHT = 0.15
+"""Peso da gente atrás de uma figura/cartão (quase não aparece, mas a borda dela ainda escapa)."""
+_PEOPLE_TAGS = {"personagem", "rosto", "corpo"}
+
+
+def _scenery(asset: Asset) -> bool:
+    """Quadro de lugar da biblioteca (sem rosto marcado nem tag de personagem): a gente nele é figurante. Fora da
+    biblioteca (upload, mídia, quadro sem item) não dá para saber se a pessoa é o assunto: fica como está."""
+    meta = asset.meta or {}
+    return (asset.kind == "frame" and bool(meta.get("id")) and not meta.get("face_box")
+            and not _PEOPLE_TAGS & {str(t) for t in meta.get("tags") or []})
+
+
+def _open_weights(size: tuple[int, int], occluder: Image.Image | None) -> Any:
+    """Peso de cada célula da grade da thumb: 1 onde o fundo aparece, `PEOPLE_COVERED_WEIGHT` atrás das figuras."""
+    import numpy as np
+
+    gw, gh = PEOPLE_GRID
+    if occluder is None:
+        return np.ones((gh, gw), dtype=np.float64)
+    occ = np.asarray(occluder.convert("L").resize((gw, gh), Image.Resampling.BOX), dtype=np.float64) / 255.0
+    return 1.0 - (1.0 - PEOPLE_COVERED_WEIGHT) * occ
+
+
+def _people_cost(integral: Any, scale: tuple[float, float], box: tuple[float, float, float, float],
+                 weights: Any) -> float:
+    """Fração ponderada da área livre coberta por gente na janela `box` (px da fonte): tabela integral da máscara
+    (`integral`, já em 0..1) e a escala fonte → máscara."""
+    import numpy as np
+
+    gh, gw = weights.shape
+    left, top, cw, ch = box
+    mh, mw = integral.shape[0] - 1, integral.shape[1] - 1
+    xs = np.clip(np.round((left + cw * np.linspace(0, 1, gw + 1)) * scale[0]).astype(int), 0, mw)
+    ys = np.clip(np.round((top + ch * np.linspace(0, 1, gh + 1)) * scale[1]).astype(int), 0, mh)
+    xs = np.maximum(xs, np.concatenate([[0], xs[:-1] + 1]).clip(max=mw))
+    ys = np.maximum(ys, np.concatenate([[0], ys[:-1] + 1]).clip(max=mh))
+    sums = (integral[np.ix_(ys[1:], xs[1:])] - integral[np.ix_(ys[:-1], xs[1:])]
+            - integral[np.ix_(ys[1:], xs[:-1])] + integral[np.ix_(ys[:-1], xs[:-1])])
+    area = np.outer(np.diff(ys), np.diff(xs)).clip(min=1)
+    return float((sums / area * weights).sum() / max(weights.sum(), 1e-9))
+
+
+def _people_window(people: Image.Image, src: tuple[int, int], size: tuple[int, int], zoom: float,
+                   focus: tuple[float, float], target: tuple[float, float], weights: Any,
+                   ) -> tuple[tuple[float, float, float, float], float, float]:
+    """A janela do quadro de lugar com menos figurante na área livre da thumb. Fica a pedida (`_cover_box`) quando
+    ela já passa (`PEOPLE_FREE_MAX`); senão testa zooms de 1× a 1,6× (e o pedido) em 9×7 posições e fica a de menos
+    gente, desempatando pelo zoom menor (mais cenário) e pela mais perto da pedida. Devolve (janela, gente antes,
+    gente depois)."""
+    import numpy as np
+
+    mask = np.asarray(people.convert("L"), dtype=np.float64) / 255.0
+    integral = np.pad(mask.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    scale = (mask.shape[1] / src[0], mask.shape[0] / src[1])
+    base = _cover_box(src, size, zoom, focus, target)
+    before = _people_cost(integral, scale, base, weights)
+    if before <= PEOPLE_FREE_MAX:
+        return base, before, before
+    iw, ih = src
+    bcx, bcy = base[0] + base[2] / 2, base[1] + base[3] / 2
+    best, best_key, best_cost = base, (round(before / 0.01), 0.0), before
+    for z in sorted({*PEOPLE_ZOOMS, max(1.0, zoom)}):
+        if z > max(zoom, PEOPLE_ZOOMS[-1]) + 1e-9:
+            continue
+        left0, top0, cw, ch = _cover_box(src, size, z, (0.0, 0.0), (0.0, 0.0))
+        for fx in np.linspace(0, 1, 9):
+            for fy in np.linspace(0, 1, 7):
+                box = (left0 + fx * (iw - cw), top0 + fy * (ih - ch), cw, ch)
+                cost = _people_cost(integral, scale, box, weights)
+                # desempate: zoom menor (mais cenário) e perto do pedido; nunca vence uma janela com bem menos gente
+                # e, entre janelas parecidas, a mais alta: no quadro de lugar o que está mais acima está mais longe
+                # (horizonte, skyline) e a gente que a medida não pegou ali sai pequena
+                drift = math.hypot((box[0] + cw / 2 - bcx) / iw, (box[1] + ch / 2 - bcy) / ih)
+                key = (round(cost / 0.01), 0.5 * (z - 1.0) + drift + 0.3 * fy)
+                if key < best_key:
+                    best, best_key, best_cost = box, key, cost
+    return best, before, best_cost
 
 
 def _grade(im: Image.Image, blur: int, darken: float, H: int) -> Image.Image:
@@ -282,9 +383,78 @@ def _grade(im: Image.Image, blur: int, darken: float, H: int) -> Image.Image:
     return rgb.convert("RGBA")
 
 
+PEOPLE_MIN_BLOB = 0.01
+"""Fração do quadro a partir da qual uma mancha da máscara conta como uma pessoa (menor: ruído ou gente ao longe)."""
+
+
+def people_count(people: Image.Image) -> int:
+    """Quantas pessoas (manchas separadas da máscara, alfa > 50%, de pelo menos `PEOPLE_MIN_BLOB` do quadro) há no
+    quadro. Uma só é o assunto do quadro (o homem no telhado) ou um engano da medida (o jet ski): não se foge dela.
+    Figurante é gente: duas ou mais."""
+    import numpy as np
+
+    small = people.convert("L").resize((160, max(1, round(160 * people.height / max(1, people.width)))),
+                                       Image.Resampling.BOX)
+    on = np.asarray(small, dtype=np.uint8) > 128
+    h, w = on.shape
+    seen = np.zeros_like(on)
+    need = PEOPLE_MIN_BLOB * h * w
+    count = 0
+    for y0, x0 in zip(*np.nonzero(on), strict=False):
+        if seen[y0, x0]:
+            continue
+        stack, area = [(int(y0), int(x0))], 0
+        seen[y0, x0] = True
+        while stack:
+            y, x = stack.pop()
+            area += 1
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if 0 <= ny < h and 0 <= nx < w and on[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    stack.append((ny, nx))
+        count += area >= need
+    return count
+
+
+def scenery_people(people: Image.Image, src: tuple[int, int], size: tuple[int, int] = T.CANVAS) -> float:
+    """O mínimo de figurante que o re-enquadramento consegue num quadro de lugar (`_people_window`) com uma figura
+    tampando o lado direito (o molde mais comum: herói ou avatar de um lado, palavra do outro). Acima de
+    `PEOPLE_FREE_MAX`, nem re-enquadrando o quadro serve de fundo: o gerador do pacote troca por outro do assunto."""
+    W, H = size
+    occ = Image.new("L", size, 0)
+    ImageDraw.Draw(occ).rectangle((round(W * 0.55), 0, W, H), fill=255)
+    _box, _before, after = _people_window(people, src, size, 1.0, (0.5, 0.5), (0.5, 0.42), _open_weights(size, occ))
+    return after
+
+
+def _scenery_box(asset: Asset, resolver: AssetResolver | None, src_size: tuple[int, int],
+                 letterbox: tuple[int, int, int, int], raw_size: tuple[int, int], size: tuple[int, int], zoom: float,
+                 focus: tuple[float, float], target: tuple[float, float], occluder: Image.Image | None,
+                 layout: Layout, what: str) -> tuple[float, float, float, float] | None:
+    """A janela do quadro de lugar sem figurante como assunto (`_people_window`), ou None (sem medida, quadro que não
+    é de lugar, ou a janela pedida já serve). Gente que sobra mesmo assim vira aviso."""
+    if resolver is None or not _scenery(asset) or not hasattr(resolver, "people_for"):
+        return None
+    people = resolver.people_for(asset)
+    if people is None or people_count(people) < 2:  # uma pessoa só é o assunto (ou engano da medida)
+        return None
+    sx, sy = people.width / raw_size[0], people.height / raw_size[1]
+    x0, y0, x1, y1 = letterbox
+    people = people.crop((round(x0 * sx), round(y0 * sy), round(x1 * sx), round(y1 * sy)))
+    box, before, after = _people_window(people, src_size, size, zoom, focus, target, _open_weights(size, occluder))
+    layout.bg_people = round(after, 3)
+    if after < before:
+        layout.notes.append(f"{what}: re-enquadrado para figurante não virar o assunto "
+                            f"(gente na área livre {before:.0%} → {after:.0%})")
+    if after > PEOPLE_FREE_MAX:
+        layout.warnings.append(f"{what}: figurantes em close no quadro de lugar ({after:.0%} da área livre); "
+                               "troque por um quadro com cenário (skyline, praia aberta, letreiro, carro)")
+    return box if after < before else None
+
+
 def _background(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResolver | None,
                 pal: dict[str, tuple[int, int, int]], layout: Layout, tpl: dict[str, Any],
-                bg_key: str = "bg", ref: str | None = None) -> Image.Image:
+                bg_key: str = "bg", ref: str | None = None, occluder: Image.Image | None = None) -> Image.Image:
     bg = layers.background
     W, H = size
     geo = tpl.get(bg_key) or tpl["bg"]
@@ -299,7 +469,7 @@ def _background(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     if bg_key == "bg":
         layout.bg_tags = [str(t) for t in (asset.meta.get("tags") or [])]
     raw = open_rgba(asset.path).convert("RGB")
-    src, (cx0, cy0, _cx1, _cy1) = _strip_letterbox(raw)
+    src, (cx0, cy0, cx1, cy1) = _strip_letterbox(raw)
     rw, rh = raw.size
     sw, sh = src.size
 
@@ -326,7 +496,10 @@ def _background(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
         target_x = geo.get("target_x", 0.5)
         if bg_key == "bg" and _mirrored(layers):
             target_x = 1 - target_x  # o assunto do quadro vai para o lado oposto ao texto
-        framed, (scale, ox, oy) = _cover(src, size, bg.zoom, focus, (target_x, geo.get("target_y", 0.42)))
+        target = (target_x, geo.get("target_y", 0.42))
+        box = (_scenery_box(asset, resolver, src.size, (cx0, cy0, cx1, cy1), raw.size, size, bg.zoom, focus,
+                            target, occluder, layout, "fundo") if bg_key == "bg" else None)
+        framed, (scale, ox, oy) = _cover(src, size, bg.zoom, focus, target, box)
         framed = _grade(framed, bg.blur, bg.darken, H)
         offset_y = 0
     if face and bg_key == "bg":
@@ -1821,7 +1994,7 @@ def _band_in_window(band: Sequence[float], size: tuple[int, int],
 
 def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResolver | None,
                 pal: dict[str, tuple[int, int, int]], layout: Layout, tpl: dict[str, Any],
-                ) -> tuple[Image.Image, tuple[int, int, int, int] | None]:
+                occluder: Image.Image | None = None) -> tuple[Image.Image, tuple[int, int, int, int] | None]:
     """Fundo e cartão da prova/objeto. Fundo: o quadro do jogo de `layers.backdrop` escurecido; senão a própria
     imagem desfocada (quando colorida); senão o degradê do template. O cartão mostra a janela da imagem: numa
     página capturada, a coluna de texto inteira (`page_window`: a manchete não sai cortada); numa foto, a janela
@@ -1835,8 +2008,19 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     if layers.backdrop:
         back = _resolve(resolver, layers.backdrop, layout, "fundo da prova")
         if back is not None:
-            src_b, _ = _strip_letterbox(open_rgba(back.path).convert("RGB"))
-            canvas, _ = _cover(src_b, size, 1.0, (0.5, 0.45), (0.5, 0.45))
+            raw_b = open_rgba(back.path).convert("RGB")
+            src_b, lb = _strip_letterbox(raw_b)
+            # o cartão e o avatar tampam o fundo: a gente atrás deles quase não conta (a caixa do cartão é a do molde)
+            occ = Image.new("L", size, 0)
+            if occluder is not None:
+                occ.paste(occluder.convert("L"), (0, 0))
+            cbx, cby, cbw, cbh = conf["box"]
+            if _mirrored(layers):
+                cbx = 1 - cbx - cbw
+            ImageDraw.Draw(occ).rectangle((cbx * W, cby * H, (cbx + cbw) * W, (cby + cbh) * H), fill=255)
+            box = _scenery_box(back, resolver, src_b.size, lb, raw_b.size, size, 1.0, (0.5, 0.45), (0.5, 0.45),
+                               occ, layout, "fundo da prova")
+            canvas, _ = _cover(src_b, size, 1.0, (0.5, 0.45), (0.5, 0.45), box)
             canvas = _grade(canvas, 3, 0.42, H)
     asset = _resolve(resolver, bg.ref, layout, "prova")
     if asset is None:
@@ -1872,6 +2056,24 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
         bx += (inner[0] - new_inner_w) / 2 / W
         inner = (new_inner_w, inner[1])
         cw = new_inner_w + 2 * border
+    if page and src_band is not None and layers.mark == "circle":
+        # círculo em volta da manchete: o cartão (na mesma escala) acaba logo depois dela, com a folga do traço; o pé
+        # da página cortado pelo traço (linha do autor, data pela metade) virava ruído a 168 px
+        sh_ = src.size[1]
+        per_px = (win[3] - win[1]) / max(1, inner[1])  # px da captura por px do cartão
+        pad = _px(11 + 8 + 6 + 10, H) * per_px
+        y0 = max(0.0, src_band[1] * sh_ - pad)
+        # o topo não corta a linha de cima (sobretítulo) no meio: desce até logo abaixo dela
+        y0 = max(float(win[1]), _calm_top(src, y0, (win[0], win[2]), y0, max(y0, src_band[1] * sh_ - pad * 0.5)))
+        y1 = min(float(win[3]), src_band[3] * sh_ + pad)
+        # e o pé não pega o alto da linha de baixo (autor, data): sobe até logo acima dela
+        y1 = _calm_top(src, y1, (win[0], win[2]), src_band[3] * sh_, y1)
+        if y1 - y0 < (win[3] - win[1]) * 0.97:
+            new_inner_h = max(8, round((y1 - y0) / per_px))
+            by += (inner[1] - new_inner_h) / 2 / H
+            inner = (inner[0], new_inner_h)
+            ch = new_inner_h + 2 * border
+            win = (win[0], round(y0), win[2], round(y0 + new_inner_h * per_px))
     photo = src.resize(inner, Image.Resampling.LANCZOS, box=win)
     band = _band_in_window(src_band, src.size, win) if src_band is not None else None
     if page and band is None:
@@ -2001,12 +2203,22 @@ def render(layers: ThumbLayers, size: tuple[int, int] = T.CANVAS, assets: AssetR
     tpl = T.spec(layers.template)
     layout = Layout((W, H), layers.template)
     card = None
+    # as figuras e o avatar saem antes do fundo (cada um na sua camada): o quadro de lugar é enquadrado sabendo o que
+    # eles tampam (`_scenery_box`); o que o fundo põe em `layout.figures` continua vindo primeiro
+    placed = _cutouts((W, H), layers, assets, pal, layout)
+    avatar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    _presenter(avatar, layers, assets, pal, layout, tpl)
+    occluder = avatar.getchannel("A")
+    for layer, _fig in placed:
+        occluder = ImageChops.lighter(occluder, layer.getchannel("A"))
+    n_figs = len(layout.figures)
     if layers.template == "versus":
         canvas = _versus(Image.new("RGBA", (W, H)), layers, assets, pal, layout, tpl)
     elif _card_mode(layers, tpl):
-        canvas, card = _card_scene(layers, (W, H), assets, pal, layout, tpl)
+        canvas, card = _card_scene(layers, (W, H), assets, pal, layout, tpl, occluder)
     else:
-        canvas = _background(layers, (W, H), assets, pal, layout, tpl)
+        canvas = _background(layers, (W, H), assets, pal, layout, tpl, occluder=occluder)
+    layout.figures[:] = layout.figures[n_figs:] + layout.figures[:n_figs]
     has_text = bool(layers.text and layers.text.words.strip())
     _shade(canvas, tpl, pal, has_text, _mirrored(layers))
     if card is not None:
@@ -2017,9 +2229,6 @@ def render(layers: ThumbLayers, size: tuple[int, int] = T.CANVAS, assets: AssetR
     # as figuras vão para uma camada própria antes do VI gigante: ele fica por baixo delas, mas a posição dele
     # depende de qual figura entrou de verdade (e onde ficou depois de ancorada)
     figures = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    placed = _cutouts((W, H), layers, assets, pal, layout)
-    avatar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    _presenter(avatar, layers, assets, pal, layout, tpl)
     has_avatar = avatar.getchannel("A").getbbox() is not None
     for layer, fig in placed:
         if has_avatar and fig is not None and _hidden_fraction(layer, avatar) > HIDDEN_MAX:

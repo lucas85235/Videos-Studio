@@ -6,8 +6,10 @@ import json
 import logging
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from studio.config import get_settings
@@ -94,7 +96,14 @@ from studio.workers.pipeline.schemas import (
     STORYBOARD_SOURCES,
     TRANSLATE_SCHEMA,
 )
-from studio.workers.pipeline.storyboard_check import CORRIGIDO, Beat, Issue, has_real
+from studio.workers.pipeline.storyboard_check import (
+    CORRIGIDO,
+    HOOK_ANSWER_S,
+    Beat,
+    Issue,
+    has_real,
+    thumb_asks,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1058,8 +1067,10 @@ _SOURCE_OF_TIER = {"own": "upload", "capture": "capture", "stock": "pexels", "me
 def usable_item(item: PoolItem) -> bool:
     """O item pode ser a imagem (ou o fundo) de uma batida: material real e não meme. Meme é reação à frase (entra
     como evento de piada, pelo editor), nunca decoração; `graphic` e `ai` do acervo não são material real, nem a arte
-    de fã ou de IA que a fonte declara (`media_pool.is_synthetic`, do acervo coletado antes do filtro)."""
-    return tiers.is_real(item.tier) and item.media != "meme" and not media_pool.is_synthetic(item)
+    de fã ou de IA que a fonte declara (`media_pool.is_synthetic`, do acervo coletado antes do filtro), nem a cartela
+    do vídeo de origem (logo ou aviso de classificação sobre fundo preto, `media_pool.is_title_card`)."""
+    return (tiers.is_real(item.tier) and item.media != "meme" and not media_pool.is_synthetic(item)
+            and not media_pool.is_title_card(item))
 
 
 def media_from_pool(item: PoolItem) -> MediaRef:
@@ -2439,8 +2450,15 @@ def locked_package_block(doc: ProjectDoc, style: StyleSpec) -> str:
     hook = f"{style.script.hook_max_s:.0f}"
     thumb = f'Thumb: "{chosen.thumb_text}"' + (f", {chosen.concept}" if chosen.concept else "")
     promise = chosen.promise or "(a da thumb e do título)"
-    return (f'Título fixo: "{chosen.title or doc.title}"; {thumb}; Promessa: "{promise}". '
-            f"Os primeiros {hook}s mostram ou dizem a promessa da thumb; não troque o título.")
+    block = (f'Título fixo: "{chosen.title or doc.title}"; {thumb}; Promessa: "{promise}". '
+             f"Os primeiros {hook}s mostram ou dizem a promessa da thumb; não troque o título.")
+    if thumb_asks(chosen.thumb_text, chosen.title or doc.title):
+        block += (f" A thumb ou o título fazem uma pergunta: o gancho já dá a resposta curta nos primeiros "
+                  f"{HOOK_ANSWER_S:.0f} segundos (o dado da promessa, com a ressalva se for boato: \"a previsão é "
+                  "<data>, e ainda é boato\"); \"daqui a pouco eu te mostro\" sozinho não paga a pergunta. Depois "
+                  "do dado, o gancho pode abrir o resto (o como e o porquê) para o vídeo.")
+    return block
+
 
 
 # Títulos do pacote (medidos em 17/11 nos longos de 6 concorrentes do nicho, 75 vídeos): os outliers (≥ 5x a mediana do
@@ -2539,6 +2557,34 @@ class PackageAssets:
     low_cutouts: list[dict[str, Any]] = field(default_factory=list)
     """Recortes que não servem para thumb (`cutout_defect`: buraco no corpo, corte sem encaixe), com o motivo em
     `defect`. Fora da lista do prompt; o candidato que cita um deles troca pelo do mesmo personagem."""
+
+    _crowd: dict[str, bool] = field(default_factory=dict, repr=False)
+
+    def crowded(self, frame: dict[str, Any] | None) -> bool:
+        """O quadro de lugar tem figurante em close que nem o re-enquadramento do compositor tira da área livre
+        (`thumb_compose.scenery_people` acima de `PEOPLE_FREE_MAX`). Medido só quando perguntado (rembg, com cache
+        em disco no kit); quadro de personagem, sem arquivo ou sem a medida: False."""
+        if not frame or self.kit_dir is None or not frame.get("file") or frame.get("face_box"):
+            return False
+        if {"personagem", "keyart", "rosto", "corpo"} & {str(t) for t in frame.get("tags") or []}:
+            return False
+        fid = str(frame.get("id"))
+        if fid not in self._crowd:
+            from PIL import Image
+
+            from studio.media import thumb_compose
+            from studio.media.thumb_assets import people_mask
+
+            path = Path(self.kit_dir) / str(frame["file"])
+            mask = people_mask(path, Path(self.kit_dir) / "frames" / "_people") if path.is_file() else None
+            crowd = False
+            if mask is not None:
+                with Image.open(path) as im:
+                    size = im.size
+                crowd = (thumb_compose.people_count(mask) >= 2
+                         and thumb_compose.scenery_people(mask, size) > thumb_compose.PEOPLE_FREE_MAX)
+            self._crowd[fid] = crowd
+        return self._crowd[fid]
 
     def ids(self, kind: str) -> set[str]:
         return {str(item.get("id")) for item in getattr(self, kind) if item.get("id")}
@@ -2830,8 +2876,11 @@ def _frame_layer(frame: dict[str, Any] | None, template: str) -> dict[str, Any]:
     file = str(frame.get("file") or "")
     zoom = 1.4 if "trailer_2" in (ref + file).lower() else 1.0
     focus = frame.get("focus_x")
-    if template == "heroi-palavra" and isinstance(focus, (int, float)):
-        zoom = max(zoom, 1.5)  # sem recorte: o rosto do quadro vai para o terço direito
+    if template == "heroi-palavra" and isinstance(focus, (int, float)) and frame.get("face_box"):
+        # quadro de personagem sem recorte: o rosto do quadro vai para o terço direito. Quadro de lugar fica aberto
+        # (o zoom de 1,5× punha os figurantes da frente em close e tirava o cenário, ex.: a praia do trailer virava
+        # corpos de biquíni); o compositor ainda re-enquadra para figurante não virar o assunto (`_scenery_box`)
+        zoom = max(zoom, 1.5)
     return BgLayer(kind="frame", ref=ref, t=frame.get("t"), zoom=zoom,
                    focus_x=float(focus) if isinstance(focus, (int, float)) else 0.5).model_dump()
 
@@ -2948,7 +2997,32 @@ def _uses_keyart(batch: Any, items: dict[str, dict[str, Any]], kind: str) -> boo
 
 def _pick_frame(hint_frame: dict[str, Any] | None, frames: list[dict[str, Any]], template: str, turn: int,
                 recent: Any, batch: Any, need_face: bool, has_figure: bool = False,
-                avoid_keyart: bool = False) -> tuple[dict[str, Any] | None, str | None]:
+                avoid_keyart: bool = False, crowded: Callable[[dict[str, Any]], bool] | None = None,
+                ) -> tuple[dict[str, Any] | None, str | None]:
+    """`_pick_frame_base` e, no fim, o quadro de lugar com figurante em close (`crowded`) dá lugar a um do mesmo
+    assunto sem ele (a praia aberta ou aérea no lugar dos corpos de biquíni na frente); sem outro, fica (o compositor
+    re-enquadra para o figurante não virar o assunto)."""
+    pick, note = _pick_frame_base(hint_frame, frames, template, turn, recent, batch, need_face, has_figure,
+                                  avoid_keyart)
+    if pick is None or crowded is None or not crowded(pick):
+        return pick, note
+    tags = _subject_tags(pick)
+
+    def cost(f: dict[str, Any]) -> float:
+        return thumb_variety.penalty("background", str(f["id"]), recent, batch)
+
+    alts = [f for f in frames if f is not pick and tags & _subject_tags(f)
+            and not ({"personagem", "keyart"} & set(f.get("tags") or []) and (has_figure or avoid_keyart))
+            and not crowded(f)]
+    if not alts:
+        return pick, note
+    alt = min(alts, key=cost)
+    return alt, f"CORRIGIDO: fundo {pick['id']} tem figurantes em close (viram o assunto a 168 px); usei {alt['id']}"
+
+
+def _pick_frame_base(hint_frame: dict[str, Any] | None, frames: list[dict[str, Any]], template: str, turn: int,
+                     recent: Any, batch: Any, need_face: bool, has_figure: bool = False,
+                     avoid_keyart: bool = False) -> tuple[dict[str, Any] | None, str | None]:
     """O quadro de fundo: o citado pelo LLM quando ele não repete nada das thumbs recentes do canal nem de outro
     candidato (qualquer uso conta: o dono viu todas); senão o menos usado com o mesmo assunto (tags); sem citação,
     o menos usado da biblioteca (o de rosto quando o template precisa de rosto e não tem recorte). Capa (keyart)
@@ -3245,14 +3319,16 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
             frame, note = _pick_frame(hint_frame, frames, template, turn, recent, batch,
                                       need_face=template == "heroi-palavra" and not chars,
                                       has_figure=bool(chars) or template in ("avatar-reage", "numero-lista"),
-                                      avoid_keyart=keyart_cut)
+                                      avoid_keyart=keyart_cut, crowded=assets.crowded)
             if note:
                 notes.append(note)
         elif template == "prova" and frames:
             # atrás do print, um quadro do jogo (escurecido): a cara de canal de jogo, não um cartão no degradê
             places = [f for f in frames if not {"personagem", "keyart"} & set(f.get("tags") or [])] or frames
-            backdrop = str(min(places[turn % len(places):] + places[:turn % len(places)], key=lambda f: (
-                thumb_variety.penalty("background", str(f["id"]), recent, batch)))["id"])
+            ranked = sorted(places[turn % len(places):] + places[:turn % len(places)], key=lambda f: (
+                thumb_variety.penalty("background", str(f["id"]), recent, batch)))
+            # o menos usado sem figurante em close (medido na ordem, só até achar um)
+            backdrop = str(next((f for f in ranked if not assets.crowded(f)), ranked[0])["id"])
         if pose_id and chars and template != "versus":
             # Um foco só: avatar e personagem recortado juntos se atropelam no mesmo lado da thumb.
             if template in ("avatar-reage", "numero-lista"):

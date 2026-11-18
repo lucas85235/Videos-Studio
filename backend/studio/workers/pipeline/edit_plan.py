@@ -1209,11 +1209,14 @@ class _Planner:
         if dry:  # a consulta não mexe no sorteio de quem decide
             rng = random.Random(seed_from(self.doc.seed, beat.scene.id, "edit", "probe", word.index))
         best: tuple[float, float] | None = None
+        from studio.workers.pipeline.media_pool import is_title_card  # import tardio: media_pool puxa os jobs
+
         chosen: PoolItem | None = None
         context = beat.tags | beat.spoken
         for item in self.pool.items:
-            if item.media == "meme" or not (item.path or item.poster) or item_is_synthetic(item):
-                continue  # arte de fã ou de IA da web não é subplano real
+            if (item.media == "meme" or not (item.path or item.poster) or item_is_synthetic(item)
+                    or is_title_card(item)):
+                continue  # arte de fã ou de IA da web não é subplano real; cartela (logo/ESRB no preto) não mostra nada
             if beat.item is not None and item.id == beat.item.id:
                 continue
             if overlay_blocks(item, " ".join(beat.spoken), cutaway=True):

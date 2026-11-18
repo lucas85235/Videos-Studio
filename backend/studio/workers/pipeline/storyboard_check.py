@@ -1729,6 +1729,57 @@ def _check_cta(doc: ProjectDoc, style: StyleSpec) -> list[Issue]:
     return []
 
 
+HOOK_ANSWER_S = 10.0
+"""Até quando o gancho responde a pergunta da thumb ou do título (quem clicou num "ESPERA?" quer o dado logo)."""
+
+
+def thumb_asks(thumb_text: str | None, title: str | None) -> bool:
+    """A thumb ou o título fazem uma pergunta ("ESPERA?", "quando sai?")."""
+    return "?" in (thumb_text or "") or "?" in (title or "")
+
+
+def _answer_numbers(promise: str, lang: str) -> list[float]:
+    """Os dados da promessa que respondem a pergunta: os números com algarismo dela (ano, data, valor) a partir de
+    10, fora o algarismo de nome ("GTA 6") e o ordinal pequeno ("1º" de "1º tri de 2027": o ano vem junto)."""
+    tokens = split_words(promise)
+    out: list[float] = []
+    for i0, i1, value in notable_number_runs(tokens, lang):
+        if any(ch.isdigit() for ch in " ".join(tokens[i0:i1])) and float(value) >= 10:
+            out.append(float(value))
+    return out
+
+
+def _check_hook_answer(doc: ProjectDoc, style: StyleSpec) -> list[Issue]:
+    """A thumb ou o título perguntam ("ESPERA?", "quando sai?") e a promessa traz o dado da resposta (a data, o
+    número), mas a fala dos primeiros `HOOK_ANSWER_S` segundos não diz esse dado: quem clicou espera a resposta logo,
+    e "daqui a pouco eu te mostro" sozinho deixa a pergunta em aberto até o meio do vídeo. Aviso: a fala é a do
+    roteiro aprovado (o pedido do roteiro já manda responder no gancho)."""
+    cand = doc.locked_package()
+    if cand is None or not doc.segments or not thumb_asks(cand.thumb_text, cand.title or doc.title):
+        return []
+    lang = doc.primary_language
+    wanted = _answer_numbers(cand.promise, lang)
+    if not wanted:
+        return []
+    wpm = style.script.words_per_minute.get(lang, 150) * max(0.5, style.voice.speed)
+    limit = max(8, round(wpm / 60 * HOOK_ANSWER_S))
+    words: list[str] = []
+    for seg in doc.segments:
+        words += split_words(seg.text_for(lang))
+        if len(words) >= limit:
+            break
+    said = {float(v) for v in text_numbers(" ".join(words[:limit]), lang)}
+    if said & set(wanted):
+        return []
+    data = ", ".join(f"{v:g}" for v in dict.fromkeys(wanted))
+    asked = cand.thumb_text if "?" in (cand.thumb_text or "") else (cand.title or doc.title)
+    return [Issue("gancho_sem_resposta", AVISO,
+                  f'A thumb/título perguntam ("{asked}") e o gancho não dá a resposta nos primeiros '
+                  f"{HOOK_ANSWER_S:.0f} s: a promessa traz {data}, que a fala só diz depois. Ponha o dado no gancho "
+                  '(uma frase curta, com a ressalva se for boato, e o cartão do dado na tela) antes do "daqui a '
+                  'pouco".')]
+
+
 SAME_TIER_RUN_S = 20.0
 """Tempo máximo seguido no mesmo nível de material (só IA, só trailer...): acima disso o vídeo fica monótono."""
 
@@ -1880,5 +1931,6 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     issues += _check_cards(doc, beats)
     issues += _check_compare_units(doc, beats)
     issues += _check_cta(doc, style)
+    issues += _check_hook_answer(doc, style)
     issues += _check_real_first(doc, style, beats, pool)
     return issues
