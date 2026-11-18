@@ -190,6 +190,122 @@ def test_capture_proof_attaches_media_and_marks_partial(monkeypatch):
     assert ok["status"] == "ok"
 
 
+class LoadingPage(FakePage):
+    """Página falsa que registra cada script e tem imagens ainda carregando (`pending` por consulta)."""
+
+    def __init__(self, pending: list[int]) -> None:
+        super().__init__([True], [[PHRASE_RECT]], page_image())
+        self.pending = list(pending)
+        self.scripts: list[str] = []
+
+    def js(self, expression: str):
+        self.scripts.append(expression)
+        if expression == page_capture.IMAGES_JS:
+            self.calls.append("images")
+            return self.pending.pop(0) if self.pending else 0
+        if expression == page_capture.BROKEN_JS:
+            self.calls.append("broken")
+            return 0
+        return super().js(expression)
+
+    def screenshot(self) -> bytes:
+        self.calls.append("shot")
+        return super().screenshot()
+
+
+def test_capture_waits_for_the_images_and_hides_ads_and_broken_ones(monkeypatch):
+    """A GamesBeat saía com a caixa da foto vazia (ícone de imagem quebrada) e a Canaltech com o bloco "PUBLICIDADE":
+    a captura espera as imagens da tela, tira os espaços de anúncio e esconde a imagem quebrada antes da foto."""
+    monkeypatch.setattr(safe_http, "resolve", lambda host: ["93.184.216.34"])
+    page = LoadingPage([3, 1, 0])
+    page_capture.capture("https://jornal.com.br/a", ["A inflação"], open_page=opener(page))
+    assert page.calls.count("images") == 3  # consulta até não sobrar imagem carregando
+    assert page.calls.index("broken") < page.calls.index("shot")
+    assert page.scripts.count(page_capture.ADS_JS) == 2  # antes e depois da rolagem
+    finds = [s for s in page.scripts if "createTreeWalker" in s]
+    assert finds and all(s.rstrip().endswith("false)") for s in finds)  # prova pedida à mão: só o texto escrito
+
+    stuck = LoadingPage([5] * 20)  # imagem que nunca termina: a espera tem teto
+    page_capture.capture("https://jornal.com.br/a", ["A inflação"], open_page=opener(stuck))
+    assert stuck.calls.count("images") == page_capture.IMAGE_WAIT_TRIES
+
+
+def test_source_capture_falls_back_to_the_headline(monkeypatch):
+    monkeypatch.setattr(safe_http, "resolve", lambda host: ["93.184.216.34"])
+    page = LoadingPage([0])
+    page_capture.capture("https://jornal.com.br/a", ["Jornal – A inflação subiu"], open_page=opener(page), headline=True)
+    finds = [s for s in page.scripts if "createTreeWalker" in s]
+    assert finds and all(s.rstrip().endswith("true)") for s in finds)
+
+
+def _chrome() -> str | None:
+    import shutil
+
+    for path in (shutil.which("chrome"), shutil.which("google-chrome"), shutil.which("chromium"),
+                 r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                 r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"):
+        if path and Path(path).is_file():
+            return path
+    return None
+
+
+def _run_capture_js(tmp_path: Path, body: str, phrase: str, headline: bool) -> dict:
+    """Roda os scripts da captura numa página local no Chrome sem janela (`--dump-dom`) e devolve o resultado."""
+    find = page_capture.FIND_JS % (json.dumps([phrase], ensure_ascii=False), 0, "1", json.dumps(headline))
+    probe = f"""window.addEventListener('load', () => setTimeout(() => {{
+      const res = {{clean: {page_capture.CLEAN_JS}, ads: {page_capture.ADS_JS}}};
+      res.found = {find};
+      res.rects = {page_capture.RECTS_JS};
+      res.broken = {page_capture.BROKEN_JS};
+      res.vis = Object.fromEntries([...document.querySelectorAll('[data-t]')].map(e =>
+        [e.dataset.t, getComputedStyle(e).display + ' ' + getComputedStyle(e).visibility]));
+      const pre = document.createElement('pre'); pre.id = 'RES'; pre.textContent = JSON.stringify(res);
+      document.documentElement.appendChild(pre); }}, 200));"""
+    html = tmp_path / f"page-{int(headline)}.html"
+    html.write_text("<!doctype html><html><head><meta charset=utf-8><style>body{margin:0;font:16px sans-serif}"
+                    "h1{font-size:40px;margin:20px 60px}</style></head><body>" + body + "<script>" + probe
+                    + "</script></body></html>", encoding="utf-8")
+    out = subprocess.run([_chrome(), "--headless=new", "--disable-gpu", "--no-first-run",
+                          f"--user-data-dir={tmp_path / 'perfil'}", "--virtual-time-budget=3000",
+                          "--window-size=1100,680", "--dump-dom", html.as_uri()],
+                         capture_output=True, text=True, encoding="utf-8", timeout=90)
+    start = out.stdout.find('<pre id="RES">')
+    if start < 0:
+        pytest.skip("o Chrome sem janela não devolveu a página")
+    import html as html_mod
+
+    return json.loads(html_mod.unescape(out.stdout[start + len('<pre id="RES">'):out.stdout.index("</pre>", start)]))
+
+
+ARTICLE = """
+<header><h1>Site</h1><nav>Em alta: Grand Theft Auto VI's PC release is slated for Q1 2027 e mais</nav></header>
+<div data-t="slot" style="height:250px;background:#eee"><div><span>PUBLICIDADE</span></div><script>var a = 1;</script></div>
+<article><h1 data-t="h1">Grand Theft Auto VI’s PC release is slated for Q1 2027</h1><p>por Alex · 13 out</p>
+<figure data-t="fig" style="border:1px solid #999;width:600px;height:200px"><img src="nao-existe.png" width=600 height=200></figure>
+<p>Texto da matéria.</p></article>
+"""
+
+
+@pytest.mark.skipif(_chrome() is None, reason="sem Chrome para rodar o JavaScript da captura")
+def test_capture_scripts_find_the_headline_and_clean_the_page(tmp_path):
+    """O título da fonte do roteiro ("Veículo – título") não está igual na página: sem a manchete, a captura saía sem
+    retângulo e a edição cortava o texto. A prova pedida à mão continua só com o texto exato."""
+    title = "GamesBeat – Grand Theft Auto VI's PC release is slated for Q1 2027"
+    res = _run_capture_js(tmp_path, ARTICLE, title, headline=True)
+    assert res["found"] == [True]
+    rects = res["rects"][0]
+    assert rects and all(0 <= y and y + h <= 1 for _x, y, _w, h in rects)
+    assert min(x for x, *_ in rects) >= 60 / 1100 - 0.01  # a manchete do artigo, não o "Em alta" do menu
+    assert res["vis"]["slot"].startswith("none")  # o bloco "PUBLICIDADE" sumiu
+    assert res["vis"]["fig"].endswith("hidden")  # a caixa da imagem quebrada também
+    assert not res["vis"]["h1"].startswith("none")
+    assert _run_capture_js(tmp_path, ARTICLE, title, headline=False)["found"] == [False]
+    # sem h1: a parte mais longa do título, sem o veículo e sem a pontuação trocada ("Cuidado:" x "Cuidado!")
+    canal = "<article><h2>Cuidado! Falso GTA 6 para PC espalha vírus e pode roubar seu dinheiro</h2></article>"
+    res = _run_capture_js(tmp_path, canal, "Canaltech – Cuidado: falso GTA 6 para PC espalha vírus", headline=True)
+    assert res["found"] == [True] and res["rects"][0]
+
+
 def test_rebake_locks_the_view_and_updates_the_scene(monkeypatch, client):
     monkeypatch.setattr(safe_http, "resolve", lambda host: ["93.184.216.34"])
     pid = make_project()

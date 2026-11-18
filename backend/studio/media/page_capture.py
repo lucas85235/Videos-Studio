@@ -37,8 +37,12 @@ BROWSER_FAILED = ("O Playwright está instalado, mas nenhum navegador abriu (Edg
 
 # Acha os trechos na página (texto normalizado: aspas, traços e espaços), esconde barras fixas e banners e rola até o
 # trecho de foco ficar a `__SHOT_POS` da altura. Devolve, para cada trecho, se ele foi achado.
+# `headline` (captura das fontes do roteiro): o trecho é o título da fonte, que quase nunca está igual na página
+# ("GamesBeat – Título", "Cuidado: ..." contra "Cuidado! ..."). Sem o texto exato, vale a manchete da página (o `h1`) e,
+# sem ela, a parte mais longa do título sem o nome do veículo; sem nenhum retângulo, o enquadramento não sabe onde está
+# a manchete e o zoom da edição a corta.
 FIND_JS = r"""
-((phrases, focus, scale) => {
+((phrases, focus, scale, headline) => {
   const norm = s => s.replace(/[‘’ʼ]/g, "'").replace(/[“”]/g, '"').replace(/[‐-―−]/g, '-').replace(/\s/g, ' ');
   // limpa barras fixas, banners de cookie e overlays
   const BODY0 = document.body || document.getElementsByTagName('body')[0];
@@ -65,13 +69,26 @@ FIND_JS = r"""
       text += c.toLowerCase(); map.push([n, i]);
     }
   }
-  window.__ranges = phrases.map(p => {
-    const q = norm(p).replace(/ +/g, ' ').toLowerCase();
-    const i = text.indexOf(q);
+  const key = s => norm(s).replace(/ +/g, ' ').trim().toLowerCase();
+  const rangeOf = q => {
+    const i = q ? text.indexOf(q) : -1;
     if (i < 0) return null;
     const r = document.createRange();
     r.setStart(map[i][0], map[i][1]); r.setEnd(map[i + q.length - 1][0], map[i + q.length - 1][1] + 1);
     return r;
+  };
+  // manchete: o primeiro h1 visível com texto de título (h1 curto costuma ser o logo do site)
+  const head = [...document.querySelectorAll('h1, [itemprop=headline]')].find(e =>
+    e.getClientRects().length && (e.innerText || '').trim().length >= 15);
+  window.__ranges = phrases.map(p => {
+    const q = key(p);
+    const exact = rangeOf(q);
+    if (exact || !headline) return exact;
+    if (head) { const r = document.createRange(); r.selectNodeContents(head); return r; }
+    const parts = q.split(/\s+[-|·]\s+|:\s+/).map(s => s.trim()).filter(s => s.length >= 12)
+      .sort((a, b) => b.length - a.length);
+    for (const part of parts) { const r = rangeOf(part); if (r) return r; }
+    return null;
   });
   const f = window.__ranges[focus] || window.__ranges.find(Boolean);
   if (f) {
@@ -85,7 +102,7 @@ FIND_JS = r"""
     window.scrollTo({top: target, behavior: 'instant'});
   }
   return window.__ranges.map(r => !!r);
-})(%s, %d, %s)
+})(%s, %d, %s, %s)
 """
 
 # Retângulos de cada trecho (uma caixa por linha, juntando as caixas da mesma linha), de 0 a 1 em relação à janela.
@@ -125,6 +142,67 @@ CLEAN_JS = r"""(() => {
     }
   });
   return true; })()"""
+
+# Espaço de anúncio que o CSS não pega (no Vulto, a Canaltech saía com um bloco cinza "PUBLICIDADE" em cima da
+# manchete): a caixa que só tem o rótulo some inteira, e os marcadores comuns de anúncio também, desde que não levem a
+# matéria junto (h1, article, main) nem texto de verdade. Roda de novo depois da rolagem (anúncio que entra depois).
+ADS_JS = r"""(() => {
+  const LABEL = /^(publicidade|publicidad|publicit[ée]|an[úu]ncios?|advertisements?|advertising|ads?|sponsored|patrocinado|conte[úu]do patrocinado|anzeige|werbung)$/i;
+  const keep = (el) => el === document.body || el === document.documentElement ||
+    el.matches('h1, article, main') || el.querySelector('h1, article, main, [itemprop=articleBody]');
+  const hide = (el) => el.style.setProperty('display', 'none', 'important');
+  let n = 0;
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.childElementCount || !LABEL.test((el.textContent || '').trim()) || keep(el)) continue;
+    let box = el;
+    while (box.parentElement && !keep(box.parentElement) && LABEL.test((box.parentElement.innerText || '').trim())) box = box.parentElement;
+    hide(box); n++;
+  }
+  const marked = '[data-ad], [data-ad-slot], [data-adunit], [data-ad-unit], [data-google-query-id], [id^="ad-" i], ' +
+    '[id^="ad_" i], [class^="ad-" i], [class*=" ad-" i], [class*="publicidade" i], [id*="publicidade" i], ' +
+    '[class*="ad-wrapper" i], [class*="ad-banner" i], [class*="banner-ad" i]';
+  for (const el of document.querySelectorAll(marked)) {
+    if (keep(el) || (el.innerText || '').trim().length > 300) continue;
+    hide(el); n++;
+  }
+  return n; })()"""
+
+# Imagens na tela: a preguiçosa (`loading=lazy`, `data-src`) carrega já. Devolve quantas ainda não terminaram (a
+# GamesBeat saía com a caixa da foto vazia e o ícone de imagem quebrada).
+IMAGES_JS = r"""(() => {
+  let pending = 0;
+  for (const img of document.images) {
+    const b = img.getBoundingClientRect();
+    if (b.width < 4 || b.height < 4 || b.bottom < 0 || b.top > innerHeight || b.right < 0 || b.left > innerWidth) continue;
+    if (img.loading === 'lazy') img.loading = 'eager';
+    const src = img.getAttribute('src') || '';
+    const lazy = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.getAttribute('data-original');
+    if (lazy && (!src || src.startsWith('data:'))) img.setAttribute('src', lazy);
+    const lazySet = img.getAttribute('data-srcset');
+    if (lazySet && !img.getAttribute('srcset')) img.setAttribute('srcset', lazySet);
+    if (!img.complete) pending++;
+  }
+  return pending; })()"""
+
+# Logo antes da foto: a imagem que terminou sem carregar (ícone de imagem quebrada) some com a caixa vazia em volta,
+# sem mexer no layout (os retângulos já medidos continuam valendo).
+BROKEN_JS = r"""(() => {
+  let n = 0;
+  for (const img of document.images) {
+    const b = img.getBoundingClientRect();
+    if (b.width < 4 || b.height < 4 || b.bottom < 0 || b.top > innerHeight) continue;
+    if (!img.complete || img.naturalWidth > 0) continue;
+    const src = img.currentSrc || img.getAttribute('src') || '';
+    if (/\.svg([?#]|$)/i.test(src) || src.startsWith('data:image/svg')) continue;  // SVG sem tamanho próprio não é quebrado
+    let box = img;
+    while (box.parentElement && box.parentElement !== document.body && !(box.parentElement.innerText || '').trim()
+           && box.parentElement.querySelectorAll('img').length === 1) box = box.parentElement;
+    box.style.setProperty('visibility', 'hidden', 'important'); n++;
+  }
+  return n; })()"""
+
+IMAGE_WAIT_TRIES = 8
+IMAGE_WAIT_S = 0.5
 
 TEXT_JS = "(() => (document.body && document.body.innerText) || '')()"
 
@@ -239,24 +317,37 @@ def domain_of(url: str) -> str:
     return (urlsplit(url).hostname or "").lower().removeprefix("www.")
 
 
+def _wait_images(page: Page) -> None:
+    """Espera as imagens da tela terminarem de carregar (no máximo `IMAGE_WAIT_TRIES` × `IMAGE_WAIT_S`)."""
+    for _ in range(IMAGE_WAIT_TRIES):
+        pending = page.js(IMAGES_JS)
+        if isinstance(pending, bool) or not isinstance(pending, (int, float)) or pending <= 0:
+            return
+        page.sleep(IMAGE_WAIT_S)
+
+
 def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: OpenPage | None = None,
             width: int = WIDTH, height: int = HEIGHT, dpr: int = DPR, settle: float = SETTLE_S,
-            scale: float = 1) -> CaptureResult:
+            scale: float = 1, headline: bool = False) -> CaptureResult:
     """Fotografa a janela com o trecho de foco a 42% da altura e mede os retângulos de cada trecho (como o `shoot` do
-    canais). `open_page` é injetável (testes)."""
+    canais). `headline`: trecho que não está igual na página vira a manchete dela (o título de uma fonte do roteiro;
+    a prova pedida à mão marca só o que o usuário escreveu). `open_page` é injetável (testes)."""
     url = safe_http.check_url(url)
     phrases = [" ".join(p.split()) for p in phrases if p and p.strip()][:MAX_PHRASES]
     if not phrases:
         raise CaptureError("Escreva pelo menos um trecho para marcar.")
     focus = focus if 0 <= focus < len(phrases) else 0
     opener = open_page or playwright_page
-    find = FIND_JS % (json.dumps(phrases, ensure_ascii=False), focus, json.dumps(scale))
+    find = FIND_JS % (json.dumps(phrases, ensure_ascii=False), focus, json.dumps(scale), json.dumps(headline))
     with opener(url, width, height, dpr) as page:
         page.sleep(settle)
         page.js(f"window.__SHOT_POS = {FOCUS_POS}")
         page.js(CLEAN_JS)
+        page.js(ADS_JS)
         found = page.js(find)
         page.sleep(1.5)  # imagens que carregam depois da rolagem empurram o texto: rola e mede de novo
+        _wait_images(page)
+        page.js(ADS_JS)  # anúncio que entrou depois da rolagem
         found = page.js(find)
         page.sleep(0.8)
         rects = page.js(RECTS_JS)
@@ -268,6 +359,7 @@ def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: Open
             found = page.js(find)
             page.sleep(0.8)
             rects = page.js(RECTS_JS)
+        page.js(BROKEN_JS)
         png = page.screenshot()
         title = page.title()
         text = page.js(TEXT_JS) or ""

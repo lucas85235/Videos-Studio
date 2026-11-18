@@ -26,7 +26,8 @@ Passos:
    imagem seguida (`storyboard_check.same_image_seconds`) troca para o acervo mesmo sem cota de `switch`: reenquadrar
    não troca a imagem.
 5. **Câmera** por plano (static 35%, push 25%, drift 15%, punch seco 15%, pan 10% só em plano aberto), força ±40% e
-   curva por semente; clipe sem câmera, captura parada; `slow_zoom_share` e `static_share_min` cumpridos no fim. O
+   curva por semente; clipe sem câmera, captura parada (sem punch, e reenquadrada só quando o trecho marcado cabe
+   inteiro na janela); `slow_zoom_share` e `static_share_min` cumpridos no fim. O
    punch seco é o corte para um enquadramento mais fechado e parado (sem curva: plano parado não tem movimento).
 6. **Eventos** com cota por minuto (janela própria no gancho), escalada por `intensity` (0→0,5×, 1→0,75×, 2→1×,
    3→1,4×): primeiro os estruturais (revelação, piada, contador da lista, marca-texto da captura, plano parado demais),
@@ -111,6 +112,8 @@ HOOK_BOOST = 2.0
 BREATH_S = (5.0, 9.0)
 BURST_S = (0.5, 1.5)
 REFRAME_SCALE = 1.25
+TEXT_MARGIN = 0.04
+"""Folga (fração do quadro) em volta do trecho da captura no reenquadramento: a manchete não encosta na borda."""
 PUNCH_CAMERA = (1.15, 1.30)
 CLIP_END_PAD_S = 0.5
 """Trecho seguinte do clipe: a entrada fica a pelo menos 0,5 s do fim do material."""
@@ -263,6 +266,11 @@ class _Beat:
     @property
     def capture(self) -> bool:
         return self.media is not None and bool(self.media.rects)
+
+    @property
+    def page(self) -> bool:
+        """Captura de página (a prova da fonte), com ou sem o retângulo do trecho: a câmera não pode cortar o texto."""
+        return self.capture or (self.media is not None and "capture" in (self.media.kind, self.media.source))
 
     def word_at(self, at: str | None) -> _W | None:
         index = trigger_index([w.text for w in self.words], at) if at else None
@@ -1105,11 +1113,18 @@ class _Planner:
         key = _reframe_key(beat)
         if beat.clip or self.reframes[key] >= MAX_REFRAMES:
             return None
-        self.reframes[key] += 1
         wide = prev.framing is None or prev.framing.scale < 1.1
         scale = REFRAME_SCALE if wide else 1.0
         x = round(rng.uniform(0.35, 0.65), 3)
         y = round(rng.uniform(0.38, 0.62), 3)
+        if beat.page and scale > 1.0:
+            # Captura: a janela fechada tem de conter o trecho (a manchete) inteiro e com folga; sem ele, ou quando ele
+            # não cabe, nada de jump cut (o recorte cortaria o texto: "rand Theft" no lugar de "Grand Theft").
+            spot = _fit_window(beat.media.rects if beat.media is not None else [], scale, x, y)
+            if spot is None:
+                return None
+            x, y = spot
+        self.reframes[key] += 1
         return _Shot(t=word.start, word=word, prov=beat.prov, framing=ShotFraming(scale=scale, x=x, y=y))
 
     # --- 5: câmera ----------------------------------------------------------------------------------------------------
@@ -1120,7 +1135,7 @@ class _Planner:
         if beat.clip and shot.source == "self":
             shot.motion = "none"
             return
-        if beat.capture and shot.source == "self":
+        if beat.page and shot.source == "self":
             shot.motion = "static"
             return
         open_shot = (shot.source == "self" and beat.scene.visual.shot in OPEN_SHOTS
@@ -1169,6 +1184,8 @@ class _Planner:
             return False
         if beat.mark.serious and fx_type in COMIC_FX:
             return False
+        if beat.page and fx_type == "punch":
+            return False  # a captura aproxima pelo `zoom_rect` (que enquadra o trecho); o punch cortaria o texto
         group = {fx_type} if fx_type not in ANNOT_TYPES else set(ANNOT_TYPES)
         return all(abs(e.t - word.start) >= spacing for e in self.events if e.type in group)
 
@@ -1663,6 +1680,24 @@ def _reframe_key(beat: _Beat) -> str:
     primeiro volta ao mesmo item do acervo de propósito; com a cota do vídeo todo, um acervo pequeno esgotava os
     cortes logo no começo e o resto do vídeo ficava em planos do tamanho da batida (ritmo uniforme, CV baixo)."""
     return beat.asset if beat.prov == "ai" else f"{beat.asset}#{beat.pos}"
+
+
+def _fit_window(rects: list[list[float]], scale: float, x: float, y: float) -> tuple[float, float] | None:
+    """Centro da janela de `1/scale` (o `ShotFraming` do renderer, presa à imagem) mais perto de (x, y) que contém
+    todos os `rects` ([x, y, w, h] de 0 a 1) com `TEXT_MARGIN` de folga. None: sem retângulo ou ele não cabe."""
+    if not rects:
+        return None
+    win = 1.0 / scale
+    out: list[float] = []
+    for want, lo_edge, hi_edge in ((x, min(r[0] for r in rects), max(r[0] + r[2] for r in rects)),
+                                   (y, min(r[1] for r in rects), max(r[1] + r[3] for r in rects))):
+        lo = max(0.0, lo_edge - TEXT_MARGIN)
+        hi = min(1.0, hi_edge + TEXT_MARGIN)
+        if hi - lo > win + 1e-9:
+            return None
+        start = min(max(want - win / 2, max(0.0, hi - win)), min(1.0 - win, lo))
+        out.append(round(start + win / 2, 3))
+    return out[0], out[1]
 
 
 def _similar(a: float, b: float) -> bool:

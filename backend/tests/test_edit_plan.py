@@ -477,6 +477,61 @@ def test_pool_clip_and_capture_sources(isolated_settings):
     assert kinds["highlight"].at == kinds["zoom_rect"].at
 
 
+def _window(framing: ShotFraming | None) -> tuple[float, float, float, float]:
+    """A janela que o renderer mostra (`framingBox`): x0, y0, x1, y1 de 0 a 1."""
+    if framing is None or framing.scale <= 1.0001:
+        return 0.0, 0.0, 1.0, 1.0
+    win = 1 / framing.scale
+    left = min(max(framing.x - win / 2, 0.0), 1 - win)
+    top = min(max(framing.y - win / 2, 0.0), 1 - win)
+    return left, top, left + win, top + win
+
+
+def test_capture_never_crops_the_marked_headline(isolated_settings):
+    """Manchete larga (GamesBeat: de 5% a 65% da largura): o jump cut a 1,25 com centro sorteado e o punch no meio do
+    quadro cortavam a primeira letra ("rand Theft"). Na captura, a janela fechada contém o trecho com folga, e o punch
+    não entra (quem aproxima é o `zoom_rect`, que enquadra o trecho)."""
+    style = get_style(SHORT)
+    rect = [0.05, 0.2, 0.6, 0.12]
+    doc = _doc([LONG_TEXT] * 6, style_id=SHORT)
+    for i, scene in enumerate(doc.scenes):
+        scene.visual = Visual(type="upload", media=MediaRef(kind="capture", source="capture", tier="capture",
+                                                            asset=f"uploads/prj_teste/media/c{i}.jpg", rects=[rect]))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    framings = [sh.framing for s in doc.scenes for sh in s.shots if sh.source == "self"]
+    assert any(f is not None and f.scale > 1 for f in framings)  # o jump cut continua quando cabe
+    for framing in framings:
+        x0, y0, x1, y1 = _window(framing)
+        m = edit_plan.TEXT_MARGIN - 0.002
+        assert x0 <= rect[0] - m and x1 >= rect[0] + rect[2] + m and y0 <= rect[1] - m and y1 >= rect[1] + rect[3] + m
+    assert all(sh.motion == "static" for s in doc.scenes for sh in s.shots if sh.source == "self")
+    assert not _fx(doc, "punch")
+    assert _fx(doc, "zoom_rect")
+
+
+def test_capture_without_marked_text_is_never_zoomed(isolated_settings):
+    """Captura sem o retângulo do trecho (página em que a manchete não foi achada): sem saber onde está o texto, nada
+    de reenquadrar, de câmera andando nem de punch."""
+    style = get_style(SHORT)
+    doc = _doc([LONG_TEXT] * 6, style_id=SHORT)
+    for i, scene in enumerate(doc.scenes):
+        scene.visual = Visual(type="upload", media=MediaRef(kind="capture", source="capture", tier="capture",
+                                                            asset=f"uploads/prj_teste/media/c{i}.jpg"))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    shots = [sh for s in doc.scenes for sh in s.shots if sh.source == "self"]
+    assert all(sh.framing is None or sh.framing.scale <= 1.0 for sh in shots)
+    assert all(sh.motion == "static" for sh in shots)
+    assert not _fx(doc, "punch")
+
+
+def test_fit_window_keeps_the_rect_and_the_margin():
+    assert edit_plan._fit_window([], 1.25, 0.5, 0.5) is None
+    assert edit_plan._fit_window([[0.0, 0.1, 0.9, 0.1]], 1.25, 0.5, 0.5) is None  # mais largo que a janela
+    x, y = edit_plan._fit_window([[0.05, 0.2, 0.6, 0.12]], 1.25, 0.65, 0.5)
+    assert (x, y) == (0.41, 0.5)  # empurrada para a esquerda até a manchete caber
+    assert edit_plan._fit_window([[0.3, 0.3, 0.2, 0.1]], 1.25, 0.45, 0.4) == (0.45, 0.4)  # cabe: fica onde estava
+
+
 def test_reframes_are_capped_per_asset(isolated_settings):
     style = get_style(SHORT)
     doc = _doc([LONG_TEXT] * 3, style_id=SHORT)

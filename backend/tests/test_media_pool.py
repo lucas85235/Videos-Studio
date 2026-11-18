@@ -405,6 +405,51 @@ def test_blank_page_capture_is_refused(isolated_settings, monkeypatch):
     assert not list((get_settings().data_dir / "uploads" / "prj_blank").glob("captures/pool-*"))
 
 
+def test_source_capture_marks_the_headline_and_redoes_old_captures_without_it(isolated_settings, monkeypatch):
+    """A fonte do roteiro é capturada pelo título dela, que quase nunca está igual na página: a captura pede a
+    manchete (`headline=True`) e sai com o retângulo dela. A captura antiga sem retângulo (de antes disto) é refeita
+    na coleta completa; a que já tem retângulo fica no cache."""
+    import json as _json
+
+    page = Image.new("RGB", (2200, 1360), "white")
+    page.paste((20, 20, 20), (200, 300, 1500, 380))  # a manchete
+    png = io.BytesIO()
+    page.save(png, format="PNG")
+    calls: list[dict] = []
+
+    def fake_capture(url, texts, focus=0, **kw):
+        calls.append(kw)
+        return page_capture.CaptureResult(url=url, domain="g.example", title="T", png=png.getvalue(), text="",
+                                          found=[True], rects=[[[0.09, 0.22, 0.6, 0.06]]], width=2200, height=1360)
+
+    monkeypatch.setattr(page_capture, "capture", fake_capture)
+    pid, url, texts = "prj_manchete", "https://g.example/a", ["GamesBeat – Título da matéria"]
+    done = proofs._pool_capture_file(pid, url, texts, 16 / 9)
+    done.parent.mkdir(parents=True)
+    old = f"uploads/{pid}/captures/old.png"
+    page.save(get_settings().data_dir / old)
+    done.write_text(_json.dumps({"asset": old, "rects": []}), encoding="utf-8")  # captura antiga, sem a manchete
+
+    entry = proofs.capture_clean(pid, url, texts, 16 / 9)
+    assert len(calls) == 1 and calls[0].get("headline") is True
+    assert entry["rects"] and entry["asset"] != old and entry["headline"] is True
+    x, y, w, h = entry["rects"][0]
+    assert 0 < x and x + w < 1 and 0 < y and y + h < 1  # a manchete inteira no recorte limpo
+    assert proofs.capture_clean(pid, url, texts, 16 / 9) == entry and len(calls) == 1  # agora vem do cache
+
+    kept = {"asset": old, "rects": [[0.1, 0.1, 0.5, 0.1]]}  # captura antiga que achou o trecho: fica
+    done.write_text(_json.dumps(kept), encoding="utf-8")
+    assert proofs.capture_clean(pid, url, texts, 16 / 9) == kept and len(calls) == 1
+
+    def offline(*a, **k):
+        raise page_capture.CaptureError("A página não abriu")
+
+    monkeypatch.setattr(page_capture, "capture", offline)
+    stale = {"asset": old, "rects": []}
+    done.write_text(_json.dumps(stale), encoding="utf-8")
+    assert proofs.capture_clean(pid, url, texts, 16 / 9) == stale  # a página caiu: a captura antiga continua
+
+
 def test_gather_keeps_ids_stable_between_runs(isolated_settings, tmp_path):
     doc = _project()
     folder = get_settings().uploads_dir / doc.id / media_pool.OWN_DIR

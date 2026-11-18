@@ -494,7 +494,7 @@ Outros arquivos:
 
 `workers/pipeline/media_pool.py`, `gather(doc, style)`. Coletores independentes; falha vira aviso:
 1. Uploads do projeto e biblioteca do canal (`own`).
-2. Capturas das `doc.sources`, via `workers/visual/proofs.py` e `media/page_capture.py`. O `page_capture` passa a **devolver os `rects`** medidos em `:159`, sem queimar o destaque no PNG; o PNG limpo vai para o pool.
+2. Capturas das `doc.sources`, via `workers/visual/proofs.py` e `media/page_capture.py`. O `page_capture` passa a **devolver os `rects`** medidos em `:159`, sem queimar o destaque no PNG; o PNG limpo vai para o pool. O trecho é o título da fonte, que quase nunca está igual na página: sem o texto exato, vale a manchete (`h1`) e, sem ela, a parte mais longa do título sem o nome do veículo. Antes da foto, a captura tira espaços de anúncio ("PUBLICIDADE"), espera as imagens da tela e esconde a imagem quebrada.
 3. Clipes de links oficiais **dados pelo usuário** no projeto, via `media/clips.py` (novo), que porta e melhora `canais/motor/passos/trailer_shots.py` e `make_clips.py`:
    - yt-dlp como em `reference_video.py:54-67`;
    - cortes com `refprofile/cuts.py`;
@@ -619,6 +619,8 @@ Outros arquivos:
 - Sorteio por plano: static 35%, push 25%, drift 15%, punch seco 15%, pan 10% (só em plano aberto).
 - `zoom_strength` com ±40% e easing por semente.
 - Clipe e captura com anotação ficam `none`/`static`.
+- Captura de página (com ou sem `rects`) não leva punch; o reenquadramento só entra quando a janela fechada contém o
+  trecho inteiro com folga (sem `rects`, nunca). O zoom da captura é o `zoom_rect`, que enquadra o trecho.
 - Respeita `slow_zoom_share` e `static_share_min`.
 
 **4. Cotas por minuto** (com janela própria no gancho) para `punch`, `text_pop`, `sfx`, `meme`, `annot` e `switch`, escaladas por `intensity`: 0→0,5×, 1→0,75×, 2→1×, 3→1,4×.

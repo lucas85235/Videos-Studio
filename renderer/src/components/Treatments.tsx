@@ -333,8 +333,13 @@ const Collage: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, 
 
 export type ScreenVariant = 'window' | 'phone' | 'feed';
 
-/** Moldura da cena: no vertical, celular ou feed (às vezes janela); no horizontal, janela na maioria. */
-export const screenVariant = (seed: number, width: number, height: number): ScreenVariant => {
+/**
+ * Moldura da cena: no vertical, celular ou feed (às vezes janela); no horizontal, janela na maioria. Captura de página
+ * (`page`) é sempre janela: ela já vem na proporção do vídeo, e o `cover` no celular mostrava só uma faixa estreita do
+ * meio dela (a manchete cortada dos dois lados, ou só o branco do topo da página).
+ */
+export const screenVariant = (seed: number, width: number, height: number, page = false): ScreenVariant => {
+  if (page) return 'window';
   const pool: ScreenVariant[] = height > width ? ['phone', 'feed', 'phone', 'feed', 'window'] : ['window', 'window', 'phone', 'feed'];
   return pool[Math.floor(random(`${seed}-screen`) * pool.length) % pool.length];
 };
@@ -405,7 +410,7 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const unit = Math.min(width, height);
   const vertical = height > width;
   const cont = typeof scene.treatment_continue === 'number';
-  const variant = screenVariant(layoutSeed(scene), width, height);
+  const variant = screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture');
   const filter = imageFilter(effects, scene.look);
   // Na continuação o aparelho já está em cena.
   const enter = cont ? 1 : spring({ frame, fps, config: { damping: 16, stiffness: 120, mass: 0.8 } });

@@ -272,20 +272,27 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
     done = _pool_capture_file(project_id, url, texts, aspect)
     folder, key = done.parent, done.stem.removeprefix("pool-")
     cached = cached_capture_clean(project_id, url, texts, aspect)
-    if cached is not None:
+    if cached is not None and (cached.get("rects") or cached.get("headline")):
         return cached
-    shot = page_capture.capture(url, texts, 0, open_page=open_page)
-    with Image.open(io.BytesIO(shot.png)) as im:
-        img = im.convert("RGB")
-    if is_blank_page(img):
-        raise ProofError("A página saiu em branco (não carregou a tempo): envie um print ou tente de novo.")
+    # Sem retângulo e de antes da busca pela manchete: captura de novo (sem ele a edição não sabe onde está o texto).
+    # Se a nova falhar, a antiga ainda serve melhor que nenhuma prova.
+    try:
+        shot = page_capture.capture(url, texts, 0, open_page=open_page, headline=True)
+        with Image.open(io.BytesIO(shot.png)) as im:
+            img = im.convert("RGB")
+        if is_blank_page(img):
+            raise ProofError("A página saiu em branco (não carregou a tempo): envie um print ou tente de novo.")
+    except Exception:
+        if cached is not None:
+            return cached
+        raise
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"pool-{key}.png").write_bytes(shot.png)
     (folder / f"pool-{key}.txt").write_text(shot.text, encoding="utf-8")
     raw =[{"text": t, "rects": shot.rects[i] or [], "found": bool(shot.found[i]) or bool(shot.rects[i]),
             "view": None, "lock": False, "focus": i == 0} for i, t in enumerate(texts)]
     entry = _clean_entry(img, compute_views(img, raw), project_id, aspect, url=shot.url, domain=shot.domain,
-                         title=shot.title, text=texts[0])
+                         title=shot.title, text=texts[0], headline=True)
     done.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
     return entry
 

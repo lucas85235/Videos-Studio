@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from 'remotion';
 import { sceneImageBox } from '../frame';
 import { imageFilter } from '../look';
 import type { RenderStyle, SceneKind, ShotEasing, TimelineScene } from '../types';
@@ -83,6 +83,9 @@ const NO_CAPTIONS = new Set<SceneKind>(['text', 'quote']);
 const PANEL_KINDS = new Set<SceneKind>(['stat', 'compare', 'chart']);
 /** O cartão começa estes quadros antes do número dito: o painel já está entrando quando o impacto bate. */
 const REVEAL_LEAD = 3;
+/** Tempo (s) em que o fundo do cartão de dado escurece e desfoca quando o cartão entra depois do corte. */
+const BACKDROP_RAMP_S = 0.4;
+const CLAMP = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
 /** Cartão de notícia: fundo (a própria imagem da notícia) como o dos cartões de dado. */
 const NEWS_DIM = 0.6;
 const NEWS_BLUR = 8;
@@ -229,8 +232,11 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const overlayAt = (fx ?? []).some((e) => ANCHORED_FX.has(e.type))
     ? (box: ImageBox | null) => <FxAnchored fx={fx} frame={frame} frames={scene.durationInFrames} cuts={cuts} seed={scene.seed} box={box} />
     : undefined;
-  const dim = news ? NEWS_DIM : (DIM[kind] ?? 0);
-  const blur = news ? NEWS_BLUR : (BLUR[kind] ?? 0);
+  // Cartão que entra depois do corte: até ele entrar, o fundo fica nítido (a captura da fonte é lida antes de virar
+  // fundo desfocado) e escurece/desfoca em `BACKDROP_RAMP_S` quando o cartão chega.
+  const backdrop = cardFrom > 0 ? interpolate(frame, [cardFrom, cardFrom + Math.max(1, Math.round(fps * BACKDROP_RAMP_S))], [0, 1], CLAMP) : 1;
+  const dim = news ? NEWS_DIM : (DIM[kind] ?? 0) * backdrop;
+  const blur = news ? NEWS_BLUR : (BLUR[kind] ?? 0) * backdrop;
   const image = (sub: TimelineScene, imageUrl: string | null, overlay?: React.ReactNode, easing?: ShotEasing) => (
     <VisualLayer
       scene={sub}

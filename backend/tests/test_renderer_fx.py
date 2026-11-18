@@ -88,6 +88,18 @@ def test_effects_layer_skips_grain_and_vignette_on_clean_scene() -> None:
     assert "if (clean && DIRTY.has(effect.type)) continue;" in src
 
 
+def test_source_capture_stays_readable() -> None:
+    """A prova da fonte: o fundo do cartão de dado que entra depois do corte fica nítido até o cartão chegar (a
+    Malwarebytes só aparecia desfocada atrás dos cartões), e a captura na moldura de tela é sempre janela (o celular
+    mostrava uma faixa do meio da página, com a manchete cortada dos dois lados)."""
+    scene = _read(COMP / "SceneView.tsx")
+    assert "const backdrop = cardFrom > 0 ? interpolate(frame, [cardFrom," in scene
+    assert "(DIM[kind] ?? 0) * backdrop" in scene and "(BLUR[kind] ?? 0) * backdrop" in scene
+    treatments = _read(COMP / "Treatments.tsx")
+    assert "if (page) return 'window';" in treatments
+    assert "screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture')" in treatments
+
+
 def test_cliplayer_plays_any_video_with_trim_rate_hold_muted() -> None:
     src = _read(COMP / "ClipLayer.tsx")
     for token in ("OffthreadVideo", "muted", "trimBefore={trim}", "playbackRate={rate}", "hold", "<Freeze"):
