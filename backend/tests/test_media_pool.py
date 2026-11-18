@@ -349,6 +349,46 @@ def test_offline_with_injected_http_never_opens_browser_or_ytdlp(isolated_settin
     assert any("offline" in w for w in pool.warnings)
 
 
+def test_quick_gather_keeps_the_source_captures_of_the_full_one(isolated_settings, monkeypatch, no_network):
+    """O storyboard faz a coleta rápida: as fontes capturadas pela completa (cache em arquivo) não podem sumir."""
+    from studio.core.project.document import Source
+
+    doc = _project()
+    doc = doc.model_copy(update={"sources": [Source(url="https://example.org/noticia", title="O Farol da Ilha Rasa")]})
+    folder = get_settings().uploads_dir / doc.id / "captures"
+    folder.mkdir(parents=True)
+    Image.new("RGB", (1280, 720), "white").save(folder / "pool-x.png")
+    entry = {"asset": f"uploads/{doc.id}/captures/pool-x.png", "rects": [[0.1, 0.1, 0.5, 0.2]], "width": 1280,
+             "height": 720, "url": "https://example.org/noticia", "domain": "example.org",
+             "title": "O Farol da Ilha Rasa", "text": "O Farol da Ilha Rasa"}
+    asked: list[tuple[str, list[str]]] = []
+
+    def cached(project_id, url, phrases, aspect):
+        asked.append((url, list(phrases)))
+        return entry
+
+    monkeypatch.setattr(proofs, "cached_capture_clean", cached)
+    monkeypatch.setattr(proofs, "capture_clean", lambda *a, **k: (_ for _ in ()).throw(AssertionError("abriu")))
+    pool = media_pool.gather(doc, get_style(STYLE))
+    captures = [i for i in pool.items if i.tier == "capture"]
+    assert asked == [("https://example.org/noticia", ["O Farol da Ilha Rasa"])]
+    assert len(captures) == 1 and captures[0].page_url == "https://example.org/noticia"
+
+
+def test_cached_capture_clean_reads_only_what_was_captured(isolated_settings):
+    import json as _json
+
+    pid = "prj_cache"
+    assert proofs.cached_capture_clean(pid, "https://a.example/x", ["Trecho"], 16 / 9) is None
+    done = proofs._pool_capture_file(pid, "https://a.example/x", ["Trecho"], 16 / 9)
+    done.parent.mkdir(parents=True)
+    asset = f"uploads/{pid}/captures/pool-y.png"
+    done.write_text(_json.dumps({"asset": asset}), encoding="utf-8")
+    assert proofs.cached_capture_clean(pid, "https://a.example/x", ["Trecho"], 16 / 9) is None  # imagem sumiu
+    Image.new("RGB", (10, 10)).save(get_settings().data_dir / asset)
+    assert proofs.cached_capture_clean(pid, "https://a.example/x", ["  Trecho "], 16 / 9) == {"asset": asset}
+
+
 def test_gather_keeps_ids_stable_between_runs(isolated_settings, tmp_path):
     doc = _project()
     folder = get_settings().uploads_dir / doc.id / media_pool.OWN_DIR

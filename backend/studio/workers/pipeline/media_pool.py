@@ -446,11 +446,17 @@ def _collect_captures(ctx: _Ctx) -> list[dict[str, Any]]:
         done_urls.add(entry["url"])
         topic = _topic_for([entry.get("title", ""), entry.get("text", "")], ctx.topics, TOPIC_SOURCES)
         out.append(_capture_item(entry, f"cap:{data['id']}", topic))
-    if not ctx.full:
-        return out
-    if ctx.open_page is None and (ctx.offline or not page_capture.browser_status()["ok"]):
-        return out
     sources = [s for s in ctx.doc.sources if s.url.startswith(("http://", "https://")) and s.url not in done_urls]
+    if not ctx.full or (ctx.open_page is None and (ctx.offline or not page_capture.browser_status()["ok"])):
+        # Coleta rápida (storyboard) ou sem navegador: as fontes já capturadas numa coleta completa continuam no
+        # acervo (cache em `captures/pool-*.json`); sem isto, o storyboard regravava o acervo sem nenhuma prova.
+        for source in sources[:MAX_SOURCE_CAPTURES]:
+            phrase = (source.title or source.note or "").strip()
+            cached = proofs.cached_capture_clean(ctx.project_id, source.url, [phrase[:160]], ctx.aspect) if phrase else None
+            if cached is not None:
+                out.append(_capture_item(cached, f"capurl:{source.url}",
+                                         _topic_for([source.title], ctx.topics, TOPIC_SOURCES)))
+        return out
     for source in sources[:MAX_SOURCE_CAPTURES]:
         if ctx.cancelled():
             break

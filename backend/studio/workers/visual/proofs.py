@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import threading
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
@@ -212,26 +213,52 @@ def clean_from_capture(data: dict[str, Any], aspect: float) -> dict[str, Any] | 
                         domain=data.get("domain") or "", title=data.get("title") or "", text=text or "")
 
 
+def _pool_capture_texts(phrases: Sequence[str]) -> list[str]:
+    return [" ".join(p.split()) for p in phrases if p and p.strip()][: page_capture.MAX_PHRASES]
+
+
+def _pool_capture_file(project_id: str, url: str, texts: list[str], aspect: float) -> Path:
+    import hashlib
+    import json
+
+    key = hashlib.sha256(json.dumps([url, texts, round(aspect, 4)], ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    return get_settings().data_dir / "uploads" / project_id / "captures" / f"pool-{key}.json"
+
+
+def cached_capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: float) -> dict[str, Any] | None:
+    """A captura de `capture_clean` já feita (mesmo endereço, trechos e proporção), sem abrir o navegador. None quando
+    ainda não foi capturada ou a imagem sumiu. A coleta rápida do storyboard usa isto para não perder as fontes."""
+    import json
+
+    texts = _pool_capture_texts(phrases)
+    if not texts:
+        return None
+    done = _pool_capture_file(project_id, url, texts, aspect)
+    if not done.is_file():
+        return None
+    try:
+        cached = json.loads(done.read_text(encoding="utf-8"))
+        if (get_settings().data_dir / cached["asset"]).is_file():
+            return cached
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
 def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: float, *,
                   open_page: OpenPage | None = None) -> dict[str, Any]:
     """Captura uma página para o acervo (sem cena e sem marca-texto), com cache pelo endereço e pelos trechos:
     `uploads/<projeto>/captures/pool-<chave>.png|.txt|.json`. Devolve o mesmo formato de `clean_from_capture`."""
-    import hashlib
     import json
 
-    texts = [" ".join(p.split()) for p in phrases if p and p.strip()][: page_capture.MAX_PHRASES]
+    texts = _pool_capture_texts(phrases)
     if not texts:
         raise ProofError("Escreva pelo menos um trecho para marcar.")
-    key = hashlib.sha256(json.dumps([url, texts, round(aspect, 4)], ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
-    folder = get_settings().data_dir / "uploads" / project_id / "captures"
-    done = folder / f"pool-{key}.json"
-    if done.is_file():
-        try:
-            cached = json.loads(done.read_text(encoding="utf-8"))
-            if (get_settings().data_dir / cached["asset"]).is_file():
-                return cached
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+    done = _pool_capture_file(project_id, url, texts, aspect)
+    folder, key = done.parent, done.stem.removeprefix("pool-")
+    cached = cached_capture_clean(project_id, url, texts, aspect)
+    if cached is not None:
+        return cached
     shot = page_capture.capture(url, texts, 0, open_page=open_page)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"pool-{key}.png").write_bytes(shot.png)
