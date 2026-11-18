@@ -291,10 +291,15 @@ def test_dark_card_background_falls_back_to_the_style_background(isolated_settin
     _image("cache/media/light.jpg", 200)
     dark = {"kind": "text", "src": "cache/media/dark.jpg", "keep": [0.1, 0.1, 0.5, 0.1]}
     timeline.card_backdrop(dark)
-    assert dark["src"] is None and "keep" not in dark and "bg_luma" not in dark
+    # o `src` fica (o Short derivado e a conferência leem a imagem); o renderer troca pelo fundo do estilo
+    assert dark["src"] == "cache/media/dark.jpg" and dark["bg_luma"] < timeline.CARD_BG_MIN_LUMA
+    math = _read(MATH)
+    assert f"export const CARD_BG_MIN_LUMA = {timeline.CARD_BG_MIN_LUMA};" in math
+    assert "cardBackdropOff(scene.bg_luma) ? null : assetUrl(scene.src" in _read(COMP / "SceneView.tsx")
     light = {"kind": "title", "src": "cache/media/light.jpg"}
     timeline.card_backdrop(light)
     assert light["src"] == "cache/media/light.jpg" and light["bg_luma"] == pytest.approx(200 / 255, abs=0.01)
+    assert light["bg_luma"] >= timeline.CARD_BG_MIN_LUMA
     image = {"kind": "image", "src": "cache/media/dark.jpg"}
     timeline.card_backdrop(image)
     assert image == {"kind": "image", "src": "cache/media/dark.jpg"}  # a cena de imagem não muda

@@ -1067,7 +1067,7 @@ CARD_BG_MIN_LUMA = 0.18
 fundo (`DIM` no renderer, 55% a 62%): a página da Rockstar, quase toda preta (brilho 0,08), virava preto liso atrás do
 texto, e a palavra que entra em fade aparecia como um fantasma sobre o nada. Abaixo disto, o cartão fica com o fundo do
 estilo (cartão tipográfico); acima, o renderer só escurece até o brilho de `CARD_BG_FLOOR` (`fx/math.ts`), pelo
-`bg_luma` que vai na cena."""
+`bg_luma` que vai na cena. Espelho de `CARD_BG_MIN_LUMA` em `fx/math.ts` (o teste confere os dois)."""
 
 
 @functools.lru_cache(maxsize=512)
@@ -1094,20 +1094,17 @@ def image_luma(rel: str | None) -> float | None:
 
 
 def card_backdrop(resolved: dict[str, Any]) -> None:
-    """O fundo do cartão nunca vira preto liso: imagem escura demais (`CARD_BG_MIN_LUMA`) sai e o cartão fica com o
-    fundo do estilo; as outras levam o brilho (`bg_luma`) para o renderer limitar o escurecimento. Fora dos cartões de
-    fundo (`CARD_BACKDROP_KINDS`), com clipe, ou sem arquivo que abra: nada muda (o mesmo dict de antes)."""
+    """O fundo do cartão nunca vira preto liso: a cena leva o brilho da imagem (`bg_luma`), e o renderer desenha o
+    fundo do estilo no lugar da imagem escura demais (abaixo de `CARD_BG_MIN_LUMA`, `cardBackdropOff`) e só escurece
+    as outras até o brilho mínimo (`cardDim`). O `src` fica (o derivado do Short e a conferência leem a imagem da
+    cena). Fora dos cartões de fundo (`CARD_BACKDROP_KINDS`), com clipe, ou sem arquivo que abra: nada muda (o mesmo
+    dict de antes)."""
     if resolved.get("kind") not in CARD_BACKDROP_KINDS or not resolved.get("src") or resolved.get("video"):
         return
     luma = image_luma(resolved["src"])
     if luma is None:
         return
-    if luma < CARD_BG_MIN_LUMA:
-        resolved["src"] = None
-        for key in ("keep", "frame", "parallax"):
-            resolved.pop(key, None)
-        return
-    resolved["bg_luma"] = round(luma, 2)
+    resolved["bg_luma"] = round(luma, 3)
 
 
 def _file_rev(rel: str | None) -> str:

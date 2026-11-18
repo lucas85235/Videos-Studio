@@ -724,6 +724,15 @@ export const CARD_BG_FLOOR = 0.18;
 /** O escurecimento do cartão nunca desce disto (o texto branco continua legível sobre fundo claro). */
 export const CARD_DIM_MIN = 0.3;
 
+/**
+ * Brilho médio abaixo do qual a imagem não serve de fundo de cartão (a página quase preta virava preto liso atrás do
+ * texto): o cartão fica com o fundo do estilo. Espelho de `timeline.CARD_BG_MIN_LUMA` no backend.
+ */
+export const CARD_BG_MIN_LUMA = 0.18;
+
+/** O cartão desenha o fundo do estilo no lugar da imagem escura demais (`bg_luma` abaixo de `CARD_BG_MIN_LUMA`). */
+export const cardBackdropOff = (luma: number | undefined) => typeof luma === 'number' && luma < CARD_BG_MIN_LUMA;
+
 /** Escurecimento do fundo do cartão (`dim` do tipo) limitado pelo brilho da imagem (`bg_luma`); sem ele, o do tipo. */
 export const cardDim = (dim: number, luma: number | undefined) => {
   if (!(dim > 0) || typeof luma !== 'number' || !(luma > 0)) return dim;
