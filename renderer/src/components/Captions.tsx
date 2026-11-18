@@ -173,9 +173,9 @@ const SCRIM_ALPHA = 0.6;
 /**
  * Tarja escura atrás da legenda (degradê que some nas pontas), sobre fundo de imagem em brilho cheio: com logo, texto
  * de matéria ou foto carregada atrás, as letras da legenda deixam de se misturar com as da imagem. `center` e `half`
- * em fração da altura (os da legenda).
+ * em fração da altura (os da legenda); `opacity` some com a tarja quando o fundo escurece (cartão de dado entrando).
  */
-export const CaptionScrim: React.FC<{ center: number; half: number }> = ({ center, half }) => {
+export const CaptionScrim: React.FC<{ center: number; half: number; opacity?: number }> = ({ center, half, opacity = 1 }) => {
   const { height } = useVideoConfig();
   const top = Math.max(0, center - half * SCRIM_REACH);
   const bottom = Math.min(1, center + half * SCRIM_REACH);
@@ -189,6 +189,7 @@ export const CaptionScrim: React.FC<{ center: number; half: number }> = ({ cente
         top: top * height,
         height: (bottom - top) * height,
         background: `linear-gradient(to bottom, rgba(0,0,0,0) 0%, ${shade} 32%, ${shade} 68%, rgba(0,0,0,0) 100%)`,
+        opacity,
         pointerEvents: 'none',
       }}
     />

@@ -575,7 +575,11 @@ def test_sceneview_places_stamp_scrim_and_transition_under_captions() -> None:
     assert "textCardRects(kind, scene, cards, style.captions.uppercase, width, height)" in src
     assert "headlineRect(headline, cards, lang, width, height)" in src
     assert "placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY)" in src
-    assert "const scrim = captionsShown && !style.captions.background && dim === 0 && Boolean(url || clipUrl);" in src
+    assert "const scrim = captionsShown && !style.captions.background && scrimOpacity > 0 && Boolean(url || clipUrl);" in src
+    # Cartão de dado que entra depois do corte: o fundo fica nítido até ele (BACKDROP_RAMP_S) e a tarja da legenda
+    # acompanha, sumindo junto com o escurecimento em vez de sair de uma vez no quadro em que o cartão chega.
+    assert "const scrimOpacity = news ? 0 : (DIM[kind] ?? 0) === 0 ? 1 : 1 - backdrop;" in src
+    assert "opacity={scrimOpacity}" in src
     i_scrim = src.index("<CaptionScrim")
     i_stamp = src.index("<Stamp text={stamp}")
     i_trans = src.index("<TransitionIn type={scene.transition} frames={entry}")

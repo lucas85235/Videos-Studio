@@ -318,8 +318,10 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   }
   // Fundo de imagem em brilho cheio (foto, captura, logo, tratamento): a legenda ganha uma tarja escura por baixo, para
   // as letras não se misturarem com o texto e o logo da imagem. Cartões já escurecem o fundo; estilo com caixa própria
-  // (`captions.background`) já tem a dele.
-  const scrim = captionsShown && !style.captions.background && dim === 0 && Boolean(url || clipUrl);
+  // (`captions.background`) já tem a dele. O cartão que entra depois do corte deixa o fundo nítido até chegar: a tarja
+  // fica até lá e some junto com o escurecimento (`backdrop`), sem pular de um quadro para o outro.
+  const scrimOpacity = news ? 0 : (DIM[kind] ?? 0) === 0 ? 1 : 1 - backdrop;
+  const scrim = captionsShown && !style.captions.background && scrimOpacity > 0 && Boolean(url || clipUrl);
 
   const background = slots.length ? (
     <ShotStack
@@ -367,7 +369,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       )}
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
       {headline ? <Headline text={headline} style={cards} lang={lang} /> : null}
-      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} /> : null}
+      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} opacity={scrimOpacity} /> : null}
       {stamp && stampSpot ? <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} spot={stampSpot} /> : null}
       {sourceChip && sourceFrom > 0 ? (
         <Sequence from={sourceFrom} layout="none" name="Fonte">
