@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
 # Cartões que entram com o som de impacto (quando a cena não escolheu outro).
 IMPACT_KINDS = ("title", "count", "stat", "compare", "chart")
+REVEAL_SFX_KINDS = ("count", "stat", "compare", "chart")
+"""Cartões cujo impacto no corte nunca sai pelo orçamento de SFX (a revelação do número)."""
 # Cartões de dado: entram quando o número é dito ("reveal").
 REVEAL_KINDS = ("stat", "compare")
 # Cartões em painel: o carimbo e a fonte entram no painel, com o cartão (não é carimbo solto, nem tem som próprio).
@@ -700,8 +702,10 @@ def build_timeline(
         for scene_out in scenes_out:
             edit_resolve.fit_to_length(scene_out, fps)
         if style.audio.sfx.auto:
-            sfx = edit_resolve.cap_cut_sfx(sfx, grammar.sfx_per_min, total_frames / fps,
-                                           {s.id for s in doc.scenes if s.sfx})
+            # O som escolhido na cena e o impacto da revelação do cartão de dado ficam sempre (é o acento mais forte
+            # da edição); o resto do corte entra só no que sobra do orçamento.
+            keep = {s.id for s in doc.scenes if s.sfx or s.kind in REVEAL_SFX_KINDS}
+            sfx = edit_resolve.cap_cut_sfx(sfx, grammar.sfx_per_min, total_frames / fps, keep)
 
     out: dict[str, Any] = {
         "version": 1,
