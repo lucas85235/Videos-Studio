@@ -1448,7 +1448,9 @@ def test_gather_drops_stock_with_watermark_fan_art_or_pillarbox_shape(isolated_s
     pool = media_pool.gather(doc, get_style(STYLE))
     assert {i.source_id for i in pool.items} == {"commons:File:farol.jpg", "found:https://x.example/o.jpg"}
     told = next(w for w in pool.warnings if w.startswith("Fotos e vídeos de banco que ficaram fora do acervo"))
-    assert "2 por proporção que pede laterais desfocadas" in told and "1 por arte de fã" in told
+    assert "2 por proporção que pede laterais desfocadas" in told and "1 por marca d'água de banco" in told
+    # a capa de fã sai antes, pela autoria declarada (`is_synthetic`), com o aviso dela
+    assert any(w.startswith("1 item(ns) de arte de fã ou gerada por IA") for w in pool.warnings)
     assert "1 por marca d'água de banco" in told
 
 
