@@ -26,7 +26,9 @@ def reference_dict(row: ReferenceVideo) -> dict[str, Any]:
         "id": row.id, "title": row.title, "source_url": row.source_url, "path": row.path, "info": row.info or {},
         "shots": row.shots or [], "sheets": row.sheets or [], "stats": row.stats or {}, "status": row.status,
         "error": row.error, "created_at": row.created_at.isoformat() if row.created_at else None,
-        # O nome que o estilo criado dela recebe sem nome digitado (título limpo + " (referência)").
+        # O título limpo (as antigas guardaram o nome do arquivo do downloader, com o id do YouTube) e o nome que o
+        # estilo criado dela recebe sem nome digitado (título limpo + " (referência)").
+        "display_title": reference_title({"title": row.title}),
         "suggested_style_name": default_style_name(reference_title({"title": row.title})),
     }
 

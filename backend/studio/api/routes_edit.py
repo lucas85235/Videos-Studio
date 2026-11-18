@@ -63,8 +63,8 @@ def reedit(project_id: str, body: ReeditBody | None = None) -> dict[str, Any]:
 # Trilha de edição (ver, travar, apagar e mover)
 # --------------------------------------------------------------------------------------------
 
-MAX_FX = 60
-MAX_SHOTS = 24
+MAX_FX = edit_plan.MAX_SCENE_FX
+MAX_SHOTS = edit_plan.MAX_SCENE_SHOTS
 SCENE_LOCKED = "A cena está travada: destrave para mudar a edição dela."
 
 

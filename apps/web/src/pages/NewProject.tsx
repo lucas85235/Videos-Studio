@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AudioLines, Check, ExternalLink, FileText, History, Languages, Palette, Plus, TriangleAlert, Tv, Wand2 } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { api, type Channel, type ChannelYouTube, DEFAULT_STYLE_ID, LANGUAGES, type StyleItem, type VoiceChoice } from '../api';
 import { langLabel } from '../labels';
 import { isBoolean, isStringArray, readLocal, writeLocal } from '../shell/data';
@@ -144,8 +144,19 @@ const NewTabLink: React.FC<{ to: string; children: React.ReactNode }> = ({ to, c
   </Link>
 );
 
+/** Estado da navegação vindo de "Novo projeto a partir desta referência": o estilo feito dela já escolhido. */
+export type NewProjectState = { fromReference?: { styleId: string; styleName: string; title: string } };
+
+const isRefState = (v: unknown): v is Required<NewProjectState> => {
+  if (!v || typeof v !== 'object') return false;
+  const ref = (v as NewProjectState).fromReference;
+  return Boolean(ref) && typeof ref?.styleId === 'string' && typeof ref.styleName === 'string' && typeof ref.title === 'string';
+};
+
 export const NewProjectPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [fromReference] = useState(() => (isRefState(location.state) ? location.state.fromReference : null));
   const client = useQueryClient();
   const { toast } = useToast();
   const confirm = useConfirm();
@@ -159,12 +170,12 @@ export const NewProjectPage: React.FC = () => {
   const [topic, setTopic] = useState(draft?.topic ?? '');
   const [topicTouched, setTopicTouched] = useState(false);
   const [brief, setBrief] = useState(draft?.brief ?? '');
-  const [styleId, setStyleId] = useState(draft?.styleId ?? DEFAULT_STYLE);
+  const [styleId, setStyleId] = useState(fromReference?.styleId ?? draft?.styleId ?? DEFAULT_STYLE);
   const [channelId, setChannelId] = useState(draft?.channelId ?? '');
   const [primary, setPrimary] = useState(draft?.primary ?? DEFAULT_PRIMARY);
   const [extras, setExtras] = useState<string[]>(draft?.extras ?? []);
   const [autopilot, setAutopilot] = useState(draft?.autopilot ?? true);
-  const [voice, setVoice] = useState<VoiceChoice | null>(draft?.voice ?? null);
+  const [voice, setVoice] = useState<VoiceChoice | null>(fromReference && fromReference.styleId !== draft?.styleId ? null : (draft?.voice ?? null));
   // A voz atual veio da voz final padrão do canal (não foi escolhida à mão): trocar de canal pode trocá-la.
   const [voiceFromChannel, setVoiceFromChannel] = useState(draft?.voiceFromChannel ?? false);
   const pickVoice = (v: VoiceChoice | null) => {
@@ -172,7 +183,11 @@ export const NewProjectPage: React.FC = () => {
     setVoiceFromChannel(false);
   };
   // O que o usuário já escolheu à mão não é sobrescrito pelo canal.
-  const [touched, setTouched] = useState<Touched>(draft?.touched ?? { style: false, langs: false });
+  const [touched, setTouched] = useState<Touched>(() => {
+    const base = draft?.touched ?? { style: false, langs: false };
+    // O estilo feito da referência foi escolhido de propósito: o padrão do canal não o troca.
+    return fromReference ? { ...base, style: true } : base;
+  });
   const [applied, setApplied] = useState<ChannelApplied | null>(null);
   const [channelNote, setChannelNote] = useState<string | null>(null);
 
@@ -424,6 +439,15 @@ export const NewProjectPage: React.FC = () => {
         description="Escolha o formato, o tema e os idiomas. O roteiro para e espera sua revisão antes de qualquer gasto com voz ou imagens."
       />
 
+      {fromReference ? (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-line bg-raised px-3 py-2 text-[13px] text-muted">
+          <Palette size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
+          <span>
+            Estilo “{fromReference.styleName}”, feito da referência “{fromReference.title}”: dela vem só a fórmula (ritmo, mistura de fontes, densidades). Diga
+            o tema do seu vídeo.
+          </span>
+        </div>
+      ) : null}
       {restoredAt ? (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-sky-400/35 bg-sky-400/10 px-3 py-2 text-[13px] text-sky-200">
           <span className="flex min-w-0 items-center gap-2">

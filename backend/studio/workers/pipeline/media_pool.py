@@ -288,6 +288,11 @@ def _analyze(ctx: _Ctx, path: Path, label: str) -> list[Any]:
         ctx.unanalyzed += 1
         return []
     return shots
+def clip_source_id(prefix: str, key: str, a: float, dur: float | None) -> str:
+    """O `source_id` do trecho pelo conteúdo (`yt:<chave>#<início_ms>-<duração_ms>`), não pela posição no corte: um
+    corte refeito (outra `clips.ANALYSIS_VERSION`, outro teto de duração) dá id novo ao trecho que mudou, e o subplano
+    que citava o antigo cai no aviso de item ausente em vez de mostrar outro pedaço do vídeo em silêncio."""
+    return f"{prefix}:{key}#{int(round(float(a) * 1000))}-{int(round(float(dur or 0) * 1000))}"
 
 
 def _clip_items(shots: list[Any], *, tier: str, prefix: str, key: str, topic: str, url: str = "",
@@ -296,9 +301,9 @@ def _clip_items(shots: list[Any], *, tier: str, prefix: str, key: str, topic: st
     `dur_s`; o proxy só sai no anexo, para o plano escolhido."""
     return [{"tier": tier, "media": "clip", "desc": s.desc, "path": s.src or None, "poster": s.poster, "url": url,
              "page_url": url, "start_s": s.a, "dur_s": s.dur, "w": s.width, "h": s.height, "credit": credit,
-             "editorial": editorial, "license": license, "source_id": f"{prefix}:{key}#{i}", "topic": topic,
-             "tags": [s.material] if s.material else []}
-            for i, s in enumerate(shots, 1)]
+             "editorial": editorial, "license": license, "source_id": clip_source_id(prefix, key, s.a, s.dur),
+             "topic": topic, "tags": [s.material] if s.material else []}
+            for s in shots]
 
 
 def _own_file_item(item: PoolItem, project_id: str) -> dict[str, Any] | None:

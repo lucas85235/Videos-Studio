@@ -423,7 +423,7 @@ def _license_items(doc: ProjectDoc, timeline: dict[str, Any], starts: dict[str, 
 
     libs: list[tuple[str, str]] = []
     for scene in doc.scenes:
-        libs += [(str(fx.params["lib_id"]), scene.id) for fx in scene.fx if fx.params.get("lib_id")]
+        libs += [(str(fx.params["lib_id"]), scene.id) for fx in scene.fx if fx.params.get("lib_id") and not fx.off]
     for tl_scene in timeline.get("scenes") or []:
         libs += [(str(fx["params"]["lib_id"]), str(tl_scene.get("id") or "")) for fx in tl_scene.get("fx") or []
                  if isinstance(fx, dict) and isinstance(fx.get("params"), dict) and fx["params"].get("lib_id")]

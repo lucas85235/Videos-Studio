@@ -60,9 +60,9 @@ class PoolItem(BaseModel):
     """Hash perceptual (hex) para a anti-repetição entre vídeos."""
     score: float = 0.0
     source_id: str = ""
-    """De onde o item veio, com prefixo da origem ("commons:File:X.jpg", "pexels-video:123", "yt:<chave>#3",
-    "cap:<id>", "acervo:<arquivo>", "kit:<id>", "found:<url>", "file:<asset>"): mantém o `id` estável entre coletas e
-    diz como baixar o item no anexo."""
+    """De onde o item veio, com prefixo da origem ("commons:File:X.jpg", "pexels-video:123",
+    "yt:<chave>#<início_ms>-<duração_ms>", "cap:<id>", "acervo:<arquivo>", "kit:<id>", "found:<url>", "file:<asset>"):
+    mantém o `id` estável entre coletas e diz como baixar o item no anexo."""
     topic: str = ""
     """Tópico do roteiro a que o item responde (as linhas do pedido do storyboard são agrupadas por ele)."""
 

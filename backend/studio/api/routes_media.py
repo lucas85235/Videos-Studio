@@ -26,8 +26,10 @@ from studio.core.project import media_edit, service
 from studio.core.project.document import MediaRef, ProjectDoc, RealHint, RealKind, Scene
 from studio.core.project.ops import OpError
 from studio.core.project.pool import load_pool
-from studio.core.styles.library import get_style
+from studio.core.styles.library import StyleNotFound, get_style
 from studio.media import clips, real_media
+from studio.media.clips import ClipError
+from studio.media.ffmpeg import FFmpegError
 from studio.media.real_media import SOURCE_LABELS, MediaError
 from studio.media.safe_http import BlockedUrl, FetchError, TooLarge
 from studio.providers import media_search
@@ -168,10 +170,13 @@ def _attach_pool(project_id: str, scene_id: str, doc: ProjectDoc, pool_id: str, 
     item = load_pool(project_id).item(pool_id)
     if item is None:
         raise HTTPException(status_code=404, detail=f"O item {pool_id} não está no acervo: colete de novo.")
-    style = get_style(doc.style_id, doc.style_overrides)
+    try:
+        style = get_style(doc.style_id, doc.style_overrides)
+    except StyleNotFound as exc:
+        raise HTTPException(status_code=422, detail=f"estilo não encontrado: {doc.style_id}") from exc
     try:
         media = media_pool.materialize(item, doc, style, base=doc.scene(scene_id).visual.media)
-    except (OSError, ValueError, MediaError, FetchError, BlockedUrl, TooLarge) as exc:
+    except (OSError, ValueError, MediaError, FetchError, BlockedUrl, TooLarge, ClipError, FFmpegError) as exc:
         raise HTTPException(status_code=422, detail=f"O item {pool_id} não deu para anexar: {exc}") from exc
     warnings = ["Material oficial: pode gerar reivindicação de Content ID."] if media.editorial else []
     return _commit_media(project_id, scene_id, media, warnings, rebuild)

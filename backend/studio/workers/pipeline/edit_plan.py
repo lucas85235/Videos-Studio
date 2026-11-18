@@ -97,6 +97,11 @@ MAX_REFRAMES = 2
 SIMILAR = 0.15
 """Dois planos com duração a ±15% um do outro são "iguais": no máximo 2 seguidos."""
 MAX_SAME_PROV = 3
+MAX_SCENE_SHOTS = 41
+"""Teto de subplanos por cena: o plano de abertura e até 40 cortes. A rota da tela "Cortes" (`routes_edit`) aceita
+a mesma lista, para o usuário conseguir mexer em tudo o que o planejador gerou."""
+MAX_SCENE_FX = 120
+"""Teto de eventos por cena (o planejador corta o excesso, guardando os do usuário); o mesmo da rota."""
 HOOK_BOOST = 2.0
 """Sem `grammar.hook`, a janela do gancho tem o dobro da densidade de punch, texto, SFX e troca de material."""
 BREATH_S = (5.0, 9.0)
@@ -362,7 +367,7 @@ def plan(doc: ProjectDoc, style: StyleSpec, pool: Pool, *, intensity: int | None
 
 def summary(doc: ProjectDoc) -> dict[str, Any]:
     """Contagem do que o editor deixou: cenas com subplanos, planos e eventos por tipo."""
-    fx = Counter(e.type for s in doc.scenes for e in s.fx)
+    fx = Counter(e.type for s in doc.scenes for e in s.fx if not e.off)
     return {
         "scenes_with_shots": sum(1 for s in doc.scenes if len(s.shots) > 1),
         "shots": sum(len(s.shots) for s in doc.scenes),
@@ -796,7 +801,8 @@ class _Planner:
                 t = self._time_of(beat, event.at)
                 self.events.append(_Event(event.type, t, beat, event, kept=True))
                 kind = _budget_kind(event.type)
-                if kind is not None:
+                if kind is not None and not event.off:
+                    # o apagado pelo usuário só segura o lugar (`_free`): a cota volta para outra palavra
                     self.budget.spend(kind, t)
                 lib_id = event.params.get("lib_id")
                 if isinstance(lib_id, str):
@@ -838,7 +844,7 @@ class _Planner:
             burst = rng.randint(2, 4) - 1  # cortes da rajada (planos - 1)
         t = beat.start
         guard = 0
-        while guard < 40:
+        while guard < MAX_SCENE_SHOTS - 1 and len(shots) < MAX_SCENE_SHOTS:
             guard += 1
             if forced is not None and forced.start > t + MIN_SHOT_S and forced.index > 0:
                 target_word: _W | None = forced
@@ -1525,6 +1531,16 @@ class _Planner:
                     continue
                 seen.add(key)
                 out.append(event.fx)
+            if len(out) > MAX_SCENE_FX:
+                room = MAX_SCENE_FX - sum(1 for e in out if e.locked or e.origin == "user")
+                capped: list[FxEvent] = []
+                for e in out:
+                    if e.locked or e.origin == "user":
+                        capped.append(e)
+                    elif room > 0:
+                        capped.append(e)
+                        room -= 1
+                out = capped
             scene.fx = out
         # cena sem palavras (fora dos beats) e não travada: só o que é do usuário fica
         planned = {b.scene.id for b in self.beats}

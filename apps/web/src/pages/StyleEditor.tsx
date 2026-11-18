@@ -155,9 +155,11 @@ const OPEN_MAPS = new Set([
   'script.words_per_minute',
 ]);
 
-/** Campos obsoletos que o editor esconde (também no JSON): `art.sources_mix` nunca foi lido (vale `art.sources`) e
- * `edit.new_image_ratio` deu lugar ao teto de IA em tempo de tela. Continuam no estilo salvo, com o valor de antes. */
-const HIDDEN_PATHS = ['art.sources_mix', 'edit.new_image_ratio'];
+/** Campos obsoletos que o editor esconde (também no JSON): `art.sources_mix` nunca foi lido (vale `art.sources`).
+ * Continua no estilo salvo, com o valor de antes. O `edit.new_image_ratio` NÃO é obsoleto: sem acervo real, é ele que
+ * limita as imagens novas de IA do storyboard (`authoring.image_budget`), e com acervo ainda entra no mínimo com o
+ * teto de IA; fica na seção Fontes. */
+const HIDDEN_PATHS = ['art.sources_mix'];
 
 /** O estilo como o JSON do editor mostra: sem os campos obsoletos (o `fillMissing` devolve o valor salvo). */
 const styleJson = (style: unknown) => {
@@ -519,16 +521,23 @@ const Anchor: React.FC<{ id: string; children: React.ReactNode }> = ({ id, child
 const PROVS: Prov[] = ['own', 'official', 'capture', 'free', 'stock', 'graphic', 'meme', 'ai'];
 const pctOf = (v: number) => `${Math.round(v * 100)}%`;
 
-/** A mistura volta somando 1 (o editor de pesos trabalha com pesos livres). */
-const normalizeMix = (weights: Record<string, number>): Partial<Record<Prov, number>> => {
-  const total = Object.values(weights).reduce((a, b) => a + Math.max(0, b), 0);
-  if (total <= 0) return {};
-  return Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, Math.round((Math.max(0, v) / total) * 1000) / 1000]));
-};
+/** A mistura no editor de pesos (barra de 0 a 10, passo 0,5): a fração salva ×10, para 0,35 virar 3,5 e não ficar
+ * encostada no começo da barra. Os pesos são livres (o backend aceita qualquer valor não negativo e só a proporção
+ * entre eles conta); não renormalizar a cada mudança, senão o peso arrastado volta na hora e os outros mudam junto. */
+const MIX_SCALE = 10;
+const mixToWeights = (mix: Partial<Record<Prov, number>>): Record<string, number> =>
+  Object.fromEntries(Object.entries(mix).map(([k, v]) => [k, Math.round((v ?? 0) * MIX_SCALE * 1000) / 1000]));
+const weightsToMix = (weights: Record<string, number>): Partial<Record<Prov, number>> =>
+  Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, Math.round((Math.max(0, v) / MIX_SCALE) * 10000) / 10000]));
 
 type SetStyle = (mutate: (s: StyleSpec) => void) => void;
 
-const SourcesFields: React.FC<{ policy: SourcePolicy; preset: boolean; set: SetStyle }> = ({ policy, preset, set }) => {
+const SourcesFields: React.FC<{ policy: SourcePolicy; newImageRatio: number; preset: boolean; set: SetStyle }> = ({
+  policy,
+  newImageRatio,
+  preset,
+  set,
+}) => {
   const put = (mutate: (p: SourcePolicy) => void) =>
     set((s) => {
       if (s.art.sources) mutate(s.art.sources);
@@ -545,13 +554,23 @@ const SourcesFields: React.FC<{ policy: SourcePolicy; preset: boolean; set: SetS
         hint="Quanto do vídeo pode mostrar imagem gerada por IA. O resto vem do acervo real, de cartões e de gráficos. No Short, o padrão de 20% vira 30%."
         onChange={(v) => put((p) => void (p.ai_max_share = v))}
       />
+      <RangeField
+        label="Imagens novas de IA quando não há acervo"
+        min={0.1}
+        max={1}
+        step={0.05}
+        value={newImageRatio}
+        display={pctOf(newImageRatio)}
+        hint="Fração das cenas com imagem nova de IA quando o projeto não tem material real (offline, sem links, canal sem kit), no mínimo 3 por vídeo; o resto reaproveita imagem ou vira cartão. Com acervo, vale o menor entre este e o teto acima."
+        onChange={(v) => set((s) => void (s.edit.new_image_ratio = v))}
+      />
       <WeightsEditor
         legend="Mistura de fontes"
-        hint="De onde vem o que aparece na tela, em fração do tempo. O storyboard escolhe do acervo nessa proporção."
+        hint="De onde vem o que aparece na tela: vale a proporção entre os pesos (a barra mostra a fração de cada um no tempo). O storyboard escolhe do acervo nessa proporção."
         options={PROVS}
         labels={PROV_LABELS}
-        value={policy.mix as Record<string, number>}
-        onChange={(v) => put((p) => void (p.mix = normalizeMix(v)))}
+        value={mixToWeights(policy.mix)}
+        onChange={(v) => put((p) => void (p.mix = weightsToMix(v)))}
       />
       <FieldGroup legend="Fontes aceitas no gancho" hint="Os primeiros segundos mostram material desses níveis (nunca IA, no padrão).">
         <div className="flex flex-wrap gap-x-4 gap-y-2">
@@ -1851,7 +1870,7 @@ const StyleEditor: React.FC<{ styleId: string }> = ({ styleId }) => {
               <Anchor id="fontes">
                 <Section icon={Layers} title="Fontes" description="De onde vem o que aparece na tela e quanto pode ser IA.">
                   {style.art.sources ? (
-                    <SourcesFields policy={style.art.sources} preset={preset} set={set} />
+                    <SourcesFields policy={style.art.sources} newImageRatio={style.edit.new_image_ratio ?? 0.5} preset={preset} set={set} />
                   ) : (
                     <p className="text-[13px] text-muted">O servidor ainda não tem a política de fontes: reinicie o app.</p>
                   )}

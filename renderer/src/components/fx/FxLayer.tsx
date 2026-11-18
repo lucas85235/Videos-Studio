@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AbsoluteFill, Img, interpolate, OffthreadVideo, Sequence, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { fontStack } from '../../fonts';
 import { stickerFilter } from '../../sticker';
@@ -242,8 +242,11 @@ const Meme: React.FC<{
 }> = ({ params, len, assetBaseUrl, seed, caption, where }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
-  const src = assetUrl(pStr(params, 'src') || null, assetBaseUrl);
-  const video = assetUrl(pStr(params, 'video') || null, assetBaseUrl);
+  // Arquivo que sumiu (meme apagado da biblioteca, pose refeita): some o meme, não o render inteiro (o Remotion
+  // cancela o render no 404 de <Img>/<OffthreadVideo> sem onError). O backend já tira o caminho que não existe.
+  const [broken, setBroken] = useState(false);
+  const src = broken ? null : assetUrl(pStr(params, 'src') || null, assetBaseUrl);
+  const video = broken ? null : assetUrl(pStr(params, 'video') || null, assetBaseUrl);
   const emoji = pStr(params, 'emoji').trim();
   if (!src && !video && !emoji) {
     // "Meme sem meme" vem como freeze + punch + text_pop, não aqui. O congelamento e o punch do `freeze_zoom` (TimeWarp
@@ -256,9 +259,15 @@ const Meme: React.FC<{
   const out = exitK(f, len);
   const media = (h: number, filter?: string) =>
     video ? (
-      <OffthreadVideo src={video} muted transparent style={{ height: h, width: 'auto', display: 'block', filter }} />
+      <OffthreadVideo
+        src={video}
+        muted
+        transparent
+        onError={() => setBroken(true)}
+        style={{ height: h, width: 'auto', display: 'block', filter }}
+      />
     ) : src ? (
-      <Img src={src} style={{ height: h, width: 'auto', display: 'block', filter }} />
+      <Img src={src} maxRetries={1} onError={() => setBroken(true)} style={{ height: h, width: 'auto', display: 'block', filter }} />
     ) : (
       <span style={{ fontFamily: EMOJI_STACK, fontSize: h * 0.8, lineHeight: 1, display: 'block', filter }}>{emoji}</span>
     );
@@ -370,8 +379,9 @@ const Pip: React.FC<{ params: FxParams; len: number; assetBaseUrl: string | null
 }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
-  const src = assetUrl(pStr(params, 'src') || null, assetBaseUrl);
-  const video = assetUrl(pStr(params, 'video') || null, assetBaseUrl);
+  const [broken, setBroken] = useState(false); // arquivo que sumiu: some o inserto, não o render
+  const src = broken ? null : assetUrl(pStr(params, 'src') || null, assetBaseUrl);
+  const video = broken ? null : assetUrl(pStr(params, 'video') || null, assetBaseUrl);
   if (!src && !video) return null;
   const left = pStr(params, 'side', 'right') === 'left';
   const bottom = pStr(params, 'at', 'top') === 'bottom';
@@ -405,10 +415,11 @@ const Pip: React.FC<{ params: FxParams; len: number; assetBaseUrl: string | null
           src={video}
           muted
           trimBefore={clipIn > 0 ? Math.round(clipIn * fps) : undefined}
+          onError={() => setBroken(true)}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         />
       ) : (
-        <Img src={src!} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        <Img src={src!} maxRetries={1} onError={() => setBroken(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
       )}
     </div>
   );

@@ -176,14 +176,15 @@ def test_legacy_timeline_takes_prov_from_doc():
     assert flat["hook_real"] is False and 0 < flat["real_share"] < 1
 
 
-def _project_with_storyboard(isolated_settings, style_id: str = "curiosidades-longo") -> ProjectDoc:
+def _project_with_storyboard(isolated_settings, style_id: str = "curiosidades-longo",
+                             overrides: dict[str, Any] | None = None) -> ProjectDoc:
     doc = service.create_project(title="GTA", style_id=style_id)
     texts = ["Em 2013 um jogo vendeu milhões de cópias e ninguém esperava isso.",
              "A cidade inteira foi desenhada a partir de fotos reais de Los Angeles."]
     segments = [Segment(id=f"seg_{i}", text={LANG: t}) for i, t in enumerate(texts)]
     scenes = [Scene(id=f"scn_{i}{k}", segment_id=f"seg_{i}", part=k, parts=2, visual=Visual(prompt="cena"))
               for i in range(2) for k in range(2)]
-    doc = doc.model_copy(update={"segments": segments, "scenes": scenes})
+    doc = doc.model_copy(update={"segments": segments, "scenes": scenes, "style_overrides": overrides or {}})
     service.commit(doc.id, doc, "storyboard")
     return service.get_doc(doc.id)
 
@@ -259,8 +260,26 @@ def test_edit_items_point_to_time_and_scene(longo):
     assert {i["code"]: i["level"] for i in ok}["perfil.ia"] == "ok"
 
 
+def _final_render(isolated_settings, overrides: dict[str, Any] | None = None) -> ProjectDoc:
+    doc = _project_with_storyboard(isolated_settings, overrides=overrides)
+    _write_final(isolated_settings, doc)
+    return doc
+
+
+def test_run_edit_check_skips_the_mp4_audit_without_reference_profile(isolated_settings, monkeypatch):
+    """Sem perfil de referência no estilo, a conferência mede pela timeline do render: o scan do MP4 (minutos num
+    vídeo longo) não roda."""
+    doc = _final_render(isolated_settings)
+    seen: list[Path] = []
+    monkeypatch.setattr(profile_check, "measure_render", lambda path: seen.append(path))
+    report = profile_check.run_for_project(doc.id, LANG)
+    assert report is not None and report["kind"] == "edit"
+    assert seen == [] and report["data"]["video_measured"] is False
+
+
 def test_run_edit_check_writes_edit_report_with_video_audit(isolated_settings, monkeypatch):
-    doc = _project_with_storyboard(isolated_settings)
+    doc = _project_with_storyboard(isolated_settings,
+                                   overrides={"edit": {"grammar": {"profile_refs": ["ref_inexistente"]}}})
     _write_final(isolated_settings, doc)
     audited = EditFingerprint(source="video", pace=PaceBlock(shots=9, median_s=1.2, cv=0.8, max_still_s=2.0))
     seen: list[Path] = []

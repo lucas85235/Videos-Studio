@@ -269,8 +269,8 @@ Campos editáveis do StyleSpec (use caminhos com pontos):
 - art.languages: linguagens visuais preferidas, a primeira dominante (vazio = livre); ids: {", ".join(VISUAL_LANGUAGES)}
   (photo só com art.photoreal)
 - edit.shot_seconds.min / max (duração de cada cena; o storyboard corta a narração por frase nessa faixa)
-- edit.new_image_ratio (0.1–1): fração das cenas com imagem nova de IA (mínimo 3 por vídeo); o resto reaproveita
-  imagem ou vira cartão
+- edit.new_image_ratio (0.1–1): fração das cenas com imagem nova de IA quando o projeto não tem acervo real (mínimo
+  3 por vídeo); o resto reaproveita imagem ou vira cartão. Com acervo, vale o menor entre ela e art.sources.ai_max_share
 - edit.camera: pesos por movimento ({", ".join(AUTO_CAMERA_MOVES)}); parallax (2.5D, baixa um modelo de 99 MB) só
   quando o pedido falar nele
 - edit.transitions: pesos por transição ({", ".join(TRANSITIONS)})

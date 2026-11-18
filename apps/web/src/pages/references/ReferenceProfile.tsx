@@ -1,20 +1,23 @@
 // Perfil de edição medido da referência (ADR 0004 §3.2 e §3.11): mistura de material, ritmo, densidades por minuto,
 // elementos recorrentes e a confiança de cada campo. Daqui saem o estilo ("Criar estilo") e o projeto novo
-// ("Novo projeto a partir desta referência", estilo + projeto de uma vez, com nome editável). Embaixo, a aderência ao
-// perfil dos projetos que já usam um estilo feito dela.
+// ("Novo projeto a partir desta referência": usa um estilo já feito dela ou cria um, e abre o formulário de projeto
+// novo com ele escolhido, onde o usuário diz o tema, o canal, a voz e o piloto automático). Os dois só com o perfil
+// medido: sem ele o estilo sairia sem a gramática da referência. Embaixo, a aderência ao perfil dos projetos que já
+// usam um estilo feito dela.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Clapperboard, Gauge, Microscope, Palette, RotateCw } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { fileUrl } from '../../api';
+import type { NewProjectState } from '../NewProject';
 import { type EditProfile, type ProfileFieldMeta, type ReferenceVideo, visualApi } from '../../apiVisual';
 import { label, MATERIAL_LABELS } from '../../labels';
 import { isActiveJob, useJobs } from '../../shell/data';
-import { Badge, type BadgeTone, Button, Checkbox, ErrorBox, Field, Input, Skeleton, useToast } from '../../ui';
+import { Badge, type BadgeTone, Button, Checkbox, ErrorBox, Field, Input, Select, Skeleton, useToast } from '../../ui';
 import { defaultStyleName, ReferenceStyleButton } from './ReferenceStyle';
 
-const PROJECT_TITLE_MAX = 200;
 const STYLE_NAME_MAX = 120;
+const NEW_STYLE = '';
 
 const num = (v: number | null | undefined, digits = 1) =>
   (v ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: 0 });
@@ -175,50 +178,79 @@ export const ProfileView: React.FC<{ profile: EditProfile }> = ({ profile: p }) 
   );
 };
 
-/** "Novo projeto a partir desta referência": cria o estilo e o projeto de uma vez e abre o projeto. */
+/** "Novo projeto a partir desta referência": escolhe um estilo já feito dela (sem duplicar) ou cria um, e abre o
+ * formulário de projeto novo com ele escolhido. O tema, o canal, a voz e o piloto automático são os do fluxo normal: o
+ * título da referência não vira o tema (o roteiro sairia sobre o vídeo do outro criador). */
 const NewProjectFromReference: React.FC<{ reference: ReferenceVideo }> = ({ reference }) => {
   const navigate = useNavigate();
   const client = useQueryClient();
   const { toast } = useToast();
-  const [title, setTitle] = useState(() => Array.from(reference.title).slice(0, PROJECT_TITLE_MAX).join(''));
-  const [styleName, setStyleName] = useState(() => reference.suggested_style_name ?? defaultStyleName(reference.title));
+  const made = useQuery({ queryKey: ['reference-adherence', reference.id], queryFn: () => visualApi.adherence(reference.id), staleTime: 30_000 });
+  const existing = made.data?.styles ?? [];
+  const [picked, setPicked] = useState<string | null>(null);
+  const choice = picked ?? existing[0]?.id ?? NEW_STYLE;
+  const [styleName, setStyleName] = useState<string | null>(null);
+  const styleNameValue = styleName ?? reference.suggested_style_name ?? defaultStyleName(reference.display_title ?? reference.title);
   const [useLlm, setUseLlm] = useState(true);
+  const title = reference.display_title ?? reference.title;
+  const open = (styleId: string, name: string) => {
+    const state: NewProjectState = { fromReference: { styleId, styleName: name, title } };
+    navigate('/novo', { state });
+  };
   const create = useMutation({
-    mutationFn: () =>
-      visualApi.projectFromReference(reference.id, { title: title.trim(), style_name: styleName.trim() || undefined, use_llm: useLlm }),
-    onSuccess: (result) => {
-      void client.invalidateQueries({ queryKey: ['projects'] });
-      void client.invalidateQueries({ queryKey: ['styles'] });
-      toast({ tone: 'good', title: 'Projeto criado', description: `Com o estilo “${result.style.name}”.` });
-      navigate(`/projetos/${result.project.id}`);
+    mutationFn: () => visualApi.styleFromReference(reference.id, { use_llm: useLlm, name: styleName === null ? undefined : styleName.trim() || undefined }),
+    onSuccess: async (result) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['styles'] }),
+        client.invalidateQueries({ queryKey: ['reference-adherence', reference.id] }),
+      ]);
+      toast({ tone: 'good', title: 'Estilo criado', description: `“${result.style.name}” está em Meus estilos.` });
+      open(result.style.id, result.style.name);
     },
   });
+  const go = () => {
+    const style = existing.find((st) => st.id === choice);
+    if (style) open(style.id, style.name);
+    else create.mutate();
+  };
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-line p-3">
       <p className="text-[13px] text-muted">
-        Cria o estilo a partir do perfil medido e um projeto novo com ele. O material do vídeo de referência não é usado: só a fórmula (ritmo, mistura,
-        densidades).
+        O projeto novo usa um estilo feito desta referência. Do vídeo dela vem só a fórmula (ritmo, mistura de fontes, densidades): o tema, o canal e a voz
+        você escolhe no próximo passo.
       </p>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="Nome do projeto" hint="Dá para mudar depois.">
-          <Input value={title} maxLength={PROJECT_TITLE_MAX} onChange={(e) => setTitle(e.target.value)} />
+      {made.isPending ? <Skeleton className="h-9" /> : null}
+      {existing.length ? (
+        <Field label="Estilo" hint="Já há estilo feito desta referência: usar o mesmo não espalha a aderência por estilos repetidos.">
+          <Select value={choice} onChange={(e) => setPicked(e.target.value)} className="max-w-md">
+            {existing.map((st) => (
+              <option key={st.id} value={st.id}>
+                Usar “{st.name}”
+              </option>
+            ))}
+            <option value={NEW_STYLE}>Criar outro estilo</option>
+          </Select>
         </Field>
-        <Field label="Nome do estilo">
-          <Input value={styleName} maxLength={STYLE_NAME_MAX} onChange={(e) => setStyleName(e.target.value)} />
-        </Field>
-      </div>
-      <Checkbox
-        label="Deixar a IA completar o que as medidas não dizem"
-        description="Arte, câmera e trilha. Os campos medidos não mudam."
-        checked={useLlm}
-        onChange={setUseLlm}
-      />
+      ) : null}
+      {choice === NEW_STYLE && !made.isPending ? (
+        <>
+          <Field label="Nome do estilo" hint="Dá para mudar depois no editor de estilos.">
+            <Input value={styleNameValue} maxLength={STYLE_NAME_MAX} onChange={(e) => setStyleName(e.target.value)} className="max-w-md" />
+          </Field>
+          <Checkbox
+            label="Deixar a IA completar o que as medidas não dizem"
+            description="Arte, câmera e trilha. Os campos medidos não mudam."
+            checked={useLlm}
+            onChange={setUseLlm}
+          />
+        </>
+      ) : null}
       <div>
-        <Button variant="primary" icon={Clapperboard} busy={create.isPending} disabled={!title.trim()} onClick={() => create.mutate()}>
-          Criar estilo e projeto
+        <Button variant="primary" icon={Clapperboard} busy={create.isPending} disabled={made.isPending} onClick={go}>
+          {choice === NEW_STYLE ? 'Criar o estilo e escolher o tema' : 'Escolher o tema do projeto'}
         </Button>
       </div>
-      <ErrorBox error={create.error} title="Não foi possível criar o projeto" />
+      <ErrorBox error={create.error} title="Não foi possível criar o estilo" />
     </div>
   );
 };
@@ -282,6 +314,10 @@ export const ReferenceProfile: React.FC<{ reference: ReferenceVideo }> = ({ refe
   const profile = query.data?.profile ?? null;
   const notes = Object.entries(query.data?.notes.skipped ?? {});
   const toggle = (next: Panel) => setPanel((cur) => (cur === next ? null : next));
+  // Sem o perfil medido (referência analisada antes do ADR 0004) ou com a medida rodando, o estilo sairia sem a
+  // gramática e as fontes da referência: os dois botões esperam.
+  const blocked = Boolean(running) || !profile;
+  const blockedWhy = running ? 'Espere a medida do perfil terminar.' : 'Meça o perfil primeiro.';
   return (
     <section aria-label="Perfil de edição" className="flex flex-col gap-3 rounded-lg border border-line p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -309,18 +345,36 @@ export const ReferenceProfile: React.FC<{ reference: ReferenceVideo }> = ({ refe
           >
             Analisar a fundo
           </Button>
-          <Button size="sm" icon={Palette} aria-expanded={panel === 'style'} onClick={() => toggle('style')}>
+          <Button
+            size="sm"
+            icon={Palette}
+            aria-expanded={panel === 'style' && !blocked}
+            disabled={blocked}
+            title={blocked ? blockedWhy : undefined}
+            onClick={() => toggle('style')}
+          >
             Criar estilo
           </Button>
-          <Button size="sm" variant="primary" icon={Clapperboard} aria-expanded={panel === 'project'} onClick={() => toggle('project')}>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={Clapperboard}
+            aria-expanded={panel === 'project' && !blocked}
+            disabled={blocked}
+            title={blocked ? blockedWhy : undefined}
+            onClick={() => toggle('project')}
+          >
             Novo projeto a partir desta referência
           </Button>
         </div>
       </div>
       {running ? <p className="text-[13px] text-muted">{running.message || 'Medindo…'}</p> : null}
       <ErrorBox error={measure.error} title="Não foi possível medir o perfil" onClose={() => measure.reset()} />
-      {panel === 'style' ? <ReferenceStyleButton reference={reference} /> : null}
-      {panel === 'project' ? <NewProjectFromReference reference={reference} /> : null}
+      {!profile && !running && query.isSuccess ? (
+        <p className="text-[13px] text-muted">Meça o perfil primeiro: o estilo e o projeto copiam a edição da referência a partir dele.</p>
+      ) : null}
+      {panel === 'style' && !blocked ? <ReferenceStyleButton reference={reference} /> : null}
+      {panel === 'project' && !blocked ? <NewProjectFromReference reference={reference} /> : null}
       {query.isPending ? <Skeleton className="h-24" /> : null}
       {query.isError ? <ErrorBox error={query.error} title="Não deu para ler o perfil" onRetry={() => query.refetch()} /> : null}
       {profile ? <ProfileView profile={profile} /> : null}

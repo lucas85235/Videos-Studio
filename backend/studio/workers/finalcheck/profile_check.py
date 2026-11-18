@@ -4,7 +4,7 @@
   com o índice, a aderência ao perfil da referência, os itens `perfil.*` e a faixa por nível de fonte. Só leitura:
   serve a rota `GET /projects/{id}/edit-metrics` e o CLI `studio edit-metrics`.
 - `run_edit_check`: depois do render, audita o MP4 com o mesmo extrator da referência
-  (`media.refprofile.measure_video(mp4, quick=True)`) e grava o
+  (`media.refprofile.measure_video(mp4, quick=True)`, só quando o estilo tem perfil de referência) e grava o
   `QualityReport(kind="edit")`. A conferência do vídeo final (`report.run_final_check`) chama este passo.
 
 A timeline do vídeo final só descreve o projeto de agora quando bate com as cenas do documento e é da versão atual:
@@ -344,10 +344,15 @@ def project_metrics(project_id: str, lang: str | None = None, source: Source = "
 # --- Conferência depois do render -----------------------------------------------------------------------------------
 
 
-def run_edit_check(ctx: FinalContext, progress: Progress | None = None) -> dict[str, Any] | None:
+def run_edit_check(ctx: FinalContext, progress: Progress | None = None, *,
+                   audit_video: bool | None = None) -> dict[str, Any] | None:
     """Mede a edição do vídeo final (timeline do render + auditoria do MP4) e grava o `QualityReport(kind="edit")`.
     None quando não há o que medir (sem vídeo, ou a timeline salva é a da prévia e não a deste MP4). O nível de fonte
-    sai do documento da versão renderizada."""
+    sai do documento da versão renderizada.
+
+    A auditoria do MP4 (scan de cortes mais decodificação a 5 fps, minutos num vídeo longo e sem como cancelar no
+    meio) só roda quando há perfil da referência para comparar (`grammar.profile_refs` no estilo) ou quando
+    `audit_video=True`; nos outros casos a medida sai da timeline do render, que é a mesma edição."""
     from studio.workers.finalcheck.report import report_dict
 
     step = progress or (lambda _f, _m: None)
@@ -356,7 +361,11 @@ def run_edit_check(ctx: FinalContext, progress: Progress | None = None) -> dict[
     video = ctx.video_path
     assert video is not None
     step(0.0, "Medindo a edição do vídeo")
-    video_fp = measure_render(video)
+    audit = bool(grammar_for(ctx.style).profile_refs) if audit_video is None else audit_video
+    video_fp = None
+    if audit:
+        step(0.05, "Medindo os cortes e o movimento do vídeo final")
+        video_fp = measure_render(video)
     profile = style_profile(ctx.style)
     doc = doc_for_version(ctx, ctx.version or None)
     out = compute(ctx.timeline, doc, ctx.style, profile, video_fp, memes=channel_memes(ctx.project_id))

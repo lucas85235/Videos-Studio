@@ -52,6 +52,8 @@ export type ReferenceVideo = {
   status: 'novo' | 'pronto' | 'falhou';
   error: string | null;
   created_at: string | null;
+  /** Título limpo (as antigas guardaram o nome do arquivo do downloader, com o id do vídeo). */
+  display_title?: string;
   /** Nome do estilo criado a partir dela sem nome digitado: título limpo + " (referência)". */
   suggested_style_name?: string;
 };
@@ -268,7 +270,12 @@ export const visualApi = {
   profile: (id: string) => api.get<ReferenceProfileState>(`/api/references/${id}/profile`),
   /** Mede o perfil de novo (job `reference_profile`): `deep` acrescenta a fala e a visão. */
   measureProfile: (id: string, deep: boolean) => api.post<Job>(`/api/references/${id}/profile`, { deep }),
-  projectFromReference: (id: string, body: { title: string; style_name?: string; topic?: string; use_llm: boolean }) =>
+  /** Projeto novo direto (sem passar pelo formulário): o tema é obrigatório; `style_id` reaproveita um estilo já feito
+   * dela. 409 sem o perfil medido. A tela usa o formulário de projeto novo com o estilo escolhido. */
+  projectFromReference: (
+    id: string,
+    body: { topic: string; title?: string; style_name?: string; style_id?: string; channel_id?: string; use_llm: boolean },
+  ) =>
     api.post<ReferenceProjectResult>(`/api/references/${id}/project`, body),
   adherence: (id: string) => api.get<ReferenceAdherence>(`/api/references/${id}/adherence`),
   thumbs: (projectId: string, lang: string) =>

@@ -100,6 +100,21 @@ def test_mock_script_to_fingerprint_has_no_ai_face(project):
     index = metrics.ai_look_index(fp, style)
     assert index.score <= 55, index  # fora do vermelho
 
+    # "Vê o índice cair": o mesmo roteiro sem acervo e com o editor desligado é o slideshow de IA (a linha de base).
+    base = service.create_project(title="O farol (linha de base)", style_id=STYLE, topic=TOPIC)
+    base = base.model_copy(update={"style_overrides": {"edit": {"grammar": {"editor": "off"}}}})
+    service.commit(base.id, base, "editor desligado")
+    _run("script", base.id)
+    _run("storyboard", base.id)
+    base = service.get_doc(base.id)
+    assert not any(s.shots or s.fx for s in base.scenes)  # sem planejador
+    base_fp, base_style = _fingerprint(base)
+    before = metrics.ai_look_index(base_fp, base_style)
+    assert metrics.flat_metrics(base_fp)["ai_screen_share"] > 0.5
+    # o slideshow de IA fica na beira do vermelho (54 a 57 conforme a semente do projeto): longe do verde
+    assert before.score >= 50 and before.band != "verde", before
+    assert index.score < before.score - 10, (before.score, index.score)  # e a edição derruba o índice
+
 
 def test_reedit_intensity_and_locked_event_through_the_routes(project):
     doc = project

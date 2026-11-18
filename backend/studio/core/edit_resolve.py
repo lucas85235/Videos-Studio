@@ -5,7 +5,8 @@ O documento guarda a edição presa à fala: subplanos (`Scene.shots`) e eventos
 quadros relativos ao início da cena, o nível (`prov`) de cada plano, os SFX de evento (segundos no vídeo) e as quedas
 da trilha. Tudo determinístico pela semente do projeto e da cena.
 
-Só funções puras (o acervo e as imagens chegam prontos). A timeline (`core/timeline.py`) chama `resolve` por cena,
+Funções puras (o acervo e as imagens chegam prontos), com uma exceção: o arquivo do meme e do inserto
+(`params.src`/`video`) é conferido na pasta de dados, porque o Remotion cancela o render quando ele some. A timeline (`core/timeline.py`) chama `resolve` por cena,
 e só nos projetos com a camada de edição (`edit_active`): o projeto antigo gera a mesma timeline de antes.
 """
 
@@ -568,6 +569,32 @@ def _rect_at(frm: int, shots: ShotsResult | None, fallback: list[list[float]]) -
     return list(rects[0]) if rects else None
 
 
+# Eventos que desenham um arquivo da pasta de dados (`params.src`/`video`). O Remotion cancela o render inteiro
+# quando a imagem ou o vídeo dá 404: o arquivo que sumiu (meme apagado da biblioteca, pose do avatar refeita) sai
+# daqui, e o evento vira o "meme sem meme" (o renderer não desenha meme sem `src`, `video` nem `emoji`).
+FILE_FX = frozenset({"meme", "pip"})
+FILE_PARAMS = ("src", "video")
+FILE_FX_NOUNS = {"meme": "meme", "pip": "inserto"}
+
+
+def _drop_missing_files(params: dict[str, Any]) -> str | None:
+    """Tira de `params` o `src`/`video` cujo arquivo não existe na pasta de dados. Devolve o primeiro que sumiu."""
+    from studio.config import get_settings
+
+    data_dir = get_settings().data_dir
+    missing: str | None = None
+    for key in FILE_PARAMS:
+        value = params.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if value.startswith(("http://", "https://", "data:", "blob:")):
+            continue
+        if not (data_dir / value.replace("\\", "/").lstrip("/")).is_file():
+            params.pop(key)
+            missing = missing or value
+    return missing
+
+
 def resolve_fx(
     scene: Scene,
     words: list[dict[str, Any]],
@@ -603,6 +630,8 @@ def resolve_fx(
         return fx, sfx, drops, warnings
     fallback_rects = scene_rects(scene, doc)
     for i, event in enumerate(scene.fx):
+        if event.off:
+            continue  # apagado pelo usuário: só segura o lugar para o "Reeditar"
         name = fx_name(event.type)
         trig = trigger_frame(event.at, words, fps, alt_words=alt_words, script=script, length=length)
         frm = trig.frame
@@ -652,6 +681,11 @@ def resolve_fx(
         if event.type in AUDIO_ONLY_FX:
             continue
         dur = max(1, min(frames_of(ms, fps), length - frm))
+        if event.type in FILE_FX:
+            missing = _drop_missing_files(params)
+            if missing:
+                warnings.append(f"o arquivo do {FILE_FX_NOUNS.get(event.type, name)} sumiu ({missing}); "
+                                "o evento ficou sem a imagem")
         fx.append({"type": event.type, "from": frm, "dur": dur, "params": params})
     fx.sort(key=lambda e: e["from"])
     sfx.sort(key=lambda e: e["start"])

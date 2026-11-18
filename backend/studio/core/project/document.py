@@ -460,6 +460,12 @@ class FxEvent(BaseModel):
     def _at(cls, value: str) -> str:
         return _check_at(value, required=True) or ""
 
+    @property
+    def off(self) -> bool:
+        """Apagado pelo usuário (`params.off`): fica no documento (do usuário) só para o "Reeditar" não pôr outro do
+        mesmo tipo ali; nada sai no vídeo, nos créditos nem na contagem."""
+        return self.params.get("off") is True
+
 
 class ShotFraming(BaseModel):
     """Enquadramento do subplano: escala (1 = quadro inteiro) e centro (0 a 1)."""

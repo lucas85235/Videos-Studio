@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from studio.core.project import service
 from studio.core.styles import from_reference
@@ -60,11 +60,23 @@ class ProfileBody(BaseModel):
 
 
 class RefProjectBody(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=2000)
+    """O tema do vídeo novo (obrigatório): sem ele, o roteiro sairia sobre o título da referência (um remake)."""
+    title: str = Field(default="", max_length=200)
+    """Vazio: o tema. O título da referência mandado de volta sem mudar vira o título limpo (sem o id do downloader)."""
     style_name: str | None = Field(default=None, max_length=120)
-    topic: str = Field(default="", max_length=2000)
+    style_id: str | None = Field(default=None, max_length=80)
+    """Um estilo já feito desta referência (`grammar.profile_refs`): usa ele em vez de criar outro igual."""
     channel_id: str | None = Field(default=None, max_length=40)
     use_llm: bool = True
+
+    @field_validator("topic")
+    @classmethod
+    def _topic(cls, value: str) -> str:
+        clean = " ".join(value.split())
+        if not clean:
+            raise ValueError("Diga o tema do vídeo novo: da referência só vem a fórmula.")
+        return clean
 
 
 class ThumbSpecItem(BaseModel):
@@ -270,25 +282,61 @@ def _ready_reference(ref_id: str, action: str) -> dict[str, Any]:
     return ref
 
 
+NO_PROFILE = "Meça o perfil de edição antes de criar o projeto: sem ele, o estilo sai sem a gramática da referência."
+
+
+def reference_styles(ref_id: str) -> dict[str, str]:
+    """Os estilos do usuário feitos desta referência (`grammar.profile_refs`): {id: nome}."""
+    from studio.core.styles.library import StyleNotFound, get_style
+    from studio.core.styles.schema import grammar_for
+    from studio.db import session_scope
+    from studio.models import Style
+
+    with session_scope() as s:
+        rows = [(r.id, r.name) for r in s.query(Style.id, Style.name).all()]
+    out: dict[str, str] = {}
+    for style_id, name in rows:
+        try:
+            if ref_id in grammar_for(get_style(style_id)).profile_refs:
+                out[style_id] = name
+        except (StyleNotFound, ValueError):
+            continue
+    return out
+
+
 @router.post("/references/{ref_id}/project")
 def project_from_reference(ref_id: str, body: RefProjectBody) -> dict[str, Any]:
-    """"Novo projeto a partir desta referência": cria o estilo (como `POST .../style`) e um projeto com ele, com o nome
-    que o usuário deixou (a tela sugere o título limpo da referência)."""
+    """"Novo projeto a partir desta referência": um projeto novo, com o tema do usuário, no estilo feito dela. Com
+    `style_id` (um estilo já feito desta referência), usa esse; sem ele, cria o estilo (como `POST .../style`).
+    409 sem o perfil de edição medido: o estilo sairia sem a gramática e as fontes da referência."""
     ref = _ready_reference(ref_id, "criar o projeto")
+    if from_reference.profile_of(ref.get("stats") or {}) is None:
+        raise HTTPException(status_code=409, detail=NO_PROFILE)
+    suggestions: list[Any] = []
+    if body.style_id:
+        styles = reference_styles(ref_id)
+        if body.style_id not in styles:
+            raise HTTPException(status_code=422, detail="Esse estilo não foi feito desta referência.")
+        style_id, style_name = body.style_id, styles[body.style_id]
+    else:
+        try:
+            made = from_reference.create_from_reference(ref, use_llm=body.use_llm,
+                                                        name=(body.style_name or "").strip() or None)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        style_id, style_name = made["style"]["id"], made["style"]["name"]
+        suggestions = made.get("suggestions", [])
+    title = " ".join(body.title.split())
+    if title and title == " ".join(str(ref.get("title") or "").split()):
+        title = from_reference.reference_title(ref)  # o nome cru do downloader (com o id do vídeo) sai limpo
+    title = (title or body.topic)[:200].strip()
     try:
-        made = from_reference.create_from_reference(ref, use_llm=body.use_llm,
-                                                    name=(body.style_name or "").strip() or None)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    style_id = made["style"]["id"]
-    try:
-        doc = service.create_project(title=" ".join(body.title.split()), style_id=style_id, topic=body.topic.strip(),
-                                     channel_id=body.channel_id or None)
+        doc = service.create_project(title=title, style_id=style_id, topic=body.topic, channel_id=body.channel_id or None)
     except Exception as exc:  # noqa: BLE001 - o estilo fica em Meus estilos; o projeto se cria à mão
         raise HTTPException(status_code=422,
-                            detail=f"O estilo “{made['style']['name']}” foi criado, mas o projeto não: {exc}") from exc
+                            detail=f"O estilo “{style_name}” está pronto, mas o projeto não foi criado: {exc}") from exc
     return {"project": {"id": doc.id, "title": doc.title, "style_id": style_id},
-            "style": {"id": style_id, "name": made["style"]["name"]}, "suggestions": made.get("suggestions", [])}
+            "style": {"id": style_id, "name": style_name}, "suggestions": suggestions}
 
 
 MAX_ADHERENCE_PROJECTS = 12
@@ -298,25 +346,16 @@ MAX_ADHERENCE_PROJECTS = 12
 def reference_adherence(ref_id: str) -> dict[str, Any]:
     """Os projetos que usam um estilo feito desta referência (`grammar.profile_refs`) com a aderência ao perfil e o
     índice "cara de IA" (a medida de `GET /projects/{id}/edit-metrics`, só leitura). Os mais recentes primeiro."""
-    from studio.core.styles.library import StyleNotFound, get_style
-    from studio.core.styles.schema import grammar_for
     from studio.db import session_scope
-    from studio.models import Project, Style
+    from studio.models import Project
     from studio.workers.finalcheck.profile_check import project_metrics
 
     if references.get_reference(ref_id) is None:
         raise HTTPException(status_code=404, detail="referência não encontrada")
     with session_scope() as s:
-        style_rows = [(r.id, r.name) for r in s.query(Style.id, Style.name).all()]
         projects = [(p.id, p.title, p.style_id) for p in s.query(Project.id, Project.title, Project.style_id)
                     .order_by(Project.updated_at.desc()).all()]
-    styles: dict[str, str] = {}
-    for style_id, name in style_rows:
-        try:
-            if ref_id in grammar_for(get_style(style_id)).profile_refs:
-                styles[style_id] = name
-        except (StyleNotFound, ValueError):
-            continue
+    styles = reference_styles(ref_id)
     out: list[dict[str, Any]] = []
     for project_id, title, style_id in projects:
         if style_id not in styles:
