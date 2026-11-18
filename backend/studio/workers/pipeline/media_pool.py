@@ -56,7 +56,9 @@ OWN_DIR = "acervo"
 MAX_TOPICS = 15
 MAX_PHOTO_TOPICS = 6
 MAX_VIDEO_TOPICS = 4
-MAX_SOURCE_CAPTURES = 4
+MAX_SOURCE_CAPTURES = 8
+"""Fontes do roteiro capturadas por coleta completa (o vídeo longo cita 6 a 8 matérias; com 4, as do fim ficavam
+sem prova na tela)."""
 MAX_KIT_VIDEOS = 4
 MAX_ITEMS = 240
 MAX_PER_TOPIC = 30
@@ -69,7 +71,17 @@ MAX_ID_REGISTRY = 5000
 MAX_FALLBACK_TRIES = 3
 """Reservas tentadas por cena quando o item escolhido não anexa."""
 MAX_ATTACH_DOWNLOADS = 24
-"""Downloads por anexo (rede ruim não trava o storyboard por minutos)."""
+"""Piso de downloads por anexo (rede ruim não trava o storyboard por minutos)."""
+ATTACH_DOWNLOAD_SLACK = 8
+"""Folga para as reservas além de um download por cena pendente."""
+MAX_ATTACH_DOWNLOADS_CAP = 160
+"""Teto absoluto: um vídeo longo de 90 cenas cabe, um roteiro gigante não baixa sem fim."""
+
+
+def attach_download_budget(pending: int) -> int:
+    """Downloads permitidos num anexo com `pending` cenas esperando mídia do acervo. O piso fixo de 24 deixava o
+    vídeo longo (dezenas de cenas com foto ou trecho de banco) cair na imagem de IA a partir da 25ª cena."""
+    return min(MAX_ATTACH_DOWNLOADS_CAP, max(MAX_ATTACH_DOWNLOADS, pending + ATTACH_DOWNLOAD_SLACK))
 VIDEO_WALL_CLOCK_S = 180.0
 NOVELTY_WINDOW = 10
 NOVELTY_PENALTY = 0.5
@@ -1143,7 +1155,7 @@ def _has_real(scene: Scene, project_id: str) -> bool:
 def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]:
     """Anexa (em `doc`, no lugar) a mídia do acervo nas cenas que citam `pool_id` e ainda não estão prontas no
     projeto (`needs_attach`). Item que não baixa cai na reserva (`fallbacks`, até `MAX_FALLBACK_TRIES`; no máximo
-    `MAX_ATTACH_DOWNLOADS` downloads por anexo). Sem reserva, a cena volta à imagem de IA quando tem prompt; sem
+    `attach_download_budget` downloads por anexo). Sem reserva, a cena volta à imagem de IA quando tem prompt; sem
     prompt, repete a mídia real da cena vizinha, ou fica sem imagem (fundo do estilo). Devolve os avisos, dizendo o
     que de fato aconteceu."""
     from studio.core.styles.library import get_style
@@ -1155,6 +1167,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         style = None
     used: set[str] = set()
     downloads = 0
+    budget = attach_download_budget(sum(1 for s in doc.scenes if not s.locked and needs_attach(s.visual.media, doc.id)))
     failed: list[tuple[Scene, str]] = []
     for scene in doc.ordered_scenes():
         media = scene.visual.media
@@ -1170,7 +1183,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         source: PoolItem | None = None
         for candidate in [item, *fallbacks(pool, item, used)[:MAX_FALLBACK_TRIES]]:
             remote = _needs_network(candidate)
-            if remote and downloads >= MAX_ATTACH_DOWNLOADS:
+            if remote and downloads >= budget:
                 continue
             downloads += int(remote)
             try:

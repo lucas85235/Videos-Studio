@@ -21,7 +21,7 @@ from studio.api import routes_media
 from studio.api.app import create_app
 from studio.config import get_settings
 from studio.core.project import service
-from studio.core.project.document import ProjectDoc, Scene, Segment, Visual
+from studio.core.project.document import MediaRef, ProjectDoc, Scene, Segment, Visual
 from studio.core.project.pool import Pool, PoolItem, load_pool, save_pool
 from studio.core.styles.library import get_style
 from studio.db import session_scope
@@ -654,6 +654,39 @@ def test_attach_limits_retries_per_scene(isolated_settings, monkeypatch):
     doc.ordered_scenes()[0].visual.media = media_pool.pending_ref(items[0])
     media_pool.attach_chosen(doc, Pool(items=items))
     assert len(tried) == 1 + media_pool.MAX_FALLBACK_TRIES
+
+
+def test_attach_download_budget_grows_with_the_scenes_waiting():
+    assert media_pool.attach_download_budget(0) == media_pool.MAX_ATTACH_DOWNLOADS
+    assert media_pool.attach_download_budget(10) == media_pool.MAX_ATTACH_DOWNLOADS
+    assert media_pool.attach_download_budget(60) == 60 + media_pool.ATTACH_DOWNLOAD_SLACK
+    assert media_pool.attach_download_budget(10_000) == media_pool.MAX_ATTACH_DOWNLOADS_CAP
+
+
+def test_attach_downloads_every_scene_of_a_long_video(isolated_settings, monkeypatch):
+    """Vídeo longo: 40 cenas com foto de banco baixam todas (o teto fixo de 24 jogava as do fim na IA)."""
+    doc = _project()
+    template = doc.ordered_scenes()[0]
+    doc.scenes = []
+    for n in range(40):
+        scene = template.model_copy(deep=True)
+        scene.id = f"scn_{n:03d}"
+        doc.scenes.append(scene)
+    items = [PoolItem(id=f"p{n}", tier="stock", media="image", url=f"https://x.example/{n}.jpg", topic="Farol",
+                      source_id=f"pexels:{n}") for n in range(40)]
+    for scene, item in zip(doc.scenes, items, strict=True):
+        scene.visual.media = media_pool.pending_ref(item)
+    got: list[str] = []
+
+    def fake(item, *a, **k):
+        got.append(item.id)
+        return MediaRef(kind="photo", source="pexels", asset=f"uploads/{doc.id}/media/{item.id}.jpg", pool_id=item.id,
+                        tier="stock")
+
+    monkeypatch.setattr(media_pool, "materialize", fake)
+    media_pool.attach_chosen(doc, Pool(items=items))
+    assert len(got) == 40
+    assert all(s.visual.media is not None and s.visual.media.pool_id for s in doc.scenes)
 
 
 def test_missing_real_helper_respects_the_policy_and_locks(isolated_settings):
