@@ -115,6 +115,14 @@ class SetSceneLook(_Op):
     grade: str | None = None
 
 
+class SetAiReason(_Op):
+    """Por que a imagem da cena é de IA (hipótese, futuro, conceito; ADR 0004). Vazio tira o motivo."""
+
+    op: Literal["set_ai_reason"] = "set_ai_reason"
+    scene_id: str
+    text: str = ""
+
+
 class SplitScene(_Op):
     op: Literal["split_scene"] = "split_scene"
     scene_id: str
@@ -190,6 +198,7 @@ Operation = Annotated[
     | SetSceneKind
     | SetSceneText
     | SetSceneLook
+    | SetAiReason
     | SplitScene
     | MergeSceneWithNext
     | SetStyle
@@ -467,6 +476,9 @@ def apply_op(doc: ProjectDoc, op: Any, base_style: StyleSpec | None = None) -> N
                 if value is not None:
                     data[field] = value
             scene.look = type(scene.look).model_validate(data)
+        case SetAiReason():
+            scene = _scene(doc, op.scene_id)
+            scene.visual.ai_reason = " ".join(op.text.split())[:200] or None  # não muda a imagem: só a revisão
         case SplitScene():
             scene = _scene(doc, op.scene_id)
             visual = _split_visual(doc, scene, op.prompt)

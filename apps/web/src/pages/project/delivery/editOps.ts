@@ -27,6 +27,7 @@ export const OP_LABELS: Record<string, string> = {
   set_scene_kind: "Tipo de cena",
   set_scene_text: "Texto na tela",
   set_scene_look: "Cor e luz da cena",
+  set_ai_reason: "Motivo da imagem de IA",
   split_scene: "Dividir cena",
   merge_scene_with_next: "Juntar com a próxima cena",
   set_style: "Ajuste de estilo",
@@ -164,6 +165,10 @@ export const describeOp = (
     case "set_scene_text":
       out.quote = String(op.text ?? "");
       if (langNote) out.change = `Idioma${langNote}`;
+      break;
+    case "set_ai_reason":
+      if (op.text) out.quote = String(op.text);
+      else out.change = "Sem motivo";
       break;
     case "add_segment":
       out.quote = String(op.text ?? "");

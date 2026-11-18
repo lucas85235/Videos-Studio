@@ -45,6 +45,9 @@ class PoolItem(BaseModel):
     url: str = ""
     page_url: str = ""
     start_s: float = Field(default=0.0, ge=0)
+    """Clipe: onde o trecho começa no vídeo de ORIGEM (`url`), para o crédito e para cortar de novo. O `path` já é o
+    proxy cortado a partir desse ponto (começa em 0); a `MediaRef` anexada guarda em `start_s` o deslocamento dentro
+    do `video` dela, que para o proxy é 0."""
     dur_s: float | None = Field(default=None, gt=0)
     rects: list[list[float]] = []
     """Captura: retângulos do trecho, `[x, y, w, h]` de 0 a 1."""

@@ -87,7 +87,7 @@ export type MediaRef = {
   /** Captura: trechos destacados `[x, y, w, h]` (0 a 1). */
   rects?: number[][];
   tier?: Prov | null;
-  /** Item do acervo (`pool.json`) de onde a mídia veio. */
+  /** Item do acervo (`pool.json`) de onde a mídia veio; sem `asset` nem `video`, ainda não foi anexada (pendente). */
   pool_id?: string;
 };
 
@@ -542,6 +542,8 @@ export type StoryboardReview = {
     real_hints?: number;
     ai_pct?: number;
     real_pct?: number;
+    /** Cenas com mídia do acervo ainda não anexada (não contam em `real_pct`). */
+    media_pending?: number;
   };
   issues: StoryboardIssue[];
   retried: boolean;
@@ -905,6 +907,8 @@ export type BuildPlan = {
   media_scenes?: string[];
   /** Cenas com mídia real cujo arquivo sumiu da pasta de dados (ficam sem imagem). */
   media_missing?: string[];
+  /** Cenas com mídia do acervo ainda não anexada: mostram o prompt de IA de reserva (ou o fundo animado). */
+  media_pending?: string[];
   /** Cenas com parallax 2.5D (camadas pelo mapa de profundidade). */
   parallax_scenes?: string[];
   /** Tamanho (MB) do modelo de profundidade que ainda vai ser baixado para o parallax. */

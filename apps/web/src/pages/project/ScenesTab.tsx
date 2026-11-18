@@ -28,7 +28,7 @@ import {
   TRANSITION_LABELS,
   VISUAL_LANGUAGE_LABELS,
 } from '../../labels';
-import { Badge, Button, Card, Empty, ErrorBox, IconButton, Select, Skeleton, Spinner, Textarea, useConfirm } from '../../ui';
+import { Badge, Button, Card, Empty, ErrorBox, IconButton, Input, Select, Skeleton, Spinner, Textarea, useConfirm } from '../../ui';
 import { useJobStarting, useStartJob } from '../ProjectPage';
 import { promptDrafts, sceneChanges, useKeyedStore, useKeyedValue } from './core/drafts';
 import { ImageDialog } from './core/ImageDialog';
@@ -40,6 +40,7 @@ import {
   DOC_BUSY_REASON,
   docJobRunning,
   isActive,
+  isPendingMedia,
   isShort,
   nextStep,
   resolveCard,
@@ -64,9 +65,9 @@ const AUTO = 'Automática';
 const BUILD_KINDS = new Set(['preview', 'autopilot', 'render']);
 const BUSY_REASON = 'Aguarde o trabalho em andamento terminar.';
 
-/** Versões que não mudam o que a prévia mostra (aprovações, título, briefing, travas, sugestão de mídia real). */
+/** Versões que não mudam o que a prévia mostra (aprovações, título, briefing, travas, sugestão de mídia real, motivo da IA). */
 const NON_VISUAL_VERSION =
-  /^(Prévia aprovada|Roteiro aprovado|Cenas aprovadas|Título editado|Briefing editado|Trecho (des)?travado|Segmento (des)?travado)|: (des)?travada$|: sugestão de mídia real (dispensada|editada)$/;
+  /^(Prévia aprovada|Roteiro aprovado|Cenas aprovadas|Título editado|Briefing editado|Trecho (des)?travado|Segmento (des)?travado)|: (des)?travada$|: sugestão de mídia real (dispensada|editada)$|: motivo da IA (editado|removido)$/;
 
 /** Id do cartão da cena na página (os avisos da curadoria e o "Reaproveita a imagem da cena N" levam até ele). */
 const sceneDomId = (sceneId: string) => `cena-${sceneId}`;
@@ -302,6 +303,7 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
   const blocked = Boolean(blockedReason);
   const disabled = scene.locked || run.isPending || blocked;
   const name = `Cena ${index}`;
+  const pendingMedia = isPendingMedia(scene.visual.media);
 
   const setPrompt = (value: string) =>
     promptDrafts.set(projectId, scene.id, value === server ? null : { value, base: draft?.base ?? server });
@@ -415,7 +417,11 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2">
         <label htmlFor={promptId} className="text-xs font-medium text-subtle">
-          {scene.visual.media ? 'Prompt de reserva (vale se você tirar a mídia real)' : 'Prompt da imagem'}
+          {pendingMedia
+            ? 'Prompt de reserva (a mídia do acervo ainda não foi baixada: o vídeo usa esta imagem)'
+            : scene.visual.media
+              ? 'Prompt de reserva (vale se você tirar a mídia real)'
+              : 'Prompt da imagem'}
         </label>
         {draft && !disabled ? <span className="text-xs text-subtle">Ctrl+Enter salva</span> : null}
       </div>
@@ -590,6 +596,18 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
       <PresenterChip projectId={projectId} doc={doc} scene={scene} short={short} disabled={disabled} />
       {directed.length ? <p className="text-xs text-subtle">{directed.join(' · ')}</p> : null}
       {showPrompt ? promptBlock : null}
+      {(canRegenerate || scene.visual.ai_reason) && !scene.visual.media ? (
+        <AiReasonField
+          value={scene.visual.ai_reason ?? ''}
+          disabled={disabled}
+          onSave={(text) =>
+            run.mutate({
+              ops: [{ op: 'set_ai_reason', scene_id: scene.id, text }],
+              message: `${name}: motivo da IA ${text ? 'editado' : 'removido'}`,
+            })
+          }
+        />
+      ) : null}
       {short ? null : <div className="grid grid-cols-1 gap-2 @md:grid-cols-3">{selects}</div>}
       {buttons}
       <ErrorBox error={run.error} title="Não foi possível alterar a cena" onClose={() => run.reset()} />
@@ -598,6 +616,47 @@ const SceneCardImpl: React.FC<SceneCardProps> = ({
 };
 
 const SceneCard = memo(SceneCardImpl);
+
+/**
+ * "Por que IA": o motivo de a cena ser imagem de IA (hipótese, futuro, conceito; ADR 0004). A revisão das cenas avisa
+ * a imagem de IA sem motivo (`faltou_real`); salvar não muda a imagem. Enter ou sair do campo salva; Esc desfaz.
+ */
+const AiReasonField: React.FC<{ value: string; disabled: boolean; onSave: (text: string) => void }> = ({ value, disabled, onSave }) => {
+  const id = useId();
+  const [text, setText] = useState<string | null>(null);
+  const current = text ?? value;
+  const save = () => {
+    if (text === null) return;
+    const clean = text.trim().replace(/\s+/g, ' ');
+    setText(null);
+    if (clean !== value) onSave(clean);
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-xs font-medium text-subtle">
+        Por que IA (hipótese, futuro, conceito; vazio: sem motivo)
+      </label>
+      <Input
+        id={id}
+        value={current}
+        maxLength={200}
+        disabled={disabled}
+        placeholder="Ex.: hipótese sobre o tamanho do mapa"
+        onChange={(e) => setText(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            save();
+          } else if (e.key === 'Escape') {
+            setText(null);
+          }
+        }}
+        className="text-[13px]"
+      />
+    </div>
+  );
+};
 
 /** Quando terminou (ou começou) a última prévia/render concluída, em ms. */
 const lastBuildOf = (detail: ProjectDetail) =>

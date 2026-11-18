@@ -490,6 +490,8 @@ def run_storyboard(ctx: JobContext, payload: dict[str, Any], *, find_inline: boo
     edit_issues += plan_issues
     # A revisão (contagens e achados) sai do documento FINAL, depois do anexo do acervo e do planejador.
     review = _final_review(new_doc, review, edit_issues, style=style, pool=pool)
+    # e o aviso de cada cena cuja mídia do acervo ficou pendente (`midia_pendente`)
+    review = authoring.review_attached(new_doc, style, review, pool)
     counts = review["counts"]
     message = f"Cenas planejadas ({provider}): {counts['scenes']} cenas, {counts['new_images']} imagens novas"
     version = service.commit(project_id, new_doc, message, author="ai")

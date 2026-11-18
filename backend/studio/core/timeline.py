@@ -663,6 +663,10 @@ def build_timeline(
                 resolved["video"] = clip["path"]
                 if clip.get("seconds"):
                     resolved["video_seconds"] = round(float(clip["seconds"]), 3)
+                if clip.get("prov"):
+                    # Clipe real do acervo (ADR 0004) na cena de imagem: o nível do material vai sempre, com ou sem a
+                    # camada de edição, e o renderer toca o vídeo na cena de nível real (não só na cena-chave de IA).
+                    resolved["prov"] = clip["prov"]
             _spoken_timing(resolved, scene, raw_words, lang, f0, frame, fps)
             layer = presenter_layer(presenter, scene, resolved, raw_words, f0, f1, frame, fps,
                                     vertical=style.format.height > style.format.width,

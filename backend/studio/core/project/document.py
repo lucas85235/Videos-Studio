@@ -102,7 +102,8 @@ class MediaRef(BaseModel):
     video: str | None = None
     """Proxy de vídeo (mp4 h264 mudo), relativo a VS_DATA_DIR, para `clip` e meme animado. None: só a imagem."""
     start_s: float = Field(default=0.0, ge=0)
-    """Ponto de entrada no `video`, em segundos."""
+    """Ponto de entrada no `video`, em segundos: o deslocamento dentro DESSE arquivo (o proxy do acervo já é o trecho
+    e entra com 0), nunca o ponto no vídeo de origem (esse fica em `PoolItem.start_s`)."""
     dur_s: float | None = Field(default=None, gt=0)
     """Duração útil do trecho do `video` (None: até o fim)."""
     hold: bool = False

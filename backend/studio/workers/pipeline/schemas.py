@@ -195,6 +195,7 @@ EDIT_OPS = [
     "set_scene_kind",
     "set_scene_text",
     "set_scene_look",
+    "set_ai_reason",
     "split_scene",
     "merge_scene_with_next",
     "set_style",

@@ -36,7 +36,7 @@ from studio.core.styles.visual import (
 from studio.core.text import estimate_seconds, normalize_token, span_ranges
 from studio.core.text import words as split_words
 from studio.workers.pipeline import lighting
-from studio.workers.pipeline.build import scene_needs_image, wants_world
+from studio.workers.pipeline.build import lean_prompts, media_pending, scene_needs_image, wants_world
 
 GRAVE = "grave"
 AVISO = "aviso"
@@ -246,7 +246,8 @@ def review_counts(doc: ProjectDoc, budget: int, *, style: StyleSpec | None = Non
                   pool: Pool | None = None) -> dict[str, int]:
     """Contagens do documento final (inclui as cenas dos segmentos travados). `real_hints` (sugestões de mídia real
     ainda sem mídia) só aparece quando há alguma; `ai_pct` e `real_pct` (parte do tempo de tela com IA e com material
-    real), só com acervo de material real."""
+    real), só com acervo de material real. A mídia do acervo ainda pendente de anexo (`media_pending`, só quando há)
+    não conta como real: a cena mostra a reserva até o arquivo chegar."""
     new_images = sum(1 for s in doc.scenes if scene_needs_image(s) and not s.visual.asset)
     counts = {
         "scenes": len(doc.scenes),
@@ -259,12 +260,33 @@ def review_counts(doc: ProjectDoc, budget: int, *, style: StyleSpec | None = Non
     real_hints = sum(1 for s in doc.scenes if s.real is not None and s.visual.media is None)
     if real_hints:
         counts["real_hints"] = real_hints
+    pending = sum(1 for s in doc.scenes if media_pending(s.visual.media))
+    if pending:
+        counts["media_pending"] = pending
     if style is not None and has_real(pool):
         timed = screen_seconds(doc, style)
         total = sum(seconds for _s, _p, seconds in timed) or 1.0
         counts["ai_pct"] = round(100 * sum(sec for _s, prov, sec in timed if prov == "ai") / total)
-        counts["real_pct"] = round(100 * sum(sec for _s, prov, sec in timed if tiers.is_real(prov)) / total)
+        counts["real_pct"] = round(100 * sum(sec for scene, prov, sec in timed
+                                             if tiers.is_real(prov) and not media_pending(doc.shown_media(scene)))
+                                   / total)
     return counts
+
+
+def pending_media_issues(doc: ProjectDoc) -> list[Issue]:
+    """Um aviso por cena cuja mídia do acervo ficou pendente depois do anexo (rede, item sem download): o vídeo mostra
+    a imagem de IA de reserva ou, sem ela, o fundo animado, e o usuário precisa saber."""
+    issues: list[Issue] = []
+    for position, scene in enumerate(doc.ordered_scenes(), 1):
+        if not media_pending(scene.visual.media):
+            continue
+        shows = ("o vídeo usa a imagem de IA de reserva" if scene_needs_image(
+            scene.model_copy(update={"visual": scene.visual.model_copy(update={"media": None})}))
+                 else "a cena fica com o fundo animado")
+        issues.append(Issue("midia_pendente", AVISO, f"A mídia do acervo da cena {position} ainda não foi baixada: "
+                                                     f"{shows}. Anexe a mídia na cena ou refaça as cenas.",
+                            scene_id=scene.id))
+    return issues
 
 
 def _term_re(term: str) -> re.Pattern[str]:
@@ -979,8 +1001,10 @@ def _check_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 def _direction_light_text(doc: ProjectDoc, scene: Scene) -> str:
     """O que a direção acrescenta ao prompt da imagem e pode fixar a hora: tratamento, mundo, aparências e paleta."""
     art = doc.art
-    if art is None or not wants_world(art, scene.visual):
-        return ""  # sem entidade (nem direção do usuário), o mundo e o tratamento não entram no prompt
+    if art is None:
+        return ""
+    if lean_prompts(doc) and not wants_world(art, scene.visual):
+        return ""  # storyboard novo, sem entidade (nem direção do usuário): o mundo e o tratamento não entram
     looks = [e.look for e in (art.entity(i) for i in scene.visual.entities) if e]
     return ". ".join(t for t in (art.treatment, art.world, *looks, *art.palette) if t)
 
@@ -1308,8 +1332,10 @@ def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool
         if ai_scenes and policy.require_ai_reason:
             n = len(ai_scenes)
             what = "1 cena é imagem de IA" if n == 1 else f"{n} cenas são imagem de IA"
-            issues.append(Issue("faltou_real", AVISO, f"{what} sem motivo declarado e o acervo de material real está "
-                                                      "vazio: adicione links oficiais, fotos ou capturas no Acervo.",
+            issues.append(Issue("faltou_real", AVISO, f"{what} sem motivo declarado e o projeto não tem material "
+                                                      "real: anexe mídia real nas cenas (foto, link oficial ou "
+                                                      "notícia) ou cole os links nas Fontes do roteiro; quando a IA "
+                                                      'for de propósito, escreva o motivo em "Por que IA" na cena.',
                                 ai_scenes[0][1].key, ai_scenes[0][0].id, {"count": n}))
         return issues
     total = sum(seconds for _s, _p, seconds in timed) or 1.0
@@ -1328,8 +1354,8 @@ def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool
         if hook is not None and hook.kind != "count":
             prov = tiers.prov_of_scene(hook, doc)
             if prov not in policy.hook:
-                issues.append(Issue("hook_not_real", AVISO, f"O gancho mostra {_PROV_TEXT.get(prov, prov)}; o ideal é "
-                                                            "material próprio, oficial, captura ou foto livre.",
+                issues.append(Issue("hook_not_real", AVISO, f"O gancho mostra {PROV_LABELS.get(prov, prov)}; o ideal "
+                                                            "é material próprio, oficial, captura ou foto livre.",
                                     beats[0].key, hook.id))
     run: list[tuple[int, Scene, str, float]] = []
     for position, (scene, prov, seconds) in enumerate(timed, 1):
@@ -1341,12 +1367,16 @@ def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool
     if policy.require_ai_reason:
         for scene, beat in ai_scenes:
             issues.append(Issue("faltou_real", AVISO, "Imagem de IA sem motivo e sem item do acervo sobre o assunto: "
-                                                      "troque pelo material real (Acervo) ou diga o motivo.",
+                                                      'anexe mídia real na cena ou escreva o motivo em "Por que IA".',
                                 beat.key, scene.id))
     return issues
 
 
-_PROV_TEXT = {"ai": "imagem de IA", "graphic": "um cartão", "stock": "foto de banco de imagens", "meme": "um meme"}
+PROV_LABELS: dict[str, str] = {
+    "own": "material próprio", "official": "material oficial", "capture": "captura de página", "free": "foto livre",
+    "stock": "foto de banco de imagens", "graphic": "cartão", "meme": "meme", "ai": "imagem de IA",
+}  # fmt: skip
+"""O nível do material (`Prov`) em português, para as mensagens (o código do nível não diz nada ao usuário)."""
 
 
 def _tier_run(run: list[tuple[int, Scene, str, float]], in_beats: dict[str, Beat]) -> list[Issue]:
@@ -1358,7 +1388,7 @@ def _tier_run(run: list[tuple[int, Scene, str, float]], in_beats: dict[str, Beat
     at = next((scene for _p, scene, _v, _s in run if scene.id in in_beats), run[0][1])
     beat = in_beats.get(at.id)
     return [Issue("same_tier_run", AVISO, f"Cenas {first} a {last} ficam ~{total:.0f} s seguidos no mesmo tipo de "
-                                          f"material ({prov}): alterne com outro tipo.",
+                                          f"material ({PROV_LABELS.get(prov, prov)}): alterne com outro tipo.",
                   beat.key if beat else None, at.id, {"prov": prov, "seconds": round(total, 1)})]
 
 

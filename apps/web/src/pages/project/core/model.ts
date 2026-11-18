@@ -4,6 +4,7 @@ import {
   JOB_LABELS,
   type Job,
   type LocalizedText,
+  type MediaRef,
   type ProjectDetail,
   type ProjectDoc,
   type Scene,
@@ -536,6 +537,13 @@ export const screenTextsMissing = (doc: ProjectDoc, lang: string): number => {
   }).length;
 };
 
+/**
+ * Mídia do acervo escolhida pelo storyboard e ainda não anexada (`pool_id` sem arquivo): o vídeo mostra a reserva.
+ * Espelho de `media_pending` em build.py.
+ */
+export const isPendingMedia = (media: MediaRef | null | undefined): boolean =>
+  Boolean(media && media.pool_id && !media.asset && !media.video);
+
 /** Contagem da curadoria sobre o documento atual (mesmas definições de settings.storyboard_review.counts). */
 export const sceneCounts = (doc: ProjectDoc): SceneCounts => ({
   scenes: doc.scenes.length,
@@ -543,7 +551,8 @@ export const sceneCounts = (doc: ProjectDoc): SceneCounts => ({
   reused: doc.scenes.filter((s) => Boolean(s.visual.reuse_of)).length,
   cards: doc.scenes.filter((s) => CARD_KINDS.has(s.kind)).length,
   realHints: doc.scenes.filter((s) => Boolean(s.real) && !s.visual.media).length,
-  realMedia: doc.scenes.filter((s) => Boolean(s.visual.media)).length,
+  // Mídia do acervo ainda pendente de anexo não conta: o vídeo mostra a reserva até o arquivo chegar.
+  realMedia: doc.scenes.filter((s) => Boolean(s.visual.media) && !isPendingMedia(s.visual.media)).length,
 });
 
 const pickText = (texts: LocalizedText | undefined, lang: string, fallback: string): string =>

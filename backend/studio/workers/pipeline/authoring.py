@@ -370,7 +370,8 @@ Regras:
    composition e entities (ids da direção que aparecem nela).
 7. composition: deixe livre a faixa da legenda informada no pedido.
 8. A imagem de IA não se passa por foto: use linguagem assumidamente não fotográfica (collage_cutout, ink_sketch,
-   halftone_print, diagram, paper_cut ou as do estilo) e troque de linguagem de uma imagem de IA para a outra."""
+   halftone_print, diagram, paper_cut ou as da direção). Com acervo, troque de linguagem de uma imagem de IA para a
+   outra; sem acervo, a primeira da direção domina e as outras variam."""
 
 # Regras dos cartões de gráfico e mapa, só no pedido de estilo da família de dados e geografia.
 STORYBOARD_DATA_RULES = """Estilo de dados e geografia: além de stat e compare, o app desenha gráficos e mapas animados.
@@ -440,7 +441,10 @@ def _item_tokens(item: PoolItem) -> set[str]:
 
 def pool_block(pool: Pool) -> str:
     """As linhas do acervo para o pedido (`media_pool.prompt_block` é o dono do formato: `id · nível · tipo · desc ·
-    dur`, agrupado por tópico). Acervo vazio: ""."""
+    dur`, agrupado por tópico). Só com material real (`has_real`): acervo só de IA, gráfico ou meme não vira "real
+    primeiro" e não entra no pedido."""
+    if not has_real(pool):
+        return ""
     return media_pool.prompt_block(pool, max_lines=POOL_MAX_LINES)
 
 
@@ -601,6 +605,8 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
         lines += [
             'Acervo de material real (source "pool" + pool_id; id · nível · tipo · descrição · duração):',
             block,
+            "Item de nível meme, graphic ou ai não é imagem de batida (o meme é só reação, na piada): não cite em "
+            "pool_id.",
             *_policy_lines(style, total),
             "",
         ]
@@ -1018,13 +1024,22 @@ def _mark_from(data: dict[str, Any], beat: Beat, kind: str, is_hook: bool, humor
 # --- real primeiro: acervo, gancho, fundo dos cartões e teto de IA em tempo (ADR 0004) -------------
 
 _SOURCE_OF_TIER = {"own": "upload", "capture": "capture", "stock": "pexels", "meme": "library"}
-_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".mkv")
+
+
+def usable_item(item: PoolItem) -> bool:
+    """O item pode ser a imagem (ou o fundo) de uma batida: material real e não meme. Meme é reação à frase (entra
+    como evento de piada, pelo editor), nunca decoração; `graphic` e `ai` do acervo não são material real."""
+    return tiers.is_real(item.tier) and item.media != "meme"
 
 
 def media_from_pool(item: PoolItem) -> MediaRef:
-    """A mídia da cena que mostra um item do acervo, com o nível (`tier`) e o `pool_id`. Item já baixado (`path`)
-    entra pronto; sem `path` fica pendente: `media_pool.attach_chosen` baixa e preenche o arquivo."""
-    is_video = bool(item.path and item.path.lower().endswith(_VIDEO_EXTS))
+    """A mídia PENDENTE de anexo da cena que mostra um item do acervo (ADR 0004 §3.4/§3.5): nível (`tier`), `pool_id`,
+    tipo, origem, crédito, licença, `rects` e duração, sem arquivo (`asset`/`video`) e sem ponto de entrada.
+
+    Quem baixa/copia o item para a pasta do projeto e preenche `asset`, `video` e `start_s` é
+    `media_pool.attach_chosen` (o proxy do clipe já é o trecho: `MediaRef.start_s` é o deslocamento dentro do `video`,
+    não o `PoolItem.start_s` no vídeo de origem). Mesmo o item já local fica pendente: o arquivo do acervo vive no cache
+    da biblioteca, fora do projeto. Enquanto pendente, o build usa o prompt de reserva da cena (com aviso)."""
     if item.media in ("clip", "capture", "meme"):
         kind = item.media
     else:
@@ -1040,17 +1055,17 @@ def media_from_pool(item: PoolItem) -> MediaRef:
         source = _SOURCE_OF_TIER.get(item.tier, "link")
     return MediaRef(
         kind=kind, source=source,  # type: ignore[arg-type]
-        asset=item.poster if is_video else item.path, video=item.path if is_video else None,
         url=item.url, page_url=item.page_url, title=_text(item.desc, 200), license=item.license, credit=item.credit,
-        editorial=item.editorial or item.tier == "official", width=item.w or None, height=item.h or None,
-        start_s=item.start_s, dur_s=item.dur_s, rects=[list(r) for r in item.rects], tier=item.tier, pool_id=item.id,
+        editorial=item.editorial or item.tier == "official", dur_s=item.dur_s, rects=[list(r) for r in item.rects],
+        tier=item.tier, pool_id=item.id,
     )
 
 
 def _ai_languages(art: ArtDirection, style: StyleSpec, policy: SourcePolicy) -> list[str]:
-    """As linguagens da imagem de IA com acervo: as da direção (sem a foto, se a política não deixa a IA imitar
-    foto) e as assumidamente não fotográficas, para variar de uma imagem para a outra."""
-    base = list(art.languages) or list(style.art.languages[:3])
+    """As linguagens que a imagem de IA pode usar: as da direção (sem a foto, se a política não deixa a IA imitar
+    foto) e as assumidamente não fotográficas (regra 8 do pedido). Com acervo o storyboard alterna entre elas; sem
+    acervo, aceita a pedida e cai na primeira (a dominante da direção)."""
+    base = list(art.languages) or list(style.art.languages[:3]) or ["editorial"]
     allowed = [x for x in base if x in VISUAL_LANGUAGES and (policy.ai_photo or not VISUAL_LANGUAGES[x].photoreal)]
     return list(dict.fromkeys([*allowed, *NON_PHOTO_LANGUAGES]))
 
@@ -1106,20 +1121,20 @@ def _official_room(picks: list[_Pick], policy: SourcePolicy, seconds: float) -> 
 
 
 def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy,
-                   seconds: float = 0.0) -> PoolItem | None:
+                   seconds: float = 0.0, *, official: bool = True) -> PoolItem | None:
     """O item real do acervo que fala do mesmo assunto da batida (pelo menos uma palavra em comum), o menos usado e o
-    mais parecido; oficial só enquanto cabe no teto de material oficial."""
+    mais parecido; oficial só enquanto cabe no teto de material oficial (e nunca com `official=False`)."""
     uses = _uses(picks)
     order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
     best: tuple[Any, ...] | None = None
     chosen: PoolItem | None = None
     for index, item in enumerate(pool.items):
-        if not tiers.is_real(item.tier) or item.media == "meme":
+        if not usable_item(item):
             continue
         overlap = len(topic & _item_tokens(item))
         if overlap == 0:
             continue
-        if item.tier == "official" and not _official_room(picks, policy, seconds):
+        if item.tier == "official" and not (official and _official_room(picks, policy, seconds)):
             continue
         key = (-overlap, uses.get(item.id, 0), order.get(item.tier, 99), -item.score, index)
         if best is None or key < best:
@@ -1128,12 +1143,14 @@ def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: Sour
 
 
 def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy) -> PoolItem | None:
-    """Reserva do `pool_id` inválido: no mesmo tópico, o primeiro nível de `sources.FALLBACK` que o acervo tem; sem
-    nada do tópico, o item real genérico menos usado. None: nenhum item real (vira cartão)."""
+    """Reserva do `pool_id` inválido (ou de item que não serve de imagem): no mesmo tópico, o primeiro nível de
+    `sources.FALLBACK` que o acervo tem; sem nada do tópico, o item real genérico menos usado. None: nenhum item real
+    (vira cartão). Oficial só enquanto cabe no teto de material oficial."""
     uses = _uses(picks)
     order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
+    room = _official_room(picks, policy, 0.0)
     candidates = [(index, item) for index, item in enumerate(pool.items)
-                  if item.tier in order and tiers.is_real(item.tier) and item.media != "meme"]
+                  if item.tier in order and usable_item(item) and (room or item.tier != "official")]
     if not candidates:
         return None
     same = [(index, item) for index, item in candidates if topic & _item_tokens(item)]
@@ -1150,7 +1167,11 @@ def _clear_ai(p: _Pick) -> None:
 
 
 def _to_pool(p: _Pick, item: PoolItem) -> None:
+    """A batida passa a mostrar o item do acervo. O prompt de IA que ela tinha fica de reserva (vale se a mídia não
+    for anexada); o resto da imagem de IA sai."""
+    reserve = p.prompt
     _clear_ai(p)
+    p.prompt = reserve
     p.source, p.root, p.item, p.real = "pool", None, item, None
 
 
@@ -1162,6 +1183,13 @@ def _to_graphic(p: _Pick) -> None:
     p.source, p.root, p.item, p.real, p.motion, p.plain = "none", None, None, None, None, False
 
 
+def _item_text(item: PoolItem) -> str:
+    """O item do acervo para o usuário: a descrição curta e o tipo de material (nunca o id nem o código do nível)."""
+    label = storyboard_check.PROV_LABELS.get(item.tier, item.tier)
+    desc = _text(item.desc, 60)
+    return f'"{desc}" ({label})' if desc else label
+
+
 def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, lang: str) -> list[Issue]:
     """O gancho é o melhor item do acervo nos níveis do gancho da política (próprio, oficial, captura, foto livre):
     o do assunto da 1ª batida e, no empate, o primeiro nível e a maior nota. Sem item desses níveis, o melhor real
@@ -1171,8 +1199,8 @@ def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int |
     p = picks[hook]
     if p.source == "pool" and p.item is not None and p.item.tier in policy.hook:
         return []
-    candidates = [it for it in pool.items if it.tier in policy.hook and it.media != "meme"] or [
-        it for it in pool.items if tiers.is_real(it.tier) and it.media != "meme"]
+    candidates = [it for it in pool.items if it.tier in policy.hook and usable_item(it)] or [
+        it for it in pool.items if usable_item(it)]
     if not candidates:
         return []
     rank = {t: k for k, t in enumerate(policy.hook)}
@@ -1192,8 +1220,8 @@ def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int |
         p.kind, p.overlay, p.number = "image", None, None
     _to_pool(p, best)
     p.motion = None  # o gancho ganha o punch_zoom
-    return [Issue("gancho_real", CORRIGIDO, f"O gancho mostra o material real do acervo ({best.id}: "
-                                            f"{_text(best.desc, 60) or best.tier}).", p.beat.key)]
+    return [Issue("gancho_real", CORRIGIDO, f"O gancho mostra o material real do acervo: {_item_text(best)}.",
+                  p.beat.key)]
 
 
 def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None) -> list[Issue]:
@@ -1208,23 +1236,28 @@ def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: 
         if item is None:
             continue
         _to_pool(p, item)
-        issues.append(Issue("ia_sem_motivo", CORRIGIDO, f"A cena pedia imagem de IA sem motivo: usa o item {item.id} "
-                                                        f"do acervo ({item.tier}).", p.beat.key))
+        issues.append(Issue("ia_sem_motivo", CORRIGIDO, "A cena pedia imagem de IA sem motivo: mostra o item do acervo "
+                                                        f"{_item_text(item)}.", p.beat.key))
     return issues
 
 
-def _real_backgrounds(picks: list[_Pick]) -> None:
+def _real_backgrounds(picks: list[_Pick], policy: SourcePolicy) -> None:
     """Fundo dos cartões com acervo: o item real mais perto (antes, no empate); o fundo liso pedido fica liso; fundo
-    de IA só quando não há real nenhum. O contador do Top 10 e o mapa ficam como são."""
-    owners = [k for k, q in enumerate(picks) if q.source == "pool" and q.item is not None and tiers.is_real(q.item.tier)]
+    de IA só quando não há real nenhum. Material oficial só enquanto cabe no teto (`official_max_share`): passou dele,
+    o real não oficial mais perto ou, sem ele, o fundo liso. O contador do Top 10 e o mapa ficam como são."""
+    owners = [k for k, q in enumerate(picks) if q.source == "pool" and q.item is not None and usable_item(q.item)]
     for i, p in enumerate(picks):
         if p.kind not in CARD_KINDS or p.kind in ("count", "map") or p.plain or p.source == "pool":
             continue
         if p.source == "reuse" and p.root is not None and _pick_prov(picks, i) != "ai":
             continue
-        near = min((k for k in owners if k != i), key=lambda k: (abs(k - i), k > i), default=None)
+        room = _official_room(picks, policy, p.beat.seconds)
+        ranked = sorted((k for k in owners if k != i), key=lambda k: (abs(k - i), k > i))
+        near = next((k for k in ranked if room or _pick_prov(picks, k) != "official"), None)
         if near is not None:
             p.source, p.root = "reuse", near
+        elif ranked:
+            p.source, p.root = "none", None  # só havia real oficial e o teto acabou: fundo liso, nunca IA
         elif p.source == "none":
             last = next((k for k in range(i - 1, -1, -1) if picks[k].source == "new"), None)
             if last is not None:
@@ -1282,26 +1315,72 @@ def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook:
         item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds)
         if item is not None:
             _to_pool(p, item)
-            what = f"usa o item {item.id} do acervo ({item.tier})"
+            what = f"mostra o item do acervo {_item_text(item)}"
         else:
             _to_graphic(p)
             what = "virou cartão sobre o material real vizinho"
         issues.append(Issue("teto_de_ia", CORRIGIDO, f"Passou do teto de IA ({round(policy.ai_max_share * 100)}% do "
                                                      f"tempo): a cena {positions[i]} {what}.", p.beat.key))
-        _real_backgrounds(picks)
+        _real_backgrounds(picks, policy)
+        _flatten_roots(picks)
+    return issues
+
+
+def _enforce_official(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None,
+                      positions: list[int]) -> list[Issue]:
+    """Teto de material oficial em tempo de tela (`official_max_share`, risco de Content ID), como o de IA: das
+    últimas batidas para as primeiras (o gancho fica), a escolha oficial vira um item real não oficial do mesmo assunto
+    ou, sem ele, cartão (o fundo do cartão sai de um real não oficial ou fica liso, `_real_backgrounds`)."""
+    total = sum(p.beat.seconds for p in picks) or 1.0
+    cap = policy.official_max_share * total
+
+    def over() -> bool:
+        return _seconds_by_prov(picks).get("official", 0.0) > cap + 1e-6
+
+    issues: list[Issue] = []
+    tried: set[int] = set()
+    while over():
+        todo = [i for i in range(len(picks) - 1, -1, -1)
+                if i not in tried and i != hook and _pick_prov(picks, i) == "official"]
+        if not todo:
+            break
+        i = todo[0]
+        tried.add(i)
+        p = picks[i]
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds, official=False)
+        if p.kind in CARD_KINDS:
+            # Cartão sobre o oficial: o fundo passa a ser outro real (ou liso).
+            if item is not None:
+                p.source, p.root, p.item = "pool", None, item
+                what = f"passou a usar de fundo {_item_text(item)}"
+            else:
+                p.source, p.root, p.item, p.plain = "none", None, None, True
+                what = "ficou com o fundo liso"
+        elif item is not None:
+            _to_pool(p, item)
+            what = f"mostra {_item_text(item)}"
+        else:
+            _to_graphic(p)
+            what = "virou cartão"
+        issues.append(Issue("teto_oficial", CORRIGIDO, "Passou do teto de material oficial "
+                                                       f"({round(policy.official_max_share * 100)}% do tempo): a cena "
+                                                       f"{positions[i]} {what}.", p.beat.key))
+        _real_backgrounds(picks, policy)
         _flatten_roots(picks)
     return issues
 
 
 def _real_first(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, budget: int,
                 positions: list[int], lang: str) -> list[Issue]:
-    """Storyboard com acervo: gancho real, IA só com motivo, cartões sobre o real e o teto de IA em tempo."""
+    """Storyboard com acervo: gancho real, IA só com motivo, cartões sobre o real e os tetos de IA e de material
+    oficial em tempo de tela."""
     issues = _real_hook(picks, pool, policy, hook, lang)
     issues += _require_reason(picks, pool, policy, hook)
-    _real_backgrounds(picks)
+    _real_backgrounds(picks, policy)
     _flatten_roots(picks)
     issues += _enforce_ai_time(picks, pool, policy, hook, budget, positions)
-    _real_backgrounds(picks)
+    issues += _enforce_official(picks, pool, policy, hook, positions)
+    _real_backgrounds(picks, policy)
     _flatten_roots(picks)
     return issues
 
@@ -1311,21 +1390,21 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     """Cenas das batidas a partir da resposta (determinístico; nada aqui chama serviço externo).
 
     Com acervo de material real (`pool` com item real), o real vem primeiro (ADR 0004): `source "pool"` com `pool_id`
-    válido vira `Visual.media` (pendente de anexo quando o item ainda não foi baixado); id inválido segue
-    `sources.FALLBACK` no mesmo tópico; o gancho é o melhor item do acervo; o fundo do cartão é o real vizinho; e o
-    teto de IA é em tempo de tela (`_real_first`). Sem acervo, o de sempre."""
+    válido vira `Visual.media` pendente de anexo (`media_from_pool`, com prompt de IA de reserva); id inválido, ou
+    item que não serve de imagem (meme, gráfico, IA), segue `sources.FALLBACK` no mesmo tópico; o gancho é o melhor
+    item do acervo; o fundo do cartão é o real vizinho; e os tetos de IA e de material oficial são em tempo de tela
+    (`_real_first`). Sem acervo, o de sempre (a linguagem da IA segue a política de fontes)."""
     lang = doc.primary_language
     real_first = has_real(pool)
     policy = sources_for(style)
     grammar = grammar_for(style)
-    ai_languages = _ai_languages(art, style, policy) if real_first else []
+    ai_languages = _ai_languages(art, style, policy)
     by_key: dict[str, dict[str, Any]] = {}
     for item in _list(raw_scenes):
         if isinstance(item, dict) and isinstance(item.get("key"), str):
             by_key.setdefault(item["key"].strip(), item)
     is_top = style.structure == Structure.top10
     safe = compositions_for_caption(style.edit.captions.position)
-    languages = list(art.languages) or list(style.art.languages[:3]) or ["editorial"]
     entity_ids = {e.id for e in art.entities}
     index_of = {beat.key: i for i, beat in enumerate(beats)}
     # O gancho (1ª cena do vídeo) tem prioridade no orçamento; o contador do Top 10 fica como é.
@@ -1371,13 +1450,16 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         if real_first and kind not in ("count", "map"):
             assert pool is not None
             if source == "pool":
-                chosen_item = pool.item(_text(data.get("pool_id"), 12))
-                if chosen_item is None:  # id inválido (ou ausente): a reserva no mesmo tópico
+                cited = pool.item(_text(data.get("pool_id"), 12))
+                chosen_item = cited if cited is not None and usable_item(cited) else None
+                if chosen_item is None:
+                    # id inválido (ou ausente), ou item que não serve de imagem da batida (meme é reação, nunca
+                    # decoração; imagem de IA e gráfico do acervo não são material real): a reserva no mesmo tópico.
                     chosen_item = _fallback_item(pool, topic, picks, policy)
-                    early.append(Issue("acervo_reserva", CORRIGIDO, (
-                        f'O item "{_text(data.get("pool_id"), 12) or "(vazio)"}" não está no acervo: '
-                        + (f"usa {chosen_item.id} ({chosen_item.tier})." if chosen_item else "virou cartão.")),
-                        beat.key))
+                    why = ("A cena citava um item que não está no acervo" if cited is None else
+                           f"A cena citava {_item_text(cited)}, que não serve de imagem da batida")
+                    early.append(Issue("acervo_reserva", CORRIGIDO, f"{why}: " + (
+                        f"usa {_item_text(chosen_item)}." if chosen_item else "virou cartão."), beat.key))
                 if chosen_item is None:
                     source = "none"
                     kind = "text" if kind == "image" else kind
@@ -1425,9 +1507,11 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             p.ai_reason = _text(data.get("ai_reason"), 200)
             chosen = pick(data.get("language"), VISUAL_LANGUAGES)
             if real_first:
-                p.language = chosen  # a linguagem da IA que sobrar sai depois do teto (`_vary_ai_languages`)
+                p.language = chosen  # a linguagem da IA que sobrar sai depois do teto (o laço depois de `_real_first`)
             else:
-                p.language = chosen if chosen in languages else languages[0]
+                # Sem acervo: a pedida, se vale (as da direção sem a foto quando a política não deixa a IA imitar foto,
+                # e as não fotográficas da regra 8); senão a dominante da direção.
+                p.language = chosen if chosen in ai_languages else ai_languages[0]
             p.shot = pick(data.get("shot"), SHOTS) or _next_shot(last_shot)
             composition = pick(data.get("composition"), COMPOSITIONS)
             p.composition = composition if composition in safe else safe[new_count % len(safe)]
@@ -1479,10 +1563,12 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
                             shot=p.shot, composition=p.composition, entities=p.entities,
                             ai_reason=p.ai_reason or None)
         elif p.source == "pool" and p.item is not None:
-            # Mídia do acervo: pendente de anexo (`media_pool.attach_chosen`) quando o item ainda não foi baixado. O
-            # prompt que a resposta trouxe fica de reserva (vale quando a mídia sai), como na mídia anexada à mão.
-            visual = Visual(prompt=p.prompt, seed=seed_from(doc.seed, beat.segment_id, beat.part),
-                            language=languages[0] if p.prompt else None, media=media_from_pool(p.item))
+            # Mídia do acervo pendente de anexo (`media_pool.attach_chosen` baixa e preenche o arquivo). A cena de
+            # imagem guarda um prompt de IA de reserva (o da resposta ou a fala), como na mídia anexada à mão: vale
+            # quando a mídia sai ou não é anexada (o build avisa), e a cena nunca fica vazia.
+            reserve = (p.prompt or beat.text) if p.kind == "image" else p.prompt
+            visual = Visual(prompt=reserve, seed=seed_from(doc.seed, beat.segment_id, beat.part),
+                            language=ai_languages[0] if reserve else None, media=media_from_pool(p.item))
         elif p.source == "reuse":
             visual = Visual()
         else:
@@ -1665,9 +1751,12 @@ def _detach_kept(old: ProjectDoc, kept: list[Scene]) -> None:
 
 def _carry_media(old: ProjectDoc, new: ProjectDoc, keep_segments: set[str]) -> int:
     """A mídia real anexada pelo usuário sobrevive a "refazer as cenas": a cena nova que cobre o mesmo trecho
-    (mesmo segmento, parte, número de partes e palavras) recebe uma cópia dela. Devolve quantas cenas."""
+    (mesmo segmento, parte, número de partes e palavras) recebe uma cópia dela, mesmo sobre a escolha nova do acervo
+    (a escolha à mão vale mais). A mídia que o storyboard anterior escolheu sozinho do acervo (`pool_id`) não passa:
+    o storyboard novo escolhe de novo (o `pool_id` antigo pode nem existir no acervo recoletado). Devolve quantas
+    cenas."""
     attached = {(s.segment_id, s.part, s.parts, s.span): s.visual.media for s in old.scenes
-                if s.visual.media is not None and s.segment_id not in keep_segments}
+                if s.visual.media is not None and not s.visual.media.pool_id and s.segment_id not in keep_segments}
     carried = 0
     for scene in new.scenes:
         if scene.segment_id in keep_segments:
@@ -1760,6 +1849,21 @@ def _review(doc: ProjectDoc, budget: int, issues: list[Issue], retried: bool, *,
         "style_note": art.style_note if art else "",
         "suggested_style": art.suggested_style if art else None,
     }
+
+
+def review_attached(doc: ProjectDoc, style: StyleSpec, review: dict[str, Any], pool: Pool | None) -> dict[str, Any]:
+    """A revisão do storyboard depois do anexo do acervo (`media_pool.attach_chosen`), sobre o documento que vai ser
+    gravado: as contagens de novo (a mídia que chegou conta como real; a que caiu na reserva, como IA) e um aviso por
+    cena cuja mídia do acervo ficou pendente (`midia_pendente`). Sem acervo real e sem pendência, fica como veio."""
+    counts = review.get("counts") or {}
+    pending = storyboard_check.pending_media_issues(doc)
+    if not pending and not has_real(pool) and not counts.get("media_pending"):
+        return review
+    fresh = storyboard_check.review_counts(doc, int(counts.get("budget", 0)), style=style, pool=pool)
+    order = {storyboard_check.GRAVE: 0, storyboard_check.AVISO: 1, CORRIGIDO: 2}
+    issues = [i for i in review.get("issues") or [] if i.get("code") != "midia_pendente"]
+    issues = sorted([*issues, *(i.as_dict() for i in pending)], key=lambda i: order.get(i.get("severity"), 9))
+    return {**review, "counts": fresh, "issues": issues}
 
 
 def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = None, job_id: str | None = None,
