@@ -584,7 +584,8 @@ class ReferenceVideo(Base):
 
 
 class QualityReport(Base):
-    """Relatório de conferência: áudio (kind "audio", bloco G) ou vídeo final (kind "final", bloco H).
+    """Relatório de conferência: áudio (kind "audio", bloco G), vídeo final (kind "final", bloco H) ou edição
+    (kind "edit", ADR 0004 §3.10: itens `perfil.*` e o índice "cara de IA" em `data`).
 
     Cada item: {"code", "level": "ok"|"aviso"|"erro", "title", "detail", "at_s", "scene_id"}.
     """
@@ -593,7 +594,7 @@ class QualityReport(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
-    kind: Mapped[str] = mapped_column(String(20))  # audio|final
+    kind: Mapped[str] = mapped_column(String(20))  # audio|final|edit
     lang: Mapped[str] = mapped_column(String(10))
     version: Mapped[int] = mapped_column(Integer, default=0)  # Project.current_version na conferência
     source: Mapped[str] = mapped_column(String(300), default="")  # arquivo conferido (relativo): mix ou vídeo

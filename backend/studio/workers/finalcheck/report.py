@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -67,6 +68,14 @@ def run_final_check(project_id: str, lang: str | None = None, progress: Progress
 
     items += [measure.item("novelty", "aviso", "Parecido com vídeo recente do canal", text)
               for text in novelty.safe_warnings(project_id)]
+    if not ctx.timeline_stale:
+        step(0.72, "Medindo a edição")
+        from studio.workers.finalcheck import profile_check  # relatório próprio: QualityReport(kind="edit")
+
+        try:
+            profile_check.run_edit_check(ctx)
+        except Exception as exc:  # noqa: BLE001 - a medida da edição nunca derruba a conferência do vídeo
+            logging.getLogger(__name__).warning("conferência da edição falhou: %s", exc)
     step(0.75, "Folha de quadros")
     out = get_settings().outputs_dir / project_id / ctx.lang / SHEET_NAME
     contact_sheet(video, out, duration)

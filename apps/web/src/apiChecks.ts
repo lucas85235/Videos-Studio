@@ -18,7 +18,7 @@ export type CheckItem = {
 export type QualityReport = {
   id: number;
   project_id: string;
-  kind: 'audio' | 'final';
+  kind: 'audio' | 'final' | 'edit';
   lang: string;
   version: number;
   source: string;
@@ -53,8 +53,85 @@ export type Preflight = {
   items: CheckItem[];
 };
 
+/** Nível (origem) do material na tela, do mais real ao gerado (ADR 0004; `core/sources.py`). */
+export type Prov = 'own' | 'official' | 'capture' | 'free' | 'stock' | 'graphic' | 'meme' | 'ai';
+
+/** Faixa do índice "cara de IA": verde até 30, amarelo até 55, vermelho acima. */
+export type AiLookBand = 'verde' | 'amarelo' | 'vermelho';
+
+export type AiLookPart = {
+  key: string;
+  label: string;
+  value: number;
+  /** Alvo em texto ("≤ 0.2", "≥ 0.45", "2–5"). */
+  target: string;
+  /** 0 (no alvo) a 1 (o pior). */
+  penalty: number;
+  weight: number;
+  points: number;
+};
+
+/** Métricas da tabela do ADR 0004 §6. */
+export type EditFlatMetrics = {
+  ai_screen_share: number;
+  hook_real: boolean;
+  hook_prov: Prov | null;
+  real_share: number;
+  official_share: number;
+  shot_median: number;
+  p10: number;
+  p90: number;
+  shot_cv: number;
+  kb_share: number;
+  events_per_min: number;
+  sfx_per_min: number;
+  switch_per_min: number;
+  max_same_prov_run: number;
+  max_same_prov_run_s: number;
+  max_still_s: number;
+  repeat_hits: number;
+};
+
+/** Trecho seguido com o mesmo nível de fonte (segundos). `scene_id`: a cena onde o trecho começa. */
+export type ProvStripSpan = { start: number; end: number; prov: Prov; scene_id: string };
+
+export type EditMetricsSource = 'final' | 'preview' | 'estimate';
+
+/** `GET /projects/{id}/edit-metrics` (ADR 0004 §3.10). */
+export type EditMetrics = {
+  project_id: string;
+  lang: string;
+  /** Timeline medida: a do vídeo final, a da última prévia ou a estimada pelo roteiro. */
+  source: EditMetricsSource;
+  source_label: string;
+  version: number | null;
+  profile_refs: string[];
+  index: { score: number; band: AiLookBand; parts: AiLookPart[] };
+  metrics: EditFlatMetrics;
+  /** `EditFingerprint` completo (blocos pace/camera/materials/overlays/audio). */
+  fingerprint: Record<string, unknown>;
+  timeline_fingerprint: Record<string, unknown> | null;
+  /** Aderência ao perfil da referência do estilo (null: o estilo não veio de um perfil medido). */
+  adherence: {
+    score: number | null;
+    tolerance: number;
+    parts: { field: string; value: number; target: number; score: number }[];
+  } | null;
+  targets: Record<string, unknown>;
+  items: CheckItem[];
+  status: CheckLevel;
+  strip: ProvStripSpan[];
+  duration: number;
+  /** Último `QualityReport(kind="edit")` do idioma (auditado no MP4), se houver. */
+  report: QualityReport | null;
+};
+
 export const checksApi = {
   preflight: (projectId: string, lang: string) =>
     api.get<Preflight>(`/api/projects/${projectId}/preflight?lang=${encodeURIComponent(lang)}`),
   runPreflight: (projectId: string, lang: string) => api.post<Job>(`/api/projects/${projectId}/preflight`, { lang }),
+  editMetrics: (projectId: string, lang: string, source: 'auto' | EditMetricsSource = 'auto') =>
+    api.get<EditMetrics>(
+      `/api/projects/${projectId}/edit-metrics?lang=${encodeURIComponent(lang)}&source=${source}`,
+    ),
 };

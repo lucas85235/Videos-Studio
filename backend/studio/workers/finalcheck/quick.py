@@ -239,3 +239,206 @@ def quick_items(ctx: FinalContext) -> list[dict[str, Any]]:
         out.append(item("captions", "aviso", "Sem legendas", "o vídeo sobe sem o arquivo de legendas."))
     out.append(_ai_item(ctx.style))
     return out
+
+
+# --- Conferência da edição (ADR 0004 §3.10): itens `perfil.*` a partir da timeline, sem FFmpeg ----------------------
+
+EDIT_CODES = ("perfil.ia", "perfil.ritmo", "perfil.material", "perfil.sfx", "perfil.eventos", "perfil.parado",
+              "perfil.repeticao", "perfil.licenca")
+UNKNOWN_LICENSES = frozenset({"", "desconhecida", "unknown", "?"})
+PROV_LABELS = {"own": "material próprio", "official": "material oficial", "capture": "captura de página",
+               "free": "foto livre", "stock": "banco de imagens", "graphic": "gráfico", "meme": "meme",
+               "ai": "imagem de IA"}
+
+
+def _pct(value: float) -> str:
+    return f"{round(value * 100):d}%"
+
+
+def _n(value: float) -> str:
+    return f"{value:.1f}".replace(".", ",")
+
+
+def _library_licenses() -> dict[str, str]:
+    """Licença de cada item das bibliotecas de SFX e memes (manifestos `library/sfx|memes/manifest.json` do usuário e
+    o do pacote básico do repositório). Biblioteca ainda inexistente: vazio."""
+    from studio.config import REPO_ROOT
+
+    out: dict[str, str] = {}
+    paths = [REPO_ROOT / "assets" / "sfx" / "vulto-basico" / "manifest.json",
+             get_settings().library_dir / "sfx" / "manifest.json",
+             get_settings().library_dir / "memes" / "manifest.json"]
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = data.get("items", []) if isinstance(data, dict) else data
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and row.get("id"):
+                out[str(row["id"])] = str(row.get("license") or "")
+    return out
+
+
+def _license_items(doc: ProjectDoc, timeline: dict[str, Any], starts: dict[str, float]) -> list[dict[str, Any]]:
+    """Meme anexado sem licença e inserto da biblioteca (SFX ou meme, por `lib_id`) com licença desconhecida."""
+    out: list[dict[str, Any]] = []
+    for scene in doc.ordered_scenes():
+        media = scene.visual.media
+        if media is not None and media.kind == "meme" and media.license.strip().lower() in UNKNOWN_LICENSES:
+            out.append(item("perfil.licenca", "aviso", "Meme sem licença declarada",
+                            "material de terceiros só entra com licença registrada: declare a licença ou troque.",
+                            starts.get(scene.id), scene.id))
+    libs: list[tuple[str, str]] = []
+    for scene in doc.scenes:
+        libs += [(str(fx.params["lib_id"]), scene.id) for fx in scene.fx if fx.params.get("lib_id")]
+    libs += [(str(e["lib_id"]), str(e.get("scene") or e.get("scene_id") or "")) for e in timeline.get("sfx") or []
+             if isinstance(e, dict) and e.get("lib_id")]
+    if libs:
+        licenses = _library_licenses()
+        seen: set[str] = set()
+        for lib_id, scene_id in libs:
+            if lib_id in seen or lib_id not in licenses:
+                continue
+            seen.add(lib_id)
+            if licenses[lib_id].strip().lower() in UNKNOWN_LICENSES:
+                out.append(item("perfil.licenca", "aviso", f"Inserto \"{lib_id}\" com licença desconhecida",
+                                "som ou meme sem licença conhecida fica fora do automático: troque ou declare a "
+                                "licença na biblioteca.", starts.get(scene_id), scene_id or None))
+    return out
+
+
+def edit_items(timeline: dict[str, Any], doc: ProjectDoc, style: StyleSpec, profile: Any = None,
+               fp: Any = None) -> list[dict[str, Any]]:
+    """Itens `perfil.*` da edição a partir da timeline (um `ok` por código quando está tudo certo; `perfil.material`
+    e `perfil.licenca` podem ter mais de um aviso). `profile`: o `EditProfile` da referência (alvos medidos). `fp`:
+    impressão a usar no lugar da medida da timeline (a do MP4 mesclada, na conferência do render); os tempos e as cenas
+    dos itens continuam saindo da timeline. Nenhum item é erro: edição é gosto, não trava o envio."""
+    from studio.core.editing import metrics
+
+    measure = metrics.measure_timeline(timeline, doc)
+    if not measure.shots:
+        return [item("perfil.ia", "ok", "Edição não medida", "a timeline não tem cenas.")]
+    fp = fp or measure.fp
+    t = metrics.targets_for(style, profile)
+    index = metrics.ai_look_index(fp, style, profile)
+    starts: dict[str, float] = {}
+    for shot in measure.shots:
+        starts.setdefault(shot.scene_id, shot.start)
+    out: list[dict[str, Any]] = []
+
+    def longest_run(prov: str) -> tuple[float | None, str | None]:
+        best, best_at, best_scene = 0.0, None, None
+        run, run_at, run_scene = 0.0, 0.0, None
+        for shot in measure.shots:
+            if shot.prov != prov:
+                run = 0.0
+                continue
+            if run == 0:
+                run_at, run_scene = shot.start, shot.scene_id
+            run += shot.dur
+            if run > best:
+                best, best_at, best_scene = run, run_at, run_scene
+        return best_at, best_scene
+
+    # IA na tela (com o índice no detalhe)
+    ai = metrics.ai_screen_share(fp)
+    summary = f"Índice \"cara de IA\": {index.score} de 100 ({index.band})."
+    title = f"Imagem de IA em {_pct(ai)} da tela (teto {_pct(t.ai_max_share)})"
+    if ai > t.ai_max_share + 1e-9:
+        at, sid = longest_run("ai")
+        out.append(item("perfil.ia", "aviso", title,
+                        f"{summary} Troque IA por material real nas cenas marcadas (Acervo) ou reedite.", at, sid))
+    else:
+        out.append(item("perfil.ia", "ok", title, summary))
+
+    # Ritmo dos planos
+    lo, hi = t.shot_median_band
+    pace_issues = []
+    if fp.pace.median_s < lo or fp.pace.median_s > hi:
+        pace_issues.append(f"plano mediano de {_n(fp.pace.median_s)} s (alvo de {_n(lo)} a {_n(hi)} s)")
+    if fp.pace.cv < t.cv_min:
+        pace_issues.append(f"durações parecidas demais (variação {_n(fp.pace.cv)}, mínimo {_n(t.cv_min)})")
+    if pace_issues:
+        out.append(item("perfil.ritmo", "aviso", "Ritmo de slideshow", "; ".join(pace_issues) + "."))
+    else:
+        out.append(item("perfil.ritmo", "ok",
+                        f"Ritmo dos planos: mediana {_n(fp.pace.median_s)} s, variação {_n(fp.pace.cv)}"))
+
+    # Material: gancho, real, oficial e sequência do mesmo tipo
+    material: list[dict[str, Any]] = []
+    if fp.hook_prov == "ai":
+        material.append(item("perfil.material", "aviso", "O gancho abre com imagem de IA",
+                             "os 3 primeiros segundos pedem material real (oficial, captura ou foto).", 0.0,
+                             measure.shots[0].scene_id))
+    real = metrics.real_share(fp)
+    if real < t.real_share_min:
+        material.append(item("perfil.material", "aviso", f"Material real em {_pct(real)} da tela",
+                             f"o alvo é pelo menos {_pct(t.real_share_min)}."))
+    official = fp.materials.prov_mix.get("official", 0.0)
+    if official > t.official_max_share + 1e-9:
+        at, sid = longest_run("official")
+        material.append(item("perfil.material", "aviso", f"Material oficial em {_pct(official)} da tela",
+                             f"acima de {_pct(t.official_max_share)} cresce o risco de Content ID.", at, sid))
+    if fp.materials.max_same_prov_run > t.max_run_shots or fp.materials.max_same_prov_run_s > t.max_run_s:
+        run, run_at, run_scene, prev = 0, 0.0, "", ""
+        best: tuple[int, float, str, str] = (0, 0.0, "", "")
+        for shot in measure.shots:
+            if shot.prov == prev:
+                run += 1
+            else:
+                run, run_at, run_scene, prev = 1, shot.start, shot.scene_id, shot.prov
+            if run > best[0]:
+                best = (run, run_at, run_scene, prev)
+        label = PROV_LABELS.get(best[3], best[3])
+        material.append(item("perfil.material", "aviso",
+                             f"{fp.materials.max_same_prov_run} planos seguidos de {label}",
+                             f"troque o tipo de mídia a cada {t.max_run_shots} planos ou {_n(t.max_run_s)} s.",
+                             best[1], best[2] or None))
+    out += material or [item("perfil.material", "ok", f"Material real em {_pct(real)} da tela")]
+
+    # SFX (sem contar os da transição)
+    s_lo, s_hi = t.sfx_band
+    sfx = fp.audio.sfx_per_min
+    if sfx < s_lo or sfx > s_hi:
+        how = "poucos" if sfx < s_lo else "muitos"
+        out.append(item("perfil.sfx", "aviso", f"{_n(sfx)} efeitos sonoros por minuto ({how})",
+                        f"alvo de {_n(s_lo)} a {_n(s_hi)} por minuto, sem contar os da transição."))
+    else:
+        out.append(item("perfil.sfx", "ok", f"{_n(sfx)} efeitos sonoros por minuto"))
+
+    # Eventos (cortes + punch + fx + insertos)
+    events = fp.pace.events_per_min
+    floor = t.events_min * (1 - min(t.tolerance, 0.9))
+    if events < floor:
+        out.append(item("perfil.eventos", "aviso", f"{_n(events)} eventos por minuto",
+                        f"cortes, punch, textos e insertos somam menos que {_n(floor)} por minuto (alvo "
+                        f"{_n(t.events_min)})."))
+    else:
+        out.append(item("perfil.eventos", "ok", f"{_n(events)} eventos por minuto"))
+
+    # Maior trecho parado
+    if fp.pace.max_still_s > t.max_still_s:
+        still_at: float | None = None
+        still_scene: str | None = None
+        if fp is measure.fp:  # a medida do MP4 não diz onde: só a da timeline aponta o trecho
+            still_at = measure.still[0]
+            still_scene = next((s.scene_id for s in measure.shots if s.start <= still_at < s.end), None)
+        out.append(item("perfil.parado", "aviso", f"{_n(fp.pace.max_still_s)} s sem nenhum evento visual",
+                        f"o máximo é {_n(t.max_still_s)} s: um corte, punch ou texto quebra o trecho.", still_at,
+                        still_scene))
+    else:
+        out.append(item("perfil.parado", "ok", f"Maior trecho sem evento: {_n(fp.pace.max_still_s)} s"))
+
+    # Repetições
+    if fp.repeat_hits:
+        rep_at, rep_scene = measure.repeats[0] if measure.repeats else (None, None)
+        n = fp.repeat_hits
+        out.append(item("perfil.repeticao", "aviso", f"{n} repetiç{'ões' if n > 1 else 'ão'} de imagem ou meme",
+                        f"a mesma imagem aparece em mais de {metrics.MAX_APPEARANCES} cenas, ou o mesmo meme volta.",
+                        rep_at, rep_scene))
+    else:
+        out.append(item("perfil.repeticao", "ok", "Sem repetição de imagem ou meme"))
+
+    out += _license_items(doc, timeline, starts) or [item("perfil.licenca", "ok", "Insertos com licença registrada")]
+    return out
