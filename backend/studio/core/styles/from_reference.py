@@ -3,7 +3,7 @@
 Parte do preset mais próximo das medidas e troca só o que elas dizem: ritmo de corte → duração das cenas e
 transições, paleta → gradação e cores dos cartões, proporção → formato. Com o perfil de edição medido
 (`stats["profile"]`, ADR 0004), ele vira alvo: gramática de edição, política de fontes (de onde vem o que aparece na
-tela), legenda, SFX e ritmo da fala (`profile_changes`). Se houver LLM, ele completa o resto (arte, câmera, roteiro,
+tela), câmera, legenda, fonte dos cartões, SFX e andamento da voz (`profile_changes`). Se houver LLM, ele completa o resto (arte, câmera, roteiro,
 voz) com as medidas como restrições: mudança do LLM num campo medido é descartada. Sem LLM, fica só medidas + preset.
 Cada valor trocado sai com a origem ("de onde veio"), para a tela mostrar.
 """
@@ -20,11 +20,20 @@ from collections.abc import Callable
 from statistics import median
 from typing import Any
 
-from studio.core.editing.grammar import caption_weight, grammar_from_profile, is_measured
+from studio.core.editing.grammar import (
+    caption_weight,
+    font_catalog,
+    free_font,
+    grammar_from_profile,
+    is_measured,
+    match_font,
+    num,
+    script_reference_block,
+)
 from studio.core.editing.profile import EditProfile
 from studio.core.media_title import display_title
-from studio.core.styles.library import load_presets, set_path
-from studio.core.styles.schema import StyleSpec
+from studio.core.styles.library import get_path, load_presets, set_path
+from studio.core.styles.schema import StyleSpec, grammar_for, sources_for
 
 # (proporção, largura/altura, resolução)
 ASPECTS: tuple[tuple[str, float, str], ...] = (
@@ -44,6 +53,15 @@ PACE = {
 }
 GRADE_AMOUNT = 0.6
 WPM_MIN, WPM_MAX = 90, 260  # palavras por minuto plausíveis de narração (fora disso a medida não vale)
+# A fala medida vira `voice.speed` (a razão contra o ritmo da voz do app no idioma), nesta faixa. O
+# `script.words_per_minute` é a calibração da voz TTS (tamanho do roteiro e estimativas de duração) e não muda.
+VOICE_SPEED_MIN, VOICE_SPEED_MAX = 0.85, 1.25
+# Nomes dos níveis de fonte para a tela (os ids são internos).
+TIER_LABELS = {"own": "próprio", "official": "oficial", "capture": "captura", "free": "livre", "stock": "banco",
+               "graphic": "gráfico", "meme": "meme", "ai": "IA"}
+# Campos de fonte do estilo: o render só tem as fontes livres do catálogo (`assets/fonts/fonts.json`).
+FONT_PATHS = ("edit.captions.font", "edit.text_cards.font", "thumbnail.font")
+AI_IMAGE_RATIO_MIN = 0.1  # o menor `edit.new_image_ratio` que o estilo aceita
 
 SOURCE_LABELS = {
     "ritmo": "Ritmo dos cortes",
@@ -304,11 +322,27 @@ def _pct(x: float) -> int:
     return round(x * 100)
 
 
-def profile_changes(profile: EditProfile, base: StyleSpec,
-                    ref_ids: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+def _format_base(base: StyleSpec, short: bool) -> StyleSpec:
+    """O preset base no formato do vídeo (a referência vertical pode cair num preset longo e vice-versa)."""
+    kind = "short" if short else "long"
+    if base.format.type == kind:
+        return base
+    return base.model_copy(update={"format": base.format.model_copy(update={"type": kind})})
+
+
+def profile_changes(profile: EditProfile, base: StyleSpec, ref_ids: list[str] | None = None, *,
+                    short: bool | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """O que o perfil de edição diz, como trocas {"path", "value", "source": "perfil", "detail"} sobre o preset base,
-    e as sugestões que não são campo do estilo (ligar o apresentador). Campo medido fica travado para o LLM."""
-    pg = grammar_from_profile(profile, base=base.edit.grammar, base_sources=base.art.sources, ref_ids=ref_ids)
+    e as sugestões que não são campo do estilo (ligar o apresentador). Campo medido fica travado para o LLM.
+
+    `short`: o formato do estilo que sai (padrão: o do preset). A gramática parte da EFETIVA nesse formato
+    (`grammar_for`): com `profile_refs` o Short não troca mais nada, então o que o perfil não mediu já vai gravado no
+    valor do Short e o que mediu fica como mediu (mesmo igual ao padrão do longo)."""
+    short = base.format.type == "short" if short is None else short
+    fmt = _format_base(base, short)
+    base_sources = sources_for(fmt)
+    pg = grammar_from_profile(profile, base=grammar_for(fmt), base_sources=base_sources, ref_ids=ref_ids,
+                              base_camera=dict(base.edit.camera))
     out: list[dict[str, Any]] = []
 
     def put(path: str, value: Any, detail: str) -> None:
@@ -319,12 +353,22 @@ def profile_changes(profile: EditProfile, base: StyleSpec,
                                     "sfx_per_min", "hook") if k in pg.details]
     if not pg.grammar_fields:
         bits.append("o perfil não mediu o ritmo; a gramática é a do preset")
-    bits.append(f"tolerância {g.tolerance:g} (confiança média {pg.confidence:g})")
+    bits.append(f"tolerância {num(g.tolerance)} (confiança média {num(pg.confidence)})")
     put("edit.grammar", g.model_dump(mode="json"), "; ".join(bits))
     if pg.sources_measured:
         top = sorted(((k, v) for k, v in pg.sources.mix.items() if v > 0), key=lambda kv: -kv[1])[:3]
-        mix_txt = ", ".join(f"{k} {_pct(v)}%" for k, v in top)
-        put("art.sources", pg.sources.model_dump(mode="json"), f"{pg.details['sources']} ({mix_txt})")
+        mix_txt = ", ".join(f"{TIER_LABELS.get(k, k)} {_pct(v)}%" for k, v in top)
+        put("art.sources", pg.sources.model_dump(mode="json"),
+            f"{pg.details['sources']} ({mix_txt}); o teto por tempo de tela vale a partir do storyboard novo")
+        # O storyboard de hoje limita a IA pelo número de imagens novas (`edit.new_image_ratio`): ele acompanha o
+        # teto medido, senão a política seria só de papel.
+        ratio = round(min(1.0, max(AI_IMAGE_RATIO_MIN, pg.sources.ai_max_share)), 2)
+        put("edit.new_image_ratio", ratio,
+            f"imagens novas de IA em até {_pct(ratio)}% das cenas, perto do teto de IA medido")
+    elif pg.sources != base.art.sources:  # o teto do Short que o preset não escolheu (com `profile_refs` não troca)
+        put("art.sources", pg.sources.model_dump(mode="json"), "teto de IA do Short")
+    if pg.camera:
+        put("edit.camera", pg.camera, pg.details["camera"])
     for key, value in pg.captions.items():
         detail = pg.details["font"] if key == "font" else "legenda medida na referência"
         put(f"edit.captions.{key}", value, detail)
@@ -332,13 +376,18 @@ def profile_changes(profile: EditProfile, base: StyleSpec,
             weight = caption_weight(value, base.edit.captions.weight)
             if weight != base.edit.captions.weight:
                 put("edit.captions.weight", weight, f"peso que a fonte {value} tem")
+    if pg.text_card_font:
+        put("edit.text_cards.font", pg.text_card_font, pg.details["text_card_font"])
     if "auto" in pg.sfx:
-        put("audio.sfx.auto", pg.sfx["auto"], f"{profile.audio.sfx_per_min:g} SFX por minuto na referência")
-    wpm = profile.speech.wpm
-    if WPM_MIN <= wpm <= WPM_MAX and is_measured(profile, "speech.wpm"):
+        aud = profile.audio
+        put("audio.sfx.auto", pg.sfx["auto"], f"{num(aud.sfx_per_min)} SFX por minuto fora das transições e "
+            f"{_pct(aud.sfx_on_cut_share)}% dos cortes com SFX na referência")
+    speed = voice_speed_for(profile, base)
+    if speed is not None:
         lang = base.languages.primary
-        put("script.words_per_minute", {**base.script.words_per_minute, lang: round(wpm)},
-            f"narração com {round(wpm)} palavras por minuto")
+        app_wpm = base.script.words_per_minute.get(lang, 150)
+        put("voice.speed", speed, f"narração com {round(profile.speech.wpm)} palavras por minuto; a voz do app fala "
+            f"cerca de {app_wpm} na velocidade 1 (o tamanho do roteiro acompanha)")
     suggestions: list[str] = []
     if pg.suggest_presenter:
         suggestions.append(f"Facecam e mascote ocupam {_pct(pg.presenter_share)}% da referência: ligue o "
@@ -346,14 +395,51 @@ def profile_changes(profile: EditProfile, base: StyleSpec,
     return out, suggestions
 
 
+def voice_speed_for(profile: EditProfile, base: StyleSpec) -> float | None:
+    """Velocidade da voz que dá o andamento medido: palavras por minuto da referência ÷ as da voz do app no idioma
+    principal (`script.words_per_minute`, a calibração do TTS), entre 0,85 e 1,25. None sem fala medida."""
+    wpm = profile.speech.wpm
+    if not (WPM_MIN <= wpm <= WPM_MAX and is_measured(profile, "speech.wpm")):
+        return None
+    app_wpm = base.script.words_per_minute.get(base.languages.primary, 150) or 150
+    return round(min(VOICE_SPEED_MAX, max(VOICE_SPEED_MIN, wpm / app_wpm)), 2)
+
+
+def profile_has_measures(profile: EditProfile) -> bool:
+    """O perfil mediu alguma coisa que o estilo usa? (`{}` ou um perfil só com padrões não conta como medida.)"""
+    pg = grammar_from_profile(profile)
+    if pg.grammar_fields or pg.sources_measured or pg.captions or pg.sfx or pg.camera or pg.text_card_font:
+        return True
+    speech = WPM_MIN <= profile.speech.wpm <= WPM_MAX and is_measured(profile, "speech.wpm")
+    return speech or bool(script_reference_block([profile]))
+
+
+def _font_for_llm(desc: str) -> str:
+    font = match_font(desc) if desc else None
+    return f"{font} (a fonte livre do app mais próxima)" if font else ""
+
+
 def profile_summary(profile: EditProfile) -> dict[str, Any]:
-    """O perfil para o LLM de ajuste: os blocos com o que foi medido e a confiança de cada um (sem listas longas)."""
+    """O perfil para o LLM de ajuste: os blocos com o que foi medido e a confiança de cada um (sem listas longas).
+    As fontes medidas vão já trocadas pela fonte livre do catálogo (o nome original, como Pricedown, não vai)."""
     data = profile.model_dump(mode="json", exclude={"meta", "refs", "measured_at", "version", "recurring"})
     data["pace"].pop("cuts_per_min_windows", None)
     data["humor"]["patterns"] = data["humor"]["patterns"][:4]
+    data["overlays"]["font_desc"] = _font_for_llm(profile.overlays.font_desc)
+    data["captions"]["font_desc"] = _font_for_llm(profile.captions.font_match or profile.captions.font_desc)
+    data["captions"]["font_match"] = ""
     data["confianca"] = {k: round(v.confidence, 2) for k, v in profile.meta.items()}
     data["recorrentes"] = [{"kind": r.kind, "count": r.count} for r in profile.recurring[:5]]
     return data
+
+
+def _bad_font(candidate: dict[str, Any], current: dict[str, Any]) -> str | None:
+    """A mudança trocou alguma fonte por uma fora do catálogo livre? Devolve o campo."""
+    for path in FONT_PATHS:
+        new = get_path(candidate, path)
+        if new != get_path(current, path) and not free_font(new):
+            return path
+    return None
 
 
 # --------------------------------------------------------------------------------------------
@@ -392,8 +478,10 @@ def _llm_system() -> str:
             "medida e volta sempre). Proponha só o que as medidas não dizem (arte, câmera, efeitos de textura, "
             "trilha, roteiro, voz), coerente com elas, como pares path/value_json (JSON válido). Quando vier o perfil "
             "de edição, use a fala, o tom e o humor dele para ajustar script.tone, script.structure, script.cta e "
-            "voice.style_prompt/voice.speed; descreva o padrão, nunca copie frases da referência. Poucas mudanças; "
-            "mantenha o resto.\n"
+            "voice.style_prompt; descreva o padrão, nunca copie frases da referência. O andamento da fala já está "
+            "em voice.speed quando medido (não mexa em script.words_per_minute: é a calibração da voz do app). "
+            f"Fontes (edit.captions.font, edit.text_cards.font, thumbnail.font): só uma destas: "
+            f"{', '.join(font_catalog())}. Poucas mudanças; mantenha o resto.\n"
             + STYLE_FIELDS_HELP)
 
 
@@ -460,6 +548,8 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     stats = dict(reference.get("stats") or {})
     shots = list(reference.get("shots") or [])
     profile = profile_of(stats)
+    if profile is not None and not profile_has_measures(profile):
+        profile = None  # perfil vazio (ou só com padrões) não é medida
     if (not stats.get("median_s") and not shots and not stats.get("palette") and not info.get("w")
             and profile is None):
         raise ValueError("A referência ainda não tem medidas: analise o vídeo primeiro.")
@@ -474,7 +564,8 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     suggestions: list[str] = []
     if profile is not None:
         ref_ids = [str(reference["id"])] if reference.get("id") else None
-        extra, suggestions = profile_changes(profile, base, ref_ids)
+        kind = next((ch["value"] for ch in changes if ch["path"] == "format.type"), base.format.type)
+        extra, suggestions = profile_changes(profile, base, ref_ids, short=kind == "short")
         changes += extra
     for ch in changes:
         data = set_path(data, ch["path"], ch["value"])
@@ -484,6 +575,8 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
     locked_set = {ch["path"] for ch in changes} - {"edit.effects"}
     if "format.aspect" in locked_set:  # proporção medida: o formato (e a duração dele) também fica
         locked_set |= {"format.type", "format.duration"}
+    if "voice.speed" in locked_set:  # andamento medido: a calibração da voz (tamanho do roteiro) também fica
+        locked_set.add("script.words_per_minute")
     locked = sorted(locked_set)
     measured_grade = None
     if any(ch["path"] == "edit.effects" for ch in changes):
@@ -512,6 +605,10 @@ def build_style(reference: dict[str, Any], *, presets: dict[str, StyleSpec] | No
                         value.append(measured_grade)
                     candidate = set_path(data, path, value)
                     StyleSpec.model_validate(candidate)
+                    bad = _bad_font(candidate, data)
+                    if bad:
+                        raise ValueError(f"fonte fora do catálogo de fontes livres do app em {bad}: "
+                                         f"{get_path(candidate, bad)}")
                 except Exception as exc:  # noqa: BLE001 - mudança inválida é descartada e reportada
                     rejected.append({"path": path, "error": str(exc)[:300]})
                     continue

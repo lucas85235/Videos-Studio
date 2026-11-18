@@ -161,7 +161,7 @@ def reference_voice_block(style: StyleSpec) -> str:
     from studio.core.editing.grammar import reference_profiles, script_reference_block
 
     try:
-        return script_reference_block(reference_profiles(refs))
+        return script_reference_block(reference_profiles(refs), style.format.duration.target_s)
     except Exception as exc:  # noqa: BLE001 - sem o perfil, o roteiro segue como antes
         log.warning("perfil da referência indisponível para o roteiro: %s", exc)
         return ""

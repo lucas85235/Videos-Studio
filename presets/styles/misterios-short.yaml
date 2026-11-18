@@ -33,8 +33,8 @@ voice:
   gap_s: 0.15
 
 art:
-  # Fontes da mídia (ADR 0004): Fotos, documentos e arquivo primeiro; IA só para hipótese declarada.
-  sources: { mix: { free: 0.25, capture: 0.2, stock: 0.15, official: 0.1, graphic: 0.1, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
+  # Fontes da mídia (ADR 0004): Fotos, documentos e arquivo primeiro; IA só para hipótese declarada. Alvo de IA 20%; teto 30%, o do Short (declarado, para o efetivo ser o que está escrito).
+  sources: { mix: { free: 0.25, capture: 0.2, stock: 0.15, official: 0.1, graphic: 0.1, meme: 0.0, ai: 0.2 }, ai_max_share: 0.3 }
   bible: "pintura a óleo sombria e cinematográfica, paleta azul petróleo e dourado envelhecido, pouca luz, contraste dramático, grão de tela"
   banned: ["texto", "letras", "logotipos", "marca d'água", "fotorrealismo"]
   languages: [painting, archival, collage]

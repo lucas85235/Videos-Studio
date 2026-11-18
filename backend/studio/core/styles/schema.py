@@ -514,7 +514,7 @@ class EditSpec(StrictModel):
     """Avatar do apresentador nas cenas: "auto" segue o canal/projeto; "off" desliga neste estilo."""
     grammar: EditGrammar = EditGrammar()
     """Gramática de edição (subplanos, eventos, cotas). Use `grammar_for(style)` para a efetiva (o Short troca os
-    valores que estão no padrão)."""
+    valores que estão no padrão, menos na gramática medida de uma referência)."""
 
     @field_validator("treatments")
     @classmethod
@@ -670,17 +670,27 @@ def _short_swap[M: StrictModel](model: M, swaps: dict[str, float]) -> M:
     return model.model_copy(update=update) if update else model
 
 
+def _measured(style: StyleSpec) -> bool:
+    """A gramática e a política saíram do perfil medido de uma referência (`profile_refs`): valor igual ao padrão do
+    longo ali é medida, não "não escolhido", e o Short não troca (o estilo da referência já grava os do Short)."""
+    return bool(style.edit.grammar.profile_refs)
+
+
 def grammar_for(style: StyleSpec) -> EditGrammar:
     """A gramática efetiva do estilo. No Short, o que está no valor padrão troca: mediana 1,6 s, `max_still_s` 3 s e
-    6 SFX/min. Valor escolhido (diferente do padrão) fica."""
+    6 SFX/min. Valor escolhido (diferente do padrão) fica, e gramática medida (`profile_refs`) não troca nada."""
     grammar = style.edit.grammar
-    return _short_swap(grammar, SHORT_GRAMMAR_DEFAULTS) if style.format.type == "short" else grammar
+    if style.format.type != "short" or _measured(style):
+        return grammar
+    return _short_swap(grammar, SHORT_GRAMMAR_DEFAULTS)
 
 
 def sources_for(style: StyleSpec) -> SourcePolicy:
-    """A política de fontes efetiva. No Short, o teto de IA no padrão (0,20) vira 0,30."""
+    """A política de fontes efetiva. No Short, o teto de IA no padrão (0,20) vira 0,30 (menos com `profile_refs`)."""
     policy = style.art.sources
-    return _short_swap(policy, SHORT_SOURCES_DEFAULTS) if style.format.type == "short" else policy
+    if style.format.type != "short" or _measured(style):
+        return policy
+    return _short_swap(policy, SHORT_SOURCES_DEFAULTS)
 
 
 def treatment_pool(style: StyleSpec) -> dict[str, float]:

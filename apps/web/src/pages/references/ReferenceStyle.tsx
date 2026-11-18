@@ -6,6 +6,7 @@ import { Palette, Wand2 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { visualApi, type RefStyleOrigin, type RefStyleResult, type ReferenceVideo } from '../../apiVisual';
+import { CAMERA_LABELS, label } from '../../labels';
 import { Button, Checkbox, ErrorBox, Field, Input, useToast } from '../../ui';
 
 /** O que vai no estado da navegação para o editor de estilos. */
@@ -49,8 +50,16 @@ const FIELD_LABELS: Record<string, string> = {
   'edit.captions.position': 'Posição da legenda',
   'edit.captions.max_words_per_line': 'Palavras por linha',
   'audio.sfx.auto': 'Efeitos sonoros automáticos',
-  'script.words_per_minute': 'Palavras por minuto',
+  'edit.text_cards.font': 'Fonte dos cartões de texto',
+  'edit.new_image_ratio': 'Cenas com imagem nova de IA',
+  'voice.speed': 'Velocidade da voz',
 };
+
+/** Humor da gramática em português (os ids são internos; os níveis de fonte já vêm traduzidos no detalhe). */
+const HUMOR_LABELS: Record<string, string> = { none: 'nenhum', light: 'leve', meme: 'memes' };
+
+/** Número com vírgula decimal (1,43). */
+const num = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 
 /** Limite do nome do estilo (o mesmo do campo Nome no editor e da API). */
 const STYLE_NAME_MAX = 120;
@@ -89,14 +98,26 @@ function showValue(path: string, value: unknown): React.ReactNode {
   }
   if (path === 'edit.grammar' && value && typeof value === 'object') {
     const g = value as { shot_median_s: number; punch_per_min: number; sfx_per_min: number; humor: string };
-    return `plano mediano ${g.shot_median_s} s, ${g.punch_per_min} punch/min, ${g.sfx_per_min} SFX/min, humor ${g.humor}`;
+    return `plano mediano de ${num(g.shot_median_s)} s, ${num(g.punch_per_min)} punch-ins/min, ${num(g.sfx_per_min)} SFX/min, humor ${HUMOR_LABELS[g.humor] ?? g.humor}`;
   }
   if (path === 'art.sources' && value && typeof value === 'object') {
     const s = value as { ai_max_share: number };
     return `IA em até ${Math.round(s.ai_max_share * 100)}% do tempo`;
   }
+  if (path === 'edit.camera' && value && typeof value === 'object') {
+    const w = value as Record<string, number>;
+    const total = Object.values(w).reduce((a, b) => a + b, 0) || 1;
+    return Object.entries(w)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${label(CAMERA_LABELS, k).toLowerCase()} ${Math.round((v / total) * 100)}%`)
+      .join(', ');
+  }
+  if ((path === 'edit.new_image_ratio' || path === 'voice.speed') && typeof value === 'number') {
+    return path === 'voice.speed' ? `${num(value)}×` : `${Math.round(value * 100)}%`;
+  }
   if (typeof value === 'boolean') return value ? 'sim' : 'não';
-  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (typeof value === 'number') return num(value);
+  if (typeof value === 'string') return value;
   const text = JSON.stringify(value);
   return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }

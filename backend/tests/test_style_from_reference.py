@@ -288,7 +288,9 @@ def test_profile_becomes_policy_without_ai_and_measured_grammar():
     assert g.humor == "meme" and g.caption_emphasis == "pop"
     assert g.punch_scale.min == pytest.approx(1.15) and g.punch_scale.max == pytest.approx(1.25)
     assert g.hook is not None and g.hook.shot_median_s < g.shot_median_s  # gancho mais rápido que o vídeo
-    assert g.sfx_palette == {"impact": 0.3, "whoosh": 0.35, "pop": 0.25, "riser": 0.1}
+    assert g.hook.window_s == 30.0  # 804 s: a janela medida inteira
+    # Só tipos que o app toca: pop vira impacto.
+    assert g.sfx_palette == {"impact": 0.55, "whoosh": 0.35, "riser": 0.1}
     # Campo marcado como padrão no meta (shake) não vale: fica o do preset.
     assert g.shake_per_min == base.edit.grammar.shake_per_min
     # Legenda: a fonte livre mais próxima (Pricedown nunca), palavra a palavra, caixa alta.
@@ -296,11 +298,26 @@ def test_profile_becomes_policy_without_ai_and_measured_grammar():
     assert caps.font == "Anton" and "pricedown" not in json.dumps(out["style"]).lower()
     assert caps.style == "word" and caps.uppercase is True and caps.max_words_per_line == 2
     assert caps.weight == 400  # o peso que a Anton tem
+    assert style.edit.text_cards.font == "Anton"  # textos na tela: "Pricedown, pesada"
     assert style.audio.sfx.auto is True
-    assert style.script.words_per_minute[style.languages.primary] == 172
+    # A fala medida (172 palavras/min) vira velocidade da voz; a calibração do TTS (tamanho do roteiro) não muda.
+    assert style.script.words_per_minute == base.script.words_per_minute
+    app_wpm = base.script.words_per_minute[style.languages.primary]
+    assert style.voice.speed == round(172 / app_wpm, 2)
+    # O teto medido vale no storyboard de hoje (número de imagens novas de IA).
+    assert style.edit.new_image_ratio == 0.1
+    # A câmera: quase nada de Ken Burns/pan (5%), muita câmera parada (48%).
+    cam = style.edit.camera
+    total = sum(cam.values())
+    kb = sum(v for k, v in cam.items() if k.startswith(("ken_burns", "pan_")))
+    assert kb / total == pytest.approx(0.05, abs=0.01) and cam["static"] / total == pytest.approx(0.48, abs=0.01)
+    assert max(cam, key=cam.get) == "static" and cam["punch_zoom"] > 0
     origins = {o["path"]: o for o in out["origins"]}
-    assert origins["edit.grammar"]["source"] == "perfil" and "1.43" in origins["edit.grammar"]["detail"]
+    assert origins["edit.grammar"]["source"] == "perfil" and "1,43" in origins["edit.grammar"]["detail"]
     assert origins["art.sources"]["source"] == "perfil" and "IA em 0%" in origins["art.sources"]["detail"]
+    assert "oficial" in origins["art.sources"]["detail"] and "official" not in origins["art.sources"]["detail"]
+    assert "storyboard novo" in origins["art.sources"]["detail"]
+    assert origins["edit.camera"]["source"] == "perfil" and origins["voice.speed"]["source"] == "perfil"
     assert "perfil" in fr.SOURCE_LABELS and "texto" not in fr.SOURCE_LABELS
     # facecam + mascote = 15% da referência: sugere ligar o apresentador.
     assert len(out["suggestions"]) == 1 and "apresentador" in out["suggestions"][0]
@@ -317,6 +334,14 @@ def test_without_profile_keeps_current_behavior():
     broken = {**FAST_VERTICAL, "stats": {**FAST_VERTICAL["stats"], "profile": {"pace": {"median_s": -1}}}}
     assert fr.build_style(broken, use_llm=False)["style"]["edit"]["grammar"] == style.edit.grammar.model_dump(
         mode="json")
+    # Perfil vazio (ou só com padrões) não é medida: o estilo fica igual ao de sem perfil.
+    for empty in ({}, {"quick": False, "meta": {"pace": {"confidence": 0.0, "origin": "padrão"}}}):
+        ref = {**FAST_VERTICAL, "stats": {**FAST_VERTICAL["stats"], "profile": empty}}
+        same = fr.build_style(ref, use_llm=False)
+        assert same["style"] == out["style"] and not [o for o in same["origins"] if o["source"] == "perfil"]
+    # ... e sem nenhuma outra medida, a referência continua "sem medidas".
+    with pytest.raises(ValueError, match="ainda não tem medidas"):
+        fr.build_style({"info": {}, "stats": {"profile": {}}}, use_llm=False)
 
 
 def test_quick_profile_keeps_policy_and_only_measures_pace():
@@ -336,6 +361,7 @@ def test_quick_profile_keeps_policy_and_only_measures_pace():
     assert g.tolerance > 0.35
     assert style.edit.captions.font == base.edit.captions.font
     assert style.script.words_per_minute == base.script.words_per_minute  # fala não medida
+    assert style.voice.speed == base.voice.speed
     assert out["suggestions"] == []
 
 
@@ -370,6 +396,12 @@ def test_match_font_is_free_and_never_pricedown():
     assert gr.match_font("máquina de escrever") == "Special Elite"
     assert gr.match_font("pixel retrô de terminal") == "VT323"
     assert gr.match_font("Montserrat") == "Montserrat"
+    # Radicais casam por prefixo.
+    assert gr.match_font("fonte datilografada") == "Special Elite"
+    assert gr.match_font("datilografia antiga") == "Special Elite"
+    assert gr.match_font("letreiro de noticias") == "Oswald"
+    # "sans serif" não puxa a fonte serifada.
+    assert gr.match_font("sans serif limpa") == "Noto Sans"
     assert gr.match_font("") is None and gr.match_font("xyzzy") is None
     catalog = gr.font_catalog()
     assert catalog and "Pricedown" not in catalog
@@ -387,6 +419,11 @@ def test_llm_sees_profile_script_and_voice_but_not_measured_fields():
             {"path": "art.sources", "value_json": json.dumps({"ai_max_share": 1.0}), "reason": "x"},
             {"path": "edit.captions.font", "value_json": json.dumps("Cinzel"), "reason": "x"},
             {"path": "script.words_per_minute", "value_json": json.dumps({"pt-BR": 120}), "reason": "x"},
+            {"path": "voice.speed", "value_json": "0.9", "reason": "x"},
+            {"path": "edit.text_cards.font", "value_json": json.dumps("Oswald"), "reason": "x"},
+            {"path": "thumbnail.font", "value_json": json.dumps("Pricedown"), "reason": "x"},
+            {"path": "thumbnail", "value_json": json.dumps({"font": "Pricedown"}), "reason": "x"},
+            {"path": "thumbnail.font", "value_json": json.dumps("Cinzel"), "reason": "x"},
         ]}, "fake_llm"
 
     out = fr.build_style(GTA, llm=fake)
@@ -396,11 +433,19 @@ def test_llm_sees_profile_script_and_voice_but_not_measured_fields():
     assert '"script"' in prompt and '"voice"' in prompt
     assert "quinto padrão" not in prompt  # só 4 padrões de humor
     assert "nunca copie frases" in seen["system"]
+    assert "voice.speed/" not in seen["system"] and "Anton" in seen["system"]  # só fontes do catálogo
+    assert "pricedown" not in prompt.lower()  # a fonte medida já vai trocada pela livre
     assert style.script.tone == "conversado, irônico e empolgado"
     assert style.edit.grammar.punch_per_min == 4.2 and style.art.sources.ai_max_share <= 0.05
-    assert style.edit.captions.font == "Anton" and style.script.words_per_minute["pt-BR"] == 172
-    assert {r["path"] for r in out["rejected"]} == {"edit.grammar.punch_per_min", "art.sources",
-                                                    "edit.captions.font", "script.words_per_minute"}
+    base = load_presets()[out["base_style_id"]]
+    assert style.edit.captions.font == "Anton" and style.script.words_per_minute == base.script.words_per_minute
+    assert style.voice.speed == round(172 / base.script.words_per_minute["pt-BR"], 2)
+    assert style.edit.text_cards.font == "Anton" and style.thumbnail.font == "Cinzel"
+    rejected = {r["path"] for r in out["rejected"]}
+    assert rejected == {"edit.grammar.punch_per_min", "art.sources", "edit.captions.font",
+                        "script.words_per_minute", "voice.speed", "edit.text_cards.font", "thumbnail.font",
+                        "thumbnail"}
+    assert any("catálogo" in r["error"] for r in out["rejected"] if r["path"] == "thumbnail.font")
 
 
 def test_route_with_profile_points_grammar_to_the_reference():
@@ -432,7 +477,9 @@ def test_presets_declare_sources_and_grammar_by_family(path):
     assert style.edit.grammar.profile_refs == []
     expected_ai = {"colagem-artesanal": 0.5, "whiteboard-explicador": 0.5, "explicador-vetorial": 0.5,
                    "games-cultura-pop-short": 0.10, "dados-e-mapas": 0.15}
-    assert policy.ai_max_share == expected_ai.get(style.id, 0.20)
+    # O Short declara o teto dele (0,30): o efetivo é o que está escrito, sem troca de padrão.
+    assert policy.ai_max_share == expected_ai.get(style.id, 0.30 if style.format.type == "short" else 0.20)
+    assert sources_for(style).ai_max_share == policy.ai_max_share
     # Grão e vinheta só no material de arquivo; o terror analógico é a exceção (a textura é o estilo).
     assert style.edit.grammar.effects_policy == ("global" if style.id == "terror-analog" else "per_tier")
 
@@ -444,8 +491,10 @@ def test_family_specific_presets():
     assert grammar_for(games).shot_median_s == 1.4  # valor escolhido: o Short não troca
     dados = presets["dados-e-mapas"].art.sources.mix
     assert max(dados, key=dados.get) == "graphic"
-    # Short com o teto padrão (0,20) continua virando 0,30.
-    assert sources_for(presets["misterios-short"]).ai_max_share == 0.30
+    # Short com o teto no padrão do longo (0,20, não escolhido) continua virando 0,30.
+    plain = presets["misterios-short"].model_copy(update={"art": presets["misterios-short"].art.model_copy(
+        update={"sources": SourcePolicy()})})
+    assert sources_for(plain).ai_max_share == 0.30
 
 
 # --- roteiro ------------------------------------------------------------------------------------------------------
@@ -479,6 +528,10 @@ def test_script_prompt_has_reference_block_only_with_profile(monkeypatch):
     assert "172 palavras por minuto" in prompt and "primeira pessoa" in prompt
     assert "empolgado, conversado, irônico" in prompt
     assert "hook (0–4%" in prompt and "fechamento" in prompt
+    # Os tempos saem na duração do vídeo novo, nunca os segundos da referência (804 s).
+    assert "160–700 s" not in prompt and "0–30 s" not in prompt
+    target = style.format.duration.target_s
+    assert f"hook (0–4%, ~0–{30 / 804.5 * target:.0f} s do vídeo novo)" in prompt
     assert "autoironia sobre a espera" in prompt and "quinto padrão" not in prompt
     assert "nenhuma frase da referência" in prompt
     assert calls[-1]["context"]["reference_voice"]
@@ -500,3 +553,103 @@ def test_quick_profile_gives_no_script_block():
     assert gr.script_reference_block([]) == ""
     block = gr.script_reference_block([_profile()])
     assert block.count("\n  - ") == 4  # 4 padrões de humor, no máximo
+
+
+# --- revisão: Short medido, andamento da voz, gancho, SFX e determinismo ----------------------------------------
+
+VERTICAL_GTA = {**GTA, "info": {"w": 1080, "h": 1920, "fps": 30, "dur": 55.0}}
+
+
+def test_measured_short_keeps_values_equal_to_long_defaults():
+    # Referência vertical com valores medidos iguais aos padrões do longo: o Short não troca.
+    prof = {**PROFILE, "duration_s": 55.0,
+            "pace": {**PROFILE["pace"], "median_s": 2.6, "max_still_s": 6.0, "p90_s": 4.0},
+            "audio": {**PROFILE["audio"], "sfx_per_min": 4.0},
+            "materials": {**PROFILE["materials"], "mix": {"ai_illustration": 0.2, "photo_real": 0.5,
+                                                          "text_card": 0.3}}}
+    ref = {**VERTICAL_GTA, "stats": {**GTA["stats"], "median_s": 2.6, "profile": prof}}
+    style = StyleSpec.model_validate(fr.build_style(ref, use_llm=False)["style"])
+    assert style.format.type == "short" and style.edit.grammar.profile_refs
+    assert style.art.sources.ai_max_share == pytest.approx(0.20)
+    assert sources_for(style).ai_max_share == pytest.approx(0.20)
+    g = grammar_for(style)
+    assert g.sfx_per_min == 4.0 and g.shot_median_s == 2.6 and g.max_still_s == 6.0
+    # O que o perfil não mede fica no valor do Short (gravado, porque com profile_refs não há mais troca).
+    quick = {"quick": True, "duration_s": 55.0, "pace": {"shots": 30, "median_s": 1.2}}
+    ref = {**VERTICAL_GTA, "stats": {**GTA["stats"], "profile": quick}}
+    out = fr.build_style(ref, use_llm=False)
+    style = StyleSpec.model_validate(out["style"])
+    base = load_presets()[out["base_style_id"]]
+    assert style.edit.grammar.shot_median_s == 1.2
+    assert grammar_for(style).max_still_s == grammar_for(base).max_still_s
+    assert sources_for(style) == sources_for(base)
+
+
+def test_short_script_length_fits_max_duration(monkeypatch):
+    from studio.core.project import service
+    from studio.core.styles.library import save_user_style
+    from studio.providers.base import LLMResult, Usage
+    from studio.workers.pipeline import authoring
+
+    prompts = []
+
+    def fake_llm(task, system, prompt, schema, context, project_id, job_id):
+        prompts.append(prompt)
+        data = {"title": "GTA", "sources": [], "segments": [
+            {"role": "hook", "speaker": "narrator", "chapter": None, "number": None, "text": "Olha isso."}]}
+        return LLMResult(data=data, text="", usage=Usage()), "fake_llm"
+
+    monkeypatch.setattr(authoring, "_llm", fake_llm)
+    style = StyleSpec.model_validate(fr.build_style(VERTICAL_GTA, use_llm=False, new_id="ref-gta-short")["style"])
+    assert style.format.type == "short"
+    save_user_style(style)
+    doc = service.create_project(title="GTA", style_id="ref-gta-short", topic="o trailer do GTA 6")
+    authoring.generate_script(doc, style)
+    import re
+
+    words = int(re.search(r"cerca de (\d+) palavras no total", prompts[-1]).group(1))
+    # A voz do app fala `words_per_minute × voice.speed`: o roteiro pedido cabe no máximo do Short.
+    lang = doc.primary_language
+    spoken_wpm = style.script.words_per_minute[lang] * style.voice.speed
+    assert words / spoken_wpm * 60 <= style.format.duration.max_s
+    assert words / spoken_wpm * 60 == pytest.approx(style.format.duration.target_s, abs=1)
+
+
+def test_hook_window_follows_duration():
+    short = gr.grammar_from_profile(_profile(duration_s=55.0)).grammar
+    assert short.hook is not None and short.hook.window_s == pytest.approx(11.0)
+    tiny = gr.grammar_from_profile(_profile(duration_s=10.0)).grammar
+    assert tiny.hook is not None and tiny.hook.window_s == 3.0
+    assert gr.hook_window_s(0) == 5.0
+
+
+def test_sfx_auto_with_transition_sfx_only_and_palette_kinds():
+    from studio.media.audio import SFX_KINDS
+
+    p = _profile(audio={"sfx_per_min": 0.0, "sfx_on_cut_share": 0.6,
+                        "sfx_classes": {"whoosh": 0.5, "scratch": 0.2, "pop": 0.2, "other": 0.1}})
+    pg = gr.grammar_from_profile(p)
+    assert pg.sfx == {"auto": True}  # whoosh em todo corte: o SFX automático fica ligado
+    assert set(pg.grammar.sfx_palette) <= set(SFX_KINDS)
+    assert pg.grammar.sfx_palette == {"whoosh": 0.5, "glitch": 0.2, "impact": 0.2}
+    silent = gr.grammar_from_profile(_profile(audio={"sfx_per_min": 0.0, "sfx_on_cut_share": 0.0}))
+    assert silent.sfx == {"auto": False}
+
+
+def test_script_block_is_deterministic_and_respects_meta():
+    a = _profile(speech={**PROFILE["speech"], "person": "1"})
+    b = _profile(speech={**PROFILE["speech"], "person": "2"})
+    assert "primeira pessoa" in gr.script_reference_block([a, b])
+    assert "falando direto" in gr.script_reference_block([b, a])
+    # Campo marcado como padrão (ou confiança 0) no meta não entra.
+    meta = {**PROFILE["meta"], "speech.person": {"confidence": 0.0, "origin": "padrão"},
+            "speech.tone_tags": {"confidence": 0.0, "origin": "padrão"},
+            "speech.structure": {"confidence": 0.0, "origin": "padrão"},
+            "humor": {"confidence": 0.0, "origin": "padrão"}}
+    block = gr.script_reference_block([_profile(meta=meta)])
+    assert "palavras por minuto" in block
+    assert "Pessoa:" not in block and "Tom:" not in block and "Papéis" not in block
+    assert "Padrões de humor" not in block
+    # Sem duração-alvo, só a proporção.
+    plain = gr.script_reference_block([_profile()])
+    assert "hook (0–4%)" in plain and " s)" not in plain

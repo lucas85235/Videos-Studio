@@ -32,8 +32,8 @@ voice:
   gap_s: 0.3
 
 art:
-  # Fontes da mídia (ADR 0004): Estátuas, pinturas e paisagens livres primeiro; IA como apoio.
-  sources: { mix: { free: 0.35, stock: 0.2, graphic: 0.15, capture: 0.05, official: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.2 }
+  # Fontes da mídia (ADR 0004): Estátuas, pinturas e paisagens livres primeiro; IA como apoio. Alvo de IA 20%; teto 30%, o do Short (declarado, para o efetivo ser o que está escrito).
+  sources: { mix: { free: 0.35, stock: 0.2, graphic: 0.15, capture: 0.05, official: 0.05, meme: 0.0, ai: 0.2 }, ai_max_share: 0.3 }
   bible: "pintura clássica a óleo, estátuas de mármore greco-romanas, templos e paisagens mediterrâneas, tons quentes, atmosfera serena e contemplativa"
   banned: ["texto", "letras", "logotipos", "marca d'água"]
   languages: [painting, render_3d]
