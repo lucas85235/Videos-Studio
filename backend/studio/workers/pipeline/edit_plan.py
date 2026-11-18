@@ -1409,8 +1409,11 @@ class _Planner:
                 continue
             # todo plano de imagem conta: um push lento de 20 s também é "parado" para quem assiste
             spans = self._frozen_clip_spans(beat) if beat.clip else self._still_spans(beat)
+            # A captura de página não tem corte nem punch (só o `zoom_rect` no trecho): sem a folga dos cortes, a
+            # duração estimada aqui pode passar do limite na timeline final; ela já quebra a partir de 80% dele.
+            threshold = limit * 0.8 if beat.page else limit
             for start, end in spans:
-                if end - start <= limit:
+                if end - start <= threshold:
                     continue
                 marks = sorted([start, end, *(e.t for e in self.events if e.beat is beat and start < e.t < end
                                                 and e.type in ("punch", "zoom_rect", "shake"))])
@@ -1421,7 +1424,16 @@ class _Planner:
                         word = min((w for w in beat.words if a + MIN_SHOT_S < w.start < min(b, beat.latest_start())),
                                    key=lambda w, x=target: abs(w.start - x) - (1.0 if w.emph else 0.6 if w.content
                                                                                 else 0.0), default=None)
-                        if word is None or not self._free(beat, word, "punch"):
+                        if word is None:
+                            continue
+                        if beat.page:
+                            # Captura: o punch cortaria a manchete; quem quebra o plano parado é o `zoom_rect` no
+                            # trecho marcado (enquadra o texto inteiro). Sem trecho não há enquadramento seguro.
+                            if beat.capture and self._free(beat, word, "zoom_rect"):
+                                rect = [round(v, 4) for v in beat.media.rects[0]]  # type: ignore[union-attr]
+                                self._add(beat, word, "zoom_rect", params={"rect": rect})
+                            continue
+                        if not self._free(beat, word, "punch"):
                             continue
                         self.budget.take("punch", word.start)  # sem cota entra igual: é trava
                         self._add(beat, word, "punch", params={"scale": round(self.g.punch_scale.min, 3)})

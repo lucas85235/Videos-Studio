@@ -474,7 +474,9 @@ def test_pool_clip_and_capture_sources(isolated_settings):
     kinds = {e.type: e for e in cap.fx}
     assert "highlight" in kinds and "zoom_rect" in kinds
     assert kinds["highlight"].params["rect"] == [0.1, 0.2, 0.5, 0.1]
-    assert kinds["highlight"].at == kinds["zoom_rect"].at
+    # o zoom acompanha o marca-texto (outro `zoom_rect` pode vir depois, quebrando o plano parado da captura)
+    assert any(e.type == "zoom_rect" and e.at == kinds["highlight"].at for e in cap.fx)
+    assert "punch" not in kinds
 
 
 def _window(framing: ShotFraming | None) -> tuple[float, float, float, float]:
@@ -507,6 +509,27 @@ def test_capture_never_crops_the_marked_headline(isolated_settings):
     assert all(sh.motion == "static" for s in doc.scenes for sh in s.shots if sh.source == "self")
     assert not _fx(doc, "punch")
     assert _fx(doc, "zoom_rect")
+
+
+def test_long_still_capture_breaks_with_zoom_rect_not_punch(isolated_settings):
+    """Captura cujo trecho não cabe na janela do jump cut (sem corte) e sem punch: o plano parado passava de
+    `max_still_s` (7,4 s no ponta a ponta). Quem quebra é o `zoom_rect` no trecho, já a 80% do limite (a duração aqui
+    é estimada e a captura não tem a folga dos cortes)."""
+    style = get_style(LONG)
+    grammar = grammar_for(style)
+    rects = [[0.05, 0.1, 0.9, 0.1], [0.05, 0.75, 0.9, 0.1]]  # do alto ao pé da página: não cabe na janela de 1/1,25
+    doc = _doc([LONG_TEXT] * 4)
+    for i, scene in enumerate(doc.scenes):
+        scene.visual = Visual(type="upload", media=MediaRef(kind="capture", source="capture", tier="capture",
+                                                            asset=f"uploads/prj_teste/media/c{i}.jpg", rects=rects))
+    edit_plan.plan(doc, style, Pool(), recent=set())
+    assert not _fx(doc, "punch")
+    assert all(sh.framing is None or sh.framing.scale <= 1.0 for s in doc.scenes for sh in s.shots)
+    planner = edit_plan._Planner(doc, style, grammar, Pool(), set())
+    for beat in planner.beats:
+        marks = sorted({beat.start, beat.end, *(planner._time_of(beat, sh.at) for sh in beat.scene.shots if sh.at),
+                        *(planner._time_of(beat, e.at) for e in beat.scene.fx if e.type == "zoom_rect")})
+        assert all(b - a <= grammar.max_still_s + 1e-6 for a, b in zip(marks, marks[1:], strict=False)), marks
 
 
 def test_capture_without_marked_text_is_never_zoomed(isolated_settings):
