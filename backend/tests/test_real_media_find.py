@@ -510,3 +510,11 @@ def test_attaching_a_found_item_keeps_outlet_page_and_chosen_image(isolated_sett
     assert news.page_url == "https://news.example.com/recorde" and news.outlet == "Notícias Exemplo"
     og, _ = media_from_link("https://news.example.com/recorde", "prj_x", kind="news", lang="pt-BR", http=http)
     assert og.url == "https://img.example.com/og.jpg"
+    # Material oficial anexado pela página (o anexo do acervo passa a página): também a imagem escolhida, nunca a
+    # og:image (a capa da matéria virava o "ícone do instalador" e o "print da mensagem" do mesmo artigo).
+    chosen, _ = media_from_link("https://news.example.com/recorde", "prj_x", kind="official", lang="pt-BR", http=http,
+                                found={"image": "https://img.example.com/big2.jpg",
+                                       "page_url": "https://news.example.com/recorde", "outlet": "Exemplo"})
+    assert chosen.kind == "official" and chosen.url == "https://img.example.com/big2.jpg"
+    page, _ = media_from_link("https://news.example.com/recorde", "prj_x", kind="official", lang="pt-BR", http=http)
+    assert page.url == "https://img.example.com/og.jpg"  # sem achado, a imagem principal da página

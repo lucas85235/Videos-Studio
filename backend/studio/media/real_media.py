@@ -352,11 +352,14 @@ def media_from_link(url: str, project_id: str, *, kind: RealKind | None, lang: s
                              outlet=news_outlet, published=preview.published,
                              headline={lang: headline} if headline else {})
         else:
-            if not preview.image_url:
+            # Achado escolhido (o item do acervo da busca web): a imagem dele, não a og:image da página. A capa da
+            # matéria no lugar do print do instalador repetia a mesma ilustração em três cenas (prj_gq4krrs11w).
+            image_url = _found_https(found, "image") or preview.image_url
+            if not image_url:
                 raise MediaError("A página não tem imagem para usar. Cole o link da imagem ou envie o arquivo.")
-            stored = store_image(_media_fetch(preview.image_url, http), project_id)
+            stored = store_image(_media_fetch(image_url, http), project_id)
             warnings += stored.warnings
-            media = MediaRef(kind=final_kind, source="link", asset=stored.rel, url=preview.image_url,
+            media = MediaRef(kind=final_kind, source="link", asset=stored.rel, url=image_url,
                              page_url=preview.url, title=preview.title or found_title, author=preview.author,
                              credit=outlet or default_credit("link", site=site), editorial=True, width=stored.width,
                              height=stored.height)
