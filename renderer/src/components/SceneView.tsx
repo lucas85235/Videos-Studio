@@ -4,16 +4,42 @@ import { sceneImageBox } from '../frame';
 import { imageFilter } from '../look';
 import type { RenderStyle, SceneKind, ShotEasing, TimelineScene } from '../types';
 import { CameraRig, TimeWarp } from './CameraRig';
-import { Captions, captionCenter, captionHalfHeight, captionTop } from './Captions';
+import { CaptionScrim, Captions, captionCenter, captionHalfHeight, captionTop } from './Captions';
 import { ChartCard, chartRows } from './ChartCard';
-import { type CardBand, type CardViewProps, CompareCard, Headline, headlineBox, SourceChip, Stamp, StatCard } from './DataCards';
+import {
+  type CardBand,
+  type CardViewProps,
+  CompareCard,
+  Headline,
+  headlineBox,
+  headlineRect,
+  SourceChip,
+  Stamp,
+  StatCard,
+  stampGeom,
+  stampPreferred,
+} from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
-import { FxAnchored, FxLayer } from './fx/FxLayer';
-import { ANCHORED_FX, cameraFx, cutsOf, type ImageBox, shotSlots, spaceAt } from './fx/math';
+import { counterRect, FxAnchored, FxLayer } from './fx/FxLayer';
+import {
+  ANCHORED_FX,
+  cameraFx,
+  cutsOf,
+  entryFrames,
+  fxRects,
+  type ImageBox,
+  placeStamp,
+  type Rect,
+  rectThroughFraming,
+  shotSlots,
+  spaceAt,
+  type StampSpot,
+} from './fx/math';
 import { MapCard, mapItems } from './MapCard';
-import { PresenterLayer } from './PresenterLayer';
+import { PresenterLayer, presenterRect } from './PresenterLayer';
 import { assetUrl, NewsCard } from './RealMedia';
 import { ClipLayer } from './ClipLayer';
+import { textCardRects } from './TextBoxes';
 import { CountCard, DocumentCard, KineticText, QuoteCard, TitleCard } from './TextCards';
 import { TransitionIn } from './TransitionIn';
 import { ShotStack } from './ShotStack';
@@ -142,6 +168,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const realClip = scene.prov !== undefined && scene.prov !== 'ai';
   const clipUrl = scene.kind === 'video' || realClip ? assetUrl(scene.video, assetBaseUrl) : null;
   const cards = style.textCards;
+  // Transição de entrada (desfoque, flash, fade) curta: a do estilo, até ENTRY_MAX_S.
+  const entry = entryFrames(style.transitionFrames, fps);
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
   const headline = scene.card?.headline?.trim();
@@ -208,7 +236,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       scene={sub}
       effects={style.effects}
       zoomStrength={style.zoomStrength}
-      transitionFrames={style.transitionFrames}
+      transitionFrames={entry}
       url={imageUrl}
       layers={sub === scene ? layers : []}
       cards={cards}
@@ -241,7 +269,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
           scene={scene}
           effects={style.effects}
           zoomStrength={style.zoomStrength}
-          transitionFrames={style.transitionFrames}
+          transitionFrames={entry}
           url={url}
           cards={cards}
         />,
@@ -254,6 +282,39 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const sceneBox = ownImage ? sceneImageBox(scene.frame, width, height) : null;
   // O `zoom_rect` vai para a câmera já na tela (arquivo → recorte → enquadramento do plano em que ele começa).
   const camFx = cameraFx(fx, (at) => spaceAt(slots, at, sceneBox), width / height);
+  const captionsShown = !hideCaptions && style.captions.style !== 'none';
+
+  // Carimbo solto: no lugar da composição da imagem quando está livre; senão, desvia de todo texto conhecido na tela
+  // (o do cartão de texto, a faixa do topo, o cartão de notícia, a legenda, o avatar, o contador e o trecho marcado
+  // da captura).
+  let stampSpot: StampSpot | undefined;
+  if (stamp && !inPanel) {
+    const obstacles: Rect[] = textCardRects(kind, scene, cards, style.captions.uppercase, width, height);
+    if (headline) obstacles.push(headlineRect(headline, cards, lang, width, height));
+    if (news) {
+      const newsW = width > height ? 0.52 : 0.86;
+      obstacles.push([(1 - newsW) / 2, band.top, newsW, Math.max(0, band.bottom - band.top)]);
+    }
+    if (captionsShown) obstacles.push([0, captionMid - captionHalf, 1, captionHalf * 2]);
+    const avatar = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
+    if (avatar) obstacles.push(avatar);
+    for (const e of fx ?? []) {
+      const counter = e.type === 'counter' ? counterRect(e.params ?? {}, width, height, band.top) : null;
+      if (counter) obstacles.push(counter);
+      if (!ANCHORED_FX.has(e.type)) continue;
+      const space = spaceAt(slots, Math.round(e.from), sceneBox);
+      for (const r of fxRects(e.params, space.box, width / height)) {
+        const onScreen = rectThroughFraming(r, space.framing);
+        if (onScreen) obstacles.push(onScreen);
+      }
+    }
+    stampSpot = placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY), stampGeom(stamp, cards, lang, width, height), obstacles);
+  }
+  // Fundo de imagem em brilho cheio (foto, captura, logo, tratamento): a legenda ganha uma tarja escura por baixo, para
+  // as letras não se misturarem com o texto e o logo da imagem. Cartões já escurecem o fundo; estilo com caixa própria
+  // (`captions.background`) já tem a dele.
+  const scrim = captionsShown && !style.captions.background && dim === 0 && Boolean(url || clipUrl);
+
   const background = slots.length ? (
     <ShotStack
       scene={scene}
@@ -287,7 +348,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         cuts={cuts}
         captionMid={captionMid}
         captionHalf={captionHalf}
-        captionsShown={!hideCaptions && style.captions.style !== 'none'}
+        captionsShown={captionsShown}
         minTop={band.top}
         lang={lang}
       />
@@ -300,9 +361,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       )}
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
       {headline ? <Headline text={headline} style={cards} lang={lang} /> : null}
-      {stamp && !inPanel ? (
-        <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} at={scene.card?.stamp_at} lowY={stampLowY} sideY={stampSideY} />
-      ) : null}
+      {scrim ? <CaptionScrim center={captionMid} half={captionHalf} /> : null}
+      {stamp && stampSpot ? <Stamp text={stamp} style={cards} lang={lang} delay={stampDelay} spot={stampSpot} /> : null}
       {sourceChip && sourceFrom > 0 ? (
         <Sequence from={sourceFrom} layout="none" name="Fonte">
           {sourceChip}
@@ -313,8 +373,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       {scene.presenter ? (
         <PresenterLayer presenter={scene.presenter} words={scene.words} assetBaseUrl={assetBaseUrl} minTop={band.top} />
       ) : null}
+      {/* A transição de entrada (flash, fade, luz) passa por baixo da legenda: a legenda fica sempre opaca. */}
+      <TransitionIn type={scene.transition} frames={entry} seed={scene.seed} />
       {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} />}
-      <TransitionIn type={scene.transition} frames={style.transitionFrames} seed={scene.seed} />
     </AbsoluteFill>
   );
 };

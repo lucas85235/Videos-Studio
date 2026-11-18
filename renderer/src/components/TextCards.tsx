@@ -101,7 +101,7 @@ export const QuoteCard: React.FC<CardProps> = ({ scene, style }) => {
 /** Palavras por página do texto cinético (a página também vira no fim de cada frase). */
 const KINETIC_PAGE = 6;
 
-const kineticPages = (words: CaptionWord[]) => {
+export const kineticPages = (words: CaptionWord[]) => {
   const pages: CaptionWord[][] = [];
   let current: CaptionWord[] = [];
   for (const w of words) {
@@ -117,6 +117,20 @@ const kineticPages = (words: CaptionWord[]) => {
 
 const core = (text: string) => text.replace(/[^\p{L}\p{N}]/gu, '');
 
+/** Palavras do texto cinético que já estão na página (mesma conta do quadro): sem fala, uma a cada 8 quadros. */
+export const kineticWords = (scene: TimelineScene): CaptionWord[] =>
+  scene.words.length ? scene.words : scene.text.split(/\s+/).map((t, i) => ({ text: t, from: i * 8, to: i * 8 + 8 }));
+
+/** Destaque da página: palavras longas e números (ou a mais longa), nunca "a última". */
+export const kineticMarks = (shown: CaptionWord[]) => {
+  const marked = shown.map((w) => core(w.text).length >= 7 || /\p{N}/u.test(w.text));
+  if (!marked.some(Boolean) && shown.length > 1) {
+    const longest = shown.reduce((best, w, i) => (core(w.text).length > core(shown[best].text).length ? i : best), 0);
+    marked[longest] = true;
+  }
+  return marked;
+};
+
 /**
  * Tipografia cinética: as palavras da narração aparecem grandes, no ritmo da fala. A página inteira já está
  * diagramada desde o começo (a palavra ainda não dita fica invisível), então nada muda de lugar quando a próxima
@@ -126,7 +140,7 @@ const core = (text: string) => text.replace(/[^\p{L}\p{N}]/gu, '');
 export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle; uppercase: boolean }> = ({ scene, style, uppercase }) => {
   const frame = useCurrentFrame();
   const { fps, width } = useVideoConfig();
-  const words: CaptionWord[] = scene.words.length ? scene.words : scene.text.split(/\s+/).map((t, i) => ({ text: t, from: i * 8, to: i * 8 + 8 }));
+  const words = kineticWords(scene);
   const pages = kineticPages(words);
   const said = words.filter((w) => w.from <= frame).length;
   let index = 0;
@@ -135,11 +149,7 @@ export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle;
     seen += pages[i].length;
   }
   const shown = pages[index] ?? [];
-  const marked = shown.map((w) => core(w.text).length >= 7 || /\p{N}/u.test(w.text));
-  if (!marked.some(Boolean) && shown.length > 1) {
-    const longest = shown.reduce((best, w, i) => (core(w.text).length > core(shown[best].text).length ? i : best), 0);
-    marked[longest] = true;
-  }
+  const marked = kineticMarks(shown);
   return (
     <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center', padding: width * 0.08 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'baseline', gap: `${width * 0.01}px ${width * 0.025}px`, maxWidth: '92%' }}>

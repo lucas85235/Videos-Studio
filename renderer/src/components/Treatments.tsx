@@ -464,7 +464,8 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
     width: device.w,
     height: device.h,
     borderRadius: radius,
-    opacity: enter,
+    // Opaco desde o 1º quadro: só sobe e cresce. Com fade, os primeiros quadros ficavam só no fundo desfocado (quadro
+    // morto, sem nada nítido, ainda mais com a transição de desfoque por cima).
     transform: `translateY(${(1 - enter) * unit * 0.06}px) scale(${0.94 + 0.06 * enter})`,
     boxShadow: `0 ${unit * 0.03}px ${unit * 0.08}px rgba(0,0,0,0.55)`,
     overflow: 'hidden',

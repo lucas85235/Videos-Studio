@@ -2,6 +2,7 @@ import React from 'react';
 import { AbsoluteFill, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { fontStack, fontWeight } from '../fonts';
 import type { StampPlace, TextCardStyle, TimelineCardItem, TimelineScene } from '../types';
+import type { Rect, StampGeom, StampSpot } from './fx/math';
 import { useEntrance } from './TextCards';
 
 // Cartões de dado (stat, compare) e sobreposições (faixa, carimbo, fonte), mais o fundo animado.
@@ -262,6 +263,14 @@ export const headlineBox = (text: string, style: TextCardStyle, lang: string, wi
   const boxH = lines * size * 1.05 + size * 0.34;
   const center = height * headlineCenter(portrait);
   return { label, maxW, padX, size, top: center, bottom: center + boxH / 2 };
+};
+
+/** Caixa [x, y, w, h] (fração da tela) da faixa do topo, para o carimbo desviar dela. */
+export const headlineRect = (text: string, style: TextCardStyle, lang: string, width: number, height: number): Rect => {
+  const { label, maxW, padX, size, top: center, bottom } = headlineBox(text, style, lang, width, height);
+  const w = Math.min(maxW, label.length * charEm(style.font) * size * 1.02 + padX * 2) / width;
+  const half = bottom - center;
+  return [0.5 - w / 2, (center - half) / height, w, (half * 2) / height];
 };
 
 /** Tamanho do carimbo: uma linha; quebra em duas (palavra por linha) antes de ficar pequeno demais. */
@@ -752,23 +761,44 @@ export const Headline: React.FC<{ text: string; style: TextCardStyle; lang: stri
   );
 };
 
+/** Distância da borda do carimbo solto até a borda da tela (fração da largura). */
+const STAMP_MARGIN = 0.07;
+/** Rotação do carimbo (graus). */
+const STAMP_ROT = 10;
+
 /**
- * Lugar do carimbo solto, pela composição da imagem (`stamp_at` da timeline): do lado oposto ao sujeito, na altura
- * `sideY` (30% por padrão: abaixo da faixa do topo, acima da coluna de botões do vertical; mais abaixo quando a
- * legenda de cima desceu), ou embaixo (`lowY`), à esquerda, quando o sujeito ocupa o meio ou a metade de cima: nunca
- * cai num rosto na altura da cabeça.
+ * Lugares preferidos do carimbo solto, pela composição da imagem (`stamp_at` da timeline): do lado oposto ao sujeito,
+ * na altura `sideY` (30% por padrão: abaixo da faixa do topo, acima da coluna de botões do vertical; mais abaixo
+ * quando a legenda de cima desceu), ou embaixo (`lowY`), à esquerda, quando o sujeito ocupa o meio ou a metade de
+ * cima: nunca cai num rosto na altura da cabeça. O `placeStamp` desvia daí quando há texto no caminho.
  */
-const stampPlace = (
-  at: StampPlace | undefined,
-  width: number,
-  height: number,
-  lowY: number,
-  sideY: number,
-): React.CSSProperties => {
-  if (at === 'left') return { position: 'absolute', left: width * 0.07, top: height * sideY };
-  if (at === 'low') return { position: 'absolute', left: width * 0.07, top: height * lowY };
-  return { position: 'absolute', right: width * 0.07, top: height * sideY };
+export const stampPreferred = (at: StampPlace | undefined, lowY: number, sideY: number): StampSpot[] => {
+  if (at === 'left') return [{ side: 'left', y: sideY }];
+  if (at === 'low') return [{ side: 'left', y: lowY }];
+  return [{ side: 'right', y: sideY }];
 };
+
+/** Medidas na tela (fração) do carimbo solto girado, para o `placeStamp` (mesma conta de tamanho do `Stamp`). */
+export const stampGeom = (text: string, style: TextCardStyle, lang: string, width: number, height: number): StampGeom => {
+  const { portrait, u } = layoutOf(width, height);
+  const { lines, size } = stampFit(upper(text.trim(), lang), style.font, width * (portrait ? 0.5 : 0.3), u);
+  const longest = Math.max(...lines.map((l) => l.length));
+  const border = Math.max(3, u * 0.007);
+  // Letra com espaçamento de 0,06 em, respiro dos lados e a borda; altura das linhas, respiro e a borda.
+  const w = longest * (charEm(style.font) + 0.06) * size + size * 0.68 + border * 2;
+  const h = lines.length * size + size * 0.26 + border * 2;
+  const rad = (STAMP_ROT * Math.PI) / 180;
+  const rw = w * Math.cos(rad) + h * Math.sin(rad);
+  const rh = w * Math.sin(rad) + h * Math.cos(rad);
+  const cx = STAMP_MARGIN + w / 2 / width;
+  return { cx: { left: cx, right: 1 - cx }, halfW: rw / 2 / width, halfH: rh / 2 / height };
+};
+
+/** Carimbo solto no lugar `spot`: a borda dele a STAMP_MARGIN do lado, o centro na altura `y`. */
+const stampPlace = (spot: StampSpot, width: number, height: number): React.CSSProperties =>
+  spot.side === 'left'
+    ? { position: 'absolute', left: width * STAMP_MARGIN, top: height * spot.y }
+    : { position: 'absolute', right: width * STAMP_MARGIN, top: height * spot.y };
 
 /** Carimbo girado −10° com borda na cor de destaque; entra com mola de escala 2,2 → 1. */
 export const Stamp: React.FC<{
@@ -779,12 +809,9 @@ export const Stamp: React.FC<{
   anchor?: React.CSSProperties;
   /** Largura máxima (px); sem ela, metade da tela no vertical e 30% no horizontal. */
   maxWidth?: number;
-  /** Lugar sem `anchor` (ver `stampPlace`); `lowY` é a altura do centro no lugar "low". */
-  at?: StampPlace;
-  lowY?: number;
-  /** Altura do centro nos lugares "left"/"right" (padrão 0,3). */
-  sideY?: number;
-}> = ({ text, style, lang, delay = 6, anchor, maxWidth, at, lowY = 0.66, sideY = 0.3 }) => {
+  /** Lugar sem `anchor` (ver `stampPreferred` e `placeStamp`); padrão: à direita, a 30% da altura. */
+  spot?: StampSpot;
+}> = ({ text, style, lang, delay = 6, anchor, maxWidth, spot = { side: 'right', y: 0.3 } }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, portrait, u } = useLayout();
@@ -793,9 +820,9 @@ export const Stamp: React.FC<{
   const fitted = stampFit(upper(text.trim(), lang), style.font, maxWidth ?? width * (portrait ? 0.5 : 0.3), u);
   const size = fitted.size;
   const border = Math.max(3, u * 0.007);
-  const place: React.CSSProperties = anchor ?? stampPlace(at, width, height, lowY, sideY);
+  const place: React.CSSProperties = anchor ?? stampPlace(spot, width, height);
   return (
-    <div style={{ ...place, transform: `${anchor ? '' : 'translateY(-50%) '}rotate(-10deg) scale(${interpolate(s, [0, 1], [2.2, 1])})`, opacity: Math.min(1, s * 2) }}>
+    <div style={{ ...place, transform: `${anchor ? '' : 'translateY(-50%) '}rotate(-${STAMP_ROT}deg) scale(${interpolate(s, [0, 1], [2.2, 1])})`, opacity: Math.min(1, s * 2) }}>
       <div
         style={{
           padding: `${size * 0.16}px ${size * 0.34}px ${size * 0.1}px`,

@@ -2,6 +2,7 @@ import React from 'react';
 import { Easing, Img, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import type { CaptionWord, TimelinePresenter } from '../types';
 import { stickerFilter } from '../sticker';
+import type { Rect } from './fx/math';
 import { assetUrl } from './RealMedia';
 
 // Avatar do apresentador (porte do `Reacao.tsx` do canais/plantao-vice): só a pose, nunca balão, texto ou som.
@@ -38,6 +39,25 @@ type Props = {
   minTop?: number;
 };
 
+/** Altura da figura em fração da tela (mesma conta do componente). */
+const figureHeight = (presenter: TimelinePresenter, minTop: number | undefined) => {
+  const want = Math.max(0.1, Math.min(1, presenter.height || (presenter.mode === 'explica' ? 0.48 : 0.55)));
+  const room = minTop !== undefined ? (1 - Math.max(0, minTop) - TOP_GAP) / (1 - SINK) : want;
+  return Math.max(0.25, Math.min(want, room));
+};
+
+/**
+ * Caixa [x, y, w, h] (fração da tela) do avatar no canto de baixo, para o carimbo solto desviar dele: a figura em pé
+ * tem ~0,6 da altura de largura (a proporção do arquivo não chega aqui). Null no vertical, onde ele não aparece.
+ */
+export const presenterRect = (presenter: TimelinePresenter, width: number, height: number, minTop?: number): Rect | null => {
+  if (width <= height || !presenter.src || presenter.dur <= 0) return null;
+  const h = figureHeight(presenter, minTop);
+  const w = (h * height * 0.6 * (1 - BLEED)) / width;
+  const shown = h * (1 - SINK);
+  return [presenter.side === 'left' ? 0 : 1 - w, 1 - shown, w, shown];
+};
+
 export const PresenterLayer: React.FC<Props> = ({ presenter, words, assetBaseUrl, minTop }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -52,9 +72,7 @@ export const PresenterLayer: React.FC<Props> = ({ presenter, words, assetBaseUrl
   const explica = presenter.mode === 'explica';
   const left = presenter.side === 'left';
   // Altura da figura; a cabeça não passa da faixa do topo (a figura afunda 8% abaixo da borda).
-  const want = Math.max(0.1, Math.min(1, presenter.height || (explica ? 0.48 : 0.55)));
-  const room = minTop !== undefined ? (1 - Math.max(0, minTop) - TOP_GAP) / (1 - SINK) : want;
-  const h = Math.round(Math.max(0.25, Math.min(want, room)) * height);
+  const h = Math.round(figureHeight(presenter, minTop) * height);
 
   // Entra por baixo com mola (~8 quadros), a inclinação assenta e ele flutua leve; sai descendo.
   const enter = spring({ frame: f, fps, config: { damping: 13, stiffness: 170 }, durationInFrames: 8 });

@@ -401,6 +401,95 @@ export const cornerStickerBox = (portrait: boolean, caption: Band | null) => {
   return { bottom, height: Math.min(height, below) };
 };
 
+/**
+ * Fileiras de itens que quebram como o `flex-wrap` centrado (palavras do texto cinético, do título): `widths` em px,
+ * `gap` entre itens da mesma fileira. Devolve a largura de cada fileira e o índice do 1º item dela. Item mais largo que
+ * `maxWidth` fica sozinho na fileira (como no navegador).
+ */
+export const flowRows = (widths: number[], gap: number, maxWidth: number): { width: number; start: number }[] => {
+  const rows: { width: number; start: number }[] = [];
+  widths.forEach((w, i) => {
+    const row = rows[rows.length - 1];
+    if (row && row.width + gap + w <= maxWidth + 1e-6) row.width += gap + w;
+    else rows.push({ width: w, start: i });
+  });
+  return rows;
+};
+
+// --- carimbo solto -----------------------------------------------------------------------------------------------------
+//
+// O carimbo girado (BOATO, CONFIRMADO) fica num canto da tela. Antes ele ia sempre para a mesma altura e caía em
+// cima do título, da palavra do texto cinético ou do trecho marcado da captura ("SEM PC, DEMU UU BETA"). Agora ele vai
+// para o primeiro lugar livre de todo texto conhecido na tela, dentro da área segura.
+
+/** Área segura do carimbo (fração da tela): a caixa dele nunca chega a menos disto das bordas de cima e de baixo. */
+export const STAMP_SAFE = 0.05;
+/** Respiro entre o carimbo e o texto que ele desvia (fração da altura). */
+export const STAMP_GAP = 0.015;
+
+export type StampSide = 'left' | 'right';
+/** Lugar do carimbo: o lado (a borda dele fica a 7% da borda da tela, como sempre) e a altura do centro. */
+export type StampSpot = { side: StampSide; y: number };
+/** Medidas do carimbo na tela (fração): centro horizontal de cada lado e meia caixa já com a rotação. */
+export type StampGeom = { cx: Record<StampSide, number>; halfW: number; halfH: number };
+
+/** Caixa [x, y, w, h] (fração da tela) do carimbo girado no lugar `spot`. */
+export const stampRect = (spot: StampSpot, g: StampGeom): Rect => [g.cx[spot.side] - g.halfW, spot.y - g.halfH, g.halfW * 2, g.halfH * 2];
+
+const overlapArea = (a: Rect, b: Rect) => {
+  const w = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]);
+  const h = Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]);
+  return w > 1e-6 && h > 1e-6 ? w * h : 0;
+};
+
+/**
+ * Onde o carimbo solto fica: o primeiro lugar de `preferred` (o da composição da imagem, como antes) que não toca
+ * nenhum texto conhecido (`obstacles`, caixas em fração da tela) e cabe na área segura; senão, o lugar livre mais
+ * perto da altura preferida, logo acima ou abaixo de algum texto, de qualquer lado (o lado preferido primeiro).
+ * Sem lugar livre, o de menor sobreposição. Sem texto no caminho, o lugar de sempre (o quadro não muda).
+ */
+export const placeStamp = (preferred: StampSpot[], g: StampGeom, obstacles: Rect[]): StampSpot => {
+  const lo = STAMP_SAFE + g.halfH;
+  const hi = 1 - STAMP_SAFE - g.halfH;
+  const fit = (y: number) => (lo <= hi ? clamp(y, lo, hi) : 0.5);
+  const first = preferred[0] ?? { side: 'right' as StampSide, y: 0.3 };
+  const other: StampSide = first.side === 'right' ? 'left' : 'right';
+  const ys = [first.y, lo, hi];
+  for (const o of obstacles) ys.push(o[1] - g.halfH - STAMP_GAP, o[1] + o[3] + g.halfH + STAMP_GAP);
+  const near = [...new Set(ys.map(fit))].sort((a, b) => Math.abs(a - first.y) - Math.abs(b - first.y));
+  const candidates: StampSpot[] = [
+    ...preferred.map((p) => ({ side: p.side, y: fit(p.y) })),
+    ...near.flatMap((y) => [
+      { side: first.side, y },
+      { side: other, y },
+    ]),
+  ];
+  const cost = (spot: StampSpot) => {
+    const box = stampRect(spot, g);
+    return obstacles.reduce((sum, o) => sum + overlapArea(box, o), 0);
+  };
+  let best = candidates[0];
+  let bestCost = Infinity;
+  for (const spot of candidates) {
+    const c = cost(spot);
+    if (c === 0) return spot;
+    if (c < bestCost - 1e-9) {
+      best = spot;
+      bestCost = c;
+    }
+  }
+  return best;
+};
+
+// --- transição de entrada --------------------------------------------------------------------------------------------
+
+/** Teto da transição de entrada (desfoque, flash, fade): mais longa, ela vira quadro morto sem nada nítido. */
+export const ENTRY_MAX_S = 0.4;
+
+/** Quadros da transição de entrada: os do estilo, até ENTRY_MAX_S (o estilo aceita até 2 s). */
+export const entryFrames = (transitionFrames: number, fps: number) =>
+  Math.max(1, Math.min(Math.round(num(transitionFrames, 1)), Math.round(ENTRY_MAX_S * fps)));
+
 // --- câmera ----------------------------------------------------------------------------------------------------------
 
 /**

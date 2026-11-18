@@ -326,6 +326,24 @@ const Flash: React.FC<{ color: string; amount: number; len: number }> = ({ color
 
 // --- contador ------------------------------------------------------------------------------------------------------
 
+/** Texto do contador ("2/5"): `text`, ou `n`/`total`. */
+const counterText = (params: FxParams) => {
+  const n = pNum(params, 'n', NaN);
+  const total = pNum(params, 'total', NaN);
+  return pStr(params, 'text') || (Number.isFinite(n) ? (Number.isFinite(total) ? `${n}/${total}` : `${n}`) : '');
+};
+
+/** Caixa [x, y, w, h] (fração da tela) do contador no canto de cima, para o carimbo solto desviar dele. */
+export const counterRect = (params: FxParams, width: number, height: number, minTop: number): Rect | null => {
+  const text = counterText(params);
+  if (!text) return null;
+  const size = Math.min(width, height) * 0.06;
+  const w = (text.length * 0.62 + 0.84) * size;
+  const side = width * (height > width ? 0.06 : 0.04);
+  const x = pStr(params, 'side', 'right') === 'left' ? side : width - side - w;
+  return [x / width, Math.max(minTop, 0.05) + (size * 0.2) / height, w / width, (size * 1.34) / height];
+};
+
 const Counter: React.FC<{ params: FxParams; len: number; style: RenderStyle; minTop: number; last: boolean }> = ({
   params,
   len,
@@ -335,9 +353,7 @@ const Counter: React.FC<{ params: FxParams; len: number; style: RenderStyle; min
 }) => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
-  const n = pNum(params, 'n', NaN);
-  const total = pNum(params, 'total', NaN);
-  const text = pStr(params, 'text') || (Number.isFinite(n) ? (Number.isFinite(total) ? `${n}/${total}` : `${n}`) : '');
+  const text = counterText(params);
   if (!text) return null;
   const cards = style.textCards;
   const left = pStr(params, 'side', 'right') === 'left';

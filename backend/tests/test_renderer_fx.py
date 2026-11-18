@@ -280,6 +280,34 @@ out.cornerBottomCaption = m.cornerStickerBox(false, [0.78, 0.94]);
 out.cornerMidCaption = m.cornerStickerBox(false, [0.42, 0.58]);
 out.cornerTopCaption = m.cornerStickerBox(false, [0.06, 0.2]);
 out.cornerPortrait = m.cornerStickerBox(true, [0.62, 0.78]);
+// Carimbo solto ("CONFIRMADO" num 16:9): o lugar de sempre quando livre; desvia do texto conhecido.
+const geom = { cx: { left: 0.2, right: 0.8 }, halfW: 0.14, halfH: 0.093 };
+const right = [{ side: 'right', y: 0.3 }];
+const caption = [0, 0.7, 1, 0.2];
+out.stampGeom = geom;
+out.stampSafe = m.STAMP_SAFE;
+out.stampFree = m.placeStamp(right, geom, [caption]);
+// Título de 2 linhas no meio ("SEM PC, DEMO OU / BETA"): o carimbo sobe para cima dele, do mesmo lado.
+const title = [[0.14, 0.2875, 0.72, 0.19], [0.4, 0.4775, 0.2, 0.19], [0.3, 0.6675, 0.4, 0.045]];
+out.stampTitle = m.placeStamp(right, geom, [...title, caption]);
+out.stampTitleObstacles = [...title, caption];
+// Trecho marcado da captura no lado do carimbo: ele troca de lado na mesma altura.
+const marked = [[0.6, 0.25, 0.3, 0.1]];
+out.stampMarked = m.placeStamp(right, geom, [...marked, caption]);
+out.stampMarkedObstacles = [...marked, caption];
+// Sem lugar livre: o de menor sobreposição, dentro da área segura.
+const wall = [[0, 0.1, 1, 0.55], caption];
+out.stampWall = m.placeStamp(right, geom, wall);
+out.stampWallObstacles = wall;
+out.stampWallPreferredRect = m.stampRect({ side: 'right', y: 0.3 }, geom);
+out.rectTitle = m.stampRect(out.stampTitle, geom);
+out.rectMarked = m.stampRect(out.stampMarked, geom);
+out.rectWall = m.stampRect(out.stampWall, geom);
+// Preferido fora da área segura (carimbo embaixo, colado na borda): entra na área.
+out.stampClamped = m.placeStamp([{ side: 'left', y: 0.97 }], geom, []);
+out.flow = m.flowRows([300, 200, 900, 100, 100], 40, 1000);
+out.entry = [9, 12, 30, 60, 0].map((f) => m.entryFrames(f, 30));
+out.entryMax = m.ENTRY_MAX_S;
 console.log(JSON.stringify(out));
 """
 
@@ -486,6 +514,65 @@ def test_corner_meme_stays_off_the_caption(fx_math: dict) -> None:
     assert fx_math["cornerTopCaption"] == {"bottom": 0.06, "height": 0.42}  # legenda em cima: canto de sempre
     top, bottom = span(fx_math["cornerPortrait"])
     assert bottom <= 0.62 + 1e-9
+
+
+def _overlap(a: list[float], b: list[float]) -> float:
+    w = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    h = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    return w * h if w > 1e-6 and h > 1e-6 else 0.0
+
+
+def test_stamp_keeps_its_place_when_free_and_dodges_known_text(fx_math: dict) -> None:
+    """QA do prj_gq4krrs11w: "CONFIRMADO" tampava "DEMO OU" no título ("SEM PC, DEMU UU BETA"). Livre, o carimbo fica
+    onde sempre ficou (o quadro não muda); com texto no caminho, vai para o lugar livre mais perto, na área segura."""
+    assert fx_math["stampFree"] == {"side": "right", "y": 0.3}
+    safe = fx_math["stampSafe"]
+    assert safe == pytest.approx(0.05)
+    title = fx_math["rectTitle"]
+    assert fx_math["stampTitle"]["side"] == "right"  # mesmo lado, logo acima do título
+    assert all(_overlap(title, o) == 0 for o in fx_math["stampTitleObstacles"])
+    assert title[1] >= safe - 1e-9 and title[1] + title[3] <= 0.2875 + 1e-9
+    marked = fx_math["rectMarked"]
+    assert fx_math["stampMarked"] == {"side": "left", "y": 0.3}  # troca de lado na mesma altura
+    assert all(_overlap(marked, o) == 0 for o in fx_math["stampMarkedObstacles"])
+    # Sem lugar livre: dentro da área segura e com menos sobreposição que o lugar de sempre.
+    wall = fx_math["rectWall"]
+    assert wall[1] >= safe - 1e-9 and wall[1] + wall[3] <= 1 - safe + 1e-9
+    cost = lambda r: sum(_overlap(r, o) for o in fx_math["stampWallObstacles"])  # noqa: E731
+    assert cost(wall) < cost(fx_math["stampWallPreferredRect"])
+    clamped = fx_math["stampClamped"]
+    assert clamped["side"] == "left" and clamped["y"] == pytest.approx(1 - safe - fx_math["stampGeom"]["halfH"])
+
+
+def test_flow_rows_wrap_like_flex(fx_math: dict) -> None:
+    assert fx_math["flow"] == [{"width": 540, "start": 0}, {"width": 900, "start": 2}, {"width": 240, "start": 3}]
+
+
+def test_entry_transition_is_capped(fx_math: dict) -> None:
+    """Transição de entrada (desfoque, flash, fade) de no máximo 0,4 s: o estilo aceita até 2 s, que viravam quadro morto."""
+    assert fx_math["entryMax"] == pytest.approx(0.4)
+    assert fx_math["entry"] == [9, 12, 12, 12, 1]
+
+
+def test_sceneview_places_stamp_scrim_and_transition_under_captions() -> None:
+    """O carimbo solto passa pelo `placeStamp` com o texto conhecido da tela; a tarja fica sob a legenda no fundo de
+    imagem em brilho cheio; a transição de entrada usa o teto e fica ABAIXO da legenda (o flash lavava a fala)."""
+    src = _read(COMP / "SceneView.tsx")
+    assert "const entry = entryFrames(style.transitionFrames, fps);" in src
+    assert "style.transitionFrames}" not in src  # nenhuma peça usa a duração sem teto
+    assert "textCardRects(kind, scene, cards, style.captions.uppercase, width, height)" in src
+    assert "headlineRect(headline, cards, lang, width, height)" in src
+    assert "placeStamp(stampPreferred(scene.card?.stamp_at, stampLowY, stampSideY)" in src
+    assert "const scrim = captionsShown && !style.captions.background && dim === 0 && Boolean(url || clipUrl);" in src
+    i_scrim = src.index("<CaptionScrim")
+    i_stamp = src.index("<Stamp text={stamp}")
+    i_trans = src.index("<TransitionIn type={scene.transition} frames={entry}")
+    i_caps = src.index("<Captions lines=")
+    assert i_scrim < i_stamp < i_trans < i_caps
+    # O aparelho do tratamento "tela" não entra transparente (os primeiros quadros ficavam só no fundo desfocado).
+    screen = _read(COMP / "Treatments.tsx")
+    device = screen[screen.index("const deviceStyle"):screen.index("// Coordenadas do conteúdo")]
+    assert "opacity" not in device
 
 
 # --- quadros renderizados (opt-in) -------------------------------------------------------------------------------------

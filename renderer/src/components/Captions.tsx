@@ -166,6 +166,35 @@ export const captionRows = (
   return { size: Math.max(fallback.size, top * MIN_ROW_SCALE), split: fallback.split };
 };
 
+/** Quanto a tarja passa da meia altura da legenda (de 2 linhas), para cima e para baixo; e o escuro no meio dela. */
+const SCRIM_REACH = 1.7;
+const SCRIM_ALPHA = 0.6;
+
+/**
+ * Tarja escura atrás da legenda (degradê que some nas pontas), sobre fundo de imagem em brilho cheio: com logo, texto
+ * de matéria ou foto carregada atrás, as letras da legenda deixam de se misturar com as da imagem. `center` e `half`
+ * em fração da altura (os da legenda).
+ */
+export const CaptionScrim: React.FC<{ center: number; half: number }> = ({ center, half }) => {
+  const { height } = useVideoConfig();
+  const top = Math.max(0, center - half * SCRIM_REACH);
+  const bottom = Math.min(1, center + half * SCRIM_REACH);
+  const shade = `rgba(0,0,0,${SCRIM_ALPHA})`;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: top * height,
+        height: (bottom - top) * height,
+        background: `linear-gradient(to bottom, rgba(0,0,0,0) 0%, ${shade} 32%, ${shade} 68%, rgba(0,0,0,0) 100%)`,
+        pointerEvents: 'none',
+      }}
+    />
+  );
+};
+
 /** Legendas queimadas: karaokê (palavra ativa destacada), palavra a palavra ou linha. */
 export const Captions: React.FC<Props> = ({ lines, style, topOverride, lang }) => {
   const frame = useCurrentFrame();
