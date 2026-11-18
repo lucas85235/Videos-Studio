@@ -58,7 +58,16 @@ VISUAL_LANGUAGES: dict[str, VisualLanguage] = {
     "collage": VisualLanguage("Colagem", "mixed-media paper collage, cut-out shapes, layered textures"),
     "line_art": VisualLanguage("Traço de lousa", "hand-drawn black marker line drawing on plain white background, whiteboard sketch, bold clean outlines, minimal shading"),
     "photo": VisualLanguage("Foto realista", "realistic editorial photograph, natural light, shallow depth of field", photoreal=True),
+    # Linguagens assumidamente não fotográficas (ADR 0004): a IA que sobra é apoio declarado (hipótese, futuro,
+    # conceito) e não se passa por foto, nem por "pintura digital" limpa e coerente, a assinatura de IA mais reconhecível.
+    "collage_cutout": VisualLanguage("Recorte de colagem", "cut-out paper collage with torn edges, halftone photo scraps, visible tape and paper grain, flat hard shadows"),
+    "ink_sketch": VisualLanguage("Esboço a nanquim", "loose ink sketch with cross-hatching on off-white paper, uneven pen pressure, sparse color wash"),
+    "halftone_print": VisualLanguage("Impressão em retícula", "two-color halftone print, coarse dot screen, slight misregistration, flat newsprint texture"),
+    "diagram": VisualLanguage("Diagrama", "explanatory schematic illustration, simple shapes, arrows and outlines on a flat background, no labels"),
+    "paper_cut": VisualLanguage("Papel recortado", "layered paper-cut diorama, stacked colored card stock, soft drop shadows between layers, handmade look"),
 }
+# Linguagens da IA "declarada" (não fotográficas): o storyboard com acervo de material real alterna entre elas.
+NON_PHOTO_LANGUAGES: tuple[str, ...] = ("collage_cutout", "ink_sketch", "halftone_print", "diagram", "paper_cut")
 
 SHOTS: dict[str, CatalogItem] = {
     "wide": CatalogItem("Plano aberto", "wide establishing shot"),

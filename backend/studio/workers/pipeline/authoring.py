@@ -11,19 +11,27 @@ from datetime import date
 from typing import Any
 
 from studio.config import get_settings
+from studio.core import sources as tiers
 from studio.core.glossary import GlossaryEntry, check_pairs, glossary_prompt
 from studio.core.hashing import seed_from
 from studio.core.numbers import card_number, notable_number_runs, number_runs
 from studio.core.project import characters as characters_mod
 from studio.core.project.document import (
+    BEAT_ROLES,
+    CARD_KINDS,
     DATA_KINDS,
+    GAG_PAYOFFS,
+    PRESENTER_AT_RE,
     REAL_KINDS,
     THUMB_WORDS_MAX,
     ArtDirection,
+    BeatMark,
     BgLayer,
     CardItem,
     Character,
     Entity,
+    GagHint,
+    MediaRef,
     Metadata,
     PackageCandidate,
     Presenter,
@@ -38,6 +46,7 @@ from studio.core.project.document import (
     Visual,
     effective_allow_editorial,
 )
+from studio.core.project.pool import Pool, PoolItem, load_pool
 from studio.core.regions import find_regions, is_us_state, region_code, region_codes
 from studio.core.styles.library import StyleNotFound, get_style
 from studio.core.styles.schema import (
@@ -45,8 +54,11 @@ from studio.core.styles.schema import (
     CHART_TYPES,
     GRADE_PRESETS,
     Family,
+    SourcePolicy,
     Structure,
     StyleSpec,
+    grammar_for,
+    sources_for,
 )
 from studio.core.styles.visual import (
     APPROACHES,
@@ -54,6 +66,7 @@ from studio.core.styles.visual import (
     FOCUS_POINTS,
     FOCUS_ROTATION,
     GENRES,
+    NON_PHOTO_LANGUAGES,
     SHOT_ROTATION,
     SHOTS,
     STYLE_FITS,
@@ -69,7 +82,7 @@ from studio.providers import registry
 from studio.providers.base import LLMResult
 from studio.workers.analytics.lessons import lessons_block, lessons_key
 from studio.workers.pipeline import characters as character_scenes
-from studio.workers.pipeline import dubbing, storyboard_check
+from studio.workers.pipeline import dubbing, media_pool, storyboard_check
 from studio.workers.pipeline import presenter as presenter_scenes
 from studio.workers.pipeline.schemas import (
     METADATA_SCHEMA,
@@ -81,7 +94,7 @@ from studio.workers.pipeline.schemas import (
     STORYBOARD_SOURCES,
     TRANSLATE_SCHEMA,
 )
-from studio.workers.pipeline.storyboard_check import CORRIGIDO, Beat, Issue
+from studio.workers.pipeline.storyboard_check import CORRIGIDO, Beat, Issue, has_real
 
 log = logging.getLogger(__name__)
 
@@ -215,16 +228,17 @@ Use speaker 'narrator' (ou o nome de um personagem, se houver diálogo)."""
 
 STORYBOARD_SYSTEM = """Você é o diretor de arte e o editor de um canal sem rosto (Shorts, TikTok, Reels e vídeos longos).
 O roteiro já foi aprovado e chega cortado em batidas (uma frase ou ideia por batida). Sua tarefa é a
-curadoria visual: escolher a linguagem visual certa para ESTE assunto e decidir, batida por batida, o que
-aparece na tela usando só o que o app sabe produzir.
+curadoria visual: decidir, batida por batida, o que aparece na tela usando só o que o app sabe produzir. O MATERIAL
+REAL vem primeiro (o acervo do projeto: trechos oficiais, capturas de página e notícia, fotos próprias e livres); a
+imagem de IA é apoio declarado, com motivo, e o teto dela é medido em tempo de tela.
 
 1) Direção de arte ("direction"), decidida pelo assunto e pelo roteiro, não pelo nome do estilo:
 - genre: o tipo de vídeo (notícia de games não é mistério, mesmo com estilo de mistério).
 - approach: literal (mostra o assunto), misto ou alegorico (metáforas).
 - world: só o cenário, lugar e época, em até 20 palavras em inglês ("big Brazilian city, 1990s"), sem hora do dia,
-  clima nem céu (cada imagem diz os seus). O app junta o world a TODA imagem nova: nada de pessoas, objetos ou ações
-  nele. Personagem, lugar ou objeto que volta em várias batidas vira entidade (só entra nas imagens que a citam); o
-  que é de uma batida só vai no prompt dela.
+  clima nem céu (cada imagem diz os seus). O app junta o world às imagens de IA que citam entidades: nada de pessoas,
+  objetos ou ações nele. Personagem, lugar ou objeto que volta em várias batidas vira entidade (só entra nas imagens
+  que a citam); o que é de uma batida só vai no prompt dela.
 - languages: 1 a 3 ids do catálogo, o primeiro dominante. Prefira os do estilo; se não combinarem com o
   assunto, escolha os que combinam e diga em style_fit/style_note.
 - treatment: contraste, saturação e textura em até 12 palavras, em inglês, SEM hora do dia, clima, céu, luz ou
@@ -244,9 +258,22 @@ aparece na tela usando só o que o app sabe produzir.
 - style_fit: ok | fraco | errado; style_note: o porquê numa frase; suggested_style: id da lista ou null.
 - hook: o que o primeiro quadro mostra, em inglês.
 
-2) Uma entrada em "scenes" por batida, com a chave exata e na mesma ordem. O que o app desenha:
-- image: imagem em tela cheia com câmera. source "new" = imagem nova de IA (~35 s de cota cada; respeite o
-  limite); source "reuse" = a imagem de uma batida anterior (reuse_key) com outro enquadramento (focus), custo zero.
+2) Uma entrada em "scenes" por batida, com a chave exata e na mesma ordem.
+De onde vem a imagem (source). Quando o pedido traz o "Acervo de material real" (linhas "id · nível · tipo ·
+descrição · duração"), toda batida de imagem segue esta ordem de preferência:
+  a) source "pool" com o item ESPECÍFICO da batida (pool_id = o id exato da lista: a pessoa, o lugar, o produto, o
+     trecho do trailer, a página ou a notícia que a frase cita);
+  b) source "pool" com um item GENÉRICO do mesmo assunto (cidade, tela, multidão, cenário);
+  c) um cartão (stat, compare, title, text, quote) quando a batida é número, citação ou frase de impacto;
+  d) só então source "new" (imagem de IA), e só com ai_reason: o motivo, em português e curto, de a batida não ter
+     material real: hipótese ("e se..."), futuro, conceito abstrato ou cena impossível de filmar. Sem motivo, não
+     use "new".
+  O mesmo item real pode voltar em outra batida; a mesma imagem de IA não serve de enchimento. ai_reason é null fora
+  de "new". Sem acervo no pedido, use "new" e "reuse" dentro do limite (com ai_reason quando houver motivo).
+O que o app desenha:
+- image: imagem (ou o trecho de vídeo, quando o item do acervo é clipe) em tela cheia com câmera. source "pool" = item
+  do acervo (pool_id); source "new" = imagem nova de IA (~35 s de cota cada; respeite o limite); source "reuse" = a
+  imagem de uma batida anterior (reuse_key) com outro enquadramento (focus), custo zero.
 - stat: número grande que conta na tela; value com algarismos e unidade curta ("475 MI", "200 MI+", "2013",
   "2"), label até 6 palavras com o qualificador que a fala dá (plataforma, janela de tempo: "views em 24 h no
   YouTube"), mesmo que ele venha na batida seguinte.
@@ -258,26 +285,38 @@ aparece na tela usando só o que o app sabe produzir.
   ritmo da fala (pergunta ou frase de impacto). quote: citação curta (overlay_text).
 - count: só no formato Top 10, na primeira batida de cada item (o app desenha o número do item).
 - chart e map: só quando o pedido trouxer as regras do estilo de dados (senão, use stat ou compare).
-Todo cartão (stat, compare, title, text, quote) usa de fundo a imagem de uma batida anterior (source "reuse" e
-reuse_key), desfocada e escurecida.
+Todo cartão (stat, compare, title, text, quote) usa de fundo, desfocado e escurecido, o material de uma batida
+vizinha: prefira o real (source "pool" com o pool_id, ou "reuse" de uma batida com item do acervo); source "none"
+deixa o fundo liso (só quando o cartão pede fundo limpo); fundo de IA só quando não houver material real.
 Em qualquer cena: headline (faixa no topo, até 5 palavras), stamp (carimbo, até 2 palavras, ex. "RECORDE"; nunca
 "INÉDITO" nem "EXCLUSIVO": as imagens são ilustrações), source_ref (o número da fonte em "Fontes do roteiro" que
 traz o dado do cartão, ou null). Campo que não se aplica vai como null. A faixa compete com a legenda: use no
 gancho e só onde acrescenta o que a fala não diz (data, nome, virada de assunto: "TRAILER 2 · MAIO 2025", não só
 "MAIO DE 2025"), no máximo 1 a cada 3 cenas, sem repetir a fala da batida.
 
-Mídia real (real_kind, real_query, real_note, real_source_ref): marque as batidas em que uma imagem real vale mais
-que a de IA: pessoa real citada, lugar real, produto, personagem oficial, notícia ou anúncio, documento. O app não
-baixa nada sozinho: ele busca fotos livres e o usuário escolhe, cola um link ou envia o arquivo.
+Mídia real de reserva (real_kind, real_query, real_note, real_source_ref): quando o acervo não tem o que a batida
+pede, marque as batidas em que uma imagem real vale mais que a de IA: pessoa real citada, lugar real, produto,
+personagem oficial, notícia ou anúncio, documento. O app busca fotos livres (Wikimedia Commons) para elas.
 - real_kind: photo (pessoa, lugar ou objeto real que pode ter foto livre no Wikimedia Commons), news (a batida cita
   uma notícia ou anúncio: vira cartão de notícia; real_source_ref = o número da fonte com o link, ou null), official
   (arte, trailer ou foto de imprensa oficial: só o usuário pode anexar).
 - real_query: 2 a 6 palavras em inglês para a busca (nome próprio vale: "Miami Beach skyline"); null quando não há o
   que buscar.
 - real_note: em português, o que mostrar e onde achar ("arte oficial da Lucia no Newswire da Rockstar").
-- Só em kind image, no máximo 1 a cada 3 batidas. Sem mídia real: os quatro null.
+- Só em kind image fora de source "pool" (o item do acervo já é real). Sem mídia real: os quatro null.
 - A cena continua com o prompt de IA de reserva (o vídeo funciona sem a mídia real). Com real_kind official de
   personagem, a reserva mostra de costas, em silhueta ou só objetos e lugar, nunca o rosto.
+
+Marcas de edição (todas as batidas; o app monta cortes, ênfases e efeitos a partir delas):
+- role: hook (o gancho, a 1ª batida), reveal (revelação), joke (piada), aside (comentário à parte), list (item de
+  lista), number (número que importa), tension (suspense), breath (respiro, passagem), cta (chamada final).
+- emphasis: 1 a 3 palavras FALADAS na batida, escritas como na frase (o número, o nome, a palavra-chave): viram a
+  ênfase da legenda e o ponto de corte; [] quando nada se destaca.
+- serious: true na batida séria (morte, tragédia, crime, doença, perda): nada cômico nela.
+- gag_payoff, gag_line, gag_at: a piada da batida, quando houver. Meme é reação à frase (contradição, literalidade,
+  autoironia), nunca decoração; batida séria sem humor. gag_payoff: meme | freeze | zoom | sfx | text; gag_line:
+  a reação em até 6 palavras (o "meme sem meme"); gag_at: a palavra falada onde a piada cai. Sem piada: os três null.
+  No máximo 1 piada a cada 4 batidas.
 
 Vídeo IA (video_motion): o app pode animar a imagem de poucas batidas com um clipe de IA (pago, o usuário confirma).
 Marque só as batidas de imagem nova em que o movimento conta a história (o gancho, uma virada, uma ação: fumaça
@@ -290,24 +329,28 @@ Regras:
    quando a frase não tiver nada concreto, no máximo 1 a cada 5 imagens.
 2. Número, data, valor, recorde ou comparação vira stat ou compare, ou vai em headline/stamp, sempre com
    algarismos. Nunca peça número ou texto dentro da imagem. Use só números da narração ou das fontes.
-3. A primeira batida é o gancho: image, source "new", a imagem mais forte e literal do assunto, headline curta,
-   motion "punch_zoom".
+3. A primeira batida é o gancho: image com o melhor item próprio, oficial, captura ou foto livre do acervo (source
+   "pool", o mais forte e literal do assunto), headline curta, motion "punch_zoom". Sem acervo: source "new", a imagem
+   mais forte e literal do assunto.
 4. Quando a narração volta ao MESMO momento, lugar, personagem ou objeto, use reuse em vez de outra imagem
    parecida, com outro focus e motion "zoom_to". Batida com outra data, outro evento ou outra headline nunca
    reaproveita imagem em tela cheia (kind image): use imagem nova. A chamada final pode reaproveitar o gancho.
    Espalhe o reaproveitamento: no máximo 3 batidas seguidas na mesma imagem, contando os cartões sobre ela;
    depois alterne com imagem nova ou mídia real.
 5. No máximo 2 cartões (stat, compare, title, text, quote) seguidos; não repita o shot em imagens novas seguidas.
-6. prompt (só imagem nova): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. Cada imagem nova
-   diz a própria hora e luz, e elas variam: no máximo 1 em cada 3 no mesmo momento (ex.: pôr do sol); siga o clima
-   da narração (passado = luz fria ou de arquivo, revelação = escuro). Tela dentro da imagem (TV, celular, telão)
-   não repete o mesmo conteúdo. NÃO escreva estilo, técnica, paleta, "no text" nem "vertical": o app acrescenta.
-   Nada de logotipo, personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak"
-   ou cena de trailer. Nome de personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no
-   world, no hook nem no look: descreva o que se vê (figura histórica, cidade e país reais podem). Personagem
-   oficial de ficção aparece de costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha
-   também language, shot, composition e entities (ids da direção que aparecem nela).
-7. composition: deixe livre a faixa da legenda informada no pedido."""
+6. prompt (só imagem nova de IA): 1 a 3 frases em inglês com sujeito, ação, lugar, época, hora e luz. Cada imagem
+   nova diz a própria hora e luz, e elas variam: no máximo 1 em cada 3 no mesmo momento (ex.: pôr do sol); siga o
+   clima da narração (passado = luz fria ou de arquivo, revelação = escuro). Tela dentro da imagem (TV, celular,
+   telão) não repete o mesmo conteúdo. NÃO escreva estilo, técnica, paleta, "no text" nem "vertical": o app
+   acrescenta. Só no prompt de IA (o material real do acervo mostra o assunto de verdade): nada de logotipo,
+   personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer;
+   nome de personagem de ficção, marca, jogo, produto ou pessoa viva não entra no prompt, no world, no hook nem no
+   look: descreva o que se vê (figura histórica, cidade e país reais podem); personagem oficial de ficção aparece de
+   costas, em silhueta ou só por objetos, nunca de frente. Na imagem nova, preencha também language, shot,
+   composition e entities (ids da direção que aparecem nela).
+7. composition: deixe livre a faixa da legenda informada no pedido.
+8. A imagem de IA não se passa por foto: use linguagem assumidamente não fotográfica (collage_cutout, ink_sketch,
+   halftone_print, diagram, paper_cut ou as do estilo) e troque de linguagem de uma imagem de IA para a outra."""
 
 # Regras dos cartões de gráfico e mapa, só no pedido de estilo da família de dados e geografia.
 STORYBOARD_DATA_RULES = """Estilo de dados e geografia: além de stat e compare, o app desenha gráficos e mapas animados.
@@ -335,9 +378,107 @@ _SOURCES = dict.fromkeys(STORYBOARD_SOURCES)
 _MOTIONS = dict.fromkeys(AUTO_CAMERA_MOVES)  # parallax só por escolha do usuário
 
 
-def image_budget(n_beats: int, style: StyleSpec) -> int:
-    """Limite de imagens novas de IA do storyboard (o resto reaproveita imagem ou é cartão)."""
-    return max(3, math.ceil(n_beats * style.edit.new_image_ratio))
+def image_budget(n_beats: int, style: StyleSpec, pool: Pool | None = None) -> int:
+    """Limite de imagens novas de IA do storyboard (o resto reaproveita imagem ou é cartão).
+
+    Com acervo de material real, o limite sai do teto de IA da política de fontes (`ai_max_share`, a fração das
+    batidas), sem o mínimo de 3: o real ocupa o resto. Sem acervo, o de sempre (`new_image_ratio`, no mínimo 3)."""
+    legacy = max(3, math.ceil(n_beats * style.edit.new_image_ratio))
+    if not has_real(pool):
+        return legacy
+    return min(legacy, math.ceil(n_beats * sources_for(style).ai_max_share - 1e-9))
+
+
+# --- acervo de material real (ADR 0004) ----------------------------------------------------------
+
+POOL_MAX_LINES = 120
+# Níveis do acervo que entram como reserva de outra cena (o meme é reação, não serve de B-roll).
+_FALLBACK_TIERS = [t for t in tiers.FALLBACK if t != "meme"]
+_MATCH_MIN_LEN = 4
+_MATCH_STOP = {
+    "para", "pela", "pelo", "como", "mais", "muito", "isso", "esse", "essa", "este", "esta", "aqui", "onde", "quando",
+    "ainda", "depois", "antes", "sobre", "entre", "todo", "toda", "todos", "todas", "ninguem", "agora", "cada", "porque",
+    "the", "with", "from", "that", "this", "into", "over", "their", "there", "what", "when", "where", "which",
+}  # fmt: skip
+
+
+def _match_tokens(*texts: object) -> set[str]:
+    out: set[str] = set()
+    for text in texts:
+        if isinstance(text, str):
+            for word in text.replace("_", " ").replace("-", " ").split():
+                token = normalize_token(word)
+                if len(token) >= _MATCH_MIN_LEN and token not in _MATCH_STOP:
+                    out.add(token)
+                    out.add(token.rstrip("s"))
+    return out
+
+
+def _item_tokens(item: PoolItem) -> set[str]:
+    return _match_tokens(item.desc, *item.tags, *item.entities)
+
+
+def _pool_lines(pool: Pool, max_lines: int = POOL_MAX_LINES) -> str:
+    """Reserva local do bloco do acervo (`media_pool.prompt_block` é o dono do formato): `id · nível · tipo · desc ·
+    dur`, agrupado pelo primeiro tópico (entidade ou etiqueta) de cada item."""
+    groups: dict[str, list[PoolItem]] = {}
+    for item in pool.items:
+        topic = (item.entities or item.tags or ["geral"])[0]
+        groups.setdefault(topic, []).append(item)
+    lines: list[str] = []
+    for topic, items in groups.items():
+        lines.append(f"[{topic}]")
+        for item in items:
+            dur = f"{_seconds_text(item.dur_s)} s" if item.dur_s else "-"
+            lines.append(f"{item.id} · {item.tier} · {item.media} · {_text(item.desc, 140) or '(sem descrição)'} · {dur}")
+    if len(lines) > max_lines:
+        lines = [*lines[:max_lines - 1], f"(+{len(lines) - max_lines + 1} linhas)"]
+    return "\n".join(lines)
+
+
+def pool_block(pool: Pool) -> str:
+    """As linhas do acervo para o pedido: as de `media_pool.prompt_block` ou, enquanto ele não existe, a reserva."""
+    if not pool.items:
+        return ""
+    return media_pool.prompt_block(pool, max_lines=POOL_MAX_LINES) or _pool_lines(pool)
+
+
+_HUMOR_TEXT = {"none": "sem humor", "light": "humor leve (reação pontual)", "meme": "humor de meme (reações frequentes)"}
+
+
+def grammar_lines(style: StyleSpec) -> list[str]:
+    """A "Gramática de edição deste estilo" em 3 a 5 linhas (de `grammar_for`): o ritmo e a densidade que o editor
+    automático vai montar, para o storyboard escolher material e marcas que caibam nela."""
+    g = grammar_for(style)
+    if g.editor == "off":
+        return ["Gramática de edição deste estilo: editor automático desligado (um plano por batida, sem eventos)."]
+
+    def n(value: float) -> str:
+        return f"{value:g}".replace(".", ",")
+
+    return [
+        "Gramática de edição deste estilo (o app monta cortes e efeitos a partir do material e das marcas):",
+        f"- ritmo: planos de ~{n(g.shot_median_s)} s em média, nada parado mais de {n(g.max_still_s)} s; "
+        f"{n(g.switch_per_min)} trocas de tipo de material por minuto.",
+        f"- por minuto: {n(g.punch_per_min)} punch, {n(g.text_pop_per_min)} textos que pulam, "
+        f"{n(g.sfx_per_min)} efeitos sonoros, {n(g.meme_per_min)} memes.",
+        f"- humor: {_HUMOR_TEXT.get(g.humor, g.humor)}; ênfase da legenda: {g.caption_emphasis}.",
+    ]
+
+
+def _policy_lines(style: StyleSpec, total_s: float) -> list[str]:
+    policy = sources_for(style)
+    ai_pct = round(policy.ai_max_share * 100)
+    lines = [
+        f"Teto de imagem de IA: {ai_pct}% do tempo de tela (~{total_s * policy.ai_max_share:.0f} s de {total_s:.0f} s)"
+        + (", sempre com ai_reason." if policy.require_ai_reason else "."),
+        f"Gancho: item de nível {', '.join(policy.hook)} do acervo.",
+        f"Material oficial (trailer, gameplay): até {round(policy.official_max_share * 100)}% do tempo, trechos de até "
+        f"{_seconds_text(policy.official_max_clip_s)} s.",
+    ]
+    if not policy.ai_photo:
+        lines.append("A IA não imita foto: linguagem assumidamente não fotográfica, variando entre as imagens de IA.")
+    return lines
 
 
 def plan_beats(doc: ProjectDoc, style: StyleSpec, keep_segments: set[str] | None = None) -> list[Beat]:
@@ -401,8 +542,9 @@ def _beat_line(beat: Beat) -> str:
 
 def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int, *,
                       channel: dict[str, Any] | None = None, styles: dict[str, str] | None = None,
-                      characters: list[Character] | None = None) -> str:
-    """Pedido do storyboard v2: contexto completo do vídeo, catálogos e as batidas."""
+                      characters: list[Character] | None = None, pool: Pool | None = None) -> str:
+    """Pedido do storyboard v2: contexto completo do vídeo, catálogos, a gramática de edição, o acervo de material
+    real (quando há) e as batidas."""
     lang = doc.primary_language
     channel = channel or {}
     planned = {b.segment_id for b in beats}
@@ -450,6 +592,18 @@ def storyboard_prompt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budg
         *([f"- [{n}] {s.title}" + (f": {s.note}" if s.note else "") + (f" ({s.url})" if s.url else "")
            for n, s in enumerate(doc.sources, 1)] or ["(nenhuma)"]),
         "",
+        *grammar_lines(style),
+        "",
+    ]
+    block = pool_block(pool) if pool is not None else ""
+    if pool is not None and block:
+        lines += [
+            'Acervo de material real (source "pool" + pool_id; id · nível · tipo · descrição · duração):',
+            block,
+            *_policy_lines(style, total),
+            "",
+        ]
+    lines += [
         "Roteiro completo (papel do segmento):",
         *[f"[{seg.role}{'' if seg.id in planned else ', cenas travadas'}] {seg.text_for(lang)}" for seg in doc.segments],
         "",
@@ -485,8 +639,9 @@ def _number_label(value: float) -> str:
     return fmt(value)
 
 
-def _storyboard_context(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int) -> dict[str, Any]:
-    """Dados para o LLM offline (o Claude recebe só o system e o pedido)."""
+def _storyboard_context(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int,
+                        pool: Pool | None = None) -> dict[str, Any]:
+    """Dados para o LLM offline (o Claude recebe só o system e o pedido). O acervo (`pool`) só entra quando há."""
     lang = doc.primary_language
     scenes = []
     for beat in beats:
@@ -498,9 +653,18 @@ def _storyboard_context(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], bu
             "values": [_number_label(run[2]) for run in runs],
             "regions": find_regions(beat.text),
         })  # fmt: skip
-    return {"topic": doc.topic or doc.title, "bible": style.art.bible, "languages": list(style.art.languages),
-            "photoreal": style.art.photoreal, "budget": budget, "scenes": scenes, "data_geo": is_data_style(style),
-            "sources": [{"n": n, "title": s.title, "url": s.url} for n, s in enumerate(doc.sources, 1)]}
+    context: dict[str, Any] = {
+               "topic": doc.topic or doc.title, "bible": style.art.bible, "languages": list(style.art.languages),
+               "photoreal": style.art.photoreal, "budget": budget, "scenes": scenes, "data_geo": is_data_style(style),
+               "sources": [{"n": n, "title": s.title, "url": s.url} for n, s in enumerate(doc.sources, 1)]}
+    if has_real(pool):
+        assert pool is not None
+        policy = sources_for(style)
+        context["pool"] = [{"id": i.id, "tier": i.tier, "media": i.media, "desc": i.desc, "tags": list(i.tags),
+                            "entities": list(i.entities), "dur_s": i.dur_s} for i in pool.items]
+        context["hook_tiers"] = list(policy.hook)
+        context["ai_max_share"] = policy.ai_max_share
+    return context
 
 
 # --- normalização da resposta -------------------------------------------------------------------
@@ -599,9 +763,18 @@ class _Pick:
     beat: Beat
     kind: str
     source: str
-    """new | reuse | none"""
+    """new | reuse | none | pool"""
     root: int | None = None
     """Índice da batida dona da imagem (source "reuse")."""
+    item: PoolItem | None = None
+    """Item do acervo que a cena mostra (source "pool")."""
+    ai_reason: str = ""
+    """Por que a cena é imagem de IA (source "new"); vazio: sem motivo declarado."""
+    topic: set[str] = field(default_factory=set)
+    """Palavras da batida (fala, prompt, busca) para achar o item do acervo do mesmo tópico."""
+    plain: bool = False
+    """Cartão com o fundo liso pedido pela resposta (com acervo, fica liso)."""
+    mark: BeatMark | None = None
     prompt: str = ""
     language: str | None = None
     shot: str | None = None
@@ -647,8 +820,10 @@ def _real_from(data: dict[str, Any], kind: str, sources: list[Source]) -> RealHi
     return RealHint(kind=real_kind, query=query, note=note, source_ref=ref)  # type: ignore[arg-type]
 
 
-# Sugestões de mídia real: no máximo 1 a cada 3 batidas (o usuário confere cada uma).
-REAL_SHARE = 1 / 3
+def real_hint_limit(n_beats: int, ai_max_share: float) -> int:
+    """Quantas sugestões de mídia real o storyboard guarda. O real deixou de ter teto próprio (ADR 0004): o limite só
+    evita sugerir em tudo, e é o tempo que sobra do teto de IA (antes, 1 a cada 3 batidas)."""
+    return max(2, math.ceil(n_beats * (1 - ai_max_share) - 1e-9))
 
 
 def _real_rank(hint: RealHint) -> int:
@@ -658,9 +833,9 @@ def _real_rank(hint: RealHint) -> int:
     return {"official": 1, "news": 2}.get(hint.kind, 3)
 
 
-def _limit_real(picks: list[_Pick]) -> list[Issue]:
+def _limit_real(picks: list[_Pick], ai_max_share: float) -> list[Issue]:
     hinted = [i for i, p in enumerate(picks) if p.real is not None]
-    limit = max(2, math.ceil(len(picks) * REAL_SHARE))
+    limit = real_hint_limit(len(picks), ai_max_share)
     if len(hinted) <= limit:
         return []
     keep = set(sorted(hinted, key=lambda i: (_real_rank(picks[i].real), i))[:limit])  # type: ignore[arg-type]
@@ -785,10 +960,364 @@ def _next_shot(previous: str | None) -> str:
     return SHOT_ROTATION[(SHOT_ROTATION.index(previous) + 1) % len(SHOT_ROTATION)]
 
 
+# --- marcas de edição da batida (ADR 0004) -------------------------------------------------------
+
+_ROLES = dict.fromkeys(BEAT_ROLES)
+_PAYOFFS = dict.fromkeys(GAG_PAYOFFS)
+_ROLE_ENERGY = {"hook": 3, "reveal": 3, "tension": 2, "joke": 2, "number": 2, "list": 1, "aside": 1, "cta": 1,
+                "breath": 0}
+_WORD_EDGES = " \t.,;:!?…\"'“”‘’«»()[]"
+
+
+def _spoken_run(beat: Beat, text: str, max_words: int = 3) -> str | None:
+    """As palavras faladas da batida que batem com `text` (sem acento nem pontuação), escritas como na fala. None:
+    não foram ditas (ou passam de `max_words`)."""
+    wanted = [t for t in (normalize_token(w) for w in text.split()) if t]
+    if not wanted or len(wanted) > max_words:
+        return None
+    spoken = [normalize_token(w) for w in beat.words]
+    for k in range(len(spoken) - len(wanted) + 1):
+        if spoken[k:k + len(wanted)] == wanted:
+            return " ".join(w.strip(_WORD_EDGES) for w in beat.words[k:k + len(wanted)]) or None
+    return None
+
+
+def _mark_from(data: dict[str, Any], beat: Beat, kind: str, is_hook: bool, humor: str) -> BeatMark | None:
+    """Marcas da batida a partir dos campos achatados da resposta (`role`, `emphasis`, `serious`, `gag_*`). A ênfase
+    só fica com palavras realmente faladas na batida; batida séria (ou estilo sem humor) não tem piada. None: a
+    resposta não trouxe marca nenhuma (resposta antiga)."""
+    role = pick(data.get("role"), _ROLES)
+    emphasis: list[str] = []
+    for raw in _list(data.get("emphasis")):
+        word = _spoken_run(beat, _text(raw, 60)) if isinstance(raw, str) else None
+        if word and word not in emphasis:
+            emphasis.append(word)
+        if len(emphasis) == 3:
+            break
+    serious = data.get("serious") is True
+    gag = None
+    payoff = pick(data.get("gag_payoff"), _PAYOFFS)
+    if payoff and not serious and humor != "none":
+        at = _spoken_run(beat, _text(data.get("gag_at"), 60), max_words=1) if data.get("gag_at") else None
+        gag = GagHint(at=at if at and PRESENTER_AT_RE.match(at) else None, payoff=payoff,  # type: ignore[arg-type]
+                      line=_words_max(data.get("gag_line"), 6))
+    if role is None and not emphasis and not serious and gag is None:
+        return None
+    if is_hook:
+        role = "hook"
+    elif role in (None, "breath") and beat.role == "cta":
+        role = "cta"
+    elif role is None:
+        role = "number" if kind in DATA_KINDS else "breath"
+    energy = _ROLE_ENERGY.get(role, 1)
+    return BeatMark(role=role, emphasis=emphasis, energy=min(energy, 1) if serious else energy,  # type: ignore[arg-type]
+                    serious=serious, gag=gag)
+
+
+# --- real primeiro: acervo, gancho, fundo dos cartões e teto de IA em tempo (ADR 0004) -------------
+
+_SOURCE_OF_TIER = {"own": "upload", "capture": "capture", "stock": "pexels", "meme": "library"}
+_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".mkv")
+
+
+def media_from_pool(item: PoolItem) -> MediaRef:
+    """A mídia da cena que mostra um item do acervo, com o nível (`tier`) e o `pool_id`. Item já baixado (`path`)
+    entra pronto; sem `path` fica pendente: `media_pool.attach_chosen` baixa e preenche o arquivo."""
+    is_video = bool(item.path and item.path.lower().endswith(_VIDEO_EXTS))
+    if item.media in ("clip", "capture", "meme"):
+        kind = item.media
+    else:
+        kind = {"official": "official", "capture": "capture"}.get(item.tier, "photo")
+    url = (item.url or "").lower()
+    if item.tier == "own":
+        source = "upload" if (item.path or "").startswith("uploads/") else "library"
+    elif item.tier == "official":
+        source = "youtube" if item.media == "clip" or "youtu" in url else "link"
+    elif item.tier == "free":
+        source = "commons" if "wikimedia" in url else "openverse" if "openverse" in url else "link"
+    else:
+        source = _SOURCE_OF_TIER.get(item.tier, "link")
+    return MediaRef(
+        kind=kind, source=source,  # type: ignore[arg-type]
+        asset=item.poster if is_video else item.path, video=item.path if is_video else None,
+        url=item.url, page_url=item.page_url, title=_text(item.desc, 200), license=item.license, credit=item.credit,
+        editorial=item.editorial or item.tier == "official", width=item.w or None, height=item.h or None,
+        start_s=item.start_s, dur_s=item.dur_s, rects=[list(r) for r in item.rects], tier=item.tier, pool_id=item.id,
+    )
+
+
+def _ai_languages(art: ArtDirection, style: StyleSpec, policy: SourcePolicy) -> list[str]:
+    """As linguagens da imagem de IA com acervo: as da direção (sem a foto, se a política não deixa a IA imitar
+    foto) e as assumidamente não fotográficas, para variar de uma imagem para a outra."""
+    base = list(art.languages) or list(style.art.languages[:3])
+    allowed = [x for x in base if x in VISUAL_LANGUAGES and (policy.ai_photo or not VISUAL_LANGUAGES[x].photoreal)]
+    return list(dict.fromkeys([*allowed, *NON_PHOTO_LANGUAGES]))
+
+
+def _next_language(pool: list[str], chosen: str | None, previous: str | None) -> str:
+    """A linguagem pedida (se vale e não repete a da imagem de IA anterior); senão a seguinte da lista."""
+    if chosen in pool and chosen != previous:
+        return chosen  # type: ignore[return-value]
+    base = pool.index(previous) + 1 if previous in pool else 0
+    for step in range(len(pool)):
+        candidate = pool[(base + step) % len(pool)]
+        if candidate != previous:
+            return candidate
+    return pool[0]
+
+
+def _uses(picks: list[_Pick]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for p in picks:
+        if p.source == "pool" and p.item is not None:
+            out[p.item.id] = out.get(p.item.id, 0) + 1
+    return out
+
+
+def _pick_prov(picks: list[_Pick], i: int) -> str:
+    """O nível do que a batida mostra (espelho de `sources.prov_of_scene` antes de existir a cena)."""
+    seen: set[int] = set()
+    while i not in seen:
+        seen.add(i)
+        p = picks[i]
+        if p.source == "pool" and p.item is not None:
+            return p.item.tier
+        if p.source == "new":
+            return "ai"
+        if p.source == "reuse" and p.root is not None:
+            i = p.root
+            continue
+        break
+    return "graphic"
+
+
+def _seconds_by_prov(picks: list[_Pick]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for i, p in enumerate(picks):
+        prov = _pick_prov(picks, i)
+        out[prov] = out.get(prov, 0.0) + p.beat.seconds
+    return out
+
+
+def _official_room(picks: list[_Pick], policy: SourcePolicy, seconds: float) -> bool:
+    total = sum(p.beat.seconds for p in picks) or 1.0
+    return _seconds_by_prov(picks).get("official", 0.0) + seconds <= policy.official_max_share * total + 1e-6
+
+
+def _specific_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy,
+                   seconds: float = 0.0) -> PoolItem | None:
+    """O item real do acervo que fala do mesmo assunto da batida (pelo menos uma palavra em comum), o menos usado e o
+    mais parecido; oficial só enquanto cabe no teto de material oficial."""
+    uses = _uses(picks)
+    order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
+    best: tuple[Any, ...] | None = None
+    chosen: PoolItem | None = None
+    for index, item in enumerate(pool.items):
+        if not tiers.is_real(item.tier) or item.media == "meme":
+            continue
+        overlap = len(topic & _item_tokens(item))
+        if overlap == 0:
+            continue
+        if item.tier == "official" and not _official_room(picks, policy, seconds):
+            continue
+        key = (-overlap, uses.get(item.id, 0), order.get(item.tier, 99), -item.score, index)
+        if best is None or key < best:
+            best, chosen = key, item
+    return chosen
+
+
+def _fallback_item(pool: Pool, topic: set[str], picks: list[_Pick], policy: SourcePolicy) -> PoolItem | None:
+    """Reserva do `pool_id` inválido: no mesmo tópico, o primeiro nível de `sources.FALLBACK` que o acervo tem; sem
+    nada do tópico, o item real genérico menos usado. None: nenhum item real (vira cartão)."""
+    uses = _uses(picks)
+    order = {t: k for k, t in enumerate(_FALLBACK_TIERS)}
+    candidates = [(index, item) for index, item in enumerate(pool.items)
+                  if item.tier in order and tiers.is_real(item.tier) and item.media != "meme"]
+    if not candidates:
+        return None
+    same = [(index, item) for index, item in candidates if topic & _item_tokens(item)]
+    if same:
+        return min(same, key=lambda c: (order[c[1].tier], -len(topic & _item_tokens(c[1])), uses.get(c[1].id, 0),
+                                        -c[1].score, c[0]))[1]
+    return min(candidates, key=lambda c: (uses.get(c[1].id, 0), order[c[1].tier], -c[1].score, c[0]))[1]
+
+
+def _clear_ai(p: _Pick) -> None:
+    p.prompt, p.ai_reason, p.video = "", "", None
+    p.language = p.shot = p.composition = p.focus = None
+    p.entities = []
+
+
+def _to_pool(p: _Pick, item: PoolItem) -> None:
+    _clear_ai(p)
+    p.source, p.root, p.item, p.real = "pool", None, item, None
+
+
+def _to_graphic(p: _Pick) -> None:
+    """A batida vira cartão de texto (a fala grande) sobre o real vizinho (`_real_backgrounds`)."""
+    _clear_ai(p)
+    if p.kind == "image":
+        p.kind, p.overlay = "text", None
+    p.source, p.root, p.item, p.real, p.motion, p.plain = "none", None, None, None, None, False
+
+
+def _real_hook(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, lang: str) -> list[Issue]:
+    """O gancho é o melhor item do acervo nos níveis do gancho da política (próprio, oficial, captura, foto livre):
+    o do assunto da 1ª batida e, no empate, o primeiro nível e a maior nota. Sem item desses níveis, o melhor real
+    (a revisão acusa `hook_not_real`). O contador do Top 10 fica como é."""
+    if hook is None or picks[hook].kind == "count":
+        return []
+    p = picks[hook]
+    if p.source == "pool" and p.item is not None and p.item.tier in policy.hook:
+        return []
+    candidates = [it for it in pool.items if it.tier in policy.hook and it.media != "meme"] or [
+        it for it in pool.items if tiers.is_real(it.tier) and it.media != "meme"]
+    if not candidates:
+        return []
+    rank = {t: k for k, t in enumerate(policy.hook)}
+    best = min(enumerate(candidates), key=lambda c: (-len(p.topic & _item_tokens(c[1])), rank.get(c[1].tier, 99),
+                                                     -c[1].score, c[0]))[1]
+    if p.kind in CARD_KINDS:
+        # Como `storyboard_check.fix_hook`: o número ou o texto do cartão vira a faixa do gancho.
+        card = p.card or SceneCard()
+        if not card.headline.get(lang):
+            carried = card.value.get(lang) or p.overlay or ""
+            if carried and card.label.get(lang):
+                carried = f"{carried} {card.label[lang]}"
+            if carried:
+                card.headline = {lang: " ".join(carried.split()[:5])}
+        card.value, card.label, card.items, card.highlight = {}, {}, [], None
+        p.card = card if card.resolved(lang) else None
+        p.kind, p.overlay, p.number = "image", None, None
+    _to_pool(p, best)
+    p.motion = None  # o gancho ganha o punch_zoom
+    return [Issue("gancho_real", CORRIGIDO, f"O gancho mostra o material real do acervo ({best.id}: "
+                                            f"{_text(best.desc, 60) or best.tier}).", p.beat.key)]
+
+
+def _require_reason(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None) -> list[Issue]:
+    """Imagem de IA sem motivo declarado, havendo no acervo um item real do mesmo assunto: usa o item."""
+    if not policy.require_ai_reason:
+        return []
+    issues: list[Issue] = []
+    for i, p in enumerate(picks):
+        if p.source != "new" or p.ai_reason or i == hook or p.kind == "count":
+            continue
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds)
+        if item is None:
+            continue
+        _to_pool(p, item)
+        issues.append(Issue("ia_sem_motivo", CORRIGIDO, f"A cena pedia imagem de IA sem motivo: usa o item {item.id} "
+                                                        f"do acervo ({item.tier}).", p.beat.key))
+    return issues
+
+
+def _real_backgrounds(picks: list[_Pick]) -> None:
+    """Fundo dos cartões com acervo: o item real mais perto (antes, no empate); o fundo liso pedido fica liso; fundo
+    de IA só quando não há real nenhum. O contador do Top 10 e o mapa ficam como são."""
+    owners = [k for k, q in enumerate(picks) if q.source == "pool" and q.item is not None and tiers.is_real(q.item.tier)]
+    for i, p in enumerate(picks):
+        if p.kind not in CARD_KINDS or p.kind in ("count", "map") or p.plain or p.source == "pool":
+            continue
+        if p.source == "reuse" and p.root is not None and _pick_prov(picks, i) != "ai":
+            continue
+        near = min((k for k in owners if k != i), key=lambda k: (abs(k - i), k > i), default=None)
+        if near is not None:
+            p.source, p.root = "reuse", near
+        elif p.source == "none":
+            last = next((k for k in range(i - 1, -1, -1) if picks[k].source == "new"), None)
+            if last is not None:
+                p.source, p.root = "reuse", last
+
+
+def _flatten_roots(picks: list[_Pick]) -> None:
+    """Quem aponta para uma batida que virou reaproveitamento passa a apontar para a dona da imagem."""
+    for p in picks:
+        hops = 0
+        while p.source == "reuse" and p.root is not None and picks[p.root].source == "reuse" and hops < len(picks):
+            p.root = picks[p.root].root
+            hops += 1
+        if p.source == "reuse" and p.root is not None and picks[p.root].source == "none":
+            # A dona virou cartão liso (não há real para o fundo): sem imagem para mostrar.
+            if p.kind == "image":
+                _to_graphic(p)
+            else:
+                p.source, p.root = "none", None
+
+
+def _enforce_ai_time(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, budget: int,
+                     positions: list[int]) -> list[Issue]:
+    """Teto de IA em TEMPO de tela (`ai_max_share` da duração estimada das batidas) e em número de imagens novas
+    (`budget`). O excesso vira o item real do mesmo assunto ou, sem ele, cartão sobre o real vizinho; nunca o
+    reaproveitamento da mesma imagem de IA. Sai primeiro o reaproveitamento de IA, depois a IA sem motivo e por último
+    a IA com motivo (das últimas batidas para as primeiras)."""
+    total = sum(p.beat.seconds for p in picks)
+    cap = policy.ai_max_share * total
+
+    def over() -> bool:
+        ai = _seconds_by_prov(picks).get("ai", 0.0)
+        news = sum(1 for p in picks if p.source == "new")
+        return ai > cap + 1e-6 or news > budget
+
+    def candidates() -> list[int]:
+        reused = [i for i, p in enumerate(picks) if p.source == "reuse" and p.kind == "image"
+                  and _pick_prov(picks, i) == "ai"]
+        bare = [i for i, p in enumerate(picks) if p.source == "new" and not p.ai_reason and i != hook]
+        reasoned = [i for i, p in enumerate(picks) if p.source == "new" and p.ai_reason and i != hook]
+        news = sum(1 for p in picks if p.source == "new")
+        # Acima do número de imagens novas, o reaproveitamento não resolve: começa pelas imagens novas.
+        first = [] if news > budget else reused[::-1]
+        return [*first, *bare[::-1], *reasoned[::-1], *([] if first else reused[::-1])]
+
+    issues: list[Issue] = []
+    tried: set[int] = set()
+    while over():
+        todo = [i for i in candidates() if i not in tried]
+        if not todo:
+            break
+        i = todo[0]
+        tried.add(i)
+        p = picks[i]
+        item = _specific_item(pool, p.topic, picks, policy, p.beat.seconds)
+        if item is not None:
+            _to_pool(p, item)
+            what = f"usa o item {item.id} do acervo ({item.tier})"
+        else:
+            _to_graphic(p)
+            what = "virou cartão sobre o material real vizinho"
+        issues.append(Issue("teto_de_ia", CORRIGIDO, f"Passou do teto de IA ({round(policy.ai_max_share * 100)}% do "
+                                                     f"tempo): a cena {positions[i]} {what}.", p.beat.key))
+        _real_backgrounds(picks)
+        _flatten_roots(picks)
+    return issues
+
+
+def _real_first(picks: list[_Pick], pool: Pool, policy: SourcePolicy, hook: int | None, budget: int,
+                positions: list[int], lang: str) -> list[Issue]:
+    """Storyboard com acervo: gancho real, IA só com motivo, cartões sobre o real e o teto de IA em tempo."""
+    issues = _real_hook(picks, pool, policy, hook, lang)
+    issues += _require_reason(picks, pool, policy, hook)
+    _real_backgrounds(picks)
+    _flatten_roots(picks)
+    issues += _enforce_ai_time(picks, pool, policy, hook, budget, positions)
+    _real_backgrounds(picks)
+    _flatten_roots(picks)
+    return issues
+
+
 def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: list[Beat], raw_scenes: object,
-                 budget: int, positions: list[int]) -> tuple[list[Scene], list[Issue]]:
-    """Cenas das batidas a partir da resposta (determinístico; nada aqui chama serviço externo)."""
+                 budget: int, positions: list[int], pool: Pool | None = None) -> tuple[list[Scene], list[Issue]]:
+    """Cenas das batidas a partir da resposta (determinístico; nada aqui chama serviço externo).
+
+    Com acervo de material real (`pool` com item real), o real vem primeiro (ADR 0004): `source "pool"` com `pool_id`
+    válido vira `Visual.media` (pendente de anexo quando o item ainda não foi baixado); id inválido segue
+    `sources.FALLBACK` no mesmo tópico; o gancho é o melhor item do acervo; o fundo do cartão é o real vizinho; e o
+    teto de IA é em tempo de tela (`_real_first`). Sem acervo, o de sempre."""
     lang = doc.primary_language
+    real_first = has_real(pool)
+    policy = sources_for(style)
+    grammar = grammar_for(style)
+    ai_languages = _ai_languages(art, style, policy) if real_first else []
     by_key: dict[str, dict[str, Any]] = {}
     for item in _list(raw_scenes):
         if isinstance(item, dict) and isinstance(item.get("key"), str):
@@ -803,6 +1332,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
     data_style = is_data_style(style)
 
     picks: list[_Pick] = []
+    early: list[Issue] = []
     last_new: int | None = None
     last_shot: str | None = None
     new_count = 0
@@ -833,9 +1363,28 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         source = pick(data.get("source"), _SOURCES) if item is not None else None
         root = None
         ahead = None
+        topic = _match_tokens(beat.text, data.get("prompt"), data.get("real_query"), data.get("real_note"),
+                              data.get("headline"), data.get("overlay_text"))
+        chosen_item: PoolItem | None = None
+        plain = False
+        if real_first and kind not in ("count", "map"):
+            assert pool is not None
+            if source == "pool":
+                chosen_item = pool.item(_text(data.get("pool_id"), 12))
+                if chosen_item is None:  # id inválido (ou ausente): a reserva no mesmo tópico
+                    chosen_item = _fallback_item(pool, topic, picks, policy)
+                    early.append(Issue("acervo_reserva", CORRIGIDO, (
+                        f'O item "{_text(data.get("pool_id"), 12) or "(vazio)"}" não está no acervo: '
+                        + (f"usa {chosen_item.id} ({chosen_item.tier})." if chosen_item else "virou cartão.")),
+                        beat.key))
+                if chosen_item is None:
+                    source = "none"
+                    kind = "text" if kind == "image" else kind
+            elif source == "none" and kind in CARD_KINDS:
+                plain = True  # o LLM pediu o fundo liso: fica liso
         j = index_of.get(_text(data.get("reuse_key"), 120)) if source == "reuse" else None
         if j is not None and j < i:
-            root = j if picks[j].source == "new" else picks[j].root
+            root = j if picks[j].source in ("new", "pool") else picks[j].root
         if kind == "count" and (root is None or beats[root].segment_id != beat.segment_id):
             # O contador abre o item: o fundo é a imagem do próprio item, nunca a do item anterior. Com mais
             # batidas no item, é a de uma batida seguinte (sem nenhuma, o fundo animado); item de uma batida só
@@ -846,7 +1395,11 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
                 source = "none"
             else:
                 source = "new"
-        if kind == "image":
+        if chosen_item is not None:
+            source, root = "pool", None  # item do acervo: imagem ou fundo do cartão
+        elif real_first and kind in CARD_KINDS and kind not in ("count", "map") and root is None:
+            source = "none"  # fundo do cartão: o real vizinho, decidido depois de todas as batidas (`_real_backgrounds`)
+        elif kind == "image":
             if item is None or source == "new":
                 source = "new"
             elif root is None:  # reuse inválido ou "none": imagem nova se couber, senão a última imagem nova
@@ -862,11 +1415,18 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
             source, root = ("reuse", last_new) if last_new is not None else ("none", None)
 
         p = _Pick(beat, kind, source or "none", root, overlay=overlay, number=number, card=card, ahead=ahead,
-                  real=_real_from(data, kind, doc.sources))
+                  real=_real_from(data, kind, doc.sources) if chosen_item is None else None, item=chosen_item,
+                  topic=topic, plain=plain, mark=_mark_from(data, beat, kind, i == hook, grammar.humor))
+        if p.source == "pool":
+            p.prompt = _text(data.get("prompt"), 700)  # reserva de IA, quando a resposta trouxe
         if p.source == "new":
             p.prompt = _text(data.get("prompt"), 700) or beat.text
+            p.ai_reason = _text(data.get("ai_reason"), 200)
             chosen = pick(data.get("language"), VISUAL_LANGUAGES)
-            p.language = chosen if chosen in languages else languages[0]
+            if real_first:
+                p.language = chosen  # a linguagem da IA que sobrar sai depois do teto (`_vary_ai_languages`)
+            else:
+                p.language = chosen if chosen in languages else languages[0]
             p.shot = pick(data.get("shot"), SHOTS) or _next_shot(last_shot)
             composition = pick(data.get("composition"), COMPOSITIONS)
             p.composition = composition if composition in safe else safe[new_count % len(safe)]
@@ -883,10 +1443,19 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         p.motion = pick(data.get("motion"), _MOTIONS)
         picks.append(p)
 
-    issues = _enforce_budget(picks, budget, hook, positions)
+    if real_first:
+        assert pool is not None
+        issues = early + _real_first(picks, pool, policy, hook, budget, positions, lang)
+        # A IA que sobra varia de linguagem (assumidamente não fotográfica) de uma imagem para a outra.
+        previous: str | None = None
+        for p in picks:
+            if p.source == "new":
+                p.language = previous = _next_language(ai_languages, p.language, previous)
+    else:
+        issues = _enforce_budget(picks, budget, hook, positions)
     _resolve_ahead(picks)
     issues += _trim_headlines(picks, lang, hook)
-    issues += _limit_real(picks)
+    issues += _limit_real(picks, policy.ai_max_share)
     _limit_video(picks, video_limit(style))
 
     uses: dict[int, int] = {}
@@ -906,7 +1475,13 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         beat = p.beat
         if p.source == "new":
             visual = Visual(prompt=p.prompt, seed=seed_from(doc.seed, beat.segment_id, beat.part), language=p.language,
-                            shot=p.shot, composition=p.composition, entities=p.entities)
+                            shot=p.shot, composition=p.composition, entities=p.entities,
+                            ai_reason=p.ai_reason or None)
+        elif p.source == "pool" and p.item is not None:
+            # Mídia do acervo: pendente de anexo (`media_pool.attach_chosen`) quando o item ainda não foi baixado. O
+            # prompt que a resposta trouxe fica de reserva (vale quando a mídia sai), como na mídia anexada à mão.
+            visual = Visual(prompt=p.prompt, seed=seed_from(doc.seed, beat.segment_id, beat.part),
+                            language=languages[0] if p.prompt else None, media=media_from_pool(p.item))
         elif p.source == "reuse":
             visual = Visual()
         else:
@@ -914,7 +1489,7 @@ def _scenes_from(doc: ProjectDoc, style: StyleSpec, art: ArtDirection, beats: li
         scenes.append(Scene(segment_id=beat.segment_id, part=beat.part, parts=beat.parts, kind=p.kind,  # type: ignore[arg-type]
                             visual=visual, overlay_text={lang: p.overlay} if p.overlay else {}, number=p.number,
                             motion=p.motion, span=len(beat.words), card=p.card, focus=p.focus, real=p.real,
-                            video_hint=p.video if p.source == "new" else None))
+                            video_hint=p.video if p.source == "new" else None, mark=p.mark))
     for p, scene in zip(picks, scenes, strict=True):
         if p.source == "reuse" and p.root is not None:
             scene.visual.reuse_of = scenes[p.root].id
@@ -948,8 +1523,9 @@ def _resolve_ahead(picks: list[_Pick]) -> None:
         same = [k for k in range(i + 1, len(picks)) if picks[k].beat.segment_id == p.beat.segment_id]
         order = ([p.ahead] if p.ahead in same else []) + [k for k in same if k != p.ahead]
         for k in order:
-            target = k if picks[k].source == "new" else picks[k].root if picks[k].source == "reuse" else None
-            if target is not None and picks[target].source == "new":
+            owner = ("new", "pool")  # imagem nova ou item do acervo
+            target = k if picks[k].source in owner else picks[k].root if picks[k].source == "reuse" else None
+            if target is not None and picks[target].source in owner:
                 p.source, p.root = "reuse", target
                 break
 
@@ -1113,7 +1689,8 @@ class _Attempt:
 
 
 def _attempt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], data: object, keep_segments: set[str],
-             budget: int, style_ids: set[str], characters: list[Character] | None = None) -> _Attempt:
+             budget: int, style_ids: set[str], characters: list[Character] | None = None,
+             pool: Pool | None = None) -> _Attempt:
     """Documento novo a partir de uma resposta do LLM, já normalizado e revisado."""
     payload = data if isinstance(data, dict) else {}
     if doc.art is not None and doc.art.source == "user":
@@ -1126,7 +1703,7 @@ def _attempt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], data: object,
     kept = [s for s in new_doc.scenes if s.segment_id in keep_segments]
     _detach_kept(doc, kept)
     scenes, issues = _scenes_from(new_doc, style, art, beats, payload.get("scenes"), budget,
-                                  _positions(doc, beats, keep_segments))
+                                  _positions(doc, beats, keep_segments), pool)
     new_doc.scenes = kept + scenes
     carried = _carry_media(doc, new_doc, keep_segments)
     if carried:
@@ -1136,7 +1713,7 @@ def _attempt(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], data: object,
     new_doc.storyboard_approved = False
     new_doc = ProjectDoc.model_validate(new_doc.model_dump())
     issues += character_scenes.finish(new_doc, beats, characters or [], remap)
-    issues += storyboard_check.check(new_doc, style, beats, budget)
+    issues += storyboard_check.check(new_doc, style, beats, budget, pool=pool)
     return _Attempt(new_doc, issues)
 
 
@@ -1169,11 +1746,13 @@ def _swap_invented_cards(doc: ProjectDoc, issues: list[Issue]) -> list[Issue]:
     return out
 
 
-def _review(doc: ProjectDoc, budget: int, issues: list[Issue], retried: bool) -> dict[str, Any]:
-    """Resumo da curadoria (vai para `settings.storyboard_review`, sem provider e version)."""
+def _review(doc: ProjectDoc, budget: int, issues: list[Issue], retried: bool, *, style: StyleSpec | None = None,
+            pool: Pool | None = None) -> dict[str, Any]:
+    """Resumo da curadoria (vai para `settings.storyboard_review`, sem provider e version). Com acervo, as contagens
+    ganham a parte de IA e de real no tempo de tela."""
     art = doc.art
     return {
-        "counts": storyboard_check.review_counts(doc, budget),
+        "counts": storyboard_check.review_counts(doc, budget, style=style, pool=pool),
         "issues": [i.as_dict() for i in storyboard_check.sort_issues(issues)],
         "retried": retried,
         "style_fit": art.style_fit if art else "ok",
@@ -1184,33 +1763,43 @@ def _review(doc: ProjectDoc, budget: int, issues: list[Issue], retried: bool) ->
 
 def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = None, job_id: str | None = None,
                channel: dict[str, Any] | None = None, styles: dict[str, str] | None = None,
-               characters: list[Character] | None = None) -> tuple[ProjectDoc, str, dict[str, Any]]:
+               characters: list[Character] | None = None,
+               pool: Pool | None = None) -> tuple[ProjectDoc, str, dict[str, Any]]:
     """Storyboard v2: direção de arte do vídeo e uma cena por batida, revisadas antes de gastar imagens.
 
     Segmentos com cena travada ficam como estão. Se a revisão achar problema grave, pede uma correção ao
     LLM (uma vez só) e fica a resposta com menos problemas graves. Devolve (documento, provedor, revisão).
+
+    `pool`: o acervo de material real (ADR 0004); None lê o `pool.json` do projeto (gravado pela coleta antes do
+    storyboard). Com material real, o real vem primeiro; sem ele, o storyboard de sempre.
     """
+    if pool is None:
+        try:
+            pool = load_pool(project_id) if project_id else Pool()
+        except ValueError:  # id de projeto fora do padrão: sem acervo, o storyboard de sempre
+            pool = Pool()
     keep_segments = {s.segment_id for s in doc.scenes if s.locked}
     beats = plan_beats(doc, style, keep_segments)
-    budget = image_budget(len(beats), style)
+    budget = image_budget(len(beats), style, pool)
     if not beats:
         new_doc = doc.model_copy(deep=True)
         new_doc.storyboard_approved = False
         new_doc = ProjectDoc.model_validate(new_doc.model_dump())
-        return new_doc, "nenhum", _review(new_doc, budget, [], retried=False)
+        return new_doc, "nenhum", _review(new_doc, budget, [], retried=False, style=style, pool=pool)
     catalog = styles if styles is not None else style_catalog(style)
     if characters is None:
         characters = characters_mod.for_doc(doc, (channel or {}).get("style_bible") or {})
-    prompt = storyboard_prompt(doc, style, beats, budget, channel=channel, styles=catalog, characters=characters)
+    prompt = storyboard_prompt(doc, style, beats, budget, channel=channel, styles=catalog, characters=characters,
+                               pool=pool)
     # Avatar do apresentador (só com o avatar efetivo no vídeo): as poses entram no pedido e as cenas ganham os campos
     # achatados da dica (pose, palavra, modo).
     presenter = _storyboard_presenter(doc, style, channel)
     schema = storyboard_schema(presenter is not None)
     if presenter is not None:
         prompt += "\n" + "\n".join([*presenter_scenes.prompt_lines(presenter), PRESENTER_FIELDS_LINE])
-    context = _storyboard_context(doc, style, beats, budget)
+    context = _storyboard_context(doc, style, beats, budget, pool)
     result, provider_id = _llm("storyboard", STORYBOARD_SYSTEM, prompt, schema, context, project_id, job_id)
-    best = _attempt(doc, style, beats, result.data, keep_segments, budget, set(catalog), characters)
+    best = _attempt(doc, style, beats, result.data, keep_segments, budget, set(catalog), characters, pool)
     best_data: object = result.data
     severe = best.graves
     retried = False
@@ -1223,7 +1812,7 @@ def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = No
             log.warning("a correção do storyboard falhou; fica a primeira resposta: %s", exc)
         else:
             retried = True
-            other = _attempt(doc, style, beats, second.data, keep_segments, budget, set(catalog), characters)
+            other = _attempt(doc, style, beats, second.data, keep_segments, budget, set(catalog), characters, pool)
             if len(other.graves) < len(severe):
                 best, provider_id, best_data = other, second_provider, second.data
     issues = best.issues
@@ -1233,7 +1822,7 @@ def storyboard(doc: ProjectDoc, style: StyleSpec, *, project_id: str | None = No
         issues += swapped
     if presenter is not None:
         issues += _apply_presenter_hints(best.doc, style, presenter, best_data)
-    return best.doc, provider_id, _review(best.doc, budget, issues, retried)
+    return best.doc, provider_id, _review(best.doc, budget, issues, retried, style=style, pool=pool)
 
 
 PRESENTER_FIELDS_LINE = ('Campos da dica em cada cena: presenter_pose (id da pose), presenter_at (a palavra) e '

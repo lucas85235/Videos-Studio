@@ -170,9 +170,11 @@ def test_v2_builds_direction_cards_and_reuse(monkeypatch):
 
     assert review["counts"] == {"scenes": 21, "new_images": 10, "reused": 11, "cards": 8, "budget": 11, "est_seconds": 350}
     # a imagem de maio de 2025 fica em 3 cenas seguidas (~9 s) e o roteiro (do estilo de mistério) fecha com a chamada
-    # do outro estilo: só avisos, sem pedir correção
+    # do outro estilo: só avisos, sem pedir correção. Sem acervo de material real, as imagens de IA (sem motivo) dão um
+    # aviso só de `faltou_real` (ADR 0004), na primeira delas.
     assert [(i["code"], i["severity"], i["scene_id"]) for i in review["issues"]] == [
         ("imagem_seguida", "aviso", scenes[11].id), ("cta_outro_estilo", "aviso", None),
+        ("faltou_real", "aviso", scenes[0].id),
         ("nome_no_prompt", "corrigido", scenes[14].id), ("personagem_sem_rosto", "corrigido", None),
         ("carimbo_repetido", "corrigido", scenes[8].id)], review["issues"]
     assert review["retried"] is False
@@ -482,7 +484,7 @@ def test_check_warns_repeated_motif_and_too_many_cards(monkeypatch):
     _, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
     warnings = {i["code"]: i for i in review["issues"] if i["severity"] == "aviso"}
     assert set(warnings) == {"motivo_repetido", "cartoes_seguidos", "cartoes_demais", "imagem_seguida",
-                             "cta_outro_estilo"}
+                             "cta_outro_estilo", "faltou_real"}
     # os cartões seguidos ficam todos sobre a imagem do gancho
     same = [i["message"] for i in review["issues"] if i["code"] == "imagem_seguida"]
     assert any(m.startswith("A mesma imagem fica em 4 cenas seguidas (cenas 14 a 17") for m in same), same
@@ -891,10 +893,12 @@ def test_check_flags_the_same_time_of_day_and_retries(monkeypatch):
 def test_check_lighting_counts_the_direction_when_the_scene_has_no_light(monkeypatch):
     doc = gta_doc()
     data = load_fixture(doc)
-    # direção antiga: o tratamento fixa a hora e os prompts não dizem luz nenhuma
+    # direção antiga: o tratamento fixa a hora e os prompts não dizem luz nenhuma. O tratamento só entra na imagem que
+    # cita entidade (ADR 0004): todas citam a cidade.
     data["direction"]["treatment"] = "saturated golden-hour light, clean contrast"
     for index, scene in enumerate(_new_scenes(data)):
         scene["prompt"] = f"Quiet subject number {index} on a coastal avenue, 2020s."
+        scene["entities"] = ["vice_city"]
     _, _, review, fake = run(monkeypatch, doc, get_style(GAMES), data)
     grave = [i for i in review["issues"] if i["code"] == "luz_repetida"]
     assert grave and grave[0]["severity"] == "grave" and len(fake.calls) == 2

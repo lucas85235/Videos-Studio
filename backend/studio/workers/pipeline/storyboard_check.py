@@ -21,10 +21,12 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
+from studio.core import sources as tiers
 from studio.core.hashing import seed_from
 from studio.core.numbers import card_number, is_number_token, notable_number_runs, text_numbers
 from studio.core.project.document import CARD_KINDS, ProjectDoc, Scene, SceneCard, Source, Visual
-from studio.core.styles.schema import StyleSpec
+from studio.core.project.pool import Pool
+from studio.core.styles.schema import StyleSpec, sources_for
 from studio.core.styles.visual import (
     FOCUS_ROTATION,
     SHOT_ROTATION,
@@ -34,7 +36,7 @@ from studio.core.styles.visual import (
 from studio.core.text import estimate_seconds, normalize_token, span_ranges
 from studio.core.text import words as split_words
 from studio.workers.pipeline import lighting
-from studio.workers.pipeline.build import scene_needs_image
+from studio.workers.pipeline.build import scene_needs_image, wants_world
 
 GRAVE = "grave"
 AVISO = "aviso"
@@ -220,9 +222,31 @@ def is_hook_beat(doc: ProjectDoc, beat: Beat) -> bool:
     return bool(doc.segments) and beat.segment_id == doc.segments[0].id and beat.part == 0
 
 
-def review_counts(doc: ProjectDoc, budget: int) -> dict[str, int]:
+def has_real(pool: Pool | None) -> bool:
+    """O acervo do projeto tem material real (o storyboard põe o real primeiro)."""
+    return pool is not None and any(tiers.is_real(item.tier) for item in pool.items)
+
+
+def screen_seconds(doc: ProjectDoc, style: StyleSpec, beats: list[Beat] | None = None) -> list[tuple[Scene, str, float]]:
+    """Cada cena na ordem do vídeo, com o nível do que ela mostra (`sources.prov_of_scene`) e o tempo de tela
+    estimado pela fala (a batida ou, na cena travada, as palavras dela na velocidade do estilo)."""
+    lang = doc.primary_language
+    wpm = style.script.words_per_minute.get(lang, 150)
+    by_scene = {scene.id: beat for beat in beats or [] if (scene := scene_for(doc, beat)) is not None}
+    out: list[tuple[Scene, str, float]] = []
+    for scene in doc.ordered_scenes():
+        beat = by_scene.get(scene.id)
+        seconds = beat.seconds if beat is not None else estimate_seconds(
+            " ".join(_scene_words(doc, scene, by_scene)), wpm, style.voice.speed)
+        out.append((scene, tiers.prov_of_scene(scene, doc), seconds))
+    return out
+
+
+def review_counts(doc: ProjectDoc, budget: int, *, style: StyleSpec | None = None,
+                  pool: Pool | None = None) -> dict[str, int]:
     """Contagens do documento final (inclui as cenas dos segmentos travados). `real_hints` (sugestões de mídia real
-    ainda sem mídia) só aparece quando há alguma."""
+    ainda sem mídia) só aparece quando há alguma; `ai_pct` e `real_pct` (parte do tempo de tela com IA e com material
+    real), só com acervo de material real."""
     new_images = sum(1 for s in doc.scenes if scene_needs_image(s) and not s.visual.asset)
     counts = {
         "scenes": len(doc.scenes),
@@ -235,6 +259,11 @@ def review_counts(doc: ProjectDoc, budget: int) -> dict[str, int]:
     real_hints = sum(1 for s in doc.scenes if s.real is not None and s.visual.media is None)
     if real_hints:
         counts["real_hints"] = real_hints
+    if style is not None and has_real(pool):
+        timed = screen_seconds(doc, style)
+        total = sum(seconds for _s, _p, seconds in timed) or 1.0
+        counts["ai_pct"] = round(100 * sum(sec for _s, prov, sec in timed if prov == "ai") / total)
+        counts["real_pct"] = round(100 * sum(sec for _s, prov, sec in timed if tiers.is_real(prov)) / total)
     return counts
 
 
@@ -358,9 +387,11 @@ def card_numbers(card: SceneCard) -> list[str]:
 # --- correções automáticas ---------------------------------------------------------------------
 
 
-def fix_hook(doc: ProjectDoc, style: StyleSpec, beats: list[Beat]) -> list[Issue]:
-    """A primeira cena do vídeo precisa de imagem nova (o gancho): cartão vira imagem com `art.hook`."""
-    if not beats or not is_hook_beat(doc, beats[0]):
+def fix_hook(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool: Pool | None = None) -> list[Issue]:
+    """A primeira cena do vídeo precisa de imagem (o gancho): cartão vira imagem nova de IA com `art.hook`. Só sem
+    acervo de material real (ADR 0004): com ele, o storyboard já pôs no gancho o melhor item real, e o que sobrar a
+    revisão acusa (`hook_not_real`) em vez de virar IA."""
+    if not beats or not is_hook_beat(doc, beats[0]) or has_real(pool):
         return []
     beat = beats[0]
     scene = scene_for(doc, beat)
@@ -948,8 +979,8 @@ def _check_cards(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
 def _direction_light_text(doc: ProjectDoc, scene: Scene) -> str:
     """O que a direção acrescenta ao prompt da imagem e pode fixar a hora: tratamento, mundo, aparências e paleta."""
     art = doc.art
-    if art is None:
-        return ""
+    if art is None or not wants_world(art, scene.visual):
+        return ""  # sem entidade (nem direção do usuário), o mundo e o tratamento não entram no prompt
     looks = [e.look for e in (art.entity(i) for i in scene.visual.entities) if e]
     return ". ".join(t for t in (art.treatment, art.world, *looks, *art.palette) if t)
 
@@ -1257,16 +1288,94 @@ def _check_cta(doc: ProjectDoc, style: StyleSpec) -> list[Issue]:
     return []
 
 
-def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | None = None) -> list[Issue]:
+SAME_TIER_RUN_S = 20.0
+"""Tempo máximo seguido no mesmo nível de material (só IA, só trailer...): acima disso o vídeo fica monótono."""
+
+
+def _check_real_first(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], pool: Pool | None) -> list[Issue]:
+    """Achados do material real (ADR 0004), todos avisos: IA acima do teto em tempo de tela (`ai_over_budget`),
+    gancho sem material real (`hook_not_real`), o mesmo nível de material mais de 20 s seguidos (`same_tier_run`),
+    material oficial acima do teto (`official_over_share`) e imagem de IA sem motivo (`faltou_real`: por cena com
+    acervo; sem acervo, um aviso só)."""
+    policy = sources_for(style)
+    in_beats = {scene.id: beat for beat in beats if (scene := scene_for(doc, beat)) is not None}
+    timed = screen_seconds(doc, style, beats)
+    issues: list[Issue] = []
+    ai_scenes = [(scene, in_beats[scene.id]) for scene, prov, _s in timed
+                 if prov == "ai" and scene.id in in_beats and has_own_image(scene) and not scene.locked
+                 and not (scene.visual.ai_reason or "").strip()]
+    if not has_real(pool):
+        if ai_scenes and policy.require_ai_reason:
+            n = len(ai_scenes)
+            what = "1 cena é imagem de IA" if n == 1 else f"{n} cenas são imagem de IA"
+            issues.append(Issue("faltou_real", AVISO, f"{what} sem motivo declarado e o acervo de material real está "
+                                                      "vazio: adicione links oficiais, fotos ou capturas no Acervo.",
+                                ai_scenes[0][1].key, ai_scenes[0][0].id, {"count": n}))
+        return issues
+    total = sum(seconds for _s, _p, seconds in timed) or 1.0
+    ai_share = sum(seconds for _s, prov, seconds in timed if prov == "ai") / total
+    if ai_share > policy.ai_max_share + 0.005:
+        issues.append(Issue("ai_over_budget", AVISO, f"Imagem de IA em {round(ai_share * 100)}% do tempo de tela; o "
+                                                     f"teto é {round(policy.ai_max_share * 100)}%.",
+                            extra={"share": round(ai_share, 3)}))
+    official = sum(seconds for _s, prov, seconds in timed if prov == "official") / total
+    if official > policy.official_max_share + 0.005:
+        issues.append(Issue("official_over_share", AVISO, f"Material oficial em {round(official * 100)}% do tempo; o "
+                                                          f"teto é {round(policy.official_max_share * 100)}% (risco de "
+                                                          "Content ID).", extra={"share": round(official, 3)}))
+    if beats and is_hook_beat(doc, beats[0]):
+        hook = scene_for(doc, beats[0])
+        if hook is not None and hook.kind != "count":
+            prov = tiers.prov_of_scene(hook, doc)
+            if prov not in policy.hook:
+                issues.append(Issue("hook_not_real", AVISO, f"O gancho mostra {_PROV_TEXT.get(prov, prov)}; o ideal é "
+                                                            "material próprio, oficial, captura ou foto livre.",
+                                    beats[0].key, hook.id))
+    run: list[tuple[int, Scene, str, float]] = []
+    for position, (scene, prov, seconds) in enumerate(timed, 1):
+        if run and run[-1][2] != prov:
+            issues += _tier_run(run, in_beats)
+            run = []
+        run.append((position, scene, prov, seconds))
+    issues += _tier_run(run, in_beats)
+    if policy.require_ai_reason:
+        for scene, beat in ai_scenes:
+            issues.append(Issue("faltou_real", AVISO, "Imagem de IA sem motivo e sem item do acervo sobre o assunto: "
+                                                      "troque pelo material real (Acervo) ou diga o motivo.",
+                                beat.key, scene.id))
+    return issues
+
+
+_PROV_TEXT = {"ai": "imagem de IA", "graphic": "um cartão", "stock": "foto de banco de imagens", "meme": "um meme"}
+
+
+def _tier_run(run: list[tuple[int, Scene, str, float]], in_beats: dict[str, Beat]) -> list[Issue]:
+    total = sum(seconds for *_x, seconds in run)
+    if total <= SAME_TIER_RUN_S or not any(scene.id in in_beats for _p, scene, _v, _s in run):
+        return []
+    first, last = run[0][0], run[-1][0]
+    prov = run[0][2]
+    at = next((scene for _p, scene, _v, _s in run if scene.id in in_beats), run[0][1])
+    beat = in_beats.get(at.id)
+    return [Issue("same_tier_run", AVISO, f"Cenas {first} a {last} ficam ~{total:.0f} s seguidos no mesmo tipo de "
+                                          f"material ({prov}): alterne com outro tipo.",
+                  beat.key if beat else None, at.id, {"prov": prov, "seconds": round(total, 1)})]
+
+
+def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | None = None, *,
+          pool: Pool | None = None) -> list[Issue]:
     """Revisa as cenas das batidas: corrige o que dá (no próprio `doc`) e devolve os problemas.
 
     `budget` é o limite de imagens novas: com vaga sobrando, imagem reaproveitada para outra data é grave.
+    `pool`: o acervo de material real do storyboard. Com material real, o gancho não vira IA e o cartão de fundo liso
+    fica liso (o storyboard já pôs o real de fundo onde cabia).
     """
-    issues = fix_hook(doc, style, beats)
+    issues = fix_hook(doc, style, beats, pool)
     issues += fix_entity_names(doc, beats)
     issues += fix_real_reserve(doc, beats)
     issues += fix_repeated_shots(doc, beats)
-    issues += fix_flat_cards(doc, beats)
+    if not has_real(pool):
+        issues += fix_flat_cards(doc, beats)
     issues += fix_stamps(doc, beats)
     issues += fix_echo_stamps(doc, beats)
     issues += fix_repeated_headlines(doc, beats)
@@ -1281,4 +1390,5 @@ def check(doc: ProjectDoc, style: StyleSpec, beats: list[Beat], budget: int | No
     issues += _check_cards(doc, beats)
     issues += _check_compare_units(doc, beats)
     issues += _check_cta(doc, style)
+    issues += _check_real_first(doc, style, beats, pool)
     return issues

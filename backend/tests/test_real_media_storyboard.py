@@ -4,6 +4,7 @@ mantida ao refazer as cenas e a manchete na tradução. O LLM é falso (monkeypa
 from __future__ import annotations
 
 import copy
+import math
 from typing import Any
 
 from studio.core.project import media_edit
@@ -19,6 +20,7 @@ from studio.core.project.document import (
     Visual,
 )
 from studio.core.styles.library import get_style
+from studio.core.styles.schema import sources_for
 from studio.providers.base import LLMResult, Usage
 from studio.workers.pipeline import authoring, storyboard_check
 from studio.workers.pipeline.schemas import STORYBOARD_SCHEMA
@@ -117,7 +119,9 @@ def test_storyboard_keeps_hints_only_on_image_scenes_and_caps_them(monkeypatch):
     doc = base_doc()
     beats = authoring.plan_beats(doc, STYLE)
     n = len(beats)
-    limit = max(2, -(-n // 3))
+    # O real não tem mais teto de 1/3 (ADR 0004): o limite das sugestões é o tempo que sobra do teto de IA.
+    limit = authoring.real_hint_limit(n, sources_for(STYLE).ai_max_share)
+    assert limit == max(2, math.ceil(n * (1 - sources_for(STYLE).ai_max_share) - 1e-9))
     extra = {i: {"real_kind": "photo", "real_query": f"Miami place {i}"} for i in range(n)}
     extra[1] = {"real_kind": "news", "real_source_ref": 2, "real_note": "a notícia"}
     extra[2] = {"kind": "stat", "source": "reuse", "reuse_key": beats[0].key, "value": "2025", "label": "o ano",
@@ -132,7 +136,7 @@ def test_storyboard_keeps_hints_only_on_image_scenes_and_caps_them(monkeypatch):
     assert scenes[1].real.source_ref == 2 and scenes[3].real.kind == "official"
     cut = [i for i in review["issues"] if i["code"] == "sugestoes_cortadas"]
     assert len(cut) == 1 and cut[0]["severity"] == "corrigido"
-    assert cut[0]["message"].endswith(f"tiradas: ficam {limit} neste vídeo.")
+    assert cut[0]["message"].endswith(f": ficam {limit} neste vídeo.")
     assert review["counts"]["real_hints"] == limit
 
 

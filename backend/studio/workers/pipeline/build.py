@@ -168,16 +168,27 @@ def directed_variant(art: ArtDirection, visual: Visual) -> tuple[str | None, str
     return rotate_variant(visual.shot, visual.composition, visual.language, art.languages, visual.variation)
 
 
-def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual) -> str:
+def wants_world(art: ArtDirection, visual: Visual) -> bool:
+    """O mundo, as cores de destaque e o tratamento da direção entram no prompt desta imagem? Só quando a cena declara
+    entidade (o personagem ou o lugar que volta precisa do mesmo mundo) ou quando a direção é do usuário (ele pediu).
+    Fora disso, cada imagem de IA fica com a linguagem e o sujeito dela: o mesmo "World"/"Accent colors"/"Treatment" em
+    toda imagem é o que deixa as ilustrações coerentes demais entre si, a assinatura de IA (ADR 0004)."""
+    return bool(visual.entities) or art.source == "user"
+
+
+def compose_directed_prompt(style: StyleSpec, art: ArtDirection, visual: Visual, *, world_always: bool = False) -> str:
     """Prompt em camadas da cena dirigida: enquadramento, linguagem, sujeito, entidades e o mundo do vídeo.
 
     A bible do estilo não entra (a direção já adaptou o tratamento ao assunto) e o "sem texto" vai no
     envelope do gerador de imagem. A paleta entra como cores de destaque, não como a cor da imagem toda. Quando o
     prompt da cena já diz a hora, o clima ou a luz, a hora, o clima e o céu saem do mundo, das aparências e da
     paleta, e a luz sai também do tratamento (direção antiga com "golden hour" não pinta todas as imagens iguais).
-    A direção definida pelo usuário fica como ele escreveu.
+    A direção definida pelo usuário fica como ele escreveu. Mundo, cores e tratamento só entram quando `wants_world`
+    (ou com `world_always`, o prompt de antes do ADR 0004, que só serve para achar no cache a imagem já gerada).
     """
     shot, composition, language = directed_variant(art, visual)
+    if not (world_always or wants_world(art, visual)):
+        art = art.model_copy(update={"world": "", "palette": [], "treatment": ""})
     framing = ", ".join(t for t in (shot_text(shot), composition_text(composition)) if t)
     own_light = art.source != "user" and names_light(visual.prompt)
 
@@ -741,9 +752,13 @@ class Builder:
         if visual is not None and visual.type != "stock" and visual.language and self.doc.art is not None:
             # Com os personagens de agora: depois de editar a descrição, a imagem velha não é achada pelo prompt antigo.
             art, current = self.character_view(visual)
+            # O prompt de antes do ADR 0004 (mundo, cores e tratamento em toda imagem): a imagem já gerada com ele
+            # continua valendo (a prévia aprovada não muda e nada gasta cota de novo).
+            before = compose_directed_prompt(self.style, art, current, world_always=True)
             old = legacy_directed_prompt(self.style, art, current)
-            if old != inputs["prompt"]:
-                variants.append({**inputs, "prompt": old})
+            for prompt in (before, old):
+                if all(prompt != v["prompt"] for v in variants):
+                    variants.append({**inputs, "prompt": prompt})
         keys = [k for v in variants for k in (
             image_key(v), *(hash_obj({**v, "chain": chain}) for chain in (inputs["chain"], *_LEGACY_IMAGE_CHAINS)))]
         return list(dict.fromkeys(keys))
@@ -766,6 +781,9 @@ class Builder:
         """A mídia real da cena no tamanho do vídeo (cache "media": recortar de novo é só tempo de máquina). None:
         notícia sem imagem (fundo animado) ou arquivo sumido (com aviso; nunca gera IA no lugar sem avisar)."""
         media = scene.visual.media
+        if media is not None and not media.asset and media.video:
+            poster = self.clip_poster(scene)
+            media = media.model_copy(update={"asset": poster}) if poster else None
         if media is None or not media.asset:
             return None
         src = self.store.abs(media.asset)
@@ -792,6 +810,50 @@ class Builder:
             self.store.save("media", h, {"path": rel, "files": [rel], "source": media.source}, "pillow")
         self.stats.hit("media", False)
         return rel
+
+    def clip_poster(self, scene: Scene) -> str | None:
+        """Pôster JPEG do clipe real (`MediaRef.video`) sem `asset`: o quadro de entrada do trecho (cache "media").
+        É a imagem da cena enquanto o renderer não toca o vídeo e o fundo do cartão sobre ela. None: sem o arquivo
+        ou sem o FFmpeg (com aviso)."""
+        media = scene.visual.media
+        if media is None or not media.video:
+            return None
+        src = self.store.abs(media.video)
+        if not src.is_file():
+            self.warnings.append(f"O clipe real da {scene_label(self.doc, scene.id)} sumiu da pasta de dados; a cena "
+                                 "ficou sem imagem. Anexe de novo ou tire a mídia.")
+            return None
+        h = hash_obj({"poster": media.video, "t": round(media.start_s, 3), "v": 1})
+        with _media_lock:
+            cached = self.store.lookup("media", h)
+            if cached:
+                return cached["path"]
+            out = self.store.dir_for("media", h) / "poster.jpg"
+            try:
+                from studio.media.thumb_assets import extract_frame
+
+                extract_frame(src, media.start_s, out)
+            except Exception as exc:  # noqa: BLE001 - sem pôster a cena fica no fundo animado, com aviso
+                self.warnings.append(f"O pôster do clipe real da {scene_label(self.doc, scene.id)} não saiu: {exc}")
+                return None
+            rel = self.store.rel(out)
+            self.store.save("media", h, {"path": rel, "files": [rel], "source": media.source}, "ffmpeg")
+        return rel
+
+    def real_clips(self) -> dict[str, dict[str, Any]]:
+        """Clipes reais (`MediaRef.video`) das cenas de imagem que os mostram, no formato de `video_clips.build_clips`
+        ({"path", "seconds"}): a timeline passa o caminho ao renderer, que mostra o pôster até tocar o vídeo. Só o
+        trecho que começa no início do proxy (`start_s` 0): a cena não carrega o ponto de entrada (os subplanos, com
+        `clipIn`, carregam). Cena sem clipe real fica fora: a timeline dela não muda."""
+        out: dict[str, dict[str, Any]] = {}
+        for scene in self.doc.scenes:
+            media = scene.visual.media
+            if scene.kind != "image" or media is None or not media.video or media.start_s > 0.05:
+                continue
+            if not self.store.abs(media.video).is_file():
+                continue  # o aviso sai no pôster
+            out[scene.id] = {"path": media.video, "seconds": media.dur_s}
+        return out
 
     def image(self, scene: Scene) -> str | None:
         if scene.visual.media is not None:
@@ -1558,6 +1620,7 @@ class Builder:
         timeline_images = self.lut_images(images, news_photos)
         layers = self.parallax(timeline_images)
         videos = video_clips.build_clips(self, images)  # só do cache: o build nunca gera vídeo IA (é pago)
+        videos.update(self.real_clips())  # clipe real do acervo (ADR 0004): nunca convive com vídeo IA na cena
         if videos and self.lut_graded:
             n = len(videos)
             self.warnings.append(f"LUT de cor não é aplicado nos clipes de vídeo IA ({n} {'cena' if n == 1 else 'cenas'}): "

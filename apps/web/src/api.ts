@@ -32,6 +32,8 @@ export type Visual = {
   reuse_of?: string | null;
   /** Mídia real anexada: vale mais que a imagem de IA, o `asset` e o `reuse_of` (que ficam de reserva). */
   media?: MediaRef | null;
+  /** Por que a imagem é de IA (hipótese, futuro, conceito), dito pelo storyboard. Ausente/null: sem motivo. */
+  ai_reason?: string | null;
 };
 
 /* ------------------------------------------------------------------ */
@@ -396,8 +398,21 @@ export type StoryboardIssue = {
 
 /** Revisão da curadoria gravada pelo job das cenas (settings.storyboard_review). */
 export type StoryboardReview = {
-  /** `real_hints`: cenas com sugestão de mídia real (falta no servidor antigo). */
-  counts: { scenes: number; new_images: number; reused: number; cards: number; budget: number; est_seconds: number; real_hints?: number };
+  /**
+   * `real_hints`: cenas com sugestão de mídia real (falta no servidor antigo). `ai_pct`/`real_pct`: parte do tempo de
+   * tela com imagem de IA e com material real (só com acervo de material real; ADR 0004).
+   */
+  counts: {
+    scenes: number;
+    new_images: number;
+    reused: number;
+    cards: number;
+    budget: number;
+    est_seconds: number;
+    real_hints?: number;
+    ai_pct?: number;
+    real_pct?: number;
+  };
   issues: StoryboardIssue[];
   retried: boolean;
   style_fit: 'ok' | 'fraco' | 'errado';
