@@ -48,7 +48,7 @@ from typing import Any
 from PIL import Image
 
 from studio.config import get_settings
-from studio.core.project.document import MediaRef, ProjectDoc, Scene
+from studio.core.project.document import MediaRef, ProjectDoc, Scene, SceneCard
 from studio.core.project.pool import POOL_ID_RE, Pool, PoolItem, load_pool
 from studio.core.sources import (
     CARD_BACKDROP_KINDS,
@@ -994,6 +994,8 @@ def _collect_captures(ctx: _Ctx) -> list[dict[str, Any]]:
             if cached is not None:
                 out.append(_capture_item(cached, f"capurl:{source.url}",
                                          _topic_for([source.title], ctx.topics, TOPIC_SOURCES)))
+            elif phrase and (why := proofs.capture_rejection(ctx.project_id, source.url, [phrase[:160]], ctx.aspect)):
+                ctx.notes.append(blocked_note(source.url, why))
         return out
     for source in sources[:MAX_SOURCE_CAPTURES]:
         if ctx.cancelled():
@@ -1004,11 +1006,24 @@ def _collect_captures(ctx: _Ctx) -> list[dict[str, Any]]:
         try:
             entry = proofs.capture_clean(ctx.project_id, source.url, [phrase[:160]], ctx.aspect,
                                          open_page=ctx.open_page)
+        except proofs.BlockedCapture as exc:
+            reason = exc.__cause__.reason if isinstance(exc.__cause__, page_capture.BlockedPage) else str(exc)
+            ctx.notes.append(blocked_note(source.url, reason))
+            continue
         except Exception as exc:  # noqa: BLE001 - uma página que não abre não derruba as outras
             ctx.notes.append(f"A fonte {page_capture.domain_of(source.url)} não foi capturada: {exc}")
             continue
         out.append(_capture_item(entry, f"capurl:{source.url}", _topic_for([source.title], ctx.topics, TOPIC_SOURCES)))
     return out
+
+
+def blocked_note(url: str, reason: str) -> str:
+    """O aviso do acervo para a fonte cuja página só mostrou o bloqueio do site (a captura foi descartada)."""
+    from studio.media import page_capture
+
+    return (f"A fonte {page_capture.domain_of(url)} ficou sem captura: {reason.rstrip('.')}. A captura foi descartada "
+            "e a cena dessa fonte usa o cartão do dado com \"Fonte:\"; envie um print da matéria se quiser a página "
+            "na tela.")
 
 
 def pool_links(project_id: str) -> list[dict[str, str]]:
@@ -1965,6 +1980,65 @@ def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around
     return sorted(fits, key=lambda c: c.id in taken)
 
 
+def _is_page_capture(media: MediaRef) -> bool:
+    """A mídia é a foto de uma página (a captura do acervo), não a imagem publicada nela."""
+    return media.kind == "capture" or media.source == "capture"
+
+
+def drop_blocked_captures(doc: ProjectDoc) -> list[str]:
+    """Tira das cenas (em `doc`, no lugar) a captura que é a tela de bloqueio do site (verificação anti-robô, captcha,
+    "Access denied", erro: `proofs.blocked_capture_urls`), anexada antes da checagem existir. A cena de cartão fica com
+    o fundo do estilo (o cartão mostra o dado e a "Fonte:"); a cena de imagem vira o cartão tipográfico da fala com a
+    "Fonte: <veículo>" quando fala da fonte; a cena que reaproveitava a imagem dela fica com o fundo do estilo. A cena
+    travada não muda. Devolve os avisos."""
+    from studio.core.sources import outlet_for_url, scene_claims_source
+    from studio.workers.visual import proofs
+
+    try:
+        blocked = proofs.blocked_capture_urls(doc.id)
+    except Exception:  # noqa: BLE001 - sem o cache das capturas, nada muda
+        log.warning("não deu para ler o cache das capturas do projeto %s", doc.id, exc_info=True)
+        return []
+    if not blocked:
+        return []
+    dropped: dict[str, str] = {}
+    for scene in doc.ordered_scenes():
+        media = scene.visual.media
+        if scene.locked or media is None or not _is_page_capture(media):
+            continue
+        url = media.page_url or media.url or ""
+        if url not in blocked:
+            continue
+        dropped[scene.id] = url
+        scene.visual.media = None
+        scene.visual.reuse_of = None
+        scene.visual.type = "none"
+        if scene.kind != "image":
+            continue  # cartão: o fundo do estilo, o dado e a fonte continuam
+        scene.kind = "text"
+        outlet = outlet_for_url(url, doc.sources) or media.outlet or ""
+        if outlet and scene_claims_source(doc, scene, outlet):
+            card = scene.card or SceneCard()
+            if not card.source:
+                scene.card = card.model_copy(update={"source": outlet})
+    for scene in doc.scenes:
+        if not scene.locked and scene.visual.reuse_of in dropped:
+            scene.visual.reuse_of = None
+            scene.visual.type = "none"
+    warnings: list[str] = []
+    for url in dict.fromkeys(dropped.values()):
+        labels = [_label(doc, s) for s in doc.ordered_scenes() if dropped.get(s.id) == url]
+        warnings.append(f"{_scene_list(labels)}: a captura de {_site(url)} não era a matéria ({blocked[url]}); "
+                        "saiu da cena, que ficou com o cartão do dado e a fonte.")
+    return warnings
+
+
+def _site(url: str) -> str:
+    from studio.media import page_capture
+
+    return page_capture.domain_of(url) or url
+
+
 def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]:
     """Anexa (em `doc`, no lugar) a mídia do acervo nas cenas que citam `pool_id` e ainda não estão prontas no
     projeto (`needs_attach`). Item que não baixa cai na reserva (`fallbacks`, até `MAX_FALLBACK_TRIES`; no máximo
@@ -1983,7 +2057,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     passam por aqui: contam como aparição e nunca trocam. Devolve os avisos, dizendo o que de fato aconteceu."""
     from studio.core.styles.library import get_style
 
-    warnings: list[str] = []
+    warnings: list[str] = drop_blocked_captures(doc)
     try:
         style: StyleSpec | None = get_style(doc.style_id, doc.style_overrides)
     except Exception:  # noqa: BLE001 - sem estilo: só o trecho de vídeo fica de fora

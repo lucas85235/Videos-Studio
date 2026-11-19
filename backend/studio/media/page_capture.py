@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 
 from studio.media import safe_http
+from studio.media.blocked_page import blocked_reason
 
 WIDTH, HEIGHT, DPR = 1100, 680, 2
 SETTLE_S = 2.5
@@ -249,6 +250,24 @@ class CaptureError(RuntimeError):
     """Captura recusada ou falha (navegador ausente, página não abriu): mensagem em português."""
 
 
+class BlockedPage(CaptureError):
+    """A página aberta é a verificação anti-robô, o captcha, o bloqueio, a parede ou o erro do site, não a matéria
+    (`blocked_page.blocked_reason`), mesmo depois de esperar e recarregar: a captura não sai."""
+
+    def __init__(self, reason: str, url: str = "") -> None:
+        self.reason = reason
+        self.url = url
+        where = domain_of(url) if url else "o site"
+        super().__init__(f"{where}: {reason}. A captura foi descartada (não entra no acervo); envie um print da "
+                         "matéria se quiser a página na tela.")
+
+
+BLOCK_WAIT_TRIES = 4
+BLOCK_WAIT_S = 3.0
+"""O desafio do Cloudflare que passa sozinho (o de JavaScript) leva uns 5 s: a captura espera até 12 s antes de
+recarregar a página uma vez e esperar de novo."""
+
+
 class Page(Protocol):
     """O que a captura precisa de uma página aberta (Playwright ou, nos testes, uma página falsa)."""
 
@@ -259,6 +278,9 @@ class Page(Protocol):
     def screenshot(self) -> bytes: ...
 
     def title(self) -> str: ...
+
+    # Opcionais (a página falsa dos testes pode não ter): `status()` é o HTTP da última navegação da página (None sem
+    # resposta) e `reload()` recarrega a página.
 
 
 OpenPage = Callable[[str, int, int, int], AbstractContextManager[Page]]
@@ -304,8 +326,29 @@ def browser_status() -> dict[str, Any]:
 
 
 class _PlaywrightPage:
-    def __init__(self, page: Any) -> None:
+    def __init__(self, page: Any, first: Any = None) -> None:
         self._page = page
+        self._status: int | None = getattr(first, "status", None)
+        try:  # o desafio que passa navega de novo: vale o status da última navegação do quadro principal
+            page.on("response", self._on_response)
+        except Exception:  # noqa: BLE001 - sem o evento, fica o status da primeira resposta
+            pass
+
+    def _on_response(self, response: Any) -> None:
+        try:
+            if response.request.is_navigation_request() and response.frame == self._page.main_frame:
+                self._status = int(response.status)
+        except Exception:  # noqa: BLE001 - resposta que não dá para ler não muda nada
+            pass
+
+    def status(self) -> int | None:
+        return self._status
+
+    def reload(self) -> None:
+        try:
+            self._page.reload(wait_until="domcontentloaded", timeout=45_000)
+        except Exception:  # noqa: BLE001 - a página que não recarrega fica como estava (e segue bloqueada)
+            pass
 
     def js(self, expression: str) -> Any:
         return self._page.evaluate(expression)
@@ -346,14 +389,14 @@ def playwright_page(url: str, width: int, height: int, dpr: int) -> Iterator[Pag
             context = browser.new_context(viewport={"width": width, "height": height}, device_scale_factor=dpr)
             page = context.new_page()
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                first = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
                 try:
                     page.wait_for_load_state("load", timeout=20_000)
                 except Exception:  # noqa: BLE001 - página que nunca termina de carregar: segue com o que tem
                     pass
             except Exception as exc:  # noqa: BLE001
                 raise CaptureError(f"A página não abriu: {str(exc).splitlines()[0][:200]}") from exc
-            yield _PlaywrightPage(page)
+            yield _PlaywrightPage(page, first)
         finally:
             browser.close()
 
@@ -371,6 +414,51 @@ def _wait_images(page: Page) -> None:
         page.sleep(IMAGE_WAIT_S)
 
 
+def _page_status(page: Page) -> int | None:
+    get = getattr(page, "status", None)
+    try:
+        status = get() if callable(get) else None
+    except Exception:  # noqa: BLE001
+        return None
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
+
+
+def page_blocked(page: Page, expected: Sequence[str] = ()) -> str | None:
+    """O motivo de a página aberta não ser a página (`blocked_page.blocked_reason` pelo título, pelo texto visível e
+    pelo status), ou None."""
+    try:
+        text = page.js(TEXT_JS)
+    except Exception:  # noqa: BLE001 - a página navegando (o desafio que passou recarrega): lê de novo na volta
+        text = ""
+    text = text if isinstance(text, str) else ""
+    try:
+        title = page.title() or ""
+    except Exception:  # noqa: BLE001 - página sem título
+        title = ""
+    return blocked_reason(str(title), text, _page_status(page), expected=expected, blank=True)
+
+
+def wait_unblocked(page: Page, expected: Sequence[str] = ()) -> None:
+    """Espera o desafio passar (o de JavaScript passa sozinho), recarrega uma vez e espera de novo; continua
+    bloqueada: `BlockedPage`."""
+    reason = None
+    for attempt in range(2):
+        for _ in range(BLOCK_WAIT_TRIES):
+            reason = page_blocked(page, expected)
+            if reason is None:
+                return
+            page.sleep(BLOCK_WAIT_S)
+        reload = getattr(page, "reload", None)
+        if attempt == 0 and callable(reload):
+            reload()
+            page.sleep(SETTLE_S)
+        else:
+            break
+    reason = page_blocked(page, expected)
+    if reason is not None:
+        raise BlockedPage(reason)
+
+
 def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: OpenPage | None = None,
             width: int = WIDTH, height: int = HEIGHT, dpr: int = DPR, settle: float = SETTLE_S,
             scale: float = 1, headline: bool = False) -> CaptureResult:
@@ -386,6 +474,10 @@ def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: Open
     find = FIND_JS % (json.dumps(phrases, ensure_ascii=False), focus, json.dumps(scale), json.dumps(headline))
     with opener(url, width, height, dpr) as page:
         page.sleep(settle)
+        try:
+            wait_unblocked(page, phrases)
+        except BlockedPage as exc:
+            raise BlockedPage(exc.reason, url) from None
         page.js(f"window.__SHOT_POS = {FOCUS_POS}")
         page.js(CLEAN_JS)
         page.js(ADS_JS)
@@ -409,6 +501,10 @@ def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: Open
         png = page.screenshot()
         title = page.title()
         text = page.js(TEXT_JS) or ""
+        # o desafio que entrou depois (a página trocou durante a rolagem): a foto já é dele
+        late = blocked_reason(str(title), str(text), _page_status(page), expected=phrases, blank=True)
+        if late is not None:
+            raise BlockedPage(late, url)
     rects = list(rects or [])
     rects += [None] * (len(phrases) - len(rects))
     found = [bool(f) for f in (found or [])] + [False] * max(0, len(phrases) - len(found or []))

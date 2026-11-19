@@ -22,7 +22,8 @@ from studio.core.styles.library import get_style
 from studio.db import session_scope
 from studio.ids import new_id
 from studio.media import page_capture, real_media
-from studio.media.page_capture import CaptureError, OpenPage
+from studio.media.blocked_page import blocked_reason
+from studio.media.page_capture import BlockedPage, CaptureError, OpenPage
 from studio.models import PageCapture
 
 _LOCK = threading.Lock()  # rebake e captura gravam o mesmo documento e a mesma linha
@@ -35,6 +36,29 @@ class ProofError(ValueError):
 class BoilerplateOnly(ProofError):
     """A captura da página só mostrou o rodapé ou a caixa de newsletter (`CaptureResult.boilerplate_only`): nem a
     captura antiga do cache serve no lugar (ela é do mesmo jeito)."""
+
+
+class BlockedCapture(ProofError):
+    """A página da fonte era a verificação anti-robô, o captcha, o bloqueio ou o erro do site (`BlockedPage`), e não
+    há captura boa guardada: a fonte fica sem captura (a cena usa o cartão do dado com a fonte)."""
+
+
+BLOCKED_KIND = "bloqueio"
+"""`rejected` do cache da captura (`pool-<chave>.json`) da página que só mostrou o bloqueio."""
+
+
+def _text_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else ""
+    except OSError:
+        return ""
+
+
+def stored_block(title: str | None, text_path: Path | None, expected: Sequence[str] = ()) -> str | None:
+    """A captura gravada é de uma página de bloqueio (título e texto guardados, `blocked_page.blocked_reason`)?
+    Sem o texto guardado, só o título conta. Página sem texto não conta aqui: as antigas não guardavam o texto."""
+    text = _text_file(text_path) if text_path is not None else ""
+    return blocked_reason(title or "", text, expected=expected)
 
 
 def capture_dict(row: PageCapture) -> dict[str, Any]:
@@ -206,12 +230,16 @@ def clean_from_capture(data: dict[str, Any], aspect: float) -> dict[str, Any] | 
     title, text}`. None quando a página sumiu ou a captura falhou."""
     if data.get("status") == "falhou" or not data.get("image") or not data.get("project_id"):
         return None
-    path = get_settings().data_dir / data["image"]
+    data_dir = get_settings().data_dir
+    path = data_dir / data["image"]
     if not path.is_file():
         return None
+    phrases = [dict(p) for p in data.get("phrases") or []]
+    if stored_block(data.get("title"), data_dir / data["text_path"] if data.get("text_path") else None,
+                    [str(p.get("text") or "") for p in phrases]):
+        return None  # a prova gravada é a tela de bloqueio do site: nunca entra no acervo
     with Image.open(path) as im:
         img = im.convert("RGB")
-    phrases = [dict(p) for p in data.get("phrases") or []]
     text = next((p.get("text") for p in phrases if p.get("focus")), None) or next(
         (p.get("text") for p in phrases), "")
     return _clean_entry(img, phrases, data["project_id"], aspect, url=data.get("url") or "",
@@ -245,6 +273,8 @@ def cached_capture_clean(project_id: str, url: str, phrases: Sequence[str], aspe
         cached = json.loads(done.read_text(encoding="utf-8"))
         if cached.get("rejected"):
             return None  # a página só mostrou o rodapé: fora do acervo até uma coleta completa conseguir a página
+        if stored_block(cached.get("title"), done.with_suffix(".txt"), texts):
+            return None  # a página de bloqueio que entrou antes desta checagem: a próxima coleta completa refaz
         path = get_settings().data_dir / cached["asset"]
         if path.is_file():
             with Image.open(path) as im:
@@ -287,6 +317,9 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
     # falhar, a antiga ainda serve melhor que nenhuma prova; a que só mostra o rodapé, não.
     try:
         shot = page_capture.capture(url, texts, 0, open_page=open_page, headline=True)
+        late = blocked_reason(shot.title, shot.text, expected=texts)
+        if late is not None:
+            raise BlockedPage(late, url)
         if shot.boilerplate_only:
             folder.mkdir(parents=True, exist_ok=True)
             done.write_text(json.dumps({"rejected": "rodapé", "find": page_capture.FIND_VERSION}), encoding="utf-8")
@@ -298,6 +331,15 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
             raise ProofError("A página saiu em branco (não carregou a tempo): envie um print ou tente de novo.")
     except BoilerplateOnly:
         raise
+    except BlockedPage as exc:
+        # A tela de bloqueio nunca entra no cache como boa: a captura boa de antes continua (a fonte não mudou); sem
+        # ela, o cache guarda a recusa (a coleta rápida não a acha e a próxima completa tenta de novo).
+        if cached is not None:
+            return cached
+        folder.mkdir(parents=True, exist_ok=True)
+        done.write_text(json.dumps({"rejected": BLOCKED_KIND, "reason": exc.reason, "url": url,
+                                    "find": page_capture.FIND_VERSION}, ensure_ascii=False), encoding="utf-8")
+        raise BlockedCapture(str(exc)) from exc
     except Exception:
         if cached is not None:
             return cached
@@ -312,6 +354,64 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
     entry["find"] = page_capture.FIND_VERSION
     done.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
     return entry
+
+
+def capture_rejection(project_id: str, url: str, phrases: Sequence[str], aspect: float) -> str | None:
+    """Por que a fonte não tem captura no cache (`rejected` de `capture_clean`, ou a captura guardada que é a página
+    de bloqueio), em português; None quando não foi recusada."""
+    import json
+
+    texts = _pool_capture_texts(phrases)
+    if not texts:
+        return None
+    done = _pool_capture_file(project_id, url, texts, aspect)
+    try:
+        cached = json.loads(done.read_text(encoding="utf-8")) if done.is_file() else None
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cached, dict):
+        return None
+    if cached.get("rejected") == BLOCKED_KIND:
+        return str(cached.get("reason") or "o site mostrou uma página de bloqueio")
+    if cached.get("rejected"):
+        return None
+    return stored_block(cached.get("title"), done.with_suffix(".txt"), texts)
+
+
+def blocked_capture_urls(project_id: str) -> dict[str, str]:
+    """Endereço → motivo das páginas cuja captura é (ou foi recusada por ser) a tela de bloqueio do site, pelo cache
+    das capturas do acervo e pelas provas gravadas. A mídia de cena que ainda aponta para elas sai (`media_pool`)."""
+    import json
+
+    out: dict[str, str] = {}
+    folder = get_settings().data_dir / "uploads" / project_id / "captures"
+    if folder.is_dir():
+        for done in sorted(folder.glob("pool-*.json")):
+            try:
+                cached = json.loads(done.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(cached, dict) or not cached.get("url"):
+                continue
+            if cached.get("rejected") == BLOCKED_KIND:
+                out[str(cached["url"])] = str(cached.get("reason") or "o site mostrou uma página de bloqueio")
+            elif not cached.get("rejected"):
+                why = stored_block(cached.get("title"), done.with_suffix(".txt"), [str(cached.get("text") or "")])
+                if why:
+                    out[str(cached["url"])] = why
+    try:
+        rows = list_captures(project_id)
+    except Exception:  # noqa: BLE001 - sem banco (testes de função pura): só o cache conta
+        rows = []
+    data_dir = get_settings().data_dir
+    for row in rows:
+        if row.get("status") == "falhou" or not row.get("url"):
+            continue
+        why = stored_block(row.get("title"), data_dir / row["text_path"] if row.get("text_path") else None,
+                           [str(p.get("text") or "") for p in row.get("phrases") or []])
+        if why:
+            out.setdefault(str(row["url"]), why)
+    return out
 
 
 def get_capture(capture_id: str) -> dict[str, Any] | None:
@@ -389,4 +489,5 @@ def rebake(capture_id: str, i: int, view: Sequence[float] | None, lock: bool) ->
             return capture_dict(row)
 
 
-__all__ = ["CaptureError", "ProofError", "capture_proof", "rebake", "get_capture", "list_captures", "capture_dict"]
+__all__ = ["BlockedCapture", "CaptureError", "ProofError", "blocked_capture_urls", "capture_rejection", "capture_proof",
+           "rebake", "get_capture", "list_captures", "capture_dict"]
