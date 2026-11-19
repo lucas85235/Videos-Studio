@@ -98,7 +98,15 @@ def test_source_capture_stays_readable() -> None:
     assert "Math.max(BLUR[kind] ?? 0, textBehind ? CARD_TEXT_BLUR : 0) * backdrop" in scene
     treatments = _read(COMP / "Treatments.tsx")
     assert "if (page) return 'window';" in treatments
-    assert "screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture')" in treatments
+    assert "screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture', Boolean(scene.post))" in treatments
+
+
+def test_feed_frame_only_for_social_posts() -> None:
+    """A moldura de post do feed (celular com coração e comentário) só emoldura post de rede social de verdade
+    (`scene.post`, do backend): o trailer ou a matéria ali vira post que não existe (QA r4 do prj_gq4krrs11w, 1:06)."""
+    treatments = _read(COMP / "Treatments.tsx")
+    assert "const pool = post ? all : all.filter((v) => v !== 'feed');" in treatments
+    assert "post?: boolean;" in _read(COMP.parent / "types.ts")
 
 
 def test_cliplayer_plays_any_video_with_trim_rate_hold_muted() -> None:

@@ -19,6 +19,7 @@ from studio.core.text import normalize_token, span_ranges, split_word_indices, w
 if TYPE_CHECKING:
     from studio.core.project.document import ProjectDoc, Scene, Source
     from studio.core.project.pool import PoolItem
+    from studio.media.lookalike import LookIndex
 
 TIERS: tuple[str, ...] = PROVS
 """Os níveis, do mais real ao gerado (T0 a T7)."""
@@ -309,12 +310,34 @@ def window_share(spans: Iterable[tuple[float, ...]], total: float,
     return min(1.0, best / width), at
 
 
-def media_tokens(media: MediaRef | None) -> frozenset[str]:
+_SOCIAL_HOST_RE = re.compile(
+    r"(?:^|\.)(?:twitter\.com|x\.com|instagram\.com|tiktok\.com|facebook\.com|fb\.com|threads\.net|bsky\.app|"
+    r"reddit\.com|tumblr\.com|linkedin\.com|mastodon\.\w+|kwai\.com)$"
+)
+
+
+def is_social_post(media: MediaRef | None) -> bool:
+    """A mídia é um post de rede social (a página ou a imagem vêm de um perfil): só ela cabe na moldura de post do
+    feed. Trailer, arte e matéria não são post."""
+    if media is None:
+        return False
+    for url in (media.page_url, media.url):
+        host = re.sub(r"^[a-z]+://", "", (url or "").strip().lower()).split("/", 1)[0].split(":", 1)[0]
+        if host and _SOCIAL_HOST_RE.search(host):
+            return True
+    return False
+
+
+def media_tokens(media: MediaRef | None, look: LookIndex | None = None) -> frozenset[str]:
     """O que identifica a mídia na tela, para contar as aparições do mesmo material: o item do acervo, o arquivo
     anexado e o endereço da imagem. Dois itens do acervo que o anexo baixa no mesmo arquivo (a imagem de capa da mesma
-    matéria) são a mesma imagem. O endereço de vídeo não entra: trechos do mesmo trailer são planos diferentes."""
+    matéria) são a mesma imagem. O endereço de vídeo não entra: trechos do mesmo trailer são planos diferentes.
+    Com `look`, também a marca da imagem parecida (`media.lookalike`: a mesma arte noutra fonte, dentro da captura de
+    uma página ou no meio do fundo desfocado), que junta itens diferentes do acervo com a mesma imagem."""
     if media is None:
         return frozenset()
+    if look is not None:
+        return media_tokens(media) | look.media(media)
     out = {f"pool:{media.pool_id}"} if media.pool_id else set()
     if media.video:
         out.add(f"video:{media.video}#{media.start_s:g}")
@@ -326,8 +349,10 @@ def media_tokens(media: MediaRef | None) -> frozenset[str]:
     return frozenset(out)
 
 
-def item_tokens(item: PoolItem) -> frozenset[str]:
+def item_tokens(item: PoolItem, look: LookIndex | None = None) -> frozenset[str]:
     """Como `media_tokens`, para o item do acervo (antes do anexo, ou no subplano do planejador)."""
+    if look is not None:
+        return item_tokens(item) | look.item(item)
     out = {f"pool:{item.id}"}
     if item.media != "clip":
         if item.url:

@@ -379,7 +379,11 @@ Regras:
    clima da narração (passado = luz fria ou de arquivo, revelação = escuro). Tela dentro da imagem (TV, celular,
    telão) não repete o mesmo conteúdo. O sujeito da imagem é o que a fala diz: fala de console mostra o console, não
    o PC; o aparelho que a fala cita vem primeiro no prompt, e o que ela nega ou contrapõe não aparece. Gente de frente
-   (rosto) só quando a batida pede a pessoa; no resto, mãos, objeto ou pessoa de costas.
+   (rosto) só quando a batida pede a pessoa; no resto, objeto, lugar ou pessoa de costas fazendo o que a fala diz.
+   Mostre a cena CONCRETA da fala (quem faz o quê e onde: a pessoa trocando a senha no celular, a tela do banco
+   aberta, o arquivo enorme na barra de download), nunca a metáfora-clichê de banco de imagem: mão de luva, chave na
+   fechadura, cadeado, hacker de capuz, lupa, correntes, código binário, mão segurando cabo, celular de tela vazia,
+   caixa misteriosa (o app recusa o prompt que usa uma delas sem a fala citar o objeto).
    NÃO escreva estilo, técnica, paleta, "no text" nem "vertical": o app
    acrescenta. Só no prompt de IA (o material real do acervo mostra o assunto de verdade): nada de logotipo,
    personagem oficial, tipografia de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer;

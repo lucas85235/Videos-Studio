@@ -230,12 +230,21 @@ def test_official_site_in_the_speech_shows_the_site_capture():
     edit_plan.plan(doc, get_style(LONG), SITE_POOL, recent=set())
     shots = [(s.at, s.source, s.pool_id) for s in doc.scenes[0].shots]
     assert ("site", "pool", "p20") in shots
-    # a captura sem trecho marcado não prova que mostra a página (pode ser só o rodapé): não entra pelo "site"
-    bare = Pool(items=[SITE_POOL.items[0].model_copy(update={"rects": []}), SITE_POOL.items[1]])
+    # a captura sem trecho marcado nem a nota de site oficial do coletor não prova que mostra a página (pode ser só o
+    # rodapé): não entra pelo "site"
+    bare = Pool(items=[SITE_POOL.items[0].model_copy(update={"rects": [], "desc": "Rockstar Games"}),
+                       SITE_POOL.items[1]])
     doc = _doc(["Mas só no PlayStation 5 e no Xbox Series X e Series S, e isso tá no site oficial da Rockstar."],
                media=[xbox])
     edit_plan.plan(doc, get_style(LONG), bare, recent=set())
     assert all(s.pool_id != "p20" for s in doc.scenes[0].shots)
+    # com a nota do coletor ("(site oficial)"), entra mesmo sem o trecho (QA r4: o site oficial capturado no topo,
+    # sem manchete achada, e a foto do Xbox ficava sob "isso tá no site oficial")
+    marked = Pool(items=[SITE_POOL.items[0].model_copy(update={"rects": []}), SITE_POOL.items[1]])
+    doc = _doc(["Mas só no PlayStation 5 e no Xbox Series X e Series S, e isso tá no site oficial da Rockstar."],
+               media=[xbox])
+    edit_plan.plan(doc, get_style(LONG), marked, recent=set())
+    assert ("site", "pool", "p20") in [(s.at, s.source, s.pool_id) for s in doc.scenes[0].shots]
     # "site oficial do fabricante" não diz de quem: nenhuma captura entra por ele
     doc = _doc(["Passa um antivírus confiável, baixado só do site oficial do fabricante, e pronto."], media=[xbox])
     edit_plan.plan(doc, get_style(LONG), SITE_POOL, recent=set())

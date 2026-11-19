@@ -88,6 +88,7 @@ from studio.core.styles.schema import EditGrammar, StyleSpec, grammar_for, sourc
 from studio.core.text import _GOOD_CUT_BEFORE, _NO_CUT_AFTER
 from studio.core.text import words as split_words
 from studio.core.timeline import false_verdict_on_true_material, scene_word_ranges
+from studio.media.lookalike import LookIndex
 from studio.providers.base import Word
 
 log = logging.getLogger(__name__)
@@ -133,6 +134,15 @@ CLOSING_STILL_S = 5.0
 achou ~9 s no mesmo plano congelado)."""
 CARD_STILL_S = 5.0
 """Teto de cartão (título, texto, dado) parado sem evento: o punch no meio quebra o que passa disso."""
+POP_MS = 900
+"""Quanto o texto que pula fica na tela (no máximo: sai antes quando a fala muda de parte da frase, `_pop_ms`)."""
+POP_MIN_MS = 450
+_CLAUSE_WORDS = frozenset({"ou", "mas", "porem", "entao", "or", "but", "pero"})
+"""Palavra que abre outra parte da frase (sem acento, minúsculo): o texto que pula sai antes dela."""
+PILLARBOX_STILL_S = 4.0
+"""Teto do plano parado da imagem que entra inteira com o fundo desfocado dos lados (pôster vertical num vídeo
+deitado, `real_media.resolve_fit` "contain"): a moldura desfocada já é meio quadro sem nada, e parada cansa antes da
+foto que enche a tela (QA r4 do prj_gq4krrs11w: o pôster vertical 9 s parado em 1:24). O corte ou o punch quebra."""
 
 CAMERA_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("static", 0.35), ("push", 0.25), ("drift", 0.15), ("punch", 0.15), ("pan", 0.10),
@@ -222,6 +232,11 @@ class _W:
 # "site oficial", "página oficial", "official website": a fala aponta para o site da fonte.
 _SITE_WORDS = frozenset({"site", "sites", "pagina", "paginas", "website", "page", "sitio", "portal"})
 _OFFICIAL_WORDS = frozenset({"oficial", "oficiais", "official"})
+# "PlayStation Store", "Microsoft Store" (o nome vem antes); "loja da Steam" (o nome vem depois).
+_STORE_AFTER = frozenset({"store", "shop"})
+_STORE_BEFORE = frozenset({"loja", "tienda"})
+# O endereço é de uma loja ("store.playstation.com", "rockstargames.com/store", "loja.x.com.br").
+_STORE_URL_RE = re.compile(r"(?:^|[/.])(?:store|shop|loja|tienda)s?(?:[/.?#-]|$)")
 # A nota do coletor na captura ("Rockstar Games – Grand Theft Auto VI (site oficial)"), sem acento (`fold`).
 _OFFICIAL_NOTE_RE = re.compile(r"\b(?:site|pagina|page|website) (?:oficial|official)\b|\bofficial (?:site|website|page)\b")
 
@@ -648,6 +663,8 @@ class _Planner:
         self.used_lib: set[str] = set()
         self.reframes: Counter[str] = Counter()
         self.pool_uses: Counter[str] = Counter()
+        self.cue_uses: Counter[str] = Counter()
+        """Subplanos da captura citada na fala (`_official_site_cue`) por item."""
         self.official_s = 0.0
         self._last_reveal = -math.inf
         self._presenter_cache: tuple[Any] | None = None
@@ -659,17 +676,20 @@ class _Planner:
         from studio.workers.pipeline.storyboard_check import same_image_seconds  # import tardio: evita ciclo
 
         self.same_image_s = same_image_seconds(style)
+        self.frame = _frame(style)
+        self.look = LookIndex()
+        """A mesma imagem noutra fonte conta como o mesmo material (`media.lookalike`)."""
         # Onde cada material real aparece (a mídia das cenas e os subplanos do acervo, os escolhidos aqui e os que o
         # usuário fixou): a distribuição do acervo no tempo (`sources.reuse_problem`).
         self.shown: list[tuple[frozenset[str], float, float]] = []
         for beat in self.beats:
             if beat.media is not None:
-                self.shown.append((media_tokens(beat.media), beat.start, beat.end))
+                self.shown.append((media_tokens(beat.media, self.look), beat.start, beat.end))
             if beat.keep_shots or not beat.editable:
                 for shot in beat.scene.shots:
                     kept = self.pool.item(shot.pool_id) if shot.source == "pool" else None
                     if kept is not None:
-                        self.shown.append((item_tokens(kept), self._time_of(beat, shot.at), beat.end))
+                        self.shown.append((item_tokens(kept, self.look), self._time_of(beat, shot.at), beat.end))
 
     def _rng(self, beat: _Beat, *purpose: Any) -> random.Random:
         return random.Random(seed_from(self.doc.seed, beat.scene.id, "edit", *purpose))
@@ -927,17 +947,17 @@ class _Planner:
         hook = self._thumb_hook[0]
         if hook is None:
             return None
-        shown = media_tokens(beat.media) if beat.media is not None else frozenset()
+        shown = media_tokens(beat.media, self.look) if beat.media is not None else frozenset()
         for anchor in hook.anchors:
             item = anchor.item
             if not (item.path or item.poster) or item.media == "meme":
                 continue
-            if (beat.item is not None and item.id == beat.item.id) or (shown & item_tokens(item)):
+            if (beat.item is not None and item.id == beat.item.id) or (shown & item_tokens(item, self.look)):
                 return None  # a cena já abre com o elemento da thumb
             if not self._pool_ok(item, beat, beat.words[0]):
                 continue
             self.pool_uses[item.id] += 1
-            self.shown.append((item_tokens(item), beat.start, beat.end))
+            self.shown.append((item_tokens(item, self.look), beat.start, beat.end))
             framing = None
             if anchor.focus is not None and not item.rects and item.media != "clip":
                 framing = ShotFraming(scale=max(1.0, min(1.8, anchor.zoom)), x=max(0.0, min(1.0, anchor.focus[0])),
@@ -988,7 +1008,7 @@ class _Planner:
                 else:
                     d = self._sample(rng, t)
                     if not beat.clip:  # imagem parada: o corte (subplano) cumpre o `max_still_s` antes do punch
-                        d = min(d, self.g.max_still_s)
+                        d = min(d, self._still_limit(beat))
                 hard: float | None = None
                 if shots[-1].prov == "official" and beat.end - shots[-1].t > max_clip + 1e-6:
                     hard = max(shots[-1].t + max_clip, t + 2 * MIN_SHOT_S)
@@ -1034,38 +1054,55 @@ class _Planner:
         dele: a palavra "site" e a captura, para o corte mostrar o site na hora em que a fala o cita (QA do
         prj_gq4krrs11w, 0:30: a foto do console ficava sob "e isso tá no site oficial"). A captura é a do site que a
         frase nomeia depois de "site" (o endereço começa com o nome: "da Rockstar" → rockstargames.com), de preferência
-        a que o coletor marcou como site oficial. Nada quando a fala não diz de quem é o site ("do fabricante"), quando
-        a cena já mostra uma captura ou quando o acervo não tem a captura dele com o trecho marcado (`rects`: a busca
-        achou o título no conteúdo da página; a página que só mostrou o rodapé fica fora do acervo,
-        `proofs.BoilerplateOnly`)."""
+        a que o coletor marcou como site oficial. A loja citada ("compra na PlayStation Store", "na loja da Steam")
+        pede a captura da loja daquele nome (o endereço é de loja). Nada quando a fala não diz de quem é o site ("do
+        fabricante"), quando a cena já mostra uma captura, quando o acervo não tem a captura (com o trecho marcado,
+        `rects`, ou com a nota de site oficial do coletor: a página que só mostrou o rodapé fica fora do acervo,
+        `proofs.BoilerplateOnly`) ou quando ela passaria do teto de aparições."""
         if self.pool is None or beat.page or not beat.editable:
             return None
         keys = [w.key for w in beat.words]
-        at = next((i for i, k in enumerate(keys) if i > 0 and k in _SITE_WORDS
-                   and any(x in _OFFICIAL_WORDS for x in keys[i + 1:i + 3])), None)
-        if at is None:
-            return None
-        rest = set(keys[at:])
-        best: tuple[int, PoolItem] | None = None
-        for item in self.pool.items:
-            if item.tier != "capture" or not (item.path or item.poster) or not item.rects:
-                continue  # sem o trecho marcado a captura não prova que mostra a página (pode ser só o rodapé)
-            if beat.item is not None and item.id == beat.item.id:
-                return None
-            marked = bool(_OFFICIAL_NOTE_RE.search(fold(item.desc or "")))
-            named = _names_host(_host_label(item.page_url or item.url), rest)
-            if not named:
-                continue  # "site oficial do fabricante" não diz de quem: nenhuma captura é ela
-            rank = int(marked)
-            if best is None or rank > best[0]:
-                best = (rank, item)
-        return (beat.words[at], best[1]) if best is not None else None
+        cues: list[tuple[int, set[str], bool]] = []  # (palavra do corte, nomes que a seguem/antecedem, é loja)
+        site = next((i for i, k in enumerate(keys) if i > 0 and k in _SITE_WORDS
+                     and any(x in _OFFICIAL_WORDS for x in keys[i + 1:i + 3])), None)
+        if site is not None:
+            cues.append((site, set(keys[site:]), False))
+        for i, k in enumerate(keys):
+            if k in _STORE_AFTER and i > 0:  # "na PlayStation Store", "Rockstar Store"
+                cues.append((max(1, i - 1), set(keys[max(0, i - 2):i]), True))
+            elif k in _STORE_BEFORE and i > 0:  # "na loja da Steam", "loja oficial da Nintendo"
+                cues.append((i, set(keys[i + 1:i + 4]), True))
+        for at, names, store in sorted(cues, key=lambda c: c[0]):
+            best: tuple[int, PoolItem] | None = None
+            for item in self.pool.items:
+                if item.tier != "capture" or not (item.path or item.poster):
+                    continue
+                if beat.item is not None and item.id == beat.item.id:
+                    return None
+                url = item.page_url or item.url
+                # `fold` liga as palavras com hífen ("site-oficial"): a nota do coletor é procurada com espaço
+                marked = bool(_OFFICIAL_NOTE_RE.search(fold(item.desc or "").replace("-", " ")))
+                if not item.rects and not marked:
+                    continue  # sem o trecho marcado nem a nota do coletor, pode ser só o rodapé da página
+                if not _names_host(_host_label(url), names):
+                    continue  # "site oficial do fabricante" não diz de quem: nenhuma captura é ela
+                if store and not _STORE_URL_RE.search(url.lower()):
+                    continue  # "Rockstar Store" pede a loja, não a página do jogo no site da Rockstar
+                if self.cue_uses[item.id] and self._spread_problem(item, beat, beat.words[at]) == "uses":
+                    continue  # a prova citada passa do teto de aparições uma vez só (é a fala sobre ela)
+                rank = int(marked) + int(bool(item.rects))
+                if best is None or rank > best[0]:
+                    best = (rank, item)
+            if best is not None and at > 0:
+                return beat.words[at], best[1]
+        return None
 
     def _site_shot(self, beat: _Beat, word: _W, item: PoolItem) -> _Shot:
         """O subplano da captura do site oficial a partir da palavra "site" (a fala é sobre ela: a distribuição do
         acervo não tira, mas conta a aparição)."""
         self.pool_uses[item.id] += 1
-        self.shown.append((item_tokens(item), word.start, beat.end))
+        self.cue_uses[item.id] += 1
+        self.shown.append((item_tokens(item, self.look), word.start, beat.end))
         return _Shot(t=word.start, word=word, prov=item.tier, source="pool", pool_id=item.id, motion="static")
 
     def _reveal_word(self, beat: _Beat) -> _W | None:
@@ -1188,8 +1225,8 @@ class _Planner:
         """O item como subplano a partir de `word` fere a distribuição do acervo (`sources.reuse_problem`: no máximo
         `ITEM_MAX_USES` aparições a `ITEM_REUSE_GAP_S` ou mais uma da outra, contando as cenas que já o mostram)? A
         mesma imagem da cena (outro item que baixou no mesmo arquivo) não é troca nenhuma."""
-        tokens = item_tokens(item)
-        if beat.media is not None and media_tokens(beat.media) & tokens:
+        tokens = item_tokens(item, self.look)
+        if beat.media is not None and media_tokens(beat.media, self.look) & tokens:
             return "same"
         others = [(a, b) for shown, a, b in self.shown if shown & tokens]
         return reuse_problem(others, [(word.start, beat.end)])
@@ -1223,13 +1260,15 @@ class _Planner:
                 continue  # post, legenda de usuário ou slate por cima do plano: cara de vídeo de outro criador
             if item.id in recent_ids or self.pool_uses[item.id] >= 2:
                 continue
-            if not self._pool_ok(item, beat, word) or self._spread_problem(item, beat, word) is not None:
+            if not self._pool_ok(item, beat, word):
                 continue
             keys = _tagset(item.tags + item.entities)
             entity_hit = bool(_tagset(item.entities) & context) or bool(_tagset(beat.scene.visual.entities) & keys)
             hits = len(keys & context)
             if not entity_hit and hits < 2:
                 continue
+            if self._spread_problem(item, beat, word) is not None:
+                continue  # depois da afinidade: a parecença da imagem (`lookalike`) só para quem ia entrar
             score = 2.0 * len(keys & beat.tags) + len(keys & beat.spoken) + (2.0 if entity_hit else 0.0)
             score += 0.1 * item.score + (2.0 if avoid is not None and item.tier != avoid else 0.0)
             if avoid is not None and item.tier == avoid:
@@ -1243,7 +1282,7 @@ class _Planner:
             return _Shot(t=word.start, word=word, prov=chosen.tier, source="pool", pool_id=chosen.id)
         self.budget.take("switch", word.start)
         self.pool_uses[chosen.id] += 1
-        self.shown.append((item_tokens(chosen), word.start, beat.end))
+        self.shown.append((item_tokens(chosen, self.look), word.start, beat.end))
         clip_in = None
         if chosen.media == "clip":  # o segundo uso do mesmo clipe entra noutro ponto
             clip_in = chosen.start_s + 2.0 * (self.pool_uses[chosen.id] - 1)
@@ -1334,8 +1373,53 @@ class _Planner:
         if fx_type == "text_pop" and verdict.is_negative(word.text) and false_verdict_on_true_material(
                 self.doc, beat.scene, word.text, self.pool):
             return False  # "golpe" gigante sobre a foto do console ou o trailer: acusaria o que está na tela
+        if fx_type == "text_pop" and not self._pop_fits_material(beat, word):
+            return False
         group = {fx_type} if fx_type not in ANNOT_TYPES else set(ANNOT_TYPES)
         return all(abs(e.t - word.start) >= spacing for e in self.events if e.type in group)
+
+    def _material_at(self, beat: _Beat, t: float) -> tuple[str, MediaRef | PoolItem | None]:
+        """O nível e o material na tela no instante `t` da batida: o do subplano do acervo que está no ar, ou o da
+        própria cena."""
+        shot = next((s for s in reversed(beat.shots) if s.t <= t + 1e-6), None) if beat.shots else None
+        if shot is not None and shot.source == "pool":
+            item = self.pool.item(shot.pool_id)
+            return (item.tier if item is not None else shot.prov), item
+        return beat.prov, (beat.item if beat.item is not None else beat.media)
+
+    def _pop_fits_material(self, beat: _Beat, word: _W) -> bool:
+        """O texto que pula sobre material verdadeiro (oficial, captura: `verdict.TRUE_MATERIAL_TIERS`) diz o que está
+        na tela: o número, ou uma palavra do assunto do material (a descrição, o título, as etiquetas) ou do vídeo
+        inteiro (o título). Palavra de outro assunto em letra gigante sobre o trailer vira legenda dele (QA r4 do
+        prj_gq4krrs11w: "CHAOS", o nome do malware, sobre um quadro do trailer oficial; "MICROSOFT" sobre a arte do
+        blog da PlayStation). Sobre o artefato do golpe (`verdict.describes_scam`), a IA, o banco e o cartão, vale."""
+        prov, material = self._material_at(beat, word.start)
+        if prov not in verdict.TRUE_MATERIAL_TIERS or word.number:
+            return True
+        # import tardio: o media_pool puxa os jobs
+        from studio.workers.pipeline.media_pool import content_terms, video_terms
+
+        texts = [getattr(material, "desc", ""), getattr(material, "title", ""), getattr(material, "topic", ""),
+                 getattr(material, "credit", ""), *getattr(material, "tags", []), *getattr(material, "entities", [])]
+        if any(verdict.describes_scam(t or "") for t in texts):
+            return True
+        said = content_terms(word.text)
+        if not said:
+            return False
+        return bool(said & (content_terms(*texts) | set(video_terms(self.doc))))
+
+    def _pop_ms(self, beat: _Beat, word: _W, want_ms: int = POP_MS) -> int:
+        """Quanto o texto que pula fica: até `want_ms`, mas só enquanto a fala é a dele. Ele sai quando a fala passa
+        para a outra parte da frase (a vírgula, "ou", "mas"): "um arquivinho de um MEGABYTE ou uma ISO vazada
+        gigante" deixava "MEGABYTE" na tela sob "ISO gigante", dizendo o contrário da fala (QA r4 do prj_gq4krrs11w)."""
+        end = word.start + want_ms / 1000.0
+        for nxt in beat.words[word.index + 1:]:
+            if nxt.start >= end:
+                break
+            if nxt.comma_before or nxt.key in _CLAUSE_WORDS:
+                end = max(word.end, nxt.start)
+                break
+        return max(POP_MIN_MS, int((end - word.start) * 1000))
 
     def _add(self, beat: _Beat, word: _W | None, fx_type: str, *, dur_ms: int | None = None,
              params: dict[str, Any] | None = None, at: str | None = None, t: float | None = None) -> FxEvent:
@@ -1585,6 +1669,16 @@ class _Planner:
             shot.end = word.start
             beat.shots.insert(k + 1, cut)
 
+    def _still_limit(self, beat: _Beat) -> float:
+        """O plano parado mais longo da cena: `max_still_s`, ou `PILLARBOX_STILL_S` na imagem com fundo desfocado."""
+        limit = self.g.max_still_s
+        if beat.media is not None and not beat.clip and not beat.page and self.frame is not None:
+            from studio.media.real_media import resolve_fit  # import tardio: o módulo de mídia puxa o PIL
+
+            if resolve_fit(beat.media, *self.frame) == "contain":
+                limit = min(limit, PILLARBOX_STILL_S)
+        return limit
+
     def _max_still(self) -> None:
         """Nenhum plano parado passa de `max_still_s` (no fim do vídeo, de `CLOSING_STILL_S`): punch no meio (ou o
         corte já resolve). O clipe que toca não é parado; o plano do clipe que dura mais que o trecho útil dele é
@@ -1592,7 +1686,7 @@ class _Planner:
         for beat in self.beats:
             if not beat.editable or not (beat.card or beat.framed):
                 continue
-            limit = self.g.max_still_s
+            limit = self._still_limit(beat)
             if beat is self.beats[-1]:
                 limit = min(limit, CLOSING_STILL_S)  # o fim fica na tela: plano parado ali é quadro morto
             if beat.card:
@@ -1685,7 +1779,7 @@ class _Planner:
             if fx_type == "punch":
                 self._add(beat, word, "punch", params={"scale": round(rng.uniform(rng_scale.min, rng_scale.max), 3)})
             elif fx_type == "text_pop":
-                self._add(beat, word, "text_pop", params={"text": self._pop_text(word)}, dur_ms=900)
+                self._add(beat, word, "text_pop", params={"text": self._pop_text(word)}, dur_ms=self._pop_ms(beat, word))
             elif fx_type == "shake":
                 amount = round(rng.uniform(0.6, 1.2), 3)
                 self._add(beat, word, "shake", params={"strength": amount, "amount": amount},
@@ -1880,6 +1974,15 @@ class _Planner:
             framing=shot.framing, motion=shot.motion, easing=shot.easing, strength=shot.strength,  # type: ignore[arg-type]
             clip_in=shot.clip_in, hold=shot.hold,
         )
+
+
+def _frame(style: StyleSpec) -> tuple[int, int] | None:
+    """(largura, altura) do vídeo pelo estilo; None com resolução torta."""
+    try:
+        w, h = (int(x) for x in style.format.resolution.lower().split("x"))
+    except ValueError:
+        return None
+    return (w, h) if w > 0 and h > 0 else None
 
 
 def _reframe_key(beat: _Beat) -> str:

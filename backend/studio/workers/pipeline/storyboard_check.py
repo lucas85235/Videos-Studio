@@ -95,6 +95,35 @@ BRAND_TERMS = (
     "movie trailer", "film trailer", "trailer footage", "trailer scene", "trailer still", "trailer frame",
     "from the trailer", "in the trailer",
 )  # fmt: skip  # o plural simples também conta
+# Metáfora-clichê de banco de imagem no prompt de IA (inglês) → as palavras da fala (sem acento) que a justificam: o
+# objeto que a fala cita de verdade ("troca o cadeado") pode aparecer; sem isso é enfeite genérico com cara de IA (QA
+# r4 do prj_gq4krrs11w: mão de luva roubando chaves, chave na fechadura, mão com cabo de rede, celular de tela vazia).
+CLICHE_METAPHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("gloved hand", ("luva", "glove")), ("glove", ("luva", "glove")), ("hooded hacker", ("capuz", "hood")),
+    ("hooded figure", ("capuz", "hood")), ("hoodie", ("capuz", "moletom", "hoodie")), ("padlock", ("cadeado", "padlock")),
+    ("keyhole", ("fechadura", "keyhole")), ("key in a lock", ("chave", "fechadura", "key")),
+    ("key in the lock", ("chave", "fechadura", "key")), ("skeleton key", ("chave", "key")),
+    ("bunch of keys", ("chave", "key")), ("keyring", ("chave", "chaveiro", "key")), ("key ring", ("chave", "key")),
+    ("house keys", ("chave", "key")), ("magnifying glass", ("lupa", "magnifying")),
+    ("binary code", ("binario", "binary")), ("matrix code", ("matrix",)), ("falling code", ()),
+    ("chains", ("corrente", "acorrent", "chain")), ("shadowy figure", ("sombra", "shadow")), ("faceless", ()),
+    ("blank phone", ("celular", "telefone", "phone")), ("hand holding a phone", ("celular", "telefone", "phone")),
+    ("hand holding a smartphone", ("celular", "telefone", "phone", "smartphone")),
+    ("network cable", ("cabo", "cable", "internet", "rede")), ("ethernet cable", ("cabo", "cable", "internet", "rede")),
+    ("mysterious box", ("caixa", "box")), ("glowing box", ("caixa", "box")),
+)  # fmt: skip
+
+
+def cliche_metaphor(prompt: str, speech: str) -> str | None:
+    """A metáfora-clichê de banco (`CLICHE_METAPHORS`) que o prompt de IA usa sem a fala citar o objeto; None quando
+    não usa (ou quando a fala o cita)."""
+    said = unicodedata.normalize("NFKD", (speech or "").lower()).encode("ascii", "ignore").decode()
+    for term, allowed in CLICHE_METAPHORS:
+        if find_terms(prompt or "", (term,)) and not any(word in said for word in allowed):
+            return term
+    return None
+
+
 # Final que parece plural mas não é ("news", "bus", "analysis", "glass"): o "s" não sai.
 _NOT_PLURAL_ENDINGS = ("ss", "us", "is", "ws")
 
@@ -1319,6 +1348,12 @@ def _check_prompts(doc: ProjectDoc, beats: list[Beat]) -> list[Issue]:
             issues.append(Issue("aparelho_trocado", GRAVE,
                                 f'A fala cita {" e ".join(cited)} e a imagem abre com {shown}: o sujeito da imagem é o '
                                 "aparelho que a fala diz.", beat.key, scene.id))
+        cliche = cliche_metaphor(prompt, beat.text)
+        if cliche:
+            issues.append(Issue("metafora_cliche", GRAVE,
+                                f'O prompt usa "{cliche}", metáfora-clichê de banco de imagem que a fala não cita: '
+                                "mostre a cena concreta da fala (quem faz o quê, onde; a tela do aparelho com o que "
+                                "ela descreve).", beat.key, scene.id))
         brands = find_terms(prompt, BRAND_TERMS)
         if brands:
             issues.append(Issue("marca", GRAVE,

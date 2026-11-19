@@ -36,6 +36,7 @@ pedido do storyboard.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import unicodedata
 from collections.abc import Callable, Iterable
@@ -57,6 +58,7 @@ from studio.core.sources import (
     ITEM_REUSE_GAP_S,
     OWN_SOURCE_PREFIXES,
     REAL_TIERS,
+    TOUCH_S,
     item_tokens,
     looks_synthetic,
     media_tokens,
@@ -65,6 +67,7 @@ from studio.core.sources import (
     reuse_problem,
 )
 from studio.core.styles.schema import StyleSpec
+from studio.media.lookalike import LookIndex
 from studio.workers.jobs import JobContext, job
 
 log = logging.getLogger(__name__)
@@ -1927,13 +1930,16 @@ class _Spread:
             t += seconds
         self.total = t
         self.max_run_s = storyboard_check.same_image_seconds(style)
+        self.look = LookIndex()
+        """A mesma imagem noutra fonte (outro item do acervo, dentro da captura de uma página, no meio do fundo
+        desfocado) conta como o mesmo material (`media.lookalike`)."""
 
     def around(self, scene: Scene) -> _Around:
         """O que o resto do vídeo mostra em volta de `scene` agora (uma vez por cena: o documento só muda depois)."""
         mine: list[tuple[float, float]] = []
         others: list[tuple[frozenset[str], tuple[float, float]]] = []
         if self.total <= 0:
-            return _Around(mine, others, self.max_run_s)
+            return _Around(mine, others, self.max_run_s, self.look)
         for other in self.doc.scenes:
             span = self.spans.get(other.id)
             if span is None or span[1] <= span[0]:
@@ -1946,9 +1952,9 @@ class _Spread:
                 mine.append(span)  # o cartão sobre a imagem desta cena mostra o que ela mostrar
             elif root is not None and needs_attach(root.visual.media, self.doc.id):
                 continue  # ainda vai ser anexada (vem depois na ordem): a primeira aparição fica, a seguinte se ajusta
-            elif tokens := media_tokens(self.doc.shown_media(other)):
+            elif tokens := media_tokens(self.doc.shown_media(other), self.look):
                 others.append((tokens, span))
-        return _Around(mine, others, self.max_run_s)
+        return _Around(mine, others, self.max_run_s, self.look)
 
 
 @dataclass
@@ -1958,6 +1964,17 @@ class _Around:
     others: list[tuple[frozenset[str], tuple[float, float]]]
     """O que as outras cenas já mostram, e onde."""
     max_run_s: float
+    look: LookIndex | None = None
+
+    def item(self, item: PoolItem) -> frozenset[str]:
+        return item_tokens(item, self.look)
+
+    def media(self, media: MediaRef | None) -> frozenset[str]:
+        return media_tokens(media, self.look)
+
+    def elsewhere(self, tokens: frozenset[str]) -> bool:
+        """O material `tokens` já aparece noutra cena (fora a cena e os cartões sobre a imagem dela)."""
+        return any(shown & tokens for shown, _span in self.others)
 
     def problem(self, tokens: frozenset[str]) -> str | None:
         """Por que a cena mostrar o material `tokens` fere a distribuição (`sources.reuse_problem`); None: cabe."""
@@ -1965,6 +1982,37 @@ class _Around:
             return None
         spans = [span for shown, span in self.others if shown & tokens]
         return reuse_problem(spans, self.mine, max_run_s=self.max_run_s)
+
+
+def _trim_card_reuse(doc: ProjectDoc, scene: Scene, spread: _Spread, tokens: frozenset[str]) -> list[Scene]:
+    """Os cartões sobre a imagem da cena (`reuse_of`) que passam do teto de aparições ficam com o fundo do estilo: a
+    matéria e dois cartões sobre ela separados por outra imagem eram 3 aparições da mesma captura em 30 s (QA r4 do
+    prj_gq4krrs11w). Conta também as aparições do mesmo material noutras cenas; sai o cartão mais tarde primeiro.
+    Devolve os cartões que mudaram."""
+    around = spread.around(scene)
+    others = [span for shown, span in around.others if shown & tokens]
+    cards = [c for c in doc.ordered_scenes() if c.id != scene.id and c.visual.media is None and c.visual.reuse_of
+             and c.kind in CARD_BACKDROP_KINDS and not c.locked and (root := doc.reuse_root(c)) is not None
+             and root.id == scene.id and c.id in spread.spans]
+    own = spread.spans.get(scene.id)
+    if own is None or not cards:
+        return []
+    changed: list[Scene] = []
+    while cards:
+        spans = sorted([*others, own, *(spread.spans[c.id] for c in cards)])
+        runs = 0
+        end = -math.inf
+        for a, b in spans:
+            if a - end >= TOUCH_S:
+                runs += 1
+            end = max(end, b)
+        if runs <= ITEM_MAX_USES:
+            break
+        last = cards.pop()
+        last.visual.reuse_of = None
+        last.visual.type = "none"
+        changed.append(last)
+    return changed
 
 
 def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around,
@@ -1976,7 +2024,7 @@ def _spread_reserve(pool: Pool, item: PoolItem, taken: set[str], around: _Around
     distribuição é que decide), depois dos inéditos: pegar o item de uma cena adiante empurra a troca para ela."""
     fits = [c for c in fallbacks(pool, item, set())
             if c.tier in REAL_TIERS and c.media != "meme" and (c.tier != "official" or item.tier == "official")
-            and fits_scene(c, *texts, common=common) and around.problem(item_tokens(c)) is None]
+            and fits_scene(c, *texts, common=common) and around.problem(around.item(c)) is None]
     return sorted(fits, key=lambda c: c.id in taken)
 
 
@@ -2051,7 +2099,9 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
     Distribuição (`_Spread`): o item que voltaria cedo demais, pela 3ª vez ou por tempo demais seguido na tela (o que
     se sabe antes de baixar e, depois, pelo arquivo baixado: dois itens da mesma matéria podem baixar a mesma imagem
     de capa) troca por um item real da reserva que caiba; sem nenhum, a cena de imagem fica com o escolhido, com aviso,
-    e o cartão fica com o fundo do estilo (cartão tipográfico): o fundo do cartão não repete a mesma imagem.
+    e o cartão fica com o fundo do estilo (cartão tipográfico): o fundo do cartão não repete a mesma imagem. A 3ª
+    aparição é trava (a cena de imagem também vira cartão tipográfico, que o `typographic.settle` ainda tenta encher),
+    e a mesma imagem noutra fonte conta como o mesmo material (`media.lookalike`); só o material do usuário passa.
 
     Assunto: a captura de página só entra na cena que fala daquele fato ou daquela fonte (`fits_scene`, com as
     palavras do assunto do vídeo em `video_terms`). Fora dele, troca pela reserva que caiba (outro material real do
@@ -2103,13 +2153,18 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         # depois da reserva que cabe (no cartão, nem vai: o fundo do cartão não repete). Sem problema, a ordem de
         # sempre (o item e a reserva de download).
         around = spread.around(scene) if spread is not None else None
-        pre = around.problem(item_tokens(item)) if around is not None else None
+        pre = around.problem(around.item(item)) if around is not None else None
         # Papel de parede: a mesma mídia volta cedo demais numa cena de imagem cuja fala não é sobre ela (a captura sem
         # a fala citar a fonte; a foto ou o quadro sem a fala citar o assunto dela: `line_about`). Repetir ali é
         # fundo, não prova (QA do prj_gq4krrs11w: a matéria da Malwarebytes 4 vezes em 12 s nos passos práticos); só
         # fica na cena que fala dela. O material do usuário fica (a escolha é dele).
-        wallpaper = (pre is not None and not off_topic and scene.kind == "image" and item.tier != "own"
-                     and not item.source_id.startswith(OWN_SOURCE_PREFIXES)
+        own = item.tier == "own" or item.source_id.startswith(OWN_SOURCE_PREFIXES)
+        # Teto de aparições (`ITEM_MAX_USES`, contando a mesma imagem noutra fonte) é trava quando o material já está
+        # noutra cena: nem a fala sobre o item a fura (QA r4 do prj_gq4krrs11w: a captura do site oficial em 4 cenas
+        # porque toda fala cita a Rockstar, e a arte-chave em umas 25 aparições por seis itens diferentes). A cena e
+        # os cartões sobre a imagem dela, sozinhos, são a escolha do storyboard (a primeira prova fica).
+        capped = (pre == "uses" and not own and around is not None and around.elsewhere(around.item(item)))
+        wallpaper = (pre is not None and not off_topic and scene.kind == "image" and not own
                      and not line_about(item, scene_text(doc, scene), common))
         if pre is None and not off_topic:
             reserve = [c for c in fallbacks(pool, item, used) if fits_scene(c, *texts, common=common)]
@@ -2121,7 +2176,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
                            [c for c in fallbacks(pool, item, used) if c.tier in REAL_TIERS and c.media != "meme"
                             and (c.tier != "official" or item.tier == "official")
                             and fits_scene(c, *texts, common=common)])
-            keep_item = [] if off_topic or wallpaper or card else [item]
+            keep_item = [] if off_topic or wallpaper or card or capped else [item]
             order = [*fit_reserve[:MAX_FALLBACK_TRIES], *keep_item]
         spread_why = pre
         held: MediaRef | None = None  # o item baixado que só fere a distribuição pelo arquivo: fica sem reserva
@@ -2145,12 +2200,14 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
                     if candidate is item:
                         reason = str(exc)
                 continue
-            late = around.problem(media_tokens(got)) if around is not None else None
+            late = around.problem(around.media(got)) if around is not None else None
             if late is not None and candidate is item and pre is None:
                 # O arquivo baixado já está noutra cena (dois itens da mesma matéria baixam a mesma capa): no lugar
                 # da reserva de download, a reserva que cabe; o item só se ela não vier (no cartão, nem assim).
                 assert around is not None
-                held, spread_why = (None if card else got), late
+                late_capped = late == "uses" and not own and around.elsewhere(around.media(got))
+                held, spread_why = (None if card or late_capped else got), late
+                capped = capped or late_capped
                 order = [*order[:k], *(c for c in _spread_reserve(pool, item, used | cited, around, texts, common)
                                        [:MAX_FALLBACK_TRIES] if c is not item)]
                 continue
@@ -2167,7 +2224,7 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             scene.visual.type = "none"
             plain.append(_label(doc, scene))
             continue
-        if (chosen is None or source is None) and (off_topic or wallpaper) and scene.kind == "image":
+        if (chosen is None or source is None) and (off_topic or wallpaper or capped) and scene.kind == "image":
             # Cena de imagem com a captura de outro assunto (ou a mídia de papel de parede) e sem material real do
             # assunto na reserva: vira cartão tipográfico (a fala grande sobre o fundo do estilo), nunca a IA de
             # reserva (mais tempo de IA, sem conferir o teto) nem a repetição da mídia vizinha.
@@ -2188,6 +2245,8 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
             continue
         scene.visual.media = chosen
         used.add(source.id)
+        if spread is not None and not own:
+            plain += [_label(doc, c) for c in _trim_card_reuse(doc, scene, spread, around.media(chosen))]
         if off_topic:
             warnings.append(f"{_label(doc, scene)}: a captura {item.id} é de outro assunto; entrou {source.id} "
                             f"({source.tier}, {source.topic or 'sem tópico'}).")
@@ -2209,7 +2268,8 @@ def attach_chosen(doc: ProjectDoc, pool: Pool, *, http: Any = None) -> list[str]
         verb = "virou" if len(typographic) == 1 else "viraram"
         warnings.append(f"{_scene_list(typographic)} {verb} cartão tipográfico (a fala na tela, fundo do estilo): a "
                         "captura do acervo era de outro assunto (ou a mídia voltava cedo demais numa fala que não é "
-                        "sobre ela) e o acervo não tem material real que caiba ali.")
+                        f"sobre ela, ou passaria de {ITEM_MAX_USES} aparições) e o acervo não tem material real que "
+                        "caiba ali.")
     if kept:
         verb = "repete" if len(kept) == 1 else "repetem"
         warnings.append(f"{_scene_list(kept)} {verb} material do acervo cedo demais ({rule}) e o acervo não tem outro "

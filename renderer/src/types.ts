@@ -214,6 +214,8 @@ export type TimelineScene = {
    * aparelho já em cena), com a semente da cena que começou (mesma moldura e posição). Ausente: entra do zero.
    */
   treatment_continue?: number;
+  /** A mídia é post de rede social: só então a tela (`screen`) pode virar a moldura de post do feed. */
+  post?: boolean;
   /**
    * Parallax 2.5D (motion 'parallax'): camadas cortadas pelo mapa de profundidade, do fundo (opaca) para a frente
    * (com transparência), caminhos relativos como `src`. Ausente: a cena usa o Ken Burns.

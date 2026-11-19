@@ -38,6 +38,7 @@ from studio.core.sources import (
     REAL_TIERS,
     ai_weight,
     cites_source,
+    is_social_post,
     outlet_for_url,
     outlet_names,
     prov_of_item,
@@ -1541,6 +1542,10 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     treatment = scene_treatment(doc, style, scene, has_news="news" in out, pool=pool)
     if treatment != "plain":
         out["treatment"] = treatment
+        if treatment == "screen" and is_social_post(media):
+            # Só o post de rede social vai na moldura de post (celular com coração e comentário): a foto do trailer
+            # ou da matéria ali vira post que não existe (QA r4 do prj_gq4krrs11w, 1:06).
+            out["post"] = True
         if is_first and treatment == "whiteboard":
             # Primeira cena (o gancho no feed): a lousa já começa com parte do desenho e desenha rápido.
             out["treatment_quick"] = True

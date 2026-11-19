@@ -1026,6 +1026,28 @@ relação. Por isso:
   troca para o acervo mesmo sem cota de `switch`. A retomada de propósito é a que o usuário fixou (cena travada,
   mídia ou subplano escolhidos à mão): conta como aparição e nunca troca.
 
+**Emenda "Repetição e material" (rodada 5 do QA do prj_gq4krrs11w).** A arte-chave entrou por seis itens diferentes
+(o blog, a capa do kit, o pôster com fundo desfocado, a captura do site oficial e a do site falso que copia a colagem)
+e somou umas 25 aparições com o teto de 2 por item; a captura do site oficial ficou em 4 cenas porque toda fala cita a
+Rockstar. Por isso:
+- a mesma imagem noutra fonte é o mesmo material: `media.lookalike` compara o desenho (cinza passa-alta, correlação
+  normalizada em 96 px) e acha a arte noutro tamanho ou recorte, dentro da captura de uma página (várias escalas, até
+  um terço da página) e no meio do fundo desfocado; detalhe pequeno no liso (o logo no preto) não junta artes, e a
+  parecença não encadeia. A marca `look:<n>` entra em `media_tokens`/`item_tokens` no anexo, no planejador e no
+  `typographic` (com teto de tempo por índice). Limite: a mesma arte com os painéis rearranjados não é achada;
+- a 3ª aparição é trava no anexo quando o material já está noutra cena (nem a fala sobre o item a fura): a cena de
+  imagem vira cartão tipográfico (o `typographic.settle` ainda tenta encher) e os cartões sobre a imagem da cena que
+  passam do teto ficam com o fundo do estilo (o cartão mais tarde sai primeiro);
+- o pôster com fundo desfocado (`resolve_fit` "contain") não fica parado mais que `PILLARBOX_STILL_S` = 4 s;
+- o texto que pula sobre material verdadeiro diz o que está na tela (número, palavra do material ou do título do
+  vídeo; o artefato do golpe aceita tudo) e sai quando a fala passa para a outra parte da frase ("ou", "mas", vírgula);
+- "site oficial da X" aceita a captura marcada pelo coletor como site oficial mesmo sem o trecho achado, e a loja
+  citada ("PlayStation Store", "loja da Steam") pede a captura com endereço de loja daquele nome; a prova citada passa
+  do teto de aparições uma vez só;
+- a moldura de post do feed só emoldura post de rede social (`sources.is_social_post` → `post` na timeline);
+- o prompt de IA não usa metáfora-clichê de banco que a fala não cita (`storyboard_check.cliche_metaphor`: grave na
+  revisão e recusa do cenário do `typographic`), e o pedido manda mostrar a cena concreta da fala.
+
 **Onde aparece na tela**
 1. **Revisão do storyboard**, na lista de achados de `storyboard_check` (contagens em `:235`):
    - selo com o índice, já antes de gastar cota;

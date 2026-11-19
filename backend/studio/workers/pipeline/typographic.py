@@ -34,6 +34,7 @@ from studio.core import sources as tiers
 from studio.core.project.document import MediaRef, ProjectDoc, Scene, Visual
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.styles.schema import StyleSpec
+from studio.media.lookalike import LookIndex
 from studio.workers.pipeline import media_pool, storyboard_check
 
 log = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ class _State:
     """Cartões tipográficos que ficam (na ordem do vídeo)."""
     prompts: dict[str, str] = field(default_factory=dict)
     """Cenário de IA escrito para a cena que não tinha um (`write_prompts`)."""
+    look: LookIndex = field(default_factory=LookIndex)
+    """A mesma imagem noutra fonte conta como o mesmo material (`media.lookalike`)."""
 
     def refresh(self) -> None:
         self.order = self.doc.ordered_scenes()
@@ -187,14 +190,14 @@ def _shown(state: _State) -> list[tuple[str, frozenset[str], str | None, tuple[f
     out = []
     for scene in state.order:
         media = state.doc.shown_media(scene)
-        tokens = tiers.media_tokens(media)
+        tokens = tiers.media_tokens(media, state.look)
         if tokens and scene.id in state.spans:
             out.append((scene.id, tokens, _source_of_media(media), state.spans[scene.id]))
     return out
 
 
 def _uses(state: _State, item: PoolItem) -> int:
-    tokens = tiers.item_tokens(item)
+    tokens = tiers.item_tokens(item, state.look)
     return sum(1 for _id, shown, _src, _span in _shown(state) if shown & tokens)
 
 
@@ -218,7 +221,7 @@ def _placement_ok(state: _State, scene: Scene, tokens: frozenset[str], source: s
 
 
 def _spread_ok(state: _State, scene: Scene, item: PoolItem, *, gap: bool = True) -> bool:
-    return _placement_ok(state, scene, tiers.item_tokens(item), _source_of_item(item), gap=gap)
+    return _placement_ok(state, scene, tiers.item_tokens(item, state.look), _source_of_item(item), gap=gap)
 
 
 def _tier_run_ok(state: _State, scene: Scene, prov: str) -> bool:
@@ -358,6 +361,8 @@ def is_scenario(doc: ProjectDoc, scene: Scene, prompt: str, said: str = "") -> b
     if storyboard_check.find_terms(text, storyboard_check.STYLE_TERMS) or storyboard_check.find_terms(
             text, storyboard_check.BRAND_TERMS) or storyboard_check.find_terms(text, avoid):
         return False
+    if storyboard_check.cliche_metaphor(text, said):
+        return False  # mão de luva, chave na fechadura, hacker de capuz: enfeite de banco, não a cena da fala
     words = {w for w in media_pool.fold(text).split() if len(w) >= 3}
     spoken = {w for w in media_pool.fold(said).split() if len(w) >= 3}
     return bool(words) and len(words & spoken) < SCENARIO_OVERLAP * len(words)
@@ -386,7 +391,10 @@ repita as palavras dela nem escreva texto na imagem). Varie o sujeito, a hora e 
 estilo, técnica, paleta, "no text" nem "vertical": o app acrescenta. Nada de logotipo, personagem oficial, tipografia
 de marca, interface de jogo, "screenshot", "gameplay", "leak" ou cena de trailer; nome de personagem de ficção, marca,
 jogo, produto ou pessoa viva não entra: descreva o que se vê. Tela dentro da imagem (monitor, celular) sem letras
-legíveis. Respeite o cenário (world) e o que evitar (avoid) da direção de arte."""
+legíveis. Mostre a cena concreta da fala (quem faz o quê e onde: a pessoa trocando a senha no celular, a tela do banco
+aberta, a fila da loja), nunca a metáfora-clichê de banco de imagem: mão de luva, chave na fechadura, cadeado, hacker de
+capuz, lupa, correntes, código binário, mão segurando cabo, celular de tela vazia, caixa misteriosa. Respeite o cenário
+(world) e o que evitar (avoid) da direção de arte."""
 
 PROMPTS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -487,7 +495,7 @@ def _nearest_real(state: _State, scene: Scene) -> Scene | None:
         theme = prov in THEME_TIERS and media.tier != "capture" and media.kind != "capture"
         if not (subject or theme):
             continue
-        if not _placement_ok(state, scene, tiers.media_tokens(media), _source_of_media(media), gap=False):
+        if not _placement_ok(state, scene, tiers.media_tokens(media, state.look), _source_of_media(media), gap=False):
             continue
         if not _tier_run_ok(state, scene, prov):
             continue
@@ -577,7 +585,7 @@ def _settled_ok(state: _State, scene: Scene) -> bool:
     media = state.doc.shown_media(scene)
     if media is None:
         return False
-    return _placement_ok(state, scene, tiers.media_tokens(media), _source_of_media(media), gap=False) and \
+    return _placement_ok(state, scene, tiers.media_tokens(media, state.look), _source_of_media(media), gap=False) and \
         _tier_run_ok(state, scene, tiers.prov_of_media(media))
 
 

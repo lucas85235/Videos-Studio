@@ -353,17 +353,19 @@ export type ScreenVariant = 'window' | 'phone' | 'feed';
 /**
  * Moldura da cena: no vertical, celular ou feed (às vezes janela); no horizontal, janela na maioria. Captura de página
  * (`page`) é sempre janela: ela já vem na proporção do vídeo, e o `cover` no celular mostrava só uma faixa estreita do
- * meio dela (a manchete cortada dos dois lados, ou só o branco do topo da página).
+ * meio dela (a manchete cortada dos dois lados, ou só o branco do topo da página). O feed (post com coração e
+ * comentário) só emoldura post de rede social de verdade (`post`): o trailer ou a matéria ali vira post que não existe.
  */
-export const screenVariant = (seed: number, width: number, height: number, page = false): ScreenVariant => {
+export const screenVariant = (seed: number, width: number, height: number, page = false, post = false): ScreenVariant => {
   if (page) return 'window';
-  const pool: ScreenVariant[] = height > width ? ['phone', 'feed', 'phone', 'feed', 'window'] : ['window', 'window', 'phone', 'feed'];
+  const all: ScreenVariant[] = height > width ? ['phone', 'feed', 'phone', 'feed', 'window'] : ['window', 'window', 'phone', 'feed'];
+  const pool = post ? all : all.filter((v) => v !== 'feed');
   return pool[Math.floor(random(`${seed}-screen`) * pool.length) % pool.length];
 };
 
 /** A moldura que a cena usa de fato (a mesma semente do `Screen`). */
 export const sceneScreenVariant = (scene: TimelineScene, width: number, height: number) =>
-  screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture');
+  screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture', Boolean(scene.post));
 
 type Rect = PxRect;
 
@@ -374,7 +376,7 @@ type Rect = PxRect;
  */
 export const treatmentKeep = (scene: TimelineScene, treatment: SceneTreatment, width: number, height: number, zoomStrength: number, frame: number) => {
   const keep = pRects({ rect: scene.keep })[0];
-  if (!keep || treatment !== 'screen' || screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture') !== 'window') return null;
+  if (!keep || treatment !== 'screen' || sceneScreenVariant(scene, width, height) !== 'window') return null;
   const { content } = screenFrame('window', width, height);
   const dur = Math.max(1, scene.durationInFrames - 1);
   const p = interpolate(frame, [0, dur], [0, 1], { ...clamp, easing: Easing.inOut(Easing.quad) });
@@ -454,7 +456,7 @@ const Screen: React.FC<TreatmentProps> = ({ scene, effects, zoomStrength, url, c
   const unit = Math.min(width, height);
   const vertical = height > width;
   const cont = typeof scene.treatment_continue === 'number';
-  const variant = screenVariant(layoutSeed(scene), width, height, scene.prov === 'capture');
+  const variant = sceneScreenVariant(scene, width, height);
   const filter = imageFilter(effects, scene.look);
   // Na continuação o aparelho já está em cena.
   const enter = cont ? 1 : spring({ frame, fps, config: { damping: 16, stiffness: 120, mass: 0.8 } });
