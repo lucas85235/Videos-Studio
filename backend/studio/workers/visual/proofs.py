@@ -336,6 +336,7 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
         # ela, o cache guarda a recusa (a coleta rápida não a acha e a próxima completa tenta de novo).
         if cached is not None:
             return cached
+        _remember_blocked(project_id, done, texts)
         folder.mkdir(parents=True, exist_ok=True)
         done.write_text(json.dumps({"rejected": BLOCKED_KIND, "reason": exc.reason, "url": url,
                                     "find": page_capture.FIND_VERSION}, ensure_ascii=False), encoding="utf-8")
@@ -344,6 +345,7 @@ def capture_clean(project_id: str, url: str, phrases: Sequence[str], aspect: flo
         if cached is not None:
             return cached
         raise
+    _remember_blocked(project_id, done, texts)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"pool-{key}.png").write_bytes(shot.png)
     (folder / f"pool-{key}.txt").write_text(shot.text, encoding="utf-8")
@@ -378,13 +380,86 @@ def capture_rejection(project_id: str, url: str, phrases: Sequence[str], aspect:
     return stored_block(cached.get("title"), done.with_suffix(".txt"), texts)
 
 
-def blocked_capture_urls(project_id: str) -> dict[str, str]:
-    """Endereço → motivo das páginas cuja captura é (ou foi recusada por ser) a tela de bloqueio do site, pelo cache
-    das capturas do acervo e pelas provas gravadas. A mídia de cena que ainda aponta para elas sai (`media_pool`)."""
+BLOCKED_LEDGER = "blocked.json"
+"""`captures/blocked.json`: as imagens de captura que eram a tela de bloqueio e saíram do cache (a recaptura gravou a
+recusa ou a página boa por cima), imagem → {url, reason}. A cena que ainda aponta para elas sai (`media_pool`)."""
+
+
+def _ledger_path(project_id: str) -> Path:
+    return get_settings().data_dir / "uploads" / project_id / "captures" / BLOCKED_LEDGER
+
+
+def _read_ledger(project_id: str) -> dict[str, dict[str, str]]:
     import json
 
-    out: dict[str, str] = {}
-    folder = get_settings().data_dir / "uploads" / project_id / "captures"
+    path = _ledger_path(project_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def _remember_blocked(project_id: str, done: Path, texts: Sequence[str]) -> None:
+    """Antes de gravar por cima da entrada do cache: se ela era a tela de bloqueio, guarda a imagem dela no registro
+    (a cena que já a usa continua achável depois que o cache muda)."""
+    import json
+
+    try:
+        old = json.loads(done.read_text(encoding="utf-8")) if done.is_file() else None
+    except (OSError, ValueError):
+        return
+    if not isinstance(old, dict) or old.get("rejected") or not old.get("asset"):
+        return
+    why = stored_block(old.get("title"), done.with_suffix(".txt"), texts)
+    if why is None:
+        return
+    ledger = _read_ledger(project_id)
+    ledger[str(old["asset"])] = {"url": str(old.get("url") or ""), "reason": why}
+    path = _ledger_path(project_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+class BlockedCaptures:
+    """As capturas de bloqueio do projeto. `assets`: imagem → (endereço, motivo), exatas (a entrada do cache, a do
+    registro, a prova gravada). `urls`: endereço → motivo só da fonte que não tem nenhuma captura boa (em nenhuma
+    chave do cache, que é por endereço + trecho + proporção, nem prova gravada boa): a recusa de uma chave antiga não
+    derruba a captura boa que veio depois (o Cloudflare que bloqueia numa coleta e deixa passar na outra)."""
+
+    def __init__(self, assets: dict[str, tuple[str, str]], urls: dict[str, str]) -> None:
+        self.assets = assets
+        self.urls = urls
+
+    def __bool__(self) -> bool:
+        return bool(self.assets or self.urls)
+
+    def reason(self, media: MediaRef) -> tuple[str, str] | None:
+        """(endereço, motivo) quando a mídia é a captura de bloqueio, ou None."""
+        if media.asset and media.asset in self.assets:
+            url, why = self.assets[media.asset]
+            return (url or media.page_url or media.url, why)
+        for url in (media.page_url, media.url):
+            if url and url in self.urls:
+                return (url, self.urls[url])
+        return None
+
+
+def blocked_captures(project_id: str) -> BlockedCaptures:
+    """As capturas que são (ou foram recusadas por ser) a tela de bloqueio do site, pelo cache das capturas do
+    acervo, pelo registro (`BLOCKED_LEDGER`) e pelas provas gravadas."""
+    import json
+
+    assets: dict[str, tuple[str, str]] = {}
+    refused: dict[str, str] = {}
+    good: set[str] = set()
+    data_dir = get_settings().data_dir
+    for asset, info in _read_ledger(project_id).items():
+        assets[asset] = (info.get("url", ""), info.get("reason") or "o site mostrou uma página de bloqueio")
+    folder = data_dir / "uploads" / project_id / "captures"
     if folder.is_dir():
         for done in sorted(folder.glob("pool-*.json")):
             try:
@@ -393,25 +468,41 @@ def blocked_capture_urls(project_id: str) -> dict[str, str]:
                 continue
             if not isinstance(cached, dict) or not cached.get("url"):
                 continue
+            url = str(cached["url"])
             if cached.get("rejected") == BLOCKED_KIND:
-                out[str(cached["url"])] = str(cached.get("reason") or "o site mostrou uma página de bloqueio")
+                refused.setdefault(url, str(cached.get("reason") or "o site mostrou uma página de bloqueio"))
             elif not cached.get("rejected"):
                 why = stored_block(cached.get("title"), done.with_suffix(".txt"), [str(cached.get("text") or "")])
                 if why:
-                    out[str(cached["url"])] = why
+                    refused.setdefault(url, why)
+                    if cached.get("asset"):
+                        assets[str(cached["asset"])] = (url, why)
+                elif cached.get("asset") and (data_dir / str(cached["asset"])).is_file():
+                    good.add(url)
     try:
         rows = list_captures(project_id)
     except Exception:  # noqa: BLE001 - sem banco (testes de função pura): só o cache conta
         rows = []
-    data_dir = get_settings().data_dir
     for row in rows:
         if row.get("status") == "falhou" or not row.get("url"):
             continue
+        url = str(row["url"])
         why = stored_block(row.get("title"), data_dir / row["text_path"] if row.get("text_path") else None,
                            [str(p.get("text") or "") for p in row.get("phrases") or []])
-        if why:
-            out.setdefault(str(row["url"]), why)
-    return out
+        if why is None:
+            good.add(url)
+            continue
+        refused.setdefault(url, why)
+        for key in ("proof", "image"):
+            if row.get(key):
+                assets[str(row[key])] = (url, why)
+    return BlockedCaptures(assets, {u: why for u, why in refused.items() if u not in good})
+
+
+def blocked_capture_urls(project_id: str) -> dict[str, str]:
+    """Endereço → motivo das fontes cuja captura é (ou foi recusada por ser) a tela de bloqueio e que não têm
+    nenhuma captura boa (`blocked_captures`)."""
+    return dict(blocked_captures(project_id).urls)
 
 
 def get_capture(capture_id: str) -> dict[str, Any] | None:
@@ -489,5 +580,5 @@ def rebake(capture_id: str, i: int, view: Sequence[float] | None, lock: bool) ->
             return capture_dict(row)
 
 
-__all__ = ["BlockedCapture", "CaptureError", "ProofError", "blocked_capture_urls", "capture_rejection", "capture_proof",
-           "rebake", "get_capture", "list_captures", "capture_dict"]
+__all__ = ["BlockedCapture", "BlockedCaptures", "CaptureError", "ProofError", "blocked_capture_urls", "blocked_captures",
+           "capture_rejection", "capture_proof", "rebake", "get_capture", "list_captures", "capture_dict"]

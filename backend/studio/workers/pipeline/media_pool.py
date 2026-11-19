@@ -1987,28 +1987,31 @@ def _is_page_capture(media: MediaRef) -> bool:
 
 def drop_blocked_captures(doc: ProjectDoc) -> list[str]:
     """Tira das cenas (em `doc`, no lugar) a captura que é a tela de bloqueio do site (verificação anti-robô, captcha,
-    "Access denied", erro: `proofs.blocked_capture_urls`), anexada antes da checagem existir. A cena de cartão fica com
-    o fundo do estilo (o cartão mostra o dado e a "Fonte:"); a cena de imagem vira o cartão tipográfico da fala com a
-    "Fonte: <veículo>" quando fala da fonte; a cena que reaproveitava a imagem dela fica com o fundo do estilo. A cena
-    travada não muda. Devolve os avisos."""
+    "Access denied", erro: `proofs.blocked_captures`, pela imagem exata ou pela fonte sem nenhuma captura boa),
+    anexada antes da checagem existir. A cena de cartão fica com o fundo do estilo (o cartão mostra o dado e a
+    "Fonte:"); a cena de imagem vira o cartão tipográfico da fala com a "Fonte: <veículo>" quando fala da fonte; a
+    cena que reaproveitava a imagem dela fica com o fundo do estilo. A cena travada não muda. Devolve os avisos."""
     from studio.core.sources import outlet_for_url, scene_claims_source
     from studio.workers.visual import proofs
 
     try:
-        blocked = proofs.blocked_capture_urls(doc.id)
+        blocked = proofs.blocked_captures(doc.id)
     except Exception:  # noqa: BLE001 - sem o cache das capturas, nada muda
         log.warning("não deu para ler o cache das capturas do projeto %s", doc.id, exc_info=True)
         return []
     if not blocked:
         return []
     dropped: dict[str, str] = {}
+    reasons: dict[str, str] = {}
     for scene in doc.ordered_scenes():
         media = scene.visual.media
         if scene.locked or media is None or not _is_page_capture(media):
             continue
-        url = media.page_url or media.url or ""
-        if url not in blocked:
+        hit = blocked.reason(media)
+        if hit is None:
             continue
+        url = hit[0]
+        reasons.setdefault(url, hit[1])
         dropped[scene.id] = url
         scene.visual.media = None
         scene.visual.reuse_of = None
@@ -2028,7 +2031,7 @@ def drop_blocked_captures(doc: ProjectDoc) -> list[str]:
     warnings: list[str] = []
     for url in dict.fromkeys(dropped.values()):
         labels = [_label(doc, s) for s in doc.ordered_scenes() if dropped.get(s.id) == url]
-        warnings.append(f"{_scene_list(labels)}: a captura de {_site(url)} não era a matéria ({blocked[url]}); "
+        warnings.append(f"{_scene_list(labels)}: a captura de {_site(url)} não era a matéria ({reasons[url]}); "
                         "saiu da cena, que ficou com o cartão do dado e a fonte.")
     return warnings
 

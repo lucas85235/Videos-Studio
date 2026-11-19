@@ -423,6 +423,23 @@ def _page_status(page: Page) -> int | None:
     return status if isinstance(status, int) and not isinstance(status, bool) else None
 
 
+BLANK_CHECK_JS = """(() => {
+  const ct = document.contentType || '';
+  if (!/html/i.test(ct)) return false;
+  return !document.querySelector('img, picture, svg, canvas, video, iframe, embed, object');
+})()"""
+"""A página sem texto conta como vazia? Só o documento HTML sem imagem nenhuma: o endereço que aponta direto para
+uma imagem (o documento de imagem do navegador não tem texto) ou a página só de imagem não são "vazias" (a checagem de
+pixel, `proofs.is_blank_page`, cuida da foto lisa)."""
+
+
+def _blank_counts(page: Page) -> bool:
+    try:
+        return page.js(BLANK_CHECK_JS) is not False
+    except Exception:  # noqa: BLE001 - sem ler o documento: a checagem de pixel decide
+        return False
+
+
 def page_blocked(page: Page, expected: Sequence[str] = ()) -> str | None:
     """O motivo de a página aberta não ser a página (`blocked_page.blocked_reason` pelo título, pelo texto visível e
     pelo status), ou None."""
@@ -435,7 +452,7 @@ def page_blocked(page: Page, expected: Sequence[str] = ()) -> str | None:
         title = page.title() or ""
     except Exception:  # noqa: BLE001 - página sem título
         title = ""
-    return blocked_reason(str(title), text, _page_status(page), expected=expected, blank=True)
+    return blocked_reason(str(title), text, _page_status(page), expected=expected, blank=_blank_counts(page))
 
 
 def wait_unblocked(page: Page, expected: Sequence[str] = ()) -> None:
@@ -502,7 +519,8 @@ def capture(url: str, phrases: Sequence[str], focus: int = 0, *, open_page: Open
         title = page.title()
         text = page.js(TEXT_JS) or ""
         # o desafio que entrou depois (a página trocou durante a rolagem): a foto já é dele
-        late = blocked_reason(str(title), str(text), _page_status(page), expected=phrases, blank=True)
+        late = blocked_reason(str(title), str(text), _page_status(page), expected=phrases,
+                              blank=_blank_counts(page))
         if late is not None:
             raise BlockedPage(late, url)
     rects = list(rects or [])

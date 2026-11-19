@@ -23,7 +23,7 @@ from studio.core.project.pool import load_pool
 from studio.core.project.presenter import trigger_index
 from studio.core.styles.library import StyleNotFound, deep_merge, get_style
 from studio.core.styles.schema import StyleSpec, grammar_for
-from studio.workers.pipeline import edit_plan, storyboard_check
+from studio.workers.pipeline import edit_plan, media_pool, storyboard_check
 
 router = APIRouter(prefix="/api", tags=["edição"])
 
@@ -54,6 +54,9 @@ def reedit(project_id: str, body: ReeditBody | None = None) -> dict[str, Any]:
     # o projeto feito antes da regra: a fala em destaque sobre a imagem desfocada no gancho vira a imagem nítida
     # (`storyboard_check.fix_hook_text`, que o storyboard novo já aplica)
     storyboard_check.fix_hook_text_doc(doc)
+    # a captura que é a tela de bloqueio do site (Cloudflare, captcha) sai da cena também sem storyboard novo: a cena
+    # fica com o cartão do dado e a fonte (`media_pool.drop_blocked_captures`, o mesmo do anexo do storyboard)
+    media_pool.drop_blocked_captures(doc)
     edit_plan.plan(doc, style, load_pool(project_id))
     changed = doc.model_dump(mode="json") != before
     version = (service.commit(project_id, doc, f"Edição refeita (intensidade {grammar.intensity})")

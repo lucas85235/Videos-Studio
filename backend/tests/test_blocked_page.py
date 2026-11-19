@@ -336,3 +336,98 @@ def test_scene_with_the_blocked_capture_becomes_the_data_card_with_the_source(pu
     assert s3.visual.media == good  # a captura boa de outra fonte fica
     assert len(warnings) == 1 and "gamesbeat.com" in warnings[0] and "anti-robô" in warnings[0]
     assert media_pool.drop_blocked_captures(doc) == []
+
+
+# --------------------------------------------------------------------------------------------
+# Revisão: a recusa de uma chave do cache não derruba a captura boa de outra; documento de imagem não é "vazio"
+# --------------------------------------------------------------------------------------------
+
+
+def _capture_scene(asset: str, scene_id: str = "scn_0", part: int = 0, parts: int = 1) -> DocScene:
+    media = MediaRef(kind="capture", source="capture", asset=asset, url=URL, page_url=URL, title="GamesBeat",
+                     credit="gamesbeat.com", editorial=True, tier="capture")
+    return DocScene(id=scene_id, segment_id="seg_1", part=part, parts=parts, kind="image",
+                    visual=Visual(prompt="x", media=media))
+
+
+def _doc_with(scenes: list[DocScene]):
+    doc = service.create_project(title="GTA 6 no PC", style_id="curiosidades-longo", topic="GTA 6 no PC")
+    seg = Segment(id="seg_1", text={"pt-BR": "A GamesBeat publicou que o PC sai no primeiro trimestre de 2027."})
+    return doc.model_copy(update={"segments": [seg], "scenes": scenes, "sources": [Source(url=URL, title=HEADLINE)]})
+
+
+def _stale_cloudflare(doc_id: str) -> str:
+    asset = f"uploads/{doc_id}/media/cf.jpg"
+    _write_cached(doc_id, URL, [HEADLINE], {"asset": asset, "rects": [], "url": URL, "title": "Um momento…",
+                                            "text": HEADLINE, "headline": True, "find": 2}, CLOUDFLARE_PT)
+    return asset
+
+
+def test_refusal_under_another_aspect_does_not_drop_the_good_capture(public_dns):
+    """Cloudflare bloqueia numa coleta (9:16) e deixa passar na outra (16:9): a captura boa fica na cena."""
+    doc = _doc_with([])
+    with pytest.raises(proofs.BlockedCapture):
+        proofs.capture_clean(doc.id, URL, [HEADLINE], 9 / 16, open_page=opener(ChallengePage(None)))
+    good = proofs.capture_clean(doc.id, URL, [HEADLINE], 16 / 9, open_page=opener(ChallengePage(clears_after=0)))
+    assert proofs.blocked_capture_urls(doc.id) == {}
+    doc = doc.model_copy(update={"scenes": [_capture_scene(good["asset"])]})
+    assert media_pool.drop_blocked_captures(doc) == [] and doc.scene("scn_0").visual.media is not None
+
+
+def test_refusal_under_an_old_phrase_does_not_block_the_url_for_good(public_dns):
+    """A frase da fonte mudou (título pesquisado de novo): a recusa da frase antiga não vale depois da captura boa."""
+    doc = _doc_with([])
+    with pytest.raises(proofs.BlockedCapture):
+        proofs.capture_clean(doc.id, URL, ["GTA VI PC old note"], 16 / 9, open_page=opener(ChallengePage(None)))
+    assert URL in proofs.blocked_capture_urls(doc.id)
+    proofs.capture_clean(doc.id, URL, [HEADLINE], 16 / 9, open_page=opener(ChallengePage(clears_after=0)))
+    assert proofs.blocked_capture_urls(doc.id) == {}
+
+
+def test_poisoned_asset_still_leaves_the_scene_after_a_good_recapture(public_dns):
+    """O caso real: a entrada do Cloudflare no cache; a recaptura boa grava por cima. A cena que ainda mostra a tela
+    do Cloudflare (a imagem velha) sai; a que já usa a captura boa fica."""
+    doc = _doc_with([])
+    stale = _stale_cloudflare(doc.id)
+    good = proofs.capture_clean(doc.id, URL, [HEADLINE], 16 / 9, open_page=opener(ChallengePage(clears_after=0)))
+    assert good["asset"] != stale and proofs.blocked_capture_urls(doc.id) == {}  # a fonte tem captura boa
+    doc = doc.model_copy(update={"scenes": [_capture_scene(stale, "scn_0", 0, 2),
+                                            _capture_scene(good["asset"], "scn_1", 1, 2)]})
+    warnings = media_pool.drop_blocked_captures(doc)
+    assert doc.scene("scn_0").visual.media is None and doc.scene("scn_1").visual.media is not None
+    assert len(warnings) == 1 and "gamesbeat.com" in warnings[0]
+
+
+class ImageDocument(ChallengePage):
+    """O endereço da fonte aponta direto para uma imagem: o documento de imagem do navegador não tem texto."""
+
+    def __init__(self):
+        super().__init__(clears_after=0)
+
+    def js(self, expression: str):
+        if expression == page_capture.TEXT_JS:
+            self.reads += 1
+            return ""
+        if expression == page_capture.BLANK_CHECK_JS:
+            return False
+        return super().js(expression)
+
+    def title(self) -> str:
+        return "capa.jpg (1920×1080)"
+
+
+def test_url_of_an_image_is_not_refused_as_an_empty_page(public_dns):
+    page = ImageDocument()
+    shot = page_capture.capture("https://example.com/capa.jpg", [HEADLINE], open_page=opener(page), headline=True)
+    assert page.shots == 1 and not page.reloaded and shot.text == ""
+
+
+def test_reedit_drops_the_blocked_capture_without_a_new_storyboard(public_dns):
+    from studio.api import routes_edit
+
+    doc = _doc_with([])
+    stale = _stale_cloudflare(doc.id)
+    doc = doc.model_copy(update={"scenes": [_capture_scene(stale)]})
+    service.commit(doc.id, doc, "pronto")
+    routes_edit.reedit(doc.id)
+    assert service.get_doc(doc.id).scene("scn_0").visual.media is None
