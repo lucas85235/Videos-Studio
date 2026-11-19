@@ -20,7 +20,8 @@ $env:UV_PROJECT_ENVIRONMENT = Join-Path $data ".venv-backend"
 
 Write-Host "1/4 Backend Python (venv fora do OneDrive em $env:UV_PROJECT_ENVIRONMENT)" -ForegroundColor Cyan
 # --extra asr: Whisper local, que confere cada narração (instrução lida em voz alta, texto repetido) e alinha as legendas
-uv sync --project backend --python 3.12 --extra asr
+# --extra cutout: rembg, que recorta figuras sem transparência e acha figurantes no fundo da thumb (re-enquadramento)
+uv sync --project backend --python 3.12 --extra asr --extra cutout
 
 Write-Host "2/4 Voz local da prévia (Kokoro, ~350 MB, só na primeira vez)" -ForegroundColor Cyan
 uv run --project backend --no-sync videos-studio voz-local

@@ -17,7 +17,7 @@ if ((Test-Path $lock) -and (Test-Path $env:UV_PROJECT_ENVIRONMENT)) {
     $last = if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() } else { "" }
     if ($hash -ne $last) {
         Write-Host "Atualizando as dependências do backend..." -ForegroundColor Yellow
-        uv sync --project backend --extra asr --inexact
+        uv sync --project backend --extra asr --extra cutout --inexact
         if ($LASTEXITCODE -eq 0) { Set-Content -Path $stamp -Value $hash -Encoding ascii }
         else { Write-Host "Não deu para atualizar as dependências agora; rode scripts\setup.ps1." -ForegroundColor Red }
     }
