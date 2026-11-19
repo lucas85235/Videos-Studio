@@ -106,9 +106,10 @@ const CARD_TEXT_DIM = 0.7;
 const imageHasText = (scene: TimelineScene, slots: ShotSlot[]) =>
   Boolean(scene.text_rects?.length) || slots.some((s) => !s.shot?.video && Boolean(s.shot?.text_rects?.length));
 
-/** Sem imagem, o cartão tipográfico fica sobre o fundo com textura do estilo, clareado (`VisualLayer` com `solid`; com
- * imagem, ela só escurecida e desfocada). */
-const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text']);
+/** Sem imagem, o cartão de frase (o tipográfico, o título, a citação e a contagem) fica sobre o fundo com textura do
+ * estilo, clareado (`VisualLayer` com `solid`; com imagem, ela só escurecida e desfocada). O título "REMOTE PLAY" sem
+ * imagem saía no fundo escurecido liso, lido como mais um cartão tipográfico (QA r4 do prj_gq4krrs11w). */
+const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text', 'title', 'quote', 'count']);
 /** Cartão grande no meio da tela (ou o mapa, que ocupa a tela): a legenda desce para baixo dele. */
 const CARD_KINDS = new Set<SceneKind>(['title', 'count', 'stat', 'compare', 'chart', 'map']);
 /** O próprio cartão mostra as palavras, então não há legenda (no cartão tipográfico com frase própria, `scene.text`,
@@ -355,22 +356,28 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const bare = revealFrom > 0 && bareBackdrop(url, clipUrl, scene);
   const cardFrom = bare ? 0 : revealFrom;
   const avatarRect = scene.presenter ? presenterRect(scene.presenter, width, height, band.top) : null;
+  // A frase do cartão tipográfico que repete a fala ("O cookie é o pior" sobre "o cookie é o pior") dispensa a
+  // legenda: a mesma frase duas vezes, em duas cores, na mesma tela.
+  const hideCaptions =
+    (NO_CAPTIONS.has(kind) && !(kind === 'text' && filled(scene.text) && !titleEchoesSpeech(scene))) ||
+    (kind === 'title' && titleEchoesSpeech(scene));
+  // A frase própria do cartão tipográfico com a legenda da fala embaixo: o bloco da frase fica acima da legenda (a
+  // frase de três linhas descia por cima dela).
+  const textBand: CardBand =
+    kind === 'text' && !hideCaptions && style.captions.style !== 'none'
+      ? { ...band, bottom: Math.min(band.bottom, captionMid - captionHalf - 0.03) }
+      : band;
   const card = Card ? (
     <Card
       scene={scene}
       style={cards}
       uppercase={style.captions.uppercase}
       lang={lang}
-      band={band}
+      band={kind === 'text' ? textBand : band}
       pop={reveal !== undefined}
       avoid={avatarRect}
     />
   ) : null;
-  // A frase do cartão tipográfico que repete a fala ("O cookie é o pior" sobre "o cookie é o pior") dispensa a
-  // legenda: a mesma frase duas vezes, em duas cores, na mesma tela.
-  const hideCaptions =
-    (NO_CAPTIONS.has(kind) && !(kind === 'text' && filled(scene.text) && !titleEchoesSpeech(scene))) ||
-    (kind === 'title' && titleEchoesSpeech(scene));
   const sourceChip = source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null;
 
   // Edição (ADR 0004): planos, câmera por eventos, tempo do fundo e eventos de tela. Cena sem `shots` nem `fx`

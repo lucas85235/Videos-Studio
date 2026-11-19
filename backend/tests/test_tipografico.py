@@ -130,8 +130,11 @@ def test_card_with_its_own_phrase_keeps_the_phrase_over_the_material(isolated_se
     card = doc.ordered_scenes()[4]
     card.overlay_text = {"pt-BR": "O cookie é o pior"}
     _settle(doc, Pool(items=_theme()))
-    # a frase do cartão fica; o trailer vira o fundo dele
-    assert card.kind == "text" and card.visual.media is not None and not tiers.is_typographic(card, doc)
+    # a frase do cartão fica; o trailer vira o fundo dele e, com mais de 4 s, fica à vista (título sobre a imagem, não
+    # cartão tipográfico sobre o fundo borrado)
+    assert card.visual.media is not None and not tiers.is_typographic(card, doc)
+    assert card.overlay_text == {"pt-BR": "O cookie é o pior"} and card.kind == "title"
+    assert not tiers.is_text_card(card, doc)
 
 
 def test_ai_only_inside_the_cap_when_there_is_no_material(isolated_settings):
@@ -391,6 +394,194 @@ def test_offline_llm_writes_english_scenarios(isolated_settings):
     assert typographic.is_scenario(doc, card, out[card.id], scene_text(doc, card))
 
 
+# --- a trava: tudo o que se lê como cartão (QA r4 do prj_gq4krrs11w) --------------------------------------------------
+# A r4 contava só o cartão sem imagem nenhuma: o cartão de texto sobre a captura borrada colado no liso (1:36, 2:33,
+# 5:39, 6:00), o título "REMOTE PLAY" sem imagem colado no cartão (2:12), a fala longa em várias páginas seguidas
+# (3:54, 6:00-6:18) e o cartão longo sem material ficavam, com o `settle` dizendo "nenhum colado".
+
+ISO = "Segundo: a ISO vazada. Aqui é o contrário, em vez de um arquivo pequeno vem um gigante cheio de lixo."
+SIZE = "Tamanho grande não prova nada. Arquivo pesado pode ser só enchimento."
+
+
+def _stock(doc: ProjectDoc, *ks: int) -> None:
+    """Foto de banco sem item no acervo: nem assunto nem tema, e nunca repetida como fundo de outra fala."""
+    order = doc.ordered_scenes()
+    for k in ks:
+        order[k].visual = Visual(media=MediaRef(kind="photo", source="pexels", asset=f"uploads/{PID}/media/s{k}.jpg",
+                                                tier="stock"))
+
+
+def _capture(doc: ProjectDoc, k: int) -> Scene:
+    """Captura de outro assunto (a matéria da Malwarebytes): nem do assunto nem do tema da fala vizinha."""
+    scene = doc.ordered_scenes()[k]
+    scene.visual = Visual(media=MediaRef(kind="capture", source="link", asset=f"uploads/{PID}/media/p232.jpg",
+                                         pool_id="p232", tier="capture", url=MALWARE.url))
+    return scene
+
+
+def _join(doc: ProjectDoc, ids: list[str]) -> None:
+    """As cenas `ids` (seguidas) passam a ser partes de um segmento só, com a fala de todas."""
+    scenes = [s for s in doc.ordered_scenes() if s.id in ids]
+    first = doc.segment(scenes[0].segment_id)
+    first.text = {"pt-BR": " ".join(doc.segment(s.segment_id).text["pt-BR"] for s in scenes)}
+    for part, scene in enumerate(scenes):
+        if scene.segment_id != first.id:
+            doc.segments = [g for g in doc.segments if g.id != scene.segment_id]
+            scene.segment_id = first.id
+        scene.part, scene.parts = part, len(scenes)
+
+
+def _pairs(doc: ProjectDoc) -> list[tuple[str, str]]:
+    order = doc.ordered_scenes()
+    return [(a.id, b.id) for a, b in zip(order, order[1:], strict=False)
+            if tiers.is_text_card(a, doc) and tiers.is_text_card(b, doc)]
+
+
+def test_text_card_counts_every_phrase_card_on_screen(isolated_settings):
+    doc = _doc([("image", FILL), ("text", SHORT), ("title", SHORT2), ("stat", FILL)])
+    image, card, title, stat = doc.ordered_scenes()
+    title.overlay_text = {"pt-BR": "REMOTE PLAY"}
+    stat.visual = Visual(type="none")
+    assert tiers.is_text_card(card, doc) and tiers.is_bare_card(card, doc)
+    assert tiers.is_text_card(title, doc) and tiers.is_bare_card(title, doc)  # título sem imagem: cartão
+    assert not tiers.is_text_card(stat, doc) and not tiers.is_text_card(image, doc)  # painel de dado não
+    card.visual = Visual(reuse_of=image.id)  # o cartão sobre a captura borrada: cartão na tela, com imagem atrás
+    assert tiers.is_text_card(card, doc) and not tiers.is_bare_card(card, doc) and not tiers.is_typographic(card, doc)
+    title.visual = Visual(reuse_of=image.id)  # o título sobre a imagem à vista: não
+    assert not tiers.is_text_card(title, doc)
+
+
+def test_card_over_an_image_glued_to_a_bare_card_shows_the_image(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("image", FILL), ("text", SHORT), ("text", SHORT2)] + _base(6))
+    order = doc.ordered_scenes()
+    order[5].visual = Visual(reuse_of=order[4].id)  # "Qualquer tabela de requisitos" sobre a captura borrada
+    order[4].focus = "center"
+    notes = _settle(doc, Pool())
+    order = doc.ordered_scenes()
+    assert _pairs(doc) == []
+    # o cartão liso fica (curto, sozinho, sem material); o da imagem mostra a imagem, com outro recorte
+    assert tiers.is_typographic(order[6], doc)
+    assert order[5].kind == "image" and order[5].visual.reuse_of == order[4].id and order[5].focus != "center"
+    assert any("colada em outro cartão" in n for n in notes)
+
+
+def test_two_bare_cards_of_one_stretch_become_one_with_the_main_idea(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", "Tamanho grande não prova nada."), ("text", "Arquivo pesado pode ser só enchimento.")]
+               + _base(6))
+    _stock(doc, *range(4), *range(6, 12))
+    _join(doc, ["scn04", "scn05"])
+    notes = _settle(doc, Pool())
+    assert _pairs(doc) == []
+    merged = doc.scenes_of("seg04")
+    assert [s.id for s in merged] == ["scn04"] and merged[0].span == 11
+    assert scene_text(doc, merged[0]) == SIZE
+    # duas páginas na tela seriam dois cartões dizendo a mesma coisa: fica a ideia principal (a legenda tem a fala)
+    assert merged[0].overlay_text == {"pt-BR": "Tamanho grande não prova nada."}
+    assert any("viraram um só" in n for n in notes)
+
+
+def test_bare_title_glued_to_a_card_is_merged_keeping_the_title(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", "Então não tem saída pra quem tá no PC?"),
+                           ("title", "Tem uma, e é oficial: o Remote Play.")] + _base(6))
+    _stock(doc, *range(4), *range(6, 12))
+    title = doc.ordered_scenes()[5]
+    title.visual = Visual(type="none")
+    title.overlay_text = {"pt-BR": "REMOTE PLAY"}
+    _join(doc, ["scn04", "scn05"])
+    _settle(doc, Pool())
+    assert _pairs(doc) == []
+    (merged,) = doc.scenes_of("seg04")
+    assert merged.kind == "title" and merged.overlay_text == {"pt-BR": "REMOTE PLAY"}
+
+
+def test_bare_cards_in_a_row_repeat_the_neighbour_capture_with_another_crop(isolated_settings, monkeypatch):
+    """Sem material do assunto nem do tema, o cartão repete a captura da cena vizinha (a continuação do mesmo plano,
+    com outro recorte) em vez de ficar colado no outro cartão."""
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("image", FILL), ("text", SHORT), ("text", SHORT2)] + _base(6))
+    _stock(doc, *range(4), *range(7, 13))
+    capture = _capture(doc, 4)
+    capture.focus = "top"
+    notes = _settle(doc, Pool(items=[MALWARE]))
+    order = doc.ordered_scenes()
+    assert _pairs(doc) == []
+    borrowed = next(s for s in order[5:7] if not tiers.is_text_card(s, doc))
+    assert borrowed.visual.reuse_of == capture.id and borrowed.kind == "image" and borrowed.focus not in (None, "top")
+    assert any("outro recorte" in n for n in notes)
+
+
+def test_stock_photo_is_never_repeated_to_break_a_pair(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", SHORT), ("text", SHORT2)] + _base(6))
+    _stock(doc, *range(4), *range(6, 12))
+    notes = _settle(doc, Pool())
+    # cartões de trechos diferentes, sem nada que caiba: ficam e o aviso diz por quê (nunca a foto de banco repetida)
+    assert _pairs(doc) == [("scn04", "scn05")]
+    assert all(s.visual.reuse_of is None for s in doc.ordered_scenes())
+    assert any("ficou colada no cartão tipográfico" in n for n in notes)
+
+
+def test_long_bare_card_is_split_and_the_rest_shows_real_material(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", ISO), ("image", FILL)] + _base(6))
+    _stock(doc, *range(4), *range(6, 12))
+    capture = _capture(doc, 5)
+    style = get_style(LONG)
+    notes = _settle(doc, Pool(items=[MALWARE]))
+    parts = doc.scenes_of("seg04")
+    assert len(parts) == 2
+    card, rest = parts
+    # o cartão é a primeira frase inteira (até 4 s); o resto repete a captura vizinha com outro recorte
+    assert scene_text(doc, card) == "Segundo: a ISO vazada." and tiers.is_typographic(card, doc)
+    assert rest.kind == "image" and rest.visual.reuse_of == capture.id
+    assert scene_text(doc, card) + " " + scene_text(doc, rest) == ISO
+    seconds = {s.id: sec for s, _p, sec in storyboard_check.screen_seconds(doc, style)}
+    assert seconds[card.id] <= typographic.TYPO_MAX_S + 1e-6
+    assert _pairs(doc) == [] and any("foi dividido" in n for n in notes)
+
+
+def test_long_card_without_material_shows_one_idea_not_pages_in_a_row(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", SIZE)] + _base(6))
+    _stock(doc, *range(4), *range(5, 11))
+    _settle(doc, Pool())
+    card = doc.ordered_scenes()[4]
+    assert tiers.is_typographic(card, doc)  # sem material nenhum: o último recurso
+    assert card.overlay_text == {"pt-BR": "Tamanho grande não prova nada."}
+    pages = triggers._kinetic_pages([{"text": w} for w in card.overlay_text["pt-BR"].split()])
+    assert len(pages) == 1
+
+
+@pytest.mark.parametrize(("said", "idea"), [
+    (SIZE, "Tamanho grande não prova nada."),
+    ("Depois encerra todas as sessões abertas, inclusive no Discord e nas contas de jogo do PC.",
+     "Depois encerra todas as sessões abertas"),
+    ("Segundo: a ISO vazada. Aqui é o contrário.", "Segundo: a ISO vazada."),
+    ("Então, se alguém te oferece uma versão de PC do GTA 6 pra baixar", None),
+])
+def test_main_idea_is_the_first_whole_phrase_that_fits(said, idea):
+    assert typographic._main_idea(said) == idea
+
+
+def test_card_over_an_image_out_of_the_rules_shows_the_image(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    rows = _base(3) + [("text", SHORT)] + [("image", FILL), ("text", SHORT2)] + _base(4) + [("image", FILL),
+                                                                                         ("text", LONG_TEXT)] + _base(6)
+    doc = _doc(rows)
+    order = doc.ordered_scenes()
+    _stock(doc, *range(3), *range(6, 10), *range(12, 18))
+    near, late = order[5], order[11]
+    near.visual = Visual(reuse_of=order[4].id)  # sobre a imagem, a menos de 20 s do cartão liso
+    late.visual = Visual(reuse_of=order[10].id)  # sobre a imagem, mais de 4 s
+    notes = _settle(doc, Pool())
+    assert tiers.is_typographic(order[3], doc)
+    assert near.kind == "image" and late.kind == "image"
+    assert any("a menos de 20 s" in n for n in notes) and any("mais de 4 s de cartão" in n for n in notes)
+
+
 # --- avatar no cartão -------------------------------------------------------------------------------------------------
 
 
@@ -536,3 +727,22 @@ def test_typographic_background_is_lifted_above_the_black_detector(isolated_sett
     assert "!(kind === 'text' && filled(scene.text) && !titleEchoesSpeech(scene))" in scene
     # o cartão de dado sem fundo entra no corte (só o número espera a fala, `valueFrom`)
     assert "const cardFrom = bare ? 0 : revealFrom;" in scene
+
+
+def test_card_background_has_visible_texture_and_the_phrase_clears_the_captions(isolated_settings):
+    """O QA da r4 viu o gradiente magenta liso: a grade a 6% no fundo do cartão não aparece no vídeo. O fundo sem
+    imagem leva retícula e hachura que se veem no quadro parado (conferido no still do Remotion), o título sem imagem
+    usa o mesmo fundo clareado, e a frase própria do cartão fica acima da legenda da fala."""
+    data = (COMP / "DataCards.tsx").read_text(encoding="utf-8")
+    body = data.split("export const MotionBackground")[1]
+    dots = float(body.split("radial-gradient(circle, ${withAlpha(style.color, ")[1].split(")")[0])
+    assert dots >= 0.12  # a retícula
+    assert "repeating-linear-gradient(118deg" in body  # a hachura andando
+    assert "rgba(0,0,0,0.32) 100%" in body  # a vinheta
+    grid = float(body.split("backgroundImage: `linear-gradient(${withAlpha(style.color, ")[1].split(")")[0])
+    assert grid >= 0.08
+    scene = (COMP / "SceneView.tsx").read_text(encoding="utf-8")
+    assert "const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text', 'title', 'quote', 'count']);" in scene
+    assert "band={kind === 'text' ? textBand : band}" in scene
+    text = (COMP / "TextCards.tsx").read_text(encoding="utf-8")
+    assert "height: height * area," in text and "* fit," in text

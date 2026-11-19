@@ -238,6 +238,26 @@ def is_typographic(scene: Scene, doc: ProjectDoc | None = None) -> bool:
     return scene.kind == "text" and visual_prov(scene, doc) == "graphic"
 
 
+TEXT_CARD_KINDS = frozenset({"text", "title", "quote", "count"})
+"""Cartões que põem uma frase grande no meio da tela (sem painel de dado nem documento)."""
+
+
+def is_bare_card(scene: Scene, doc: ProjectDoc | None = None) -> bool:
+    """Cartão de frase sem imagem nenhuma atrás (o cartão tipográfico e o título, a citação ou a contagem sobre o
+    fundo do estilo): o que `workers.pipeline.typographic` tenta trocar por material. O QA do prj_gq4krrs11w (r4)
+    contou o título "REMOTE PLAY" no fundo liso como cartão tipográfico colado no outro."""
+    return scene.kind in TEXT_CARD_KINDS and visual_prov(scene, doc) == "graphic"
+
+
+def is_text_card(scene: Scene, doc: ProjectDoc | None = None) -> bool:
+    """O que o espectador lê como cartão tipográfico: a fala (ou a frase da cena) grande no meio da tela. É a cena de
+    texto com QUALQUER fundo (o fundo da imagem reaproveitada fica escurecido e desfocado atrás da frase: o QA da r4
+    contou "Qualquer tabela de requisitos" sobre a captura borrada colado no cartão liso) e o cartão de frase sem
+    imagem (`is_bare_card`). O título sobre uma imagem à vista e o cartão de dado não contam. É a conta da regra "nunca
+    dois seguidos", do intervalo e da parte do vídeo (`typographic`)."""
+    return scene.kind == "text" or is_bare_card(scene, doc)
+
+
 def _bare_card(scene: Scene) -> bool:
     """Sem imagem nenhuma: visual `none`, ou cartão sem prompt, imagem fixada nem reaproveitamento."""
     visual = scene.visual

@@ -113,12 +113,14 @@ const FIRST_PAGE_LEAD = 4;
  * a fala chega nela. Fica sobre a imagem escurecida e desfocada ou, sem imagem, sobre o fundo com textura do estilo
  * (`VisualLayer`, `MotionBackground` com `lift`).
  */
-export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle; uppercase: boolean; avoid?: Rect | null }> = ({
-  scene,
-  style,
-  uppercase,
-  avoid,
-}) => {
+export const KineticText: React.FC<{
+  scene: TimelineScene;
+  style: TextCardStyle;
+  uppercase: boolean;
+  avoid?: Rect | null;
+  /** Faixa livre (fração da altura): com a legenda embaixo, o bloco da frase fica acima dela, menor. */
+  band?: { top: number; bottom: number };
+}> = ({ scene, style, uppercase, avoid, band }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const pages = scenePages(scene);
@@ -130,6 +132,8 @@ export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle;
   const lead = index === 0 ? FIRST_PAGE_LEAD : 0;
   const pop = spring({ frame: frame - start + lead, fps, config: { damping: 14, stiffness: 220, mass: 0.6 } });
   // Com o avatar no cartão (`presenter.assign` põe o avatar no cartão tipográfico), a frase sai do lado dele.
+  const area = Math.min(KINETIC_CENTER_Y * 2, band?.bottom ?? 1);
+  const fit = area < KINETIC_CENTER_Y * 2 ? Math.max(0.6, (area / (KINETIC_CENTER_Y * 2)) ** 1.5) : 1;
   const margin = (side: 'left' | 'right') =>
     width * (avoid && (side === 'left' ? avoid[0] < 0.5 : avoid[0] + avoid[2] > 0.5) ? Math.max(0.08, avoid[2] + 0.02) : 0.08);
   return (
@@ -140,7 +144,7 @@ export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle;
           left: margin('left'),
           right: margin('right'),
           top: 0,
-          height: height * KINETIC_CENTER_Y * 2,
+          height: height * area,
           display: 'flex',
           justifyContent: 'center',
           alignItems: 'center',
@@ -166,7 +170,7 @@ export const KineticText: React.FC<{ scene: TimelineScene; style: TextCardStyle;
                 key={`${start}-${i}`}
                 style={{
                   fontFamily: fontStack(style.font),
-                  fontSize: width * (accent ? 0.12 : 0.095),
+                  fontSize: width * (accent ? 0.12 : 0.095) * fit,
                   lineHeight: 1,
                   color: accent ? style.accent : style.color,
                   display: 'inline-block',

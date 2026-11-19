@@ -20,7 +20,12 @@ O cartão que não cabe nas regras e não achou nada acima mostra o tema geral m
 material oficial (risco de Content ID), o de IA (média e trecho), as aparições do mesmo item (`ITEM_MAX_USES`), o tempo
 seguido na mesma imagem ou no mesmo vídeo de origem (`same_image_seconds`) e o tempo seguido no mesmo nível de material
 (`SAME_TIER_RUN_S`). Tudo conta a cena junto das que reaproveitam a imagem dela (`_group`). Sem nada que caiba, o
-cartão fica fora das regras e o aviso diz por quê. A cena travada não muda."""
+cartão fica fora das regras e o aviso diz por quê. A cena travada não muda.
+
+No fim, a trava (`_lock`) conta tudo o que o espectador lê como cartão (`sources.is_text_card`: o cartão de texto
+sobre a captura borrada e o título sem imagem também) e garante "nunca dois seguidos": o cartão com imagem atrás a
+mostra, o sem imagem divide a fala longa e repete a imagem real vizinha com outro recorte, os dois do mesmo trecho
+viram um, e o cartão mostra uma ideia só (nunca várias páginas seguidas)."""
 
 from __future__ import annotations
 
@@ -142,7 +147,7 @@ def card_problem(state: _State, scene: Scene) -> str | None:
     at = state.index(scene)
     for k in (at - 1, at + 1):
         if 0 <= k < len(state.order) and (state.order[k].id in state.kept or (
-                k == at - 1 and tiers.is_typographic(state.order[k], state.doc))):
+                k == at - 1 and tiers.is_bare_card(state.order[k], state.doc))):
             return "outro cartão tipográfico colado"
     start = state.spans.get(scene.id, (0.0, 0.0))[0]
     for other in state.kept:
@@ -665,7 +670,289 @@ def settle(doc: ProjectDoc, style: StyleSpec | None, pool: Pool, *, avatar: bool
                 state.kept.append(scene.id)
             elif not _near(state, scene, problem, notes, "o material não anexou e o cartão tipográfico não cabia ali"):
                 _keep_out_of_rules(state, scene, problem, notes)
+    _lock(state, notes)
     return notes
+
+
+# --- A trava: o que o espectador vê como cartão tipográfico -----------------------------------------------------------
+# A hierarquia acima só olha o cartão SEM imagem nenhuma. Na tela, o cartão de texto sobre a captura borrada também é
+# cartão tipográfico, a fala longa no cartão vira várias páginas seguidas (cada uma lida como um cartão) e o título sem
+# imagem é outro cartão: o QA da r4 do prj_gq4krrs11w achou ~10 pares e trios seguidos e 17% dos quadros em cartão
+# com o `settle` dizendo "nenhum colado". `_lock` roda no fim e conta tudo isso (`sources.is_text_card`).
+
+_SENTENCE_CUT = re.compile(r"[.!?…][\"'”’»)\]]*$")
+"""Fim de frase, onde a cena pode ser dividida: nunca na vírgula nem nos dois-pontos ("em vez de um arquivo pequeno,"
+sozinho na tela, ou o cartão começando no meio da frase)."""
+IDEA_MAX_WORDS = 10
+"""A frase do cartão (a ideia principal) cabe numa página grande do cartão tipográfico."""
+
+
+def _next_focus(focus: str | None) -> str:
+    """Outro enquadramento da mesma imagem (o rodízio de `styles.visual.FOCUS_ROTATION`): a imagem repetida volta
+    com outro recorte."""
+    from studio.core.styles.visual import FOCUS_ROTATION
+
+    index = FOCUS_ROTATION.index(focus) if focus in FOCUS_ROTATION else 0
+    return FOCUS_ROTATION[(index + 1) % len(FOCUS_ROTATION)]
+
+
+def _unveil(state: _State, scene: Scene, notes: list[str], why: str) -> None:
+    """O cartão de texto sobre uma imagem deixa a imagem à vista (sem custo: ela já estava na tela, escurecida e
+    desfocada atrás da frase). A frase própria vira título sobre a imagem; sem ela, a legenda mostra a fala. A imagem
+    reaproveitada da vizinha volta com outro recorte."""
+    if any(t.strip() for t in scene.overlay_text.values()):
+        scene.kind = "title"
+    else:
+        scene.kind = "image"
+        scene.motion = None if scene.motion == "static" else scene.motion
+    root = state.doc.reuse_root(scene) if scene.visual.reuse_of and scene.visual.media is None else None
+    if root is not None and root.id != scene.id:
+        scene.focus = _next_focus(root.focus if scene.focus is None else scene.focus)
+    notes.append(f"{_label(state, scene)}: a frase saiu do meio da tela ({why}); a cena mostra a imagem que estava "
+                 "atrás dela.")
+
+
+def _repeat_neighbor(state: _State, scene: Scene) -> Scene | None:
+    """A cena vizinha (a anterior primeiro) cuja imagem real a cena pode repetir com outro recorte: a continuação do
+    mesmo plano, então não é uma aparição a mais do item. Nunca a foto de banco (palavra-chave de outra fala) nem a
+    IA; dentro do teto de material oficial, do tempo seguido na mesma imagem e no mesmo nível (`_placement_ok` sem a
+    distância mínima, `_tier_run_ok`)."""
+    at = state.index(scene)
+    for k in (at - 1, at + 1):
+        if not 0 <= k < len(state.order):
+            continue
+        other = state.order[k]
+        if tiers.is_text_card(other, state.doc):
+            continue
+        media = state.doc.shown_media(other)
+        if media is None or media_pool.needs_attach(media, state.doc.id) or not (media.asset or media.video):
+            continue
+        prov = tiers.prov_of_media(media)
+        if not tiers.is_real(prov) or prov == "stock":
+            continue
+        if prov == "official" and not _official_room(state, scene):
+            continue
+        if not _placement_ok(state, scene, tiers.media_tokens(media), _source_of_media(media), gap=False):
+            continue
+        if not _tier_run_ok(state, scene, prov):
+            continue
+        return other
+    return None
+
+
+def _borrow(state: _State, scene: Scene, notes: list[str], why: str) -> bool:
+    """A cena sem imagem ganha a imagem real mais perto (`_nearest_real`) ou repete a da vizinha com outro recorte
+    (`_repeat_neighbor`)."""
+    near = _nearest_real(state, scene) or _repeat_neighbor(state, scene)
+    if near is None:
+        return False
+    _reuse(scene, near)
+    scene.focus = _next_focus(near.focus)
+    notes.append(f"{_label(state, scene)}: {why}; mostra a imagem real da {_label(state, near)} com outro recorte.")
+    return True
+
+
+def _merge(state: _State, first: Scene, second: Scene, notes: list[str]) -> bool:
+    """Dois cartões sem imagem seguidos do mesmo trecho viram um só (a frase própria de um deles, ou a ideia
+    principal da fala, `_main_idea`)."""
+    from studio.core.project.ops import MergeSceneWithNext, OpError, apply_op
+
+    if first.locked or second.locked or first.segment_id != second.segment_id or second.part != first.part + 1:
+        return False
+    if any(s.span is None for s in state.doc.scenes_of(first.segment_id)):
+        return False  # divisão antiga: juntar mudaria a fala das outras cenas do trecho
+    label = _label(state, first)
+    own = next((s for s in (first, second) if any(t.strip() for t in s.overlay_text.values())), None)
+    try:
+        apply_op(state.doc, MergeSceneWithNext(scene_id=first.id))
+    except OpError:
+        return False
+    if own is not None and own is second:
+        first.overlay_text = dict(second.overlay_text)
+        first.kind = second.kind
+    if first.presenter is None and second.presenter is not None:
+        first.presenter = second.presenter
+    notes.append(f"{label}: dois cartões tipográficos seguidos viraram um só.")
+    return True
+
+
+def _break_pair(state: _State, first: Scene, second: Scene, notes: list[str]) -> bool:
+    """Dois cartões seguidos na tela: o que tem imagem atrás mostra a imagem; sem imagem, um deles ganha a imagem real
+    mais perto ou repete a vizinha; sem nenhuma, os dois do mesmo trecho viram um só."""
+    for scene in (second, first):
+        if not scene.locked and not tiers.is_bare_card(scene, state.doc):
+            _unveil(state, scene, notes, "colada em outro cartão")
+            return True
+    for scene in (second, first):
+        if not scene.locked and _borrow(state, scene, notes, "dois cartões tipográficos seguidos"):
+            return True
+    return _merge(state, first, second, notes)
+
+
+def _split_long(state: _State, scene: Scene, notes: list[str]) -> bool:
+    """O cartão sem imagem mais longo que `TYPO_MAX_S` vira dois: o cartão com a frase inteira que cabe (no começo
+    ou no fim da fala) e o resto com a imagem real mais perto ou a da vizinha repetida com outro recorte
+    (`_borrow`). Sem imagem que caiba, nada muda."""
+    from studio.core.project.document import renumber_parts
+    from studio.core.project.ops import scene_text
+    from studio.core.text import estimate_seconds
+
+    doc = state.doc
+    if scene.locked or state.seconds(scene) <= TYPO_MAX_S + 1e-6:
+        return False
+    siblings = doc.scenes_of(scene.segment_id)
+    if any(s.span is None for s in siblings):
+        return False
+    said = scene_text(doc, scene).split()
+    if len(said) != scene.span:
+        return False
+    wpm = state.style.script.words_per_minute.get(doc.primary_language, 150)
+
+    def seconds(tokens: list[str]) -> float:
+        return estimate_seconds(" ".join(tokens), wpm, state.style.voice.speed)
+
+    cuts = [k for k in range(TYPO_MIN_WORDS, len(said) - TYPO_MIN_WORDS + 1) if _SENTENCE_CUT.search(said[k - 1])]
+    for card_first in (True, False):
+        fits = [k for k in cuts if seconds(said[:k] if card_first else said[k:]) <= TYPO_MAX_S + 1e-6]
+        if not fits:
+            continue
+        k = max(fits) if card_first else min(fits)
+        saved = [s.model_copy(deep=True) for s in doc.scenes]
+        for other in siblings:
+            if other.part > scene.part:
+                other.part += 1
+        # A cena nova vem logo depois e cobre o fim da fala (`k` palavras ficam na original).
+        rest = Scene(segment_id=scene.segment_id, part=scene.part + 1, kind="text", span=len(said) - k,
+                     visual=Visual(type="none", seed=scene.visual.seed + 7919))
+        scene.span = k
+        if card_first:
+            image = rest
+        else:
+            # A cena original (o começo da fala) ganha a imagem; a nova, o cartão com a frase do fim.
+            rest.kind, rest.overlay_text, rest.presenter = scene.kind, dict(scene.overlay_text), scene.presenter
+            scene.overlay_text, scene.presenter = {}, None
+            image = scene
+        doc.scenes.append(rest)
+        renumber_parts(doc, scene.segment_id)
+        state.refresh()
+        if _borrow(state, image, notes, "o cartão tipográfico passava de "
+                                        f"{TYPO_MAX_S:.0f} s e foi dividido: a parte sem cartão"):
+            return True
+        doc.scenes = saved
+        state.refresh()
+        siblings = doc.scenes_of(scene.segment_id)
+        scene = next(s for s in doc.scenes if s.id == scene.id)
+    return False
+
+
+def _main_idea(said: str) -> str | None:
+    """A frase do cartão que mostra uma ideia só: a primeira frase da fala, inteira quando cabe em
+    `IDEA_MAX_WORDS` palavras; senão as primeiras orações dela (cortadas na pontuação) que cabem, sem a vírgula do
+    fim. None: nem a primeira oração cabe ou ela tem menos de `TYPO_MIN_WORDS` palavras ("Então,")."""
+    clauses: list[list[str]] = [[]]
+    for token in said.split():
+        clauses[-1].append(token)
+        if _CLAUSE_END.search(token):
+            if _SENTENCE_CUT.search(token):
+                clauses[-1].append("")  # fim de frase: a ideia para aqui
+                break
+            clauses.append([])
+    chosen: list[str] = []
+    for clause in (c for c in clauses if c):
+        words_ = [w for w in clause if w]
+        if len(chosen) + len(words_) > IDEA_MAX_WORDS:
+            break
+        chosen += words_
+        if len(words_) < len(clause):
+            break
+    if len(chosen) < TYPO_MIN_WORDS:
+        return None
+    return re.sub(r"[,;:]+$", "", " ".join(chosen)).strip() or None
+
+
+def _one_idea(state: _State, scene: Scene, notes: list[str]) -> None:
+    """O cartão de texto cuja fala vira mais de uma página na tela (o renderer pagina por frase: duas páginas são dois
+    cartões seguidos, "Tamanho grande não prova nada." e "Arquivo pesado pode ser só enchimento.") mostra uma ideia
+    só, a principal; a legenda continua com a fala inteira."""
+    from studio.core.project.ops import scene_text
+    from studio.workers.finalcheck.triggers import _kinetic_pages
+
+    if scene.locked or scene.kind != "text" or any(t.strip() for t in scene.overlay_text.values()):
+        return
+    said = scene_text(state.doc, scene)
+    if len(_kinetic_pages([{"text": w} for w in said.split()])) <= 1:
+        return
+    idea = _main_idea(said)
+    if idea is None:
+        return
+    scene.overlay_text = {state.doc.primary_language: idea}
+    notes.append(f"{_label(state, scene)}: o cartão mostra uma ideia só (\"{idea}\"), não a fala em várias páginas "
+                 "seguidas.")
+
+
+def _adjacent_cards(state: _State, skip: set[tuple[str, str]]) -> tuple[Scene, Scene] | None:
+    for a, b in zip(state.order, state.order[1:], strict=False):
+        if (a.id, b.id) not in skip and tiers.is_text_card(a, state.doc) and tiers.is_text_card(b, state.doc):
+            return a, b
+    return None
+
+
+def _break_pairs(state: _State, notes: list[str], skip: set[tuple[str, str]]) -> None:
+    """Nunca dois cartões seguidos (`_break_pair`); o par sem saída fica e sai no aviso (uma vez)."""
+    for _ in range(2 * len(state.order) + 1):
+        state.refresh()
+        pair = _adjacent_cards(state, skip)
+        if pair is None:
+            return
+        if not _break_pair(state, *pair, notes):
+            skip.add((pair[0].id, pair[1].id))
+            notes.append(f"{_label(state, pair[1])}: ficou colada no cartão tipográfico da {_label(state, pair[0])}: "
+                         "nenhuma das duas tem material real que caiba ali. Mais material do assunto no acervo resolve.")
+
+
+def _lock(state: _State, notes: list[str]) -> None:
+    """A trava do cartão tipográfico, contando tudo o que se lê como cartão (`sources.is_text_card`):
+
+    1. nunca dois cartões seguidos (`_break_pair`): o que tem imagem atrás a mostra, o sem imagem ganha a imagem real
+       mais perto ou repete a vizinha com outro recorte e, sem nenhuma, os dois do mesmo trecho viram um;
+    2. o cartão sobre imagem fora das regras (mais de `TYPO_MAX_S`, a menos de `TYPO_WINDOW_S` de outro cartão ou
+       passando de `TYPO_MAX_SHARE` do vídeo) mostra a imagem: o cartão sem imagem não tem para onde ir e fica;
+    3. o cartão sem imagem longo se divide e a parte sem cartão mostra material real (`_split_long`; as imagens que o
+       passo 2 deixou à vista já contam como vizinhas);
+    4. o cartão que viraria várias páginas mostra uma ideia só (`_one_idea`).
+    O que sobra fora das regras sai num aviso."""
+    skip: set[tuple[str, str]] = set()
+    _break_pairs(state, notes, skip)
+    state.refresh()
+    bare = [s for s in state.order if tiers.is_bare_card(s, state.doc)]
+    starts = [state.spans[s.id][0] for s in bare if s.id in state.spans]
+    used = sum(state.seconds(s) for s in bare)
+    for scene in state.order:
+        if scene.locked or not tiers.is_text_card(scene, state.doc) or tiers.is_bare_card(scene, state.doc):
+            continue
+        seconds = state.seconds(scene)
+        start = state.spans.get(scene.id, (0.0, 0.0))[0]
+        if seconds > TYPO_MAX_S + 1e-6:
+            _unveil(state, scene, notes, f"mais de {TYPO_MAX_S:.0f} s de cartão")
+        elif any(abs(start - other) < TYPO_WINDOW_S - 1e-6 for other in starts):
+            _unveil(state, scene, notes, f"outro cartão a menos de {TYPO_WINDOW_S:.0f} s")
+        elif state.total > 0 and used + seconds > TYPO_MAX_SHARE * state.total + 1e-6:
+            _unveil(state, scene, notes, f"passaria de {round(TYPO_MAX_SHARE * 100)}% do vídeo em cartão")
+        else:
+            starts.append(start)
+            used += seconds
+    state.refresh()
+    for scene_id in [s.id for s in state.order]:
+        # A divisão que não acha imagem volta o documento como estava (cópias novas): procura a cena pelo id.
+        scene = next((s for s in state.doc.scenes if s.id == scene_id), None)
+        if scene is not None and scene.kind == "text" and tiers.is_bare_card(scene, state.doc):
+            _split_long(state, scene, notes)
+            state.refresh()
+    _break_pairs(state, notes, skip)
+    state.refresh()
+    for scene in state.order:
+        if tiers.is_text_card(scene, state.doc):
+            _one_idea(state, scene, notes)
 
 
 def _has_avatar(doc: ProjectDoc, style: StyleSpec) -> bool:

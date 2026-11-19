@@ -1035,6 +1035,16 @@ export const MotionBackground: React.FC<{ style: TextCardStyle; seed: number; li
   const deep = lift ? liftTo(mix(style.background, '#000000', 0.25), style.accent, TYPO_BG_MIN_LUMA - 0.02) : mix(style.background, '#000000', 0.55);
   // Faixa de luz diagonal que atravessa a tela em ~9 s (só no cartão tipográfico).
   const sweep = ((t / 9 + random(`${seed}-mb-sw`)) % 1) * 160 - 30;
+  // Retícula (pontos de meio-tom) num canto que gira devagar e linhas finas em diagonal andando: a textura que se vê
+  // no quadro parado (o QA da r4 viu o gradiente magenta liso no vídeo final, com a grade a 6% invisível).
+  const unit = Math.min(width, height) / 1080;
+  const pitch = Math.max(8, Math.round(15 * unit));
+  const dot = Math.max(1.5, 2.6 * unit);
+  const corner = r('h');
+  const hx = 50 + 46 * Math.cos(corner + t * 0.05);
+  const hy = 50 + 46 * Math.sin(corner + t * 0.05);
+  const hatch = Math.max(14, Math.round(26 * unit));
+  const hatchShift = (t * hatch * 0.35) % (hatch * 2);
   return (
     <AbsoluteFill style={{ backgroundColor: deep }}>
       <AbsoluteFill
@@ -1046,22 +1056,41 @@ export const MotionBackground: React.FC<{ style: TextCardStyle; seed: number; li
           ].join(', '),
         }}
       />
+      <AbsoluteFill
+        style={{
+          backgroundImage: `repeating-linear-gradient(118deg, ${withAlpha(style.color, 0.05)} 0px, ${withAlpha(style.color, 0.05)} ${Math.max(1, 2 * unit)}px, transparent ${Math.max(1, 2 * unit)}px, transparent ${hatch}px)`,
+          backgroundPosition: `${hatchShift}px 0px`,
+          WebkitMaskImage: `radial-gradient(ellipse at ${100 - hx}% ${100 - hy}%, #000 0%, transparent 60%)`,
+          maskImage: `radial-gradient(ellipse at ${100 - hx}% ${100 - hy}%, #000 0%, transparent 60%)`,
+        }}
+      />
+      <AbsoluteFill
+        style={{
+          backgroundImage: `radial-gradient(circle, ${withAlpha(style.color, 0.16)} ${dot}px, transparent ${dot + 0.8}px)`,
+          backgroundSize: `${pitch}px ${pitch}px`,
+          backgroundPosition: `${drift * 0.25}px ${drift * 0.15}px`,
+          WebkitMaskImage: `radial-gradient(circle at ${hx}% ${hy}%, #000 0%, rgba(0,0,0,0.5) 22%, transparent 52%)`,
+          maskImage: `radial-gradient(circle at ${hx}% ${hy}%, #000 0%, rgba(0,0,0,0.5) 22%, transparent 52%)`,
+        }}
+      />
       {lift ? (
         <AbsoluteFill
           style={{
-            background: `linear-gradient(115deg, transparent ${sweep - 18}%, ${withAlpha(style.color, 0.07)} ${sweep}%, transparent ${sweep + 18}%)`,
+            background: `linear-gradient(115deg, transparent ${sweep - 20}%, ${withAlpha(style.color, 0.12)} ${sweep}%, transparent ${sweep + 20}%)`,
           }}
         />
       ) : null}
       <AbsoluteFill
         style={{
-          backgroundImage: `linear-gradient(${withAlpha(style.color, 0.06)} 1px, transparent 1px), linear-gradient(90deg, ${withAlpha(style.color, 0.06)} 1px, transparent 1px)`,
+          backgroundImage: `linear-gradient(${withAlpha(style.color, 0.09)} 1px, transparent 1px), linear-gradient(90deg, ${withAlpha(style.color, 0.09)} 1px, transparent 1px)`,
           backgroundSize: `${cell}px ${cell}px`,
           backgroundPosition: `${drift}px ${drift * 0.6}px`,
           WebkitMaskImage: 'radial-gradient(ellipse at center, #000 30%, transparent 85%)',
           maskImage: 'radial-gradient(ellipse at center, #000 30%, transparent 85%)',
         }}
       />
+      {/* Vinheta leve: as bordas descem e o meio (onde a frase fica) se destaca. */}
+      <AbsoluteFill style={{ background: 'radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,0.32) 100%)' }} />
     </AbsoluteFill>
   );
 };
