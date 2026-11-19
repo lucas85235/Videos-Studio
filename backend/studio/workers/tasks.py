@@ -823,7 +823,8 @@ def _attach_and_plan(doc: Any, style: Any, pool: Pool) -> tuple[Any, list[Issue]
     issues: list[Issue] = []
     # Depois do anexo, a cena que ficou sem material passa pela hierarquia do cartão tipográfico (`typographic`).
     steps = (("anexo do acervo", ATTACH_FAILED, lambda d: media_pool.attach_chosen(d, pool)),
-             ("cartões tipográficos", TYPO_FAILED, lambda d: typographic.settle(d, style, pool)),
+             ("cartões tipográficos", TYPO_FAILED, lambda d: typographic.settle(
+                 d, style, pool, prompts=lambda doc, scenes: typographic.write_prompts(doc, scenes, project_id=doc.id))),
              ("planejador de edição", PLAN_FAILED, lambda d: edit_plan.plan(d, style, pool)))
     for name, failed, step in steps:
         work = doc.model_copy(deep=True)

@@ -297,8 +297,11 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const card = Card ? (
     <Card scene={scene} style={cards} uppercase={style.captions.uppercase} lang={lang} band={band} pop={reveal !== undefined} avoid={avatarRect} />
   ) : null;
+  // A frase do cartão tipográfico que repete a fala ("O cookie é o pior" sobre "o cookie é o pior") dispensa a
+  // legenda: a mesma frase duas vezes, em duas cores, na mesma tela.
   const hideCaptions =
-    (NO_CAPTIONS.has(kind) && !(kind === 'text' && filled(scene.text))) || (kind === 'title' && titleEchoesSpeech(scene));
+    (NO_CAPTIONS.has(kind) && !(kind === 'text' && filled(scene.text) && !titleEchoesSpeech(scene))) ||
+    (kind === 'title' && titleEchoesSpeech(scene));
   const sourceChip = source && !inPanel ? <SourceChip source={source} style={cards} lang={lang} y={sourceY} /> : null;
 
   // Edição (ADR 0004): planos, câmera por eventos, tempo do fundo e eventos de tela. Cena sem `shots` nem `fx`

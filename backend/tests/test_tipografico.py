@@ -25,7 +25,7 @@ from studio.core.styles.library import get_style, load_presets
 from studio.providers.base import Word
 from studio.workers.finalcheck import triggers
 from studio.workers.pipeline import presenter as presenter_scenes
-from studio.workers.pipeline import typographic
+from studio.workers.pipeline import storyboard_check, typographic
 from tests.test_presenter import _presenter
 from tests.test_renderer_fx import _node
 
@@ -35,10 +35,11 @@ LONG = "curiosidades-longo"
 PID = "prj_tipo"
 
 FILL = "Muita coisa mudou desde então no mercado de jogos e na comunidade de fãs pelo mundo afora."  # 16 palavras
-PIX = "E se pagou com cartão ou Pix, fala com o seu banco"  # 11 palavras: 4,4 s
-SHORT = "Isso derruba os cookies roubados da sessão"  # 7 palavras: 2,8 s
-SHORT2 = "Ativa a verificação em duas etapas agora"  # 7 palavras
-LONG_TEXT = "Porque pro site você já tá logado e a verificação continua importante mesmo com a sessão aberta"
+PIX = "E se pagou com cartão ou Pix, fala com o seu banco."  # 11 palavras: 4,4 s
+SHORT = "Isso derruba os cookies roubados da sessão."  # 7 palavras: 2,8 s
+SHORT2 = "Ativa a verificação em duas etapas agora."  # 7 palavras
+LONG_TEXT = "Porque pro site você já tá logado e a verificação continua importante mesmo com a sessão aberta."
+SCENARIO = "A young woman checks her phone at a kitchen table late at night, lit by a single warm lamp."
 
 
 def _own(name: str) -> MediaRef:
@@ -85,8 +86,13 @@ def _typographic(doc: ProjectDoc) -> list[str]:
     return [s.id for s in doc.ordered_scenes() if tiers.is_typographic(s, doc)]
 
 
-def _settle(doc: ProjectDoc, pool: Pool, *, avatar: bool = False) -> list[str]:
-    return typographic.settle(doc, get_style(LONG), pool, avatar=avatar, attach=_fake_attach)
+def _settle(doc: ProjectDoc, pool: Pool, *, avatar: bool = False, prompts=None, attach=_fake_attach) -> list[str]:
+    return typographic.settle(doc, get_style(LONG), pool, avatar=avatar, attach=attach, prompts=prompts)
+
+
+def _scenarios(doc: ProjectDoc, scenes: list[Scene]) -> dict[str, str]:
+    """O escritor de cenários sem LLM: um cenário em inglês para cada cena pedida."""
+    return {s.id: SCENARIO for s in scenes}
 
 
 def _base(n: int = 10) -> list[tuple[str, str]]:
@@ -131,11 +137,33 @@ def test_card_with_its_own_phrase_keeps_the_phrase_over_the_material(isolated_se
 def test_ai_only_inside_the_cap_when_there_is_no_material(isolated_settings):
     rows = _base(12) + [("text", LONG_TEXT)] + _base(12)
     doc = _doc(rows)
-    notes = _settle(doc, Pool(items=[]))
+    asked: list[list[str]] = []
+
+    def prompts(d: ProjectDoc, scenes: list[Scene]) -> dict[str, str]:
+        asked.append([s.id for s in scenes])
+        return _scenarios(d, scenes)
+
+    notes = _settle(doc, Pool(items=[]), prompts=prompts)
     card = doc.ordered_scenes()[12]
-    assert card.kind == "image" and card.visual.type == "ai_image" and card.visual.prompt
+    assert asked == [["scn12"]]  # uma chamada para as cenas sem cenário
+    assert card.kind == "image" and card.visual.type == "ai_image" and card.visual.prompt == SCENARIO
     assert card.visual.ai_reason == typographic.AI_REASON
     assert any("imagem de IA" in n for n in notes)
+
+
+def test_the_spoken_line_is_never_an_ai_prompt(isolated_settings):
+    """A reserva antiga punha a fala no prompt ("Então vamos ao golpe."): sem cenário de verdade, nada de IA."""
+    rows = _base(12) + [("text", LONG_TEXT)] + _base(12)
+    doc = _doc(rows)
+    card = doc.ordered_scenes()[12]
+    assert card.visual.prompt == LONG_TEXT
+    _settle(doc, Pool(items=[]))
+    assert tiers.prov_of_scene(card, doc) != "ai" and card.visual.prompt != LONG_TEXT
+    # o escritor de cenários que devolve a fala, marca ou estilo também não passa
+    for bad in (LONG_TEXT, "A gameplay screenshot of the game menu on a monitor at night.",
+                "An oil painting of a gamer at a desk at night, warm light."):
+        assert not typographic.is_scenario(doc, card, bad, scene_text(doc, card))
+    assert typographic.is_scenario(doc, card, SCENARIO, scene_text(doc, card))
 
 
 def test_ai_over_the_cap_never_enters(isolated_settings, monkeypatch):
@@ -212,16 +240,155 @@ def test_card_problem_reasons(isolated_settings):
     assert typographic.card_problem(state, order[-1]) == "fim do vídeo"
 
 
+@pytest.mark.parametrize("text", ["e", "Então vamos.", "dependendo do site até com a"])
+def test_a_card_is_a_whole_idea_never_a_fragment(isolated_settings, text):
+    """Uma ou duas palavras, ou a fala cortada no meio da frase, não viram cartão (quadro de uma palavra ou "até com
+    a" na tela); com a frase própria do cartão, sim."""
+    doc = _doc(_base(4) + [("text", text)] + _base(4))
+    state = typographic._State(doc=doc, style=get_style(LONG), pool=Pool(), avatar=False, common=frozenset())
+    state.refresh()
+    card = doc.ordered_scenes()[4]
+    assert typographic.card_problem(state, card) == "a fala da cena é um pedaço de frase"
+    card.overlay_text = {"pt-BR": "Cuidado com o site"}
+    assert typographic.card_problem(state, card) is None
+
+
+def test_a_card_that_starts_mid_sentence_is_a_fragment(isolated_settings):
+    doc = _doc(_base(4) + [("image", "Ela entra na sua conta como se fosse você,"), ("text", SHORT)] + _base(4))
+    # a anterior termina em vírgula: pausa, a frase do cartão é inteira
+    state = typographic._State(doc=doc, style=get_style(LONG), pool=Pool(), avatar=False, common=frozenset())
+    state.refresh()
+    assert typographic.card_problem(state, doc.ordered_scenes()[5]) is None
+    doc.segments[4].text = {"pt-BR": "Ela entra na sua conta como se fosse"}
+    state.refresh()
+    assert typographic.card_problem(state, doc.ordered_scenes()[5]) == "a fala da cena é um pedaço de frase"
+
+
+# --- os tetos contam o grupo e nunca são furados (revisão da r4) -----------------------------------------------------
+
+
+def _same_source_runs(doc: ProjectDoc) -> list[float]:
+    """Tempo seguido em cada sequência de cenas que mostram o mesmo vídeo de origem (ou a mesma imagem)."""
+    style = get_style(LONG)
+    runs: list[float] = []
+    last = None
+    for scene, _prov, seconds in storyboard_check.screen_seconds(doc, style):
+        media = doc.shown_media(scene)
+        key = (media.url or media.asset or media.video) if media is not None else None
+        if key is not None and key == last:
+            runs[-1] += seconds
+        else:
+            runs.append(seconds)
+        last = key
+    return runs
+
+
+def _trailer(n: int = 8) -> list[PoolItem]:
+    """Trechos do MESMO trailer (o mesmo endereço): planos diferentes, o mesmo vídeo na tela."""
+    return [item.model_copy(update={"url": "https://www.youtube.com/watch?v=trailer1"}) for item in _theme(n)]
+
+
+def test_theme_never_chains_clips_of_one_video_past_the_same_image_limit(isolated_settings):
+    rows = _base(4) + [("text", LONG_TEXT)] * 4 + _base(6)
+    doc = _doc(rows)
+    _settle(doc, Pool(items=_trailer()))
+    limit = storyboard_check.same_image_seconds(get_style(LONG))
+    assert max(_same_source_runs(doc)) <= limit + 1e-6
+    assert any(s.visual.media is not None and s.visual.media.pool_id for s in doc.ordered_scenes()[4:8])
+
+
+def test_forced_fill_never_breaks_the_official_cap(isolated_settings):
+    rows = (_base(2) + [("text", LONG_TEXT)]) * 8
+    doc = _doc(rows)
+    style = get_style(LONG)
+    _settle(doc, Pool(items=_theme(20)))
+    timed = storyboard_check.screen_seconds(doc, style)
+    total = sum(s for _sc, _p, s in timed)
+    official = sum(s for _sc, p, s in timed if p == "official")
+    assert official <= style.art.sources.official_max_share * total + 1e-6
+
+
+def test_ai_cap_counts_the_scenes_that_reuse_the_card(isolated_settings):
+    rows = _base(8) + [("image", SHORT), ("text", LONG_TEXT), ("text", LONG_TEXT)] + _base(8)
+    doc = _doc(rows)
+    order = doc.ordered_scenes()
+    order[8].visual = Visual(prompt=SCENARIO)  # uma imagem de IA logo antes
+    card, reusing = order[9], order[10]
+    reusing.visual = Visual(reuse_of=card.id)  # o 2º cartão mostra o fundo do 1º
+    state = typographic._State(doc=doc, style=get_style(LONG), pool=Pool(), avatar=False, common=frozenset())
+    state.refresh()
+    # a IA no 1º cartão também vai para o 2º: 3 cenas de IA seguidas passam do teto do trecho de 45 s
+    assert not typographic._ai_fits(state, card)
+    reusing.visual = Visual(type="none")
+    state.refresh()
+    assert typographic._ai_fits(state, card)
+
+
+MALWARE = PoolItem(id="p232", tier="capture", media="capture", desc="Malwarebytes: sites falsos entregam infostealer",
+                   credit="malwarebytes.com", url="https://www.malwarebytes.com/blog/fake-sites",
+                   page_url="https://www.malwarebytes.com/blog/fake-sites", path="uploads/x/p232.jpg")
+
+
+def test_nearest_real_needs_every_reusing_scene_on_the_subject(isolated_settings):
+    """A captura que cabe no cartão (ele cita a Malwarebytes) não vira papel de parede das cenas que reaproveitam o
+    fundo dele e falam de outra coisa."""
+    rows = [("image", FILL), ("image", "A Malwarebytes achou os sites falsos."), ("image", FILL),
+            ("text", "Segundo a Malwarebytes, troque as senhas."), ("text", "E fala com o seu banco hoje mesmo."),
+            ("image", FILL), ("image", FILL)]
+    doc = _doc(rows)
+    order = doc.ordered_scenes()
+    for k in (0, 2, 5, 6):  # foto de banco sem item no acervo: nem assunto nem tema
+        order[k].visual = Visual(media=MediaRef(kind="photo", source="pexels", asset=f"uploads/{PID}/media/s{k}.jpg",
+                                                tier="stock"))
+    order[1].visual = Visual(media=MediaRef(kind="capture", source="link", asset=f"uploads/{PID}/media/p232.jpg",
+                                            pool_id="p232", tier="capture", url=MALWARE.url))
+    card, reusing = order[3], order[4]
+    pool = Pool(items=[MALWARE])
+    state = typographic._State(doc=doc, style=get_style(LONG), pool=pool, avatar=False, common=frozenset())
+    state.refresh()
+    assert typographic._nearest_real(state, card) is order[1]
+    reusing.visual = Visual(reuse_of=card.id)
+    state.refresh()
+    assert typographic._nearest_real(state, card) is None
+
+
+def test_failed_attach_reserve_over_the_limit_goes_back_to_a_card(isolated_settings):
+    """O anexo que falha repete a mídia vizinha (`attach_chosen`): três cartões longos colados na mesma imagem
+    passariam do tempo seguido na mesma imagem. O `settle` confere e desfaz o que passa."""
+    rows = _base(4) + [("text", LONG_TEXT)] * 3 + _base(6)
+    doc = _doc(rows)
+
+    def failing(d: ProjectDoc) -> list[str]:
+        for scene in d.scenes:
+            media = scene.visual.media
+            if media is not None and media.pool_id and not (media.asset or media.video):
+                scene.visual = Visual(reuse_of="scn03")  # a reserva: a mídia real vizinha
+        return []
+
+    _settle(doc, Pool(items=_theme()), attach=failing)
+    limit = storyboard_check.same_image_seconds(get_style(LONG))
+    assert max(_same_source_runs(doc)) <= limit + 1e-6
+
+
 def test_storyboard_job_runs_the_typographic_step_after_the_attach(isolated_settings, monkeypatch):
     from studio.workers import tasks
     from studio.workers.pipeline import edit_plan, media_pool
 
     calls: list[str] = []
     monkeypatch.setattr(media_pool, "attach_chosen", lambda d, p: calls.append("anexo") or [])
-    monkeypatch.setattr(typographic, "settle", lambda d, s, p: calls.append("tipografico") or [])
+    monkeypatch.setattr(typographic, "settle",
+                        lambda d, s, p, **k: calls.append("tipografico" if k.get("prompts") else "sem cenário") or [])
     monkeypatch.setattr(edit_plan, "plan", lambda d, s, p: calls.append("plano") or [])
     tasks._attach_and_plan(_doc(_base(2)), get_style(LONG), Pool())
     assert calls == ["anexo", "tipografico", "plano"]
+
+
+def test_offline_llm_writes_english_scenarios(isolated_settings):
+    doc = _doc(_base(3) + [("text", LONG_TEXT)] + _base(3))
+    card = doc.ordered_scenes()[3]
+    out = typographic.write_prompts(doc, [card])
+    assert set(out) == {card.id}
+    assert typographic.is_scenario(doc, card, out[card.id], scene_text(doc, card))
 
 
 # --- avatar no cartão -------------------------------------------------------------------------------------------------
@@ -365,5 +532,6 @@ def test_typographic_background_is_lifted_above_the_black_detector(isolated_sett
     visual = (COMP / "VisualLayer.tsx").read_text(encoding="utf-8")
     assert "lift={solid}" in visual and "withAlpha(cards.background, 0.85)" not in visual
     scene = (COMP / "SceneView.tsx").read_text(encoding="utf-8")
-    assert "!(kind === 'text' && filled(scene.text))" in scene  # a frase do cartão deixa a legenda da fala
+    # a frase do cartão deixa a legenda da fala, menos quando repete a fala inteira (a mesma frase duas vezes)
+    assert "!(kind === 'text' && filled(scene.text) && !titleEchoesSpeech(scene))" in scene
     assert "!spokenAtCut && url ?" in scene  # o cartão de dado sem fundo entra no corte

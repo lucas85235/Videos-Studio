@@ -503,3 +503,19 @@ def mock_reference_humor(ctx: dict[str, Any]) -> dict[str, Any]:
         "patterns": ["exagero logo depois de um dado sério", "pergunta retórica respondida com reação"],
         "gag_count": max(1, int(dur // 40)),
     }
+
+
+_MOCK_SCENARIOS = (
+    "A person sits at a kitchen table late at night, studying a phone under a single warm lamp.",
+    "A quiet home office at dawn, a closed laptop on the desk and cold blue light through the blinds.",
+    "Two friends talk on a couch in a small living room in the afternoon, soft daylight from the window.",
+    "A padlock rests on a wooden desk beside a coffee mug, lit by the low orange sun of early evening.",
+)
+
+
+def mock_scene_prompts(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Cenário de IA offline das cenas sem material (`typographic.write_prompts`): frases fixas em inglês, uma por cena
+    e em rodízio (nunca a fala da cena)."""
+    scenes = ctx.get("scenes", []) or []
+    return {"prompts": [{"id": s["id"], "prompt": _MOCK_SCENARIOS[i % len(_MOCK_SCENARIOS)]}
+                        for i, s in enumerate(scenes)]}

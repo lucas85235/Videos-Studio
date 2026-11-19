@@ -507,7 +507,7 @@ def test_storyboard_job_calls_the_hooks_in_order(isolated_settings, monkeypatch)
     monkeypatch.setattr(edit_plan, "plan", plan)
     monkeypatch.setattr(authoring, "storyboard", storyboard)
     # a hierarquia do cartão tipográfico roda entre o anexo e o planejador (`typographic.settle`)
-    monkeypatch.setattr(typographic, "settle", lambda doc, style, pool: calls.append("typographic") or [])
+    monkeypatch.setattr(typographic, "settle", lambda doc, style, pool, **_k: calls.append("typographic") or [])
     doc = _farol()
     result = _run_job("storyboard", doc.id)
     assert calls == ["gather", "storyboard", "attach", "typographic", "plan"]
