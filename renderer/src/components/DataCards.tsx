@@ -379,19 +379,30 @@ const stampFit = (label: string, font: string, maxWidth: number, u: number) => {
   return { lines: best.lines, size: Math.max(u * 0.028, best.size) };
 };
 
-/** Quanto o carimbo pousa sobre a borda de cima do painel (px): o resto dele fica acima do painel. */
-const stampOverlap = (u: number) => u * 0.035;
-
-/**
- * Quanto o carimbo ancorado sobe acima da borda de cima do painel (px): altura das linhas e da borda, menos a parte
- * que pousa no painel, mais o canto que a rotação de −10° levanta.
- */
-const stampRise = (label: string, font: string, maxWidth: number, u: number) => {
+/** Medidas (px) do carimbo antes da rotação: largura e altura das linhas com a borda e o respiro. */
+const stampSize = (label: string, font: string, maxWidth: number, u: number) => {
   const { lines, size } = stampFit(label, font, maxWidth, u);
   const longest = Math.max(...lines.map((l) => l.length));
   const w = longest * (charEm(font) + 0.06) * size + size * 0.68;
   const h = lines.length * size + size * 0.26 + Math.max(3, u * 0.007) * 2;
-  return Math.max(0, h - stampOverlap(u)) + w * 0.09;
+  return { w, h };
+};
+
+/**
+ * Folga (px) entre a borda de baixo do carimbo ancorado e a borda de cima do painel: o canto que a rotação de −10°
+ * abaixa (~0,09 da largura) mais um respiro. O carimbo fica inteiro ACIMA do painel: pousado na borda, ele tampava a
+ * faixa de destaque e o canto do cartão (QA r4 do prj_gq4krrs11w: "BOATO" invadindo a borda do "1º TRI 2027").
+ */
+const stampClear = (label: string, font: string, maxWidth: number, u: number) =>
+  stampSize(label, font, maxWidth, u).w * 0.09 + u * 0.012;
+
+/**
+ * Quanto o carimbo ancorado sobe acima da borda de cima do painel (px): a folga (`stampClear`), a altura das linhas e
+ * da borda e o canto que a rotação de −10° levanta.
+ */
+const stampRise = (label: string, font: string, maxWidth: number, u: number) => {
+  const { w, h } = stampSize(label, font, maxWidth, u);
+  return stampClear(label, font, maxWidth, u) + h + w * 0.09;
 };
 
 /**
@@ -476,15 +487,15 @@ export const Panel: React.FC<{
           ) : null}
         </div>
         {stamp ? (
-          // No canto de cima (a faixa livre já desce o painel abaixo da faixa do topo), sem passar da largura dele.
-          // Cresce para cima a partir da borda do painel: carimbo de 2 linhas não cobre o conteúdo.
+          // Acima do canto de cima (a faixa livre já desce o painel abaixo da faixa do topo), sem passar da largura
+          // dele e sem tocar a borda: cresce para cima a partir da folga (`stampClear`), nunca cobre o cartão.
           <Stamp
             text={stamp}
             style={style}
             lang={lang}
             delay={10}
             maxWidth={stampMax}
-            anchor={{ position: 'absolute', right: 0, bottom: `calc(100% - ${stampOverlap(u)}px)` }}
+            anchor={{ position: 'absolute', right: 0, bottom: `calc(100% + ${stampClear(upper(stamp, lang), style.font, stampMax, u)}px)` }}
           />
         ) : null}
       </div>

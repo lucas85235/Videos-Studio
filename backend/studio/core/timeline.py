@@ -21,15 +21,23 @@ from typing import TYPE_CHECKING, Any
 
 from studio.core import edit_resolve, verdict
 from studio.core.hashing import hash_obj, seed_from
-from studio.core.numbers import card_number, merge_number_words, notable_number_runs, number_runs
+from studio.core.numbers import (
+    card_number,
+    localize_periods,
+    merge_number_words,
+    notable_number_runs,
+    number_runs,
+)
 from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, ProjectDoc, Scene, SubShot
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
 from studio.core.sources import (
     CARD_BACKDROP_KINDS,
+    KNOWN_OUTLETS,
     REAL_TIERS,
     ai_weight,
+    cites_source,
     outlet_for_url,
     prov_of_item,
     prov_of_media,
@@ -59,6 +67,15 @@ REVEAL_SFX_KINDS = ("count", "stat", "compare", "chart")
 REVEAL_KINDS = ("stat", "compare")
 # Cartões em painel: o carimbo e a fonte entram no painel, com o cartão (não é carimbo solto, nem tem som próprio).
 PANEL_KINDS = ("stat", "compare", "chart")
+# Cartão tipográfico (frase do apresentador, título, capítulo, contador): texto puro do vídeo, nunca leva "Fonte:" nem
+# carimbo de veredito, nem sobre o fundo desfocado da captura da fonte (QA r4 do prj_gq4krrs11w: "O GOLPE / Então
+# vamos ao golpe" com "Fonte: Canaltech", "que PC fica de fora," com CONFIRMADO e "Fonte: Windows Central").
+TYPOGRAPHIC_KINDS = frozenset({"text", "title", "count"})
+# A primeira linha da legenda do vídeo começa no quadro 0 quando a fala começa até este tempo (s): o primeiro quadro
+# (o gancho no feed) nunca fica sem legenda.
+FIRST_CAPTION_LEAD_S = 1.0
+# Chave interna (sai antes de gravar a timeline): de que subplano da cena veio cada plano resolvido.
+SHOT_OWNERS_KEY = "_shot_owners"
 # Teto da gradação trocada pela direção de arte (a do estilo pode ser mais forte, a da direção não).
 ART_GRADE_MAX = 0.45
 SFX_FOR_TRANSITION = {
@@ -422,6 +439,8 @@ def _spoken_timing(
     f0: int,
     frame: Callable[[float], int],
     fps: int,
+    *,
+    bare_at_cut: bool = False,
 ) -> None:
     """Quando o número é dito (quadro relativo à cena), só nas cenas que têm o que esperar.
 
@@ -429,10 +448,13 @@ def _spoken_timing(
     - `card.stamp_from`: carimbo com número ("2013") entra quando o número é dito, não 6 quadros depois do corte.
     Os números vêm das palavras da narração antes de virar algarismo ("dois" de "dois adiamentos" também
     conta quando bate com o cartão). Sem número dito, a chave não aparece (e o renderer faz como antes).
+    `bare_at_cut` (camada de edição): o cartão de dado sem fundo para ler (`bare_data_card`) entra no corte com o
+    número, sem `reveal`.
     """
     duration = resolved["durationInFrames"]
     card = resolved.get("card") or {}
-    if scene.kind in REVEAL_KINDS and (card or scene.number is not None):
+    waits = not (bare_at_cut and bare_data_card(scene, resolved))
+    if scene.kind in REVEAL_KINDS and (card or scene.number is not None) and waits:
         hit = _spoken_number(words, lang, _card_targets(scene, card, lang), fallback=True)
         if hit is not None:
             latest = duration - round(REVEAL_MIN_VISIBLE_S * fps)
@@ -445,6 +467,15 @@ def _spoken_timing(
             at = min(frame(hit.start) - f0, duration - round(STAMP_MIN_VISIBLE_S * fps))
             if at > STAMP_DELAY:
                 card["stamp_from"] = at
+
+
+def bare_data_card(scene: Scene, resolved: dict[str, Any]) -> bool:
+    """Cartão de dado sem fundo para ler (só o fundo do estilo: sem imagem, clipe nem subplano com material). Ele entra
+    no corte (esperar o número deixaria a tela vazia) e o número entra JUNTO com ele: o painel com o rótulo e sem o
+    número ("PC SEGUNDO A GAMESBEAT" por 2,7 s, QA r4 do prj_gq4krrs11w, 6:24) lê como cartão quebrado."""
+    if resolved.get("src") or resolved.get("video"):
+        return False
+    return not any(shot.source in ("pool", "media", "reuse") for shot in scene.shots)
 
 
 def _sfx_event(kind: str, at: float, scene_id: str) -> dict[str, Any]:
@@ -543,6 +574,7 @@ def _edit_layer(
     if edit["shots"]:
         resolved["shots"] = edit["shots"]
         resolved[edit_resolve.CAPS_KEY] = edit["caps"]  # sai no acerto final (`fit_to_length`)
+        resolved[SHOT_OWNERS_KEY] = edit["owners"]  # sai em `time_scam_headline`, logo depois
     if edit["fx"]:
         resolved["fx"] = edit["fx"]
     label = scene_label(doc, scene.id)
@@ -665,12 +697,20 @@ def build_timeline(
                 # Cada linha some quando a próxima começa
                 for i in range(len(scene_lines) - 1):
                     scene_lines[i]["to"] = min(scene_lines[i]["to"], scene_lines[i + 1]["from"]) or scene_lines[i]["to"]
+            # Com a camada de edição (o projeto antigo gera a mesma timeline de antes, ADR 0004 §3.0): o primeiro quadro
+            # do vídeo (o gancho no feed) já tem legenda.
+            if (grammar is not None and index == 0 and k == 0 and scene_lines
+                    and scene_lines[0]["from"] <= round(FIRST_CAPTION_LEAD_S * fps)):
+                scene_lines[0]["from"] = 0
             resolved = resolve_scene(doc, style, scene, lang, is_first=(index == 0 and k == 0), grammar=grammar,
                                      pool=pool)
             if grammar is not None:
+                drop_typographic_credit(scene, resolved)
                 drop_foreign_source(doc, scene, resolved, pool)
             drop_false_verdict(doc, scene, resolved, pool if pool is not None else verdict_pool)
             drop_ambiguous_verdict(scene, resolved, lang)
+            if grammar is not None:
+                headline_outlet(doc, scene, resolved, pool)
             if resolved["motion"] == PARALLAX:
                 layers = (parallax or {}).get(scene.id) if images.get(scene.id) else None
                 if layers and len(layers) > 1:  # uma camada só (mapa plano) não tem o que separar
@@ -697,7 +737,7 @@ def build_timeline(
                     # camada de edição, e o renderer toca o vídeo na cena de nível real (não só na cena-chave de IA).
                     resolved["prov"] = clip["prov"]
             card_backdrop(resolved)
-            _spoken_timing(resolved, scene, raw_words, lang, f0, frame, fps)
+            _spoken_timing(resolved, scene, raw_words, lang, f0, frame, fps, bare_at_cut=grammar is not None)
             layer = presenter_layer(presenter, scene, resolved, raw_words, f0, f1, frame, fps,
                                     vertical=style.format.height > style.format.width,
                                     merged_words=scene_words if scene_words is not raw_words else None)
@@ -711,6 +751,7 @@ def build_timeline(
                                         images, pool, script[k] if script else None, music_drops, edit_warnings,
                                         shot_files)
                 drop_false_verdict_fx(doc, scene, resolved, pool if pool is not None else verdict_pool)
+                time_scam_headline(doc, scene, resolved, pool if pool is not None else verdict_pool)
                 if style.audio.sfx.auto:
                     cut_sfx = edit_resolve.drop_stacked_sfx(cut_sfx, event_sfx, scene, SFX_LEAD, SFX_LEAD_DEFAULT)
                 cut_sfx = sorted(cut_sfx + event_sfx, key=lambda e: e["start"])
@@ -1073,6 +1114,136 @@ def drop_foreign_source(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
         resolved.pop("card")
 
 
+def localize_card_periods(card: dict[str, Any], lang: str) -> None:
+    """Período do cartão na língua do vídeo ("T1 2027" → "1º TRI 2027" em português, `localize_periods`): o valor, o
+    rótulo, a faixa do topo e os itens. O documento não muda."""
+    for key in ("value", "label", "headline"):
+        if isinstance(card.get(key), str):
+            card[key] = localize_periods(card[key], lang)
+    for item in card.get("items") or []:
+        if isinstance(item, dict):
+            for key in ("label", "value"):
+                if isinstance(item.get(key), str):
+                    item[key] = localize_periods(item[key], lang)
+
+
+def drop_typographic_credit(scene: Scene, resolved: dict[str, Any]) -> None:
+    """Tira da tela o "Fonte: X" e o carimbo do cartão tipográfico (`TYPOGRAPHIC_KINDS`): ele é texto puro do vídeo
+    (a fala do apresentador, o capítulo, o título), e o crédito ou o veredito sobre ele credita ou confirma a frase do
+    vídeo como se fosse da fonte ("O GOLPE / Então vamos ao golpe" com "Fonte: Canaltech"; "só cita os consoles Xbox."
+    com CONFIRMADO). "Fonte:" e carimbo ficam na mídia que É da fonte (captura, imagem dela) e no cartão de dado. O
+    documento não muda."""
+    card = resolved.get("card")
+    if not card or scene.kind not in TYPOGRAPHIC_KINDS:
+        return
+    for key in ("source", "stamp", "stamp_at", "stamp_from"):
+        card.pop(key, None)
+    if not card:
+        resolved.pop("card")
+
+
+# Separador da faixa "VEÍCULO · DATA" e o que separa os nomes dentro do veículo ("ESET + HUNTRESS").
+_CHIP_SEP_RE = re.compile(r"\s+·\s+")
+_NAME_SPLIT_RE = re.compile(r"\s+(?:e|and|y|et)\s+|[^0-9A-Za-zÀ-ÿ]+")
+
+
+def _name_tokens(text: str) -> set[str]:
+    return {t for t in (_compact(p) for p in _NAME_SPLIT_RE.split(text or "")) if len(t) >= 3}
+
+
+def _same_outlet(a: set[str], b: set[str]) -> bool:
+    return bool(a & b) or any(min(len(x), len(y)) >= 5 and (x in y or y in x) for x in a for y in b)
+
+
+def _names_known_outlet(doc: ProjectDoc, name: str) -> bool:
+    """O pedaço da faixa nomeia um veículo ou uma empresa do roteiro ("ROCKSTAR", "GAMESBEAT", "ESET + HUNTRESS"), e
+    não um assunto ("SITE FALSO", "LANÇAMENTO")."""
+    tokens = _name_tokens(name)
+    if not tokens:
+        return False
+    if any(cites_source(s, name) for s in doc.sources):
+        return True
+    known = [_name_tokens(s.title or "") | _name_tokens(site_label(s.url or "")) for s in doc.sources]
+    known += [_name_tokens(v) | {k} for k, v in KNOWN_OUTLETS.items()]
+    return any(all(_same_outlet({t}, names) for t in tokens) for names in known)
+
+
+def headline_outlet(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
+                    pool: Pool | Callable[[], Pool | None] | None) -> None:
+    """A faixa do topo no formato "VEÍCULO · DATA" diz o veículo da mídia mostrada, não o de quem fez a afirmação:
+    "ROCKSTAR · 10/11/2026" sobre a captura da Dexerto (QA r4 do prj_gq4krrs11w, 1:42) vira "DEXERTO · 10/11/2026". Só
+    troca quando o primeiro pedaço da faixa nomeia um veículo ou empresa do roteiro, a cena mostra só material real de
+    uma página só (a captura, a figura da matéria) e o veículo dessa página (`outlet_for_url`) não é o do nome. O
+    documento não muda."""
+    card = resolved.get("card")
+    headline = str((card or {}).get("headline") or "").strip()
+    parts = _CHIP_SEP_RE.split(headline, maxsplit=1)
+    if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+        return
+    name = parts[0].strip()
+    if not _names_known_outlet(doc, name):
+        return
+    if callable(pool):
+        pool = pool() if any(shot.source == "pool" for shot in scene.shots) else None
+    owners = scene_owners(doc, scene, pool)
+    if any(prov not in REAL_TIERS or material is None for prov, material in owners):
+        return
+    pages = {material.page_url or material.url or "" for _prov, material in owners if material is not None}
+    if len(pages) != 1:
+        return
+    page = pages.pop()
+    outlet = outlet_for_url(page, doc.sources) if page else None
+    if not outlet:
+        return
+    shown = _name_tokens(outlet) | _name_tokens(site_label(page))
+    for _prov, material in owners:
+        if material is not None:
+            for owner_name in _owner_names(material):
+                shown |= _name_tokens(owner_name)
+    if _same_outlet(_name_tokens(name), shown):
+        return
+    label = outlet.upper() if name == name.upper() else outlet
+    card["headline"] = f"{label} · {parts[1].strip()}"
+
+
+def time_scam_headline(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
+                       pool: Pool | Callable[[], Pool | None] | None) -> None:
+    """A faixa do topo que acusa ("SITE FALSO · DEMO PC", "GOLPE EM CRIPTO": `verdict.is_negative`) só fica na tela
+    enquanto o plano mostra o material do golpe. Na cena que abre com a arte oficial do Jason e corta para o print do
+    site falso (gancho do prj_gq4krrs11w), a faixa sobre a arte dizia que a arte oficial era o golpe. Com planos de
+    material verdadeiro e do golpe (`verdict.allows_negative`), a faixa entra no primeiro plano do golpe
+    (`card.headline_from`) e sai quando ele acaba (`card.headline_to`), em quadros da cena. Cena só de um ou de outro:
+    nada muda (o carimbo segue `drop_false_verdict`). Tira a chave interna dos planos (`SHOT_OWNERS_KEY`)."""
+    owners = resolved.pop(SHOT_OWNERS_KEY, None)
+    card = resolved.get("card")
+    shots = resolved.get("shots")
+    if (not card or not verdict.is_negative(card.get("headline")) or not shots or not owners
+            or len(owners) != len(shots)):
+        return
+    if callable(pool):
+        pool = pool()
+    own = (prov_of_scene(scene, doc), doc.shown_media(scene))
+
+    def allows(owner: int | None) -> bool:
+        if owner is None or owner >= len(scene.shots):
+            prov, material = own
+        else:
+            prov, material = _shot_owner(doc, scene, scene.shots[owner], pool, own)
+        return verdict.allows_negative(prov, material, _pool_desc(material, pool), _pool_topic(material, pool))
+
+    ok = [allows(owner) for owner in owners]
+    if all(ok) or not any(ok):
+        return
+    first = ok.index(True)
+    last = first
+    while last + 1 < len(ok) and ok[last + 1]:
+        last += 1
+    if first > 0:
+        card["headline_from"] = int(shots[first]["from"])
+    if last + 1 < len(shots):
+        card["headline_to"] = int(shots[last + 1]["from"])
+
+
 def scene_motion(doc: ProjectDoc, style: StyleSpec, scene: Scene) -> str:
     """Movimento de câmera da cena: o escolhido nela ou sorteado (semente da cena) entre os pesos do estilo. Mídia
     real sorteia só entre os movimentos calmos (REAL_MOTIONS).
@@ -1297,7 +1468,7 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
         transition = "cut"
     else:
         transition = scene.transition_in or pick_weighted(style.edit.transitions, seed_from(doc.seed, scene.id, "transition"))
-    text = scene.overlay_text.get(lang) or scene.overlay_text.get(doc.primary_language) or ""
+    text = localize_periods(scene.overlay_text.get(lang) or scene.overlay_text.get(doc.primary_language) or "", lang)
     out: dict[str, Any] = {
         "id": scene.id,
         "kind": scene.kind,
@@ -1310,6 +1481,7 @@ def resolve_scene(doc: ProjectDoc, style: StyleSpec, scene: Scene, lang: str, *,
     }
     # Chaves novas só quando preenchidas: a cena antiga gera o mesmo dict (e o mesmo hash de bloco) de antes.
     card = scene.card.resolved(lang, doc.primary_language) if scene.card is not None else {}
+    localize_card_periods(card, lang)
     if card.get("stamp") and scene.kind not in PANEL_KINDS:
         place = stamp_place(*image_framing(doc, scene))
         if place:

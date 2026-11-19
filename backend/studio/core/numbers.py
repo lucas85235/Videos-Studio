@@ -705,3 +705,31 @@ def spoken_number_runs(tokens: list[str], lang: str = "pt-BR") -> list[tuple[int
         trail = re.search(r"[.,;:!?…]*[" + re.escape(_CLOSERS) + r"]*$", last.strip())
         out.append((run.i0, run.i1, lead + spoken + (trail.group(0) if trail else "")))
     return out
+
+
+# Período de relatório em inglês ("T1 2027", "Q1 2027", "1Q 2027", "H2 2026"): só com o ano, para não pegar nome
+# próprio ("T1" do time de e-sports, "Q7" do carro).
+_PERIOD_RE = re.compile(r"\b(?:([TQH])([1-4])|([1-4])([TQH]))\s*[-/']?\s*((?:19|20)\d{2})\b")
+
+
+def localize_periods(text: str, lang: str = "pt-BR") -> str:
+    """Notação de período na língua do vídeo: a fala diz "primeiro trimestre", o cartão não pode dizer "T1 2027"
+    (notação de relatório em inglês; QA r4 do prj_gq4krrs11w). Português: "1º TRI 2027" e "2º SEM 2026"; inglês: "Q1
+    2027" e "H2 2026". Outras línguas ficam como estão (o "T1" é o trimestre em espanhol e em francês)."""
+    if not text or not _PERIOD_RE.search(text):
+        return text
+    base = (lang or "").lower()
+
+    def sub(match: re.Match[str]) -> str:
+        letter = match.group(1) or match.group(4)
+        n = int(match.group(2) or match.group(3))
+        year = match.group(5)
+        if letter == "H" and n > 2:
+            return match.group(0)
+        if base.startswith("pt"):
+            return f"{n}º {'SEM' if letter == 'H' else 'TRI'} {year}"
+        if base.startswith("en"):
+            return f"{'H' if letter == 'H' else 'Q'}{n} {year}"
+        return match.group(0)
+
+    return _PERIOD_RE.sub(sub, text)

@@ -304,6 +304,8 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
   const kind = effectiveKind(scene, Boolean(url));
   const Card = CARD_VIEWS[kind];
   const headline = scene.card?.headline?.trim();
+  const headFrom = Math.max(0, Math.round(scene.card?.headline_from ?? 0));
+  const headTo = Math.min(scene.durationInFrames, Math.round(scene.card?.headline_to ?? scene.durationInFrames));
   const stamp = scene.card?.stamp?.trim();
   const inPanel = PANEL_KINDS.has(kind);
   const headBox = headline ? headlineBox(headline, cards, lang, width, height) : null;
@@ -344,8 +346,9 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
 
   // Cartão de dado entra quando o número é dito (dito logo no corte, entra junto com a cena). Número dito na cena
   // entra parado ("pop"), sem contar: a contagem passaria por valores que a fala e a legenda não dizem no mesmo quadro.
-  // Sem fundo para ler antes do número (cartão sobre o fundo do estilo), o painel entra no corte e só o número espera
-  // a fala (`valueFrom`): a tela nunca fica vazia até o número ser dito.
+  // Sem fundo para ler antes do número (cartão sobre o fundo do estilo), o cartão entra no corte com o número junto: a
+  // tela nunca fica vazia, e o painel com o rótulo sem o número ("PC SEGUNDO A GAMESBEAT" por 2,7 s) lia como cartão
+  // quebrado (a timeline nova já não manda `reveal` nesse cartão; aqui vale também para a timeline antiga).
   const reveal = inPanel && typeof scene.reveal === 'number' ? scene.reveal : undefined;
   const spokenAtCut = reveal !== undefined && reveal <= Math.round(fps * 0.3);
   const revealFrom = reveal !== undefined && !spokenAtCut ? Math.max(0, reveal - REVEAL_LEAD) : 0;
@@ -360,7 +363,6 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       lang={lang}
       band={band}
       pop={reveal !== undefined}
-      valueFrom={bare ? revealFrom : undefined}
       avoid={avatarRect}
     />
   ) : null;
@@ -697,7 +699,14 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
         card
       )}
       {news ? <NewsCard news={news} style={cards} lang={lang} band={band} assetBaseUrl={assetBaseUrl} /> : null}
-      {headline ? <Headline text={headline} style={cards} lang={lang} y={headY} x={headX} /> : null}
+      {headline && (headFrom > 0 || headTo < scene.durationInFrames) ? (
+        // A faixa que acusa ("SITE FALSO") só fica enquanto o plano mostra o material do golpe (`headline_from/_to`).
+        <Sequence from={headFrom} durationInFrames={Math.max(1, headTo - headFrom)} layout="none" name="Faixa">
+          <Headline text={headline} style={cards} lang={lang} y={headY} x={headX} />
+        </Sequence>
+      ) : headline ? (
+        <Headline text={headline} style={cards} lang={lang} y={headY} x={headX} />
+      ) : null}
       {/* A transição de entrada (flash, fade, luz) passa por baixo da tarja e da legenda: a legenda fica sempre opaca
           e com o contraste da tarja, mesmo no quadro do corte. */}
       <TransitionIn type={scene.transition} frames={entry} seed={scene.seed} />

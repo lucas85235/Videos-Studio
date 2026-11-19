@@ -156,6 +156,10 @@ export type TimelineCard = {
   stamp_at?: StampPlace;
   /** Quadro (relativo à cena) em que o carimbo entra: quando o número dele é dito. Ausente: logo depois do corte. */
   stamp_from?: number;
+  /** Quadros (relativos à cena) em que a faixa do topo que acusa ("SITE FALSO") entra e sai: só enquanto o plano mostra
+   * o material do golpe. Ausentes: a cena inteira. */
+  headline_from?: number;
+  headline_to?: number;
 };
 
 export type StampPlace = 'left' | 'right' | 'low';

@@ -314,10 +314,11 @@ VERDICT_POOL = Pool(items=[
 def test_negative_verdict_never_over_official_or_press_material():
     scenes = _timeline(_verdict_doc(), pool=VERDICT_POOL)["scenes"]
     stamps = [(s.get("card") or {}).get("stamp") for s in scenes]
-    # trailer, Dexerto, arte oficial e o cartão sobre o trailer desfocado perdem o carimbo; o site falso, a IA e o
-    # cartão de fundo liso ficam com ele; veredito positivo ("CONFIRMADO", "NÃO É GOLPE") fica; o subplano do trailer
-    # dentro da cena do site falso também tira o "GOLPE"
-    assert stamps == [None, None, None, "GOLPE", "GOLPE", None, "CONFIRMADO", None, "FALSO", "NÃO É GOLPE"]
+    # trailer, Dexerto, arte oficial e o cartão sobre o trailer desfocado perdem o carimbo; o site falso e a IA ficam
+    # com ele; veredito positivo ("CONFIRMADO", "NÃO É GOLPE") fica; o subplano do trailer dentro da cena do site falso
+    # também tira o "GOLPE". Com a camada de edição, o cartão tipográfico (texto puro) nunca leva carimbo nem fonte,
+    # nem sobre fundo liso (QA r4: CONFIRMADO sobre "só cita os consoles Xbox."); sem ela, fica como antes.
+    assert stamps == [None, None, None, "GOLPE", "GOLPE", None, "CONFIRMADO", None, None, "NÃO É GOLPE"]
     assert "card" not in scenes[0] and scenes[1]["card"] == {"headline": "PC"}
     assert "stamp_at" not in (scenes[2].get("card") or {})
 

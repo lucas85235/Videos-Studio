@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from studio.core.project.document import ArtDirection, CardItem, ProjectDoc, Scene, SceneCard, Segment, Visual
+from studio.core.project.document import (
+    ArtDirection,
+    CardItem,
+    ProjectDoc,
+    Scene,
+    SceneCard,
+    Segment,
+    SubShot,
+    Visual,
+)
 from studio.core.styles.library import get_style
 from studio.core.text import normalize_token, split_word_indices, words
 from studio.core.timeline import (
@@ -402,6 +411,30 @@ def _data_doc() -> ProjectDoc:
 def _word_frame(timeline: dict, scene_index: int, text: str) -> int:
     scene = timeline["scenes"][scene_index]
     return next(w["from"] for w in scene["words"] if w["text"].startswith(text))
+
+
+def _backdrops(doc: ProjectDoc) -> dict[str, str]:
+    """Uma imagem por cena: o cartão de dado tem fundo para ler antes do número dito."""
+    return {s.id: f"cache/images/{s.id}.jpg" for s in doc.scenes}
+
+
+def test_bare_data_card_enters_with_its_number():
+    """Cartão de dado sem fundo para ler (QA r4 do prj_gq4krrs11w, 6:24: "PC SEGUNDO A GAMESBEAT" ficou 2,7 s sem o
+    número): ele entra no corte e o número junto (sem `reveal`), e o impacto bate no corte. Com fundo, o número continua
+    esperando a fala. Só com a camada de edição: o projeto antigo gera a mesma timeline de antes."""
+    style = get_style("misterios-short")
+    doc = _data_doc()
+    assert "reveal" in build_timeline(doc, style, "pt-BR", _uniform_clip(doc), {})["scenes"][1]  # projeto antigo
+    doc.scenes[0].shots = [SubShot(at="trailer", source="self")]  # camada de edição
+    timeline = build_timeline(doc, style, "pt-BR", _uniform_clip(doc), {})
+    stat, compare = timeline["scenes"][1], timeline["scenes"][2]
+    assert "reveal" not in stat and "reveal" not in compare
+    impacts = {e["scene_id"]: e["start"] for e in timeline["sfx"] if e["type"] == "impact"}
+    for scene in (stat, compare):
+        assert abs(impacts[scene["id"]] - scene["from"] / timeline["fps"]) <= 1.5 / timeline["fps"]
+    # com imagem de fundo para ler, o número espera a fala
+    with_backdrop = build_timeline(doc, style, "pt-BR", _uniform_clip(doc), _backdrops(doc))
+    assert with_backdrop["scenes"][1]["reveal"] > 0
 
 
 def test_data_cards_reveal_when_the_number_is_spoken():

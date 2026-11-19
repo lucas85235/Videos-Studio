@@ -910,15 +910,15 @@ def test_entry_wash_fades_fast_and_never_fills_the_screen(fx_math: dict) -> None
 
 def test_card_never_enters_as_ghost_nor_waits_on_empty_screen() -> None:
     """O cartão fica opaco logo na entrada (sem quadros semitransparentes, o "200 MB" fantasma do QA) e o cartão de
-    dado sem fundo para ler entra no corte, com só o número esperando a fala (a tela vazia até o número era quadro
-    morto)."""
+    dado sem fundo para ler entra no corte com o número junto (a tela vazia até o número era quadro morto; o painel
+    com o rótulo e sem o número, QA r4 6:24, lia como cartão quebrado)."""
     text = _read(COMP / "TextCards.tsx")
     assert "const opacity = Math.min(1, s / ENTRANCE_OPAQUE);" in text
     entrance = text[text.index("export const useEntrance"):text.index("const Typewriter")]
     assert "opacity: s }" not in entrance
     scene = _read(COMP / "SceneView.tsx")
     assert "const cardFrom = bare ? 0 : revealFrom;" in scene
-    assert "valueFrom={bare ? revealFrom : undefined}" in scene
+    assert "valueFrom={" not in scene  # o número não espera sozinho: entra com o cartão
     data = _read(COMP / "DataCards.tsx")
     assert "opacity: frame < vf ? 0 :" in data and "frame: frame - 2 - vf" in data
 

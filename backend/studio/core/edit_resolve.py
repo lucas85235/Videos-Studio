@@ -400,12 +400,14 @@ def _merge_short(plans: list[_Plan], min_frames: int) -> list[_Plan]:
 @dataclass
 class ShotsResult:
     """Subplanos resolvidos: `shots` (contrato do renderer), `warnings`, e por plano os retângulos da imagem
-    (`rects`, para os eventos que apontam um trecho) e o limite de duração do clipe em quadros (`caps`, None: sem)."""
+    (`rects`, para os eventos que apontam um trecho), o limite de duração do clipe em quadros (`caps`, None: sem) e
+    de qual subplano da cena veio o material (`owners`: o índice em `scene.shots`; None: o visual da própria cena)."""
 
     shots: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     rects: list[list[list[float]]] = field(default_factory=list)
     caps: list[int | None] = field(default_factory=list)
+    owners: list[int | None] = field(default_factory=list)
 
 
 def scene_rects(scene: Scene, doc: ProjectDoc | None) -> list[list[float]]:
@@ -546,6 +548,8 @@ def resolve_shots(
         result.shots.append(entry)
         result.rects.append(plan.mat.rects)
         result.caps.append(plan.cap)
+        owner = plan.key[0] if plan.key else None
+        result.owners.append(None if plan.mat.is_self or not isinstance(owner, int) or owner < 0 else owner)
     return result
 
 
@@ -733,10 +737,11 @@ def resolve(
     official_max_clip_s: float | None = None,
     auto_sfx: bool = True,
 ) -> dict[str, Any]:
-    """A edição da cena resolvida: {shots, fx, sfx, music_drops, warnings, caps}. `words`: palavras da cena em
+    """A edição da cena resolvida: {shots, fx, sfx, music_drops, warnings, caps, owners}. `words`: palavras da cena em
     quadros relativos a ela ({text, from, to}); `length`: duração da cena em quadros; `f0`: quadro em que ela começa.
     `caps`: o limite de cada plano em quadros (clipe com fim conhecido; None: sem), para o acerto final
-    (`fit_to_length`). Os subplanos saem antes dos eventos: o marca-texto aponta o material do plano na tela."""
+    (`fit_to_length`); `owners`: de que subplano da cena veio o material de cada plano (`ShotsResult.owners`). Os
+    subplanos saem antes dos eventos: o marca-texto aponta o material do plano na tela."""
     seed = doc.seed if doc is not None else 0
     shots = resolve_shots(scene, words, fps, length, doc=doc, pool=pool, images=images, camera=camera,
                           real_camera=real_camera, grammar=grammar, seed=seed, alt_words=alt_words, script=script,
@@ -745,7 +750,7 @@ def resolve(
                                              alt_words=alt_words, script=script, sfx_lead=sfx_lead, shots=shots,
                                              auto_sfx=auto_sfx)
     return {"shots": shots.shots, "fx": fx, "sfx": sfx, "music_drops": drops, "warnings": shots.warnings + fx_warnings,
-            "caps": shots.caps}
+            "caps": shots.caps, "owners": shots.owners}
 
 
 CAPS_KEY = "_shot_caps"
