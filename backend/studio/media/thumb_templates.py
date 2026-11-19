@@ -110,7 +110,12 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     "prova": {
         "bg": {"target_x": 0.5, "target_y": 0.42, "zoom": 1.0},
         "backdrop": "vice",
+        "backdrop_grade": (1, 0.3),
+        "shade": {"side": "left", "width": 0.62, "alpha": 0.5},
+        "shade_under_card": True,
         "card": {"box": (0.03, 0.42, 0.47, 0.48), "tilt": -2.5, "zoom": 1.0, "border": 8},
+        "clip": {"box": (0.03, 0.46, 0.56, 0.38), "tilt": -3.0, "outline": 4, "gap": 26},
+        "big_vi": {"h": 1.0, "alpha": 0.95, "always": True, "behind_offset": 0.14, "solo_x": 0.74},
         "mark": "x",
         "text": {"left": (0.035, 0.07, 0.56, 0.33), "top": (0.035, 0.07, 0.56, 0.33),
                  "center": (0.035, 0.07, 0.56, 0.33), "right": (0.035, 0.07, 0.56, 0.33), "size": 0.30,

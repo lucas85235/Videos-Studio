@@ -22,6 +22,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFo
 
 from studio.core.project.document import CutoutLayer, ThumbLayers
 from studio.core.styles.schema import DEFAULT_THUMB_PALETTE
+from studio.media import thumb_clip
 from studio.media import thumb_templates as T
 from studio.media.thumb_assets import (
     HOLE_NOTE,
@@ -39,7 +40,7 @@ from studio.media.thumbnail import load_font
 
 log = logging.getLogger(__name__)
 
-VERSION = 5
+VERSION = 6
 """Versão do desenho: muda quando o compositor passa a desenhar diferente (entra na chave do cache da capa)."""
 BASE_H = 720
 """Altura de referência: todos os px fixos (contornos, sombras) são a 720p e escalam com o canvas."""
@@ -1074,13 +1075,20 @@ def _mirror_segment(seg: dict[str, Any]) -> dict[str, Any]:
 
 def _big_vi(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver | None,
             pal: dict[str, tuple[int, int, int]], layout: Layout, tpl: dict[str, Any], text_box: tuple) -> None:
-    if not layers.big_vi:
+    conf = tpl.get("big_vi", {"h": 0.86, "alpha": 0.92})
+    # molde que traz a marca do jogo por padrão (prova: o VI atrás do avatar diz de que jogo é a denúncia); o
+    # "sem logo" do candidato tira a marca também
+    implied = bool(conf.get("always")) and layers.logo != "none"
+    if not (layers.big_vi or implied):
         return
     W, H = canvas.size
-    conf = tpl.get("big_vi", {"h": 0.86, "alpha": 0.92})
     ref = resolver.big_vi_id() if resolver else None
     asset = _resolve(resolver, f"logo:{ref}", layout, "VI gigante") if ref else None
+    if asset is None and not layers.big_vi:
+        return  # a marca implícita só sai com o logo do kit (nunca um "VI" de fonte num canal de outro jogo)
     cx = (text_box[0] + text_box[2] / 2) * W
+    if "solo_x" in conf:  # molde com a coluna do texto ocupada (prova: palavra e recorte): o VI vai do outro lado
+        cx = (1 - conf["solo_x"] if _mirrored(layers) else conf["solo_x"]) * W
     figure = _vi_figure(layers, layout)
     if figure is not None:
         # com recorte de personagem (heroi-palavra), o VI fica atrás da figura e aparece pelo lado do texto; a
@@ -1121,12 +1129,13 @@ def _big_vi(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver | 
 
 
 def _vi_figure(layers: ThumbLayers, layout: Layout) -> dict[str, Any] | None:
-    """O recorte de personagem que o VI gigante acompanha (só no heroi-palavra): o 1º que foi desenhado de verdade
-    (`layout.figures`); recorte recusado (corte que não encaixa) não puxa o VI para trás de uma figura que não
-    existe, e aí o VI fica atrás do texto."""
-    if layers.template != "heroi-palavra":
+    """A figura que o VI gigante acompanha: no heroi-palavra, o recorte de personagem; na prova, o avatar. A 1ª que
+    foi desenhada de verdade (`layout.figures`); figura recusada (corte que não encaixa) não puxa o VI para trás de
+    algo que não existe, e aí o VI fica atrás do texto."""
+    kind = {"heroi-palavra": "cutout", "prova": "presenter"}.get(layers.template)
+    if kind is None:
         return None
-    return next((f for f in layout.figures if f.get("kind") == "cutout" and f.get("bbox")), None)
+    return next((f for f in layout.figures if f.get("kind") == kind and f.get("bbox")), None)
 
 
 # --- Texto -------------------------------------------------------------------------------------------------------------
@@ -1197,8 +1206,56 @@ def _fill_image(size: tuple[int, int], fill: str, emph: bool, pal: dict[str, tup
     return _vertical_gradient(size, (light, y, y)).convert("RGBA")  # brilho no topo
 
 
+TEXT_FIGURE_GAP = 20
+"""Folga mínima (px a 720p) entre o contorno do texto e o recorte de uma figura ou do avatar ao lado dele: o "?" de
+"ESPERA?" encostava no cabelo do Jason e as duas silhuetas viravam uma mancha só na miniatura."""
+TEXT_SHRINK_MIN = 0.72
+TEXT_TOUCH_MAX = 0.30
+"""Só encolhe o texto que ENCOSTA na figura (sobreposição pequena, até esta fração do contorno): texto de propósito
+por cima da figura (molde que põe a palavra no peito do personagem) fica como está."""
+
+
+def _clear_of_figures(place: Any, sizes: list[float], avoid: Image.Image, size: tuple[int, int],
+                      layout: Layout) -> list[float]:
+    """Encolhe o texto (no mesmo canto do molde) até o contorno dele ficar a `TEXT_FIGURE_GAP` do recorte das
+    figuras e do avatar (`avoid`: o alfa deles), no máximo até `TEXT_SHRINK_MIN` do corpo. Medido numa cópia de 640
+    px de largura (o mesmo desenho, só menor). Texto que cobre a figura de propósito (sobreposição acima de
+    `TEXT_TOUCH_MAX`) ou que não sai dela nem no mínimo fica no tamanho original."""
+    W, H = size
+    f = 640 / W
+    sw_, sh_ = 640, max(1, round(H * f))
+    gap = max(1, round(_px(TEXT_FIGURE_GAP, H) * f))
+    av = avoid.resize((sw_, sh_), Image.Resampling.BILINEAR).point(lambda v: 255 if v > 96 else 0)
+    if not av.getbbox():
+        return sizes
+    av = av.filter(ImageFilter.MaxFilter(2 * gap + 1))
+
+    def overlap(sz: Sequence[float]) -> tuple[int, int]:
+        m = Image.new("L", (sw_, sh_), 0)
+        d = ImageDraw.Draw(m)
+        for line, _font, x, yy, _bb, size_px in place(sz):
+            fs = max(4, round(size_px * f))
+            d.text((x * f, yy * f), line, font=load_font("Anton", fs), fill=255,
+                   stroke_width=max(1, round(_stroke_w(size_px, H) * f)), stroke_fill=255)
+        area = sum(m.histogram()[128:])
+        hit = sum(ImageChops.multiply(m, av).histogram()[128:])
+        return hit, area
+
+    hit, area = overlap(sizes)
+    if not hit or hit > area * TEXT_TOUCH_MAX:
+        return sizes
+    k = 1.0
+    while k > TEXT_SHRINK_MIN:
+        k = max(TEXT_SHRINK_MIN, k * 0.95)
+        trial = [s * k for s in sizes]
+        if not overlap(trial)[0]:
+            layout.notes.append(f"texto: {round((1 - k) * 100)}% menor para não encostar na figura")
+            return trial
+    return sizes
+
+
 def _text(canvas: Image.Image, layers: ThumbLayers, pal: dict[str, tuple[int, int, int]], layout: Layout,
-          tpl: dict[str, Any]) -> tuple[float, float, float, float] | None:
+          tpl: dict[str, Any], avoid: Image.Image | None = None) -> tuple[float, float, float, float] | None:
     t = layers.text
     tconf = tpl["text"]
     pos = t.pos if t else "left"
@@ -1242,26 +1299,33 @@ def _text(canvas: Image.Image, layers: ThumbLayers, pal: dict[str, tuple[int, in
         k = room / total * 0.99
         sizes = [s * k for s in sizes]
 
+    def place(sizes: Sequence[float]) -> list[tuple[str, ImageFont.FreeTypeFont, int, int, tuple[int, int, int, int],
+                                                    int]]:
+        stroke_max = _stroke_w(max(sizes), H)
+        y = by + stroke_max
+        x_left = bx + stroke_max
+        out = []
+        for line, s in zip(lines, sizes, strict=True):
+            size_px = max(8, round(s))
+            font = load_font("Anton", size_px)
+            bb = _ink_box(font, line)
+            lw, lh = bb[2] - bb[0], bb[3] - bb[1]
+            if pos == "center" or tconf.get("box"):
+                x = round(bx + (bw - lw) / 2 - bb[0])
+            else:
+                x = round(x_left - bb[0]) if pos != "right" else round(bx + bw - stroke_max - bb[2])
+            out.append((line, font, x, round(y - bb[1]), bb, size_px))
+            y += lh + gap_k * size_px * 0.5
+        return out
+
+    if avoid is not None:
+        sizes = _clear_of_figures(place, sizes, avoid, (W, H), layout)
+
     # Máscaras: preenchimento e contorno, linha a linha
     fill_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     fill_mask_all = Image.new("L", (W, H), 0)
     stroke_mask = Image.new("L", (W, H), 0)
-    stroke_max = _stroke_w(max(sizes), H)
-    y = by + stroke_max
-    x_left = bx + stroke_max
-    rows: list[tuple[str, ImageFont.FreeTypeFont, int, int, tuple[int, int, int, int], int]] = []
-    for line, s in zip(lines, sizes, strict=True):
-        size_px = max(8, round(s))
-        font = load_font("Anton", size_px)
-        bb = _ink_box(font, line)
-        lw, lh = bb[2] - bb[0], bb[3] - bb[1]
-        if pos == "center" or tconf.get("box"):
-            x = round(bx + (bw - lw) / 2 - bb[0])
-        else:
-            x = round(x_left - bb[0]) if pos != "right" else round(bx + bw - stroke_max - bb[2])
-        yy = round(y - bb[1])
-        rows.append((line, font, x, yy, bb, size_px))
-        y += lh + gap_k * size_px * 0.5
+    rows = place(sizes)
     for i, (line, font, x, yy, bb, size_px) in enumerate(rows):
         sw = _stroke_w(size_px, H)
         ImageDraw.Draw(stroke_mask).text((x, yy), line, font=font, fill=255, stroke_width=sw, stroke_fill=255)
@@ -2013,6 +2077,10 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     conf = tpl["card"]
     bg = layers.background
     canvas = None
+    asset = _resolve(resolver, bg.ref, layout, "prova")
+    raw = open_rgba(asset.path).convert("RGB") if asset is not None else None
+    clip = thumb_clip.headline_clip(raw, asset.meta) if raw is not None and asset is not None and tpl.get("clip") \
+        else None
     if layers.backdrop:
         back = _resolve(resolver, layers.backdrop, layout, "fundo da prova")
         if back is not None:
@@ -2022,18 +2090,17 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
             occ = Image.new("L", size, 0)
             if occluder is not None:
                 occ.paste(occluder.convert("L"), (0, 0))
-            cbx, cby, cbw, cbh = conf["box"]
+            cbx, cby, cbw, cbh = (tpl["clip"] if clip is not None else conf)["box"]
             if _mirrored(layers):
                 cbx = 1 - cbx - cbw
             ImageDraw.Draw(occ).rectangle((cbx * W, cby * H, (cbx + cbw) * W, (cby + cbh) * H), fill=255)
             box = _scenery_box(back, resolver, src_b.size, lb, raw_b.size, size, 1.0, (0.5, 0.45), (0.5, 0.45),
                                occ, layout, "fundo da prova")
             canvas, _ = _cover(src_b, size, 1.0, (0.5, 0.45), (0.5, 0.45), box)
-            canvas = _grade(canvas, 3, 0.42, H)
-    asset = _resolve(resolver, bg.ref, layout, "prova")
-    if asset is None:
+            blur, darken = tpl.get("backdrop_grade", (3, 0.42))
+            canvas = _grade(canvas, blur, darken, H)
+    if raw is None:
         return (canvas if canvas is not None else _gradient_bg(tpl.get("backdrop", "vice"), size, pal)), None
-    raw = open_rgba(asset.path).convert("RGB")
     src, _ = _strip_letterbox(raw)
     colorful = _colorful(src)
     if canvas is None and colorful:
@@ -2041,6 +2108,12 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
         canvas = _grade(canvas, 22, 0.38, H)
     if canvas is None:
         canvas = _gradient_bg(tpl.get("backdrop", "vice"), size, pal)
+    if tpl.get("shade_under_card"):
+        # o escurecido do lado do texto fica embaixo da prova (por cima, ele apagava o papel)
+        _shade(canvas, tpl, pal, bool(layers.text and layers.text.words.strip()), _mirrored(layers))
+    if clip is not None:
+        # a prova vira o recorte de 2-3 palavras da manchete, grandes e com marca-texto (os pixels da matéria)
+        return canvas, _paste_clip(canvas, clip, tpl["clip"], pal, layout, bg.ref, _mirrored(layers), occluder)
     bx, by, bw, bh = conf["box"]
     if _mirrored(layers):
         bx = 1 - bx - bw
@@ -2114,6 +2187,64 @@ def _card_scene(layers: ThumbLayers, size: tuple[int, int], resolver: AssetResol
     layout.figures.append(item)
     layout.objects += 1
     return canvas, box
+
+
+def _paste_clip(canvas: Image.Image, clip: tuple[Image.Image, dict[str, Any]], conf: dict[str, Any],
+                pal: dict[str, tuple[int, int, int]], layout: Layout, ref: str | None,
+                mirrored: bool = False, occluder: Image.Image | None = None) -> tuple[int, int, int, int]:
+    """Cola o recorte da manchete (`thumb_clip.headline_clip`) como um pedaço de papel: o maior que cabe na caixa
+    `conf["box"]` do molde (do lado do texto, logo abaixo da palavra) sem chegar no avatar nem nas figuras
+    (`occluder`: fica uma folga entre o papel e o recorte delas, e a mão que aponta para a prova para antes dele),
+    contorno escuro, sombra e a inclinação do molde. Devolve a caixa ocupada e registra o item `card` (com o texto
+    recortado) em `layout.figures`."""
+    W, H = canvas.size
+    img, info = clip
+    bx, by, bw, bh = conf["box"]
+    if mirrored:
+        bx = 1 - bx - bw
+    x0, x1 = bx * W, (bx + bw) * W
+    if occluder is not None:
+        # a faixa da caixa (com a sobra da inclinação) até a figura mais próxima do lado de dentro
+        import numpy as np
+
+        gap = _px(conf.get("gap", 26), H)
+        band = np.asarray(occluder.convert("L").crop((0, round(by * H) - gap, W, round((by + bh) * H) + gap)))
+        cols = np.nonzero((band > 96).any(axis=0))[0]
+        if not mirrored:
+            hit = cols[cols > x0 + W * 0.1]
+            x1 = min(x1, float(hit[0]) - gap) if hit.size else x1
+        else:
+            hit = cols[cols < x1 - W * 0.1]
+            x0 = max(x0, float(hit[-1]) + gap) if hit.size else x0
+    edge = _px(conf.get("outline", 4), H)
+    tilt = float(conf.get("tilt", 0.0)) * (-1 if mirrored else 1)
+    a = math.radians(abs(tilt))
+    # o papel girado ocupa w·cos + h·sen de largura e w·sen + h·cos de altura: cabe na caixa já girado
+    k = img.height / img.width
+    fit_w = (x1 - x0 - 2 * edge) / (math.cos(a) + k * math.sin(a))
+    fit_h = (bh * H - 2 * edge) / (math.sin(a) + k * math.cos(a))
+    scale = max(0.1, min(fit_w, fit_h) / img.width)
+    cw, ch = max(8, round(img.width * scale)), max(8, round(img.height * scale))
+    paper = img.resize((cw, ch), Image.Resampling.LANCZOS)
+    if scale > 1.2:  # ampliado: devolve a borda da letra que o LANCZOS amacia
+        paper = paper.filter(ImageFilter.UnsharpMask(radius=max(1, round(scale)), percent=70, threshold=2))
+    piece = Image.new("RGBA", (cw + 2 * edge, ch + 2 * edge), (*pal["ink"], 255))
+    piece.paste(paper, (edge, edge))
+    if tilt:
+        piece = piece.rotate(tilt, resample=Image.Resampling.BICUBIC, expand=True)
+    x = round(x0) if not mirrored else round(x1 - piece.width)
+    y = round(by * H + max(0, bh * H - piece.height) / 2)
+    sh = piece.getchannel("A").filter(ImageFilter.GaussianBlur(_px(12, H))).point(lambda v: v * 7 // 10)
+    shl = Image.new("RGBA", piece.size, (*pal["ink"], 255))
+    shl.putalpha(sh)
+    canvas.alpha_composite(_clip_paste(shl, (W, H), x + _px(7, H), y + _px(12, H)), (0, 0))
+    canvas.alpha_composite(_clip_paste(piece, (W, H), x, y), (0, 0))
+    box = (max(0, x), max(0, y), min(W, x + piece.width), min(H, y + piece.height))
+    layout.figures.append({"kind": "card", "asset": ref, "bbox": list(box), "clip": info.get("text"),
+                           "marked": info.get("marked")})
+    layout.objects += 1
+    layout.notes.append(f"prova: recorte da manchete \"{info.get('text')}\"")
+    return box
 
 
 def _mark_spot(box: Sequence[int], headline: Sequence[int], H: int, tilt: float = 0.0) -> tuple[int, int, int, int]:
@@ -2228,10 +2359,12 @@ def render(layers: ThumbLayers, size: tuple[int, int] = T.CANVAS, assets: AssetR
         canvas = _background(layers, (W, H), assets, pal, layout, tpl, occluder=occluder)
     layout.figures[:] = layout.figures[n_figs:] + layout.figures[:n_figs]
     has_text = bool(layers.text and layers.text.words.strip())
-    _shade(canvas, tpl, pal, has_text, _mirrored(layers))
+    if card is None or not tpl.get("shade_under_card"):
+        _shade(canvas, tpl, pal, has_text, _mirrored(layers))
     if card is not None:
         item = next((f for f in layout.figures if f.get("kind") == "card"), {})
-        _mark(canvas, layers.mark, card, pal, item.get("headline"), float(tpl["card"].get("tilt", 0.0)))
+        if not item.get("clip"):  # o recorte da manchete já traz o marca-texto: X ou círculo em cima seria ruído
+            _mark(canvas, layers.mark, card, pal, item.get("headline"), float(tpl["card"].get("tilt", 0.0)))
     tconf = tpl["text"]
     text_box = tconf.get(layers.text.pos if layers.text else "left") or tconf["left"]
     # as figuras vão para uma camada própria antes do VI gigante: ele fica por baixo delas, mas a posição dele
@@ -2255,7 +2388,9 @@ def render(layers: ThumbLayers, size: tuple[int, int] = T.CANVAS, assets: AssetR
             _mark(canvas, layers.mark, tuple(target), pal)
     if tconf.get("box") and has_text:
         _text_box_backdrop(canvas, layers, pal, tpl)
-    _text(canvas, layers, pal, layout, tpl)
+    # o texto não encosta no recorte das figuras nem do avatar (o Short põe o texto numa caixa por cima, de propósito)
+    avoid = None if tconf.get("box") else ImageChops.lighter(figures.getchannel("A"), avatar.getchannel("A"))
+    _text(canvas, layers, pal, layout, tpl, avoid)
     _pill(canvas, layers, pal, layout, text_box)
     _cards(canvas, layers, assets, pal, layout, tpl)
     _strike(canvas, layers, pal, layout)

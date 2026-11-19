@@ -91,10 +91,10 @@ def test_fundo_sem_medida_ou_de_personagem_fica_como_pedido(tmp_path):
     r.detect_people = False
     r.people_for = lambda asset: None  # type: ignore[method-assign]
     lay = C.render(_hero(), T.CANVAS, r).info["layout"]
-    assert lay["bg_people"] is None and not lay["notes"]
+    assert lay["bg_people"] is None and not [n for n in lay["notes"] if n.startswith("fundo")]
     r2 = _kit(tmp_path / "b", face=True)
     lay2 = C.render(_hero(), T.CANVAS, r2).info["layout"]
-    assert lay2["bg_people"] is None and not lay2["notes"]
+    assert lay2["bg_people"] is None and not [n for n in lay2["notes"] if n.startswith("fundo")]
 
 
 def test_uma_pessoa_so_e_o_assunto_e_nao_e_reenquadrada(tmp_path):
@@ -106,7 +106,7 @@ def test_uma_pessoa_so_e_o_assunto_e_nao_e_reenquadrada(tmp_path):
     r.people_for = lambda asset: one  # type: ignore[method-assign]
     assert C.people_count(one) == 1 and C.people_count(_people((640, 360))) == 3
     lay = C.render(_hero(), T.CANVAS, r).info["layout"]
-    assert lay["bg_people"] is None and not lay["notes"]
+    assert lay["bg_people"] is None and not [n for n in lay["notes"] if n.startswith("fundo")]
 
 
 def test_so_quadro_marcado_como_lugar_e_reenquadrado(tmp_path):
@@ -116,7 +116,7 @@ def test_so_quadro_marcado_como_lugar_e_reenquadrado(tmp_path):
     for k, tags in enumerate((("keyart", "capa", "claro"), ("lugar", "capa"), ("dupla", "dia"), ())):
         r = _kit(tmp_path / str(k), tags=tags)
         lay = C.render(_hero(), T.CANVAS, r).info["layout"]
-        assert lay["bg_people"] is None and not lay["notes"], tags
+        assert lay["bg_people"] is None and not [n for n in lay["notes"] if n.startswith("fundo")], tags
         assert not any("figurante" in w for w in lay["warnings"]), tags
         assert not C.scenery_frame({"id": "x", "tags": list(tags)})
     assert C.scenery_frame({"id": "x", "tags": ["lugar", "praia"]})

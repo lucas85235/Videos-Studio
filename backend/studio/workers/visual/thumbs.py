@@ -329,8 +329,33 @@ def resolver_for(doc: ProjectDoc, style: Any, *, bible: dict[str, Any] | None = 
     presenter = presenter_core.effective(bible, doc, style, purpose="thumb") if doc.channel_id else None
     media = _media_finder(doc, images, allow)
     if doc.channel_id:
-        return AssetResolver.for_channel(doc.channel_id, presenter=presenter, allow_editorial=allow, media=media)
-    return AssetResolver(None, media=media, allow_editorial=allow)
+        resolver = AssetResolver.for_channel(doc.channel_id, presenter=presenter, allow_editorial=allow, media=media)
+    else:
+        resolver = AssetResolver(None, media=media, allow_editorial=allow)
+    resolver.media_meta = _media_meta(doc)
+    return resolver
+
+
+def _media_meta(doc: ProjectDoc) -> Callable[[str], dict[str, Any] | None]:
+    """`media:<caminho>` → o item do acervo daquele arquivo (`desc` com a manchete e `rects` com as linhas dela, numa
+    captura), para o compositor recortar 2-3 palavras da manchete na prova. Lê o acervo uma vez, só quando pedido."""
+    items: dict[str, dict[str, Any]] | None = None
+
+    def meta(ref: str) -> dict[str, Any] | None:
+        nonlocal items
+        if items is None:
+            items = {}
+            try:
+                from studio.core.project.pool import load_pool
+
+                for it in load_pool(doc.id).items if doc.id else []:
+                    if it.path and it.rects and it.path not in items:
+                        items[it.path] = {"desc": it.desc, "rects": [list(r) for r in it.rects], "media": it.media}
+            except Exception as exc:  # noqa: BLE001 - acervo ilegível: a prova sai no cartão da página inteira
+                log.warning("acervo do projeto ilegível para a thumb: %s", exc)
+        return items.get((ref or "").strip())
+
+    return meta
 
 
 def _file_stamp(path: Path | None) -> list[Any]:

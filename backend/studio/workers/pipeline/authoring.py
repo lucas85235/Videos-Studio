@@ -2499,8 +2499,10 @@ THUMB_RULES = """Regras de thumb (vêm dos vídeos que estouram no nicho: metade
 - Cada candidato é uma variante real: template, fundo, pose ou palavra diferentes. Nunca dois iguais.
 - Fuja das thumbs recentes do canal (a lista vem no pedido): outro fundo, outra figura, outra pose, outro template.
 - Vídeo com prova no acervo (captura de matéria, site falso, print): pelo menos 1 candidato usa o template prova com
-  o id da captura em background_hint (o avatar grande com emoção forte e o print de apoio com X ou círculo vermelho
-  vendem a denúncia melhor que um quadro; o print sozinho e grande vira ruído branco na miniatura).
+  o id da captura em background_hint (o avatar grande apontando para a prova, a palavra grande e, embaixo dela, 2-3
+  palavras da própria manchete recortadas em corpo grande com marca-texto vendem a denúncia melhor que um quadro; o
+  print inteiro vira ruído branco na miniatura). Escolha a captura cuja manchete tem o nome do jogo e a palavra do
+  perigo ("GTA 6 roubam", "Falso GTA 6"); a palavra da thumb completa essa frase sem repeti-la.
 - Personagens oficiais (de jogo, filme ou série) nunca são desenhados por IA: só aparecem em quadros oficiais da lista."""
 
 TITLE_RULES = f"""Regras de título (medidas no nicho: os vídeos que estouram têm títulos de ~38 caracteres; os medianos, ~54):
@@ -2527,8 +2529,9 @@ tem de ser cumprível com o tema.
 Templates de thumb: heroi-palavra (quadro com personagem/rosto grande + 1 palavra), avatar-reage (avatar do
 apresentador grande reagindo + objeto do tema, 0 a 2 palavras), lugar-mapa (quadro aéreo de um lugar + 1-2 palavras),
 numero-lista (número gigante + 1 palavra, sem cartões), versus (dois lados comparados), livre (Short vertical: 2-3
-palavras no centro), prova (avatar grande reagindo com emoção forte + 1 palavra grande + a captura/print do próprio
-vídeo menor, de apoio, com marcação vermelha; background_hint = id do acervo), objeto (o item-chave em close + 1 palavra).
+palavras no centro), prova (avatar grande apontando para a prova + 1 palavra grande + 2-3 palavras recortadas da
+manchete da captura do próprio vídeo, com marca-texto, e o logo do jogo atrás do avatar; background_hint = id do
+acervo), objeto (o item-chave em close + 1 palavra).
 Use só os templates e ativos (ids) que o pedido lista; para o que não existir, use null.
 
 """ + TITLE_RULES + "\n\n" + THUMB_RULES
@@ -2871,6 +2874,36 @@ def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent
         return None
     pick = min(rest, key=safe)["id"]
     return pick if free else repeat(pick, "")
+
+
+PROOF_POSE_EMOTIONS = ("mostrar a prova", "apontando", "apontar")
+"""Emoções/nomes da pose que aponta para a prova: no template prova, ela olha para o recorte da manchete."""
+GENERIC_SHOCK = ("choque", "surpresa", "surpreso", "espantado", "chocado")
+"""A cara de choque genérica (as duas mãos no rosto): na prova ela só repete o susto da palavra, sem dizer nada."""
+
+
+def _proof_pose(hint: object, poses: list[dict[str, Any]], used: set[str], notes: list[str]) -> object:
+    """A pose do avatar na prova: a que aponta para o recorte da manchete (`PROOF_POSE_EMOTIONS`) quando o
+    candidato não citou pose ou citou só a cara de choque genérica (`GENERIC_SHOCK`); uma emoção específica citada
+    (mão na testa do erro, bravo do golpe, lupa da investigação) fica. Sem pose que aponte (ou ela já usada no
+    pacote), fica o que veio."""
+    def names(p: dict[str, Any]) -> set[str]:
+        vals = [p.get("id"), *(p.get("aliases") or []), *(p.get("emotions") or [])]
+        return {normalize_token(str(v)) for v in vals if v} | {" ".join(str(v).lower().split()) for v in vals if v}
+
+    cited = normalize_token(str(hint or ""))
+    shock = {normalize_token(w) for w in GENERIC_SHOCK}
+    cited_pose = next((p for p in poses if cited and cited in names(p)), None)
+    if cited and not (cited in shock or (cited_pose is not None and names(cited_pose) & shock)):
+        return hint
+    wanted = {normalize_token(w) for w in PROOF_POSE_EMOTIONS} | set(PROOF_POSE_EMOTIONS)
+    pointing = next((p for p in poses if names(p) & wanted and p["id"] not in used), None)
+    if pointing is None:
+        return hint
+    if cited:
+        notes.append(f"CORRIGIDO: na prova o avatar aponta para o recorte da manchete ({pointing['id']}) em vez da "
+                     f"cara de choque genérica ({hint})")
+    return pointing["id"]
 
 
 def _frame_layer(frame: dict[str, Any] | None, template: str) -> dict[str, Any]:
@@ -3301,7 +3334,10 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         pose_id = None
         wants_pose = template in ("avatar-reage", "numero-lista", "prova") or item.get("presenter_pose")
         if is_long and assets.poses and wants_pose and template != "objeto":
-            pose_id = _pick_pose(item.get("presenter_pose"), assets.poses, used_poses, recent,
+            hint_pose = item.get("presenter_pose")
+            if template == "prova":
+                hint_pose = _proof_pose(hint_pose, assets.poses, used_poses, notes)
+            pose_id = _pick_pose(hint_pose, assets.poses, used_poses, recent,
                                  concept=str(item.get("concept") or ""),
                                  text=" ".join([title, thumb_text, str(item.get("promise") or "")]), notes=notes)
             if pose_id:
@@ -3329,7 +3365,10 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         elif template == "prova" and frames:
             # atrás do print, um quadro do jogo (escurecido): a cara de canal de jogo, não um cartão no degradê
             places = [f for f in frames if not {"personagem", "keyart"} & set(f.get("tags") or [])] or frames
+            # o quadro aéreo (orla, skyline, mapa) se reconhece atrás do avatar e não tem figurante em close; o de
+            # chão (praia, rua, telhado) punha banhista e gente de costas ao lado da prova
             ranked = sorted(places[turn % len(places):] + places[:turn % len(places)], key=lambda f: (
+                "aereo" not in (f.get("tags") or []),
                 thumb_variety.penalty("background", str(f["id"]), recent, batch)))
             # o menos usado sem figurante em close (medido na ordem, só até achar um)
             backdrop = str(next((f for f in ranked if not assets.crowded(f)), ranked[0])["id"])

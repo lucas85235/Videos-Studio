@@ -1067,6 +1067,9 @@ class AssetResolver:
         self.pose_dirs = list(pose_dirs or [])
         self.poses = dict(poses or {})
         self.media = media
+        self.media_meta: Callable[[str], dict[str, Any] | None] | None = None
+        """O item do acervo de uma mídia do projeto (`desc` com a manchete e `rects` com as linhas dela, numa
+        captura): vai em `Asset.meta` e o compositor recorta a manchete da prova (`thumb_clip`). None: sem acervo."""
         self.allow_editorial = allow_editorial
         self.extract = extract
         self.auto_cutout = auto_cutout
@@ -1251,7 +1254,13 @@ class AssetResolver:
         path = self.media(media_id) if self.media else None
         if path is None or not Path(path).is_file():
             raise AssetError(f"mídia do projeto indisponível: {media_id}")
-        return Asset(ref, Path(path), "media", False, {})
+        meta: dict[str, Any] = {}
+        if self.media_meta is not None:
+            try:
+                meta = dict(self.media_meta(media_id) or {})
+            except Exception as exc:  # noqa: BLE001 - acervo ilegível: a mídia sai sem o item (sem recorte)
+                log.warning("item do acervo de %s ilegível: %s", media_id, exc)
+        return Asset(ref, Path(path), "media", False, meta)
 
 
 def _kit_item_for(path: Path) -> dict[str, Any] | None:
