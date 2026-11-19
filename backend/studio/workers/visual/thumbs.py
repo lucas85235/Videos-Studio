@@ -361,6 +361,16 @@ def assets_stamp(layers: ThumbLayers, resolver: Any) -> list[Any]:
             out.append([ref, None])
     kit = getattr(resolver, "kit_dir", None)
     out.append(["manifest", *_file_stamp(Path(kit) / "thumbkit.json" if kit else None)])
+    # o que o ambiente sabe fazer muda o desenho com as mesmas camadas: com o rembg o compositor recorta figura sem
+    # alfa e re-enquadra o quadro de lugar com figurante; instalar (ou perder) o extra tem de refazer a capa
+    try:
+        from studio.media.thumb_assets import rembg_available
+
+        rembg = rembg_available()
+    except ImportError:  # pragma: no cover - compositor ausente
+        rembg = False
+    out.append(["rembg", rembg, bool(getattr(resolver, "detect_people", False)),
+                bool(getattr(resolver, "auto_cutout", False))])
     used = getattr(resolver, "used", None)
     if isinstance(used, list):
         used.clear()  # a impressão não conta como uso

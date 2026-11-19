@@ -265,6 +265,18 @@ def test_cache_da_capa_muda_com_o_arquivo(kit):  # noqa: F811
     assert C.VERSION >= 2
 
 
+def test_cache_da_capa_muda_com_o_rembg(kit, monkeypatch):  # noqa: F811
+    # o mesmo desenho sai outro com o rembg (recorte e re-enquadramento do figurante): instalar o extra refaz a capa
+    from studio.media import thumb_assets
+
+    resolver, _kit_dir = kit
+    lay = _layers("heroi-palavra")
+    monkeypatch.setattr(thumb_assets, "rembg_available", lambda: False)
+    without = visual_thumbs.assets_stamp(lay, resolver)
+    monkeypatch.setattr(thumb_assets, "rembg_available", lambda: True)
+    assert visual_thumbs.assets_stamp(lay, resolver) != without
+
+
 # --- avatar --------------------------------------------------------------------------------------------------------
 def test_cena_seria_por_palavra_inteira():
     assert presenter_scenes._serious("o Jason lutou contra a polícia") is None
