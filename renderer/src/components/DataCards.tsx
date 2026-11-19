@@ -3,6 +3,7 @@ import { AbsoluteFill, interpolate, random, spring, useCurrentFrame, useVideoCon
 import { fontStack, fontWeight } from '../fonts';
 import type { StampPlace, TextCardStyle, TimelineCardItem, TimelineScene } from '../types';
 import type { Rect, StampGeom, StampSpot } from './fx/math';
+import { ENTRY_POP_LEAD, entryOpacity } from './fx/math';
 import { useEntrance } from './TextCards';
 
 // Cartões de dado (stat, compare) e sobreposições (faixa, carimbo, fonte), mais o fundo animado.
@@ -531,7 +532,9 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
   const suffixRatio = affixRatioOf(suffix);
   const affixChars = (prefix ? (prefix.length + 0.6) * prefixRatio : 0) + (suffix ? (suffix.length + 0.6) * suffixRatio : 0);
   const size = Math.min(u * (portrait ? 0.3 : 0.25) * boost(font), inner / Math.max(1, (main.length + affixChars) * charEm(font)));
-  const pop = spring({ frame: frame - 2 - vf, fps, config: { damping: 11, stiffness: 140, mass: 0.7 } });
+  // O número entra no quadro `vf` já opaco (só a escala assenta): com fade, o quadro logo depois da fala pegava o
+  // "200 MB" semitransparente (QA r4).
+  const pop = spring({ frame: frame - vf + ENTRY_POP_LEAD, fps, config: { damping: 11, stiffness: 140, mass: 0.7 } });
   const scale = counted.counting ? 1 : interpolate(pop, [0, 1], [1.5, 1]);
   const labelSize = raw
     ? fitLines(label, font, inner, u * (portrait ? 0.066 : 0.058), u * 0.04, 2)
@@ -551,7 +554,7 @@ export const StatCard: React.FC<CardViewProps> = ({ scene, style, lang, band, po
         lineHeight: 1,
         fontVariantNumeric: 'tabular-nums',
         transform: `scale(${scale})`,
-        opacity: frame < vf ? 0 : counted.counting ? 1 : Math.min(1, pop * 1.4),
+        opacity: entryOpacity(frame - vf),
         whiteSpace: 'nowrap',
       }}
     >
@@ -837,7 +840,7 @@ export const Headline: React.FC<{
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, u } = useLayout();
-  const s = spring({ frame, fps, config: { damping: 16, stiffness: 170, mass: 0.6 } });
+  const s = spring({ frame: frame + ENTRY_POP_LEAD, fps, config: { damping: 16, stiffness: 170, mass: 0.6 } });
   const { label, maxW, padX, size, top } = headlineBox(text, style, lang, width, height, y);
   const shift = x === undefined ? '' : `translateX(${(x - 0.5) * width}px) `;
   return (
@@ -850,7 +853,7 @@ export const Headline: React.FC<{
         display: 'flex',
         justifyContent: 'center',
         transform: `${shift}translateY(calc(-50% + ${interpolate(s, [0, 1], [-height * 0.08, 0])}px))`,
-        opacity: Math.min(1, s * 1.5),
+        opacity: entryOpacity(frame),
       }}
     >
       <div
@@ -935,7 +938,7 @@ export const Stamp: React.FC<{
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { width, height, portrait, u } = useLayout();
-  const s = spring({ frame: frame - delay, fps, config: { damping: 12, stiffness: 200, mass: 0.7 } });
+  const s = spring({ frame: frame - delay + ENTRY_POP_LEAD, fps, config: { damping: 12, stiffness: 200, mass: 0.7 } });
   if (frame < delay) return null;
   const fitted = stampFit(upper(text.trim(), lang), style.font, maxWidth ?? width * (portrait ? 0.5 : 0.3), u);
   const size = fitted.size;
@@ -949,7 +952,7 @@ export const Stamp: React.FC<{
       style={{
         ...place,
         transform: `${anchor ? '' : centered ? 'translate(-50%, -50%) ' : 'translateY(-50%) '}rotate(-${STAMP_ROT}deg) scale(${interpolate(s, [0, 1], [entryScale, 1]) * fit})`,
-        opacity: Math.min(1, s * 2),
+        opacity: entryOpacity(frame - delay),
       }}
     >
       <div
@@ -977,11 +980,15 @@ export const Stamp: React.FC<{
   );
 };
 
+/** Quadro em que a fonte solta aparece (o `SOURCE_FADE_IN` do SceneView conta com ele). */
+const SOURCE_IN = 8;
+
 /** "Fonte: X" pequeno, à esquerda; `y` é a altura do centro em fração da tela. */
 export const SourceChip: React.FC<{ source: string; style: TextCardStyle; lang: string; y: number }> = ({ source, style, lang, y }) => {
   const frame = useCurrentFrame();
   const { width, height, u } = useLayout();
-  const opacity = interpolate(frame, [8, 16], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  // Aparece inteira no quadro 8 (sem fade: a fonte pela metade era texto fantasma no quadro amostrado).
+  const opacity = entryOpacity(frame - SOURCE_IN);
   const size = Math.max(14, u * 0.028);
   return (
     <div

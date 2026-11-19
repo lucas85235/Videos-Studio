@@ -28,7 +28,15 @@ from studio.core.numbers import (
     notable_number_runs,
     number_runs,
 )
-from studio.core.project.document import DATA_KINDS, MediaRef, Presenter, ProjectDoc, Scene, SubShot
+from studio.core.project.document import (
+    DATA_KINDS,
+    MediaRef,
+    Presenter,
+    ProjectDoc,
+    Scene,
+    SceneLook,
+    SubShot,
+)
 from studio.core.project.media_edit import scene_label
 from studio.core.project.presenter import parse_at, resolve_pose, trigger_index
 from studio.core.regions import region_codes, region_name
@@ -144,6 +152,28 @@ def lead_in(style: StyleSpec) -> float:
 
 def tail_out(style: StyleSpec) -> float:
     return 0.7 if style.format.type == "short" else 1.5
+
+
+END_SCREEN_S = 8.0
+"""Tela final do vídeo longo (o YouTube aceita de 5 a 20 s de end screen): os dois vídeos sugeridos e o inscrever."""
+END_SCREEN_BREATH_S = 0.5
+"""Respiro entre a última palavra e a tela final; no vídeo com tela final ele substitui a cauda de `tail_out` (a
+última cena parada, sem legenda, até o fim: o "quadro parado" do fechamento no QA r4)."""
+END_SCREEN_MIN_S = 25.0
+"""O YouTube só aceita tela final em vídeo de 25 s ou mais (conta a fala, sem a tela final)."""
+END_SCREEN_SHOTS = 3
+"""Planos (no máximo) do material em movimento por baixo da tela final."""
+END_SCREEN_PROVS = ("official", "own", "free", "stock")
+"""Material do tema que vai por baixo da tela final: o real (trailer, foto, vídeo próprio). Captura, meme, gráfico e
+IA não (página de site, piada e ilustração parada não são "o assunto em movimento")."""
+END_SCREEN_TEXT: dict[str, tuple[str, str]] = {
+    "pt": ("Assista também", "Inscreva-se"),
+    "en": ("Watch next", "Subscribe"),
+    "es": ("Mira también", "Suscríbete"),
+}
+"""Chamado da tela final e rótulo do inscrever, pela língua do vídeo (sem a língua, o inglês)."""
+END_SCREEN_MIN_ASPECT = 1.2
+"""Imagem mais estreita que isto (pôster em pé) vira pilar com laterais desfocadas: fica fora da tela final."""
 
 
 def normalize_words(words: list[Word], duration: float) -> list[Word]:
@@ -627,7 +657,10 @@ def build_timeline(
             raise TimelineError(f"falta a narração do segmento {seg.id} ({lang})")
         placements.append((seg, t, clip))
         t += clip.duration + gap
-    total = t - gap + tail_out(style)
+    speech_end = t - gap
+    end_screen = has_end_screen(style, speech_end)
+    # Com tela final, a última cena acaba logo depois da fala (o respiro) e a tela final entra no lugar da cauda.
+    total = speech_end + (END_SCREEN_BREATH_S if end_screen else tail_out(style))
 
     def frame(seconds: float) -> int:
         return int(math.floor(seconds * fps + 0.5))
@@ -779,6 +812,10 @@ def build_timeline(
             # da edição); o resto do corte entra só no que sobra do orçamento.
             keep = {s.id for s in doc.scenes if s.sfx or s.kind in REVEAL_SFX_KINDS}
             sfx = edit_resolve.cap_cut_sfx(sfx, grammar.sfx_per_min, total_frames / fps, keep)
+    if end_screen:
+        end = end_screen_scene(doc, style, lang, scenes_out, total_frames, frame(END_SCREEN_S), presenter)
+        scenes_out.append(end)
+        total_frames += end["durationInFrames"]
 
     out: dict[str, Any] = {
         "version": 1,
@@ -803,6 +840,161 @@ def build_timeline(
     warnings = news_reading_warnings(doc, lang, scenes_out, fps) + edit_warnings
     if warnings:
         out["warnings"] = warnings
+    return out
+
+
+def has_end_screen(style: StyleSpec, speech_s: float) -> bool:
+    """O vídeo ganha tela final: longo, horizontal (o layout do end screen é o do player 16:9) e com fala de pelo menos
+    `END_SCREEN_MIN_S`. Short não tem tela final."""
+    fmt = style.format
+    return fmt.type == "long" and fmt.width > fmt.height and speech_s >= END_SCREEN_MIN_S
+
+
+def end_screen_texts(lang: str) -> tuple[str, str]:
+    """(chamado, inscrever) da tela final na língua do vídeo."""
+    return END_SCREEN_TEXT.get(lang.split("-")[0].lower(), END_SCREEN_TEXT["en"])
+
+
+def _image_aspect(rel: str | None) -> float | None:
+    """Largura / altura da imagem (relativa à pasta de dados); None quando não dá para ler."""
+    if not rel:
+        return None
+    try:
+        from PIL import Image
+
+        from studio.config import get_settings
+
+        with Image.open(get_settings().data_dir / rel) as im:
+            w, h = im.size
+    except (OSError, ValueError):
+        return None
+    return w / h if h else None
+
+
+def end_screen_material(scenes: list[dict[str, Any]], *, wide: bool = True) -> list[dict[str, Any]]:
+    """O material do tema que passa em movimento por baixo da tela final, tirado do próprio vídeo: os trechos de vídeo
+    real (`END_SCREEN_PROVS`), dos mais longos para os mais curtos (empate: o que aparece mais perto do fim), sem
+    repetir trecho; sem vídeo real, as imagens reais largas (o pôster em pé viraria pilar com laterais desfocadas); sem
+    elas, qualquer imagem larga do vídeo. Cada item: {"video", "clipIn", "seconds", "src", "prov"} ou {"src", "prov"}."""
+    clips: list[tuple[float, int, dict[str, Any]]] = []
+    images: list[tuple[bool, int, dict[str, Any]]] = []
+    seen: set[tuple[str, float]] = set()
+    seen_src: set[str] = set()
+    order = 0
+
+    def add_image(src: Any, prov: Any) -> None:
+        nonlocal order
+        if not isinstance(src, str) or not src or src in seen_src:
+            return
+        seen_src.add(src)
+        aspect = _image_aspect(src)
+        if wide and aspect is not None and aspect < END_SCREEN_MIN_ASPECT:
+            return
+        order += 1
+        images.append((prov in END_SCREEN_PROVS, order, {"src": src, "prov": prov or "ai"}))
+
+    def add_clip(video: str, clip_in: float, seconds: float, src: Any, prov: Any) -> None:
+        nonlocal order
+        key = (video, round(clip_in, 2))
+        if key in seen or seconds <= 0 or prov not in END_SCREEN_PROVS:
+            return
+        seen.add(key)
+        order += 1
+        item: dict[str, Any] = {"video": video, "seconds": seconds, "src": src, "prov": prov}
+        if clip_in > 0:
+            item["clipIn"] = clip_in
+        clips.append((seconds, order, item))
+
+    for scene in scenes:
+        prov = scene.get("prov")
+        video = scene.get("video")
+        shots = scene.get("shots") or []
+        if isinstance(video, str) and video:
+            # Clipe da cena (o proxy já cortado na entrada): toca no plano da própria cena.
+            add_clip(video, 0.0, float(scene.get("video_seconds") or 0.0), scene.get("src"), prov)
+        elif not shots and scene.get("kind") in ("image", "video"):
+            add_image(scene.get("src"), prov)
+        for shot in shots:
+            sp = shot.get("prov") or prov
+            sv = shot.get("video")
+            if isinstance(sv, str) and sv:
+                add_clip(sv, float(shot.get("clipIn") or 0.0), float(shot.get("seconds") or 0.0), shot.get("src"), sp)
+            elif scene.get("kind") in ("image", "video") and not (shot.get("src") is None and video):
+                add_image(shot.get("src") or scene.get("src"), sp)
+    if clips:
+        clips.sort(key=lambda c: (-round(c[0], 1), -c[1]))
+        return [c[2] for c in clips[:END_SCREEN_SHOTS]]
+    real = [i for i in images if i[0]]
+    pick = real or images
+    pick.sort(key=lambda i: -i[1])
+    return [i[2] for i in pick[:END_SCREEN_SHOTS]]
+
+
+def end_screen_scene(doc: ProjectDoc, style: StyleSpec, lang: str, scenes: list[dict[str, Any]], start: int,
+                     length: int, presenter: Presenter | None) -> dict[str, Any]:
+    """A tela final do vídeo longo (`kind` "endscreen", depois da última cena): o material do tema em movimento e nítido
+    por baixo (`end_screen_material`, um plano por trecho), o chamado, os lugares dos dois vídeos sugeridos e do
+    inscrever (o renderer desenha) e o avatar do lado, até o último quadro, quando o projeto tem um. Sem material, o
+    fundo animado do estilo."""
+    fps = style.format.fps
+    title, subscribe = end_screen_texts(lang)
+    material = end_screen_material(scenes, wide=style.format.width > style.format.height)
+    shots: list[dict[str, Any]] = []
+    if material:
+        n = len(material)
+        cuts = [round(length * i / n) for i in range(n + 1)]
+        for i, item in enumerate(material):
+            shot: dict[str, Any] = {
+                "from": cuts[i],
+                "dur": cuts[i + 1] - cuts[i],
+                "prov": item["prov"],
+                "framing": {"scale": 1.0, "x": 0.5, "y": 0.5},
+            }
+            if item.get("video"):
+                shot.update({"video": item["video"], "seconds": round(item["seconds"], 3), "motion": "none"})
+                if item.get("clipIn"):
+                    shot["clipIn"] = round(item["clipIn"], 3)
+                if item.get("src"):
+                    shot["src"] = item["src"]
+            else:
+                # Imagem com câmera que anda: o fundo nunca fica parado.
+                shot.update({"src": item["src"], "motion": "push" if i % 2 == 0 else "ken_burns_in"})
+            shots.append(shot)
+    out: dict[str, Any] = {
+        "id": "endscreen",
+        "kind": "endscreen",
+        "motion": "static",
+        "transition": "cut",
+        "seed": seed_from(doc.seed, "endscreen"),
+        "look": SceneLook().model_dump(),
+        "text": title,
+        "number": None,
+        "prov": "graphic",
+        "from": start,
+        "durationInFrames": length,
+        "src": None,
+        "captions": [],
+        "words": [],
+        "end": {"title": title, "subscribe": subscribe},
+    }
+    if shots:
+        out["shots"] = shots
+    pose = resolve_pose(presenter, "feliz") if presenter is not None else None
+    vertical = style.format.height > style.format.width
+    if presenter is not None and pose is not None and not (vertical and presenter.video.hide_on_vertical):
+        src = pose.render_file or pose.file
+        lead = min(PRESENTER_DEFAULT_FROM, max(0, length - PRESENTER_MIN_FRAMES))
+        out["presenter"] = {
+            "src": src,
+            "rev": _file_rev(src),
+            "from": lead,
+            # Passa do fim da cena: o avatar fica até o último quadro, sem a saída descendo.
+            "dur": length - lead + int(round(fps * 0.5)),
+            "mode": "explica",
+            "side": "right",
+            "height": round(presenter.video.height_reacao, 4),
+            "outline": presenter.video.outline_px,
+        }
     return out
 
 

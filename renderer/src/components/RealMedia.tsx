@@ -3,6 +3,7 @@ import { Img, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remot
 import { fontStack } from '../fonts';
 import type { TextCardStyle, TimelineNews } from '../types';
 import { type CardBand, charEm } from './DataCards';
+import { ENTRY_POP_LEAD, entryOpacity } from './fx/math';
 
 // Mídia real: cartão de notícia (cena de imagem dona da notícia). O crédito das imagens não vai para a tela: fica na
 // descrição da publicação. O `src` da cena já vem enquadrado pelo backend (cover com foco ou contain com fundo
@@ -98,7 +99,8 @@ export const NewsCard: React.FC<{
   const fit = Math.min(1, room / panelH);
   const center = ((band.top + band.bottom) / 2) * height;
 
-  const s = spring({ frame: frame - 2, fps, config: { damping: 18, stiffness: 150, mass: 0.7 }, durationInFrames: 12 });
+  // Opaco desde o corte (`entryOpacity`): só sobe. Com fade, o 1º quadro amostrado pegava o cartão fantasma.
+  const s = spring({ frame: frame + ENTRY_POP_LEAD, fps, config: { damping: 18, stiffness: 150, mass: 0.7 }, durationInFrames: 12 });
   const rise = interpolate(s, [0, 1], [height * 0.05, 0]);
   const zoom = interpolate(frame, [0, Math.max(1, durationInFrames - 1)], [1, 1.04], clamp);
   const radius = u * 0.022;
@@ -111,7 +113,7 @@ export const NewsCard: React.FC<{
         width: panelW,
         top: center,
         transform: `translateY(-50%) translateY(${rise}px)${fit < 1 ? ` scale(${fit})` : ''}`,
-        opacity: Math.min(1, s * 1.5),
+        opacity: entryOpacity(frame),
       }}
     >
       <div

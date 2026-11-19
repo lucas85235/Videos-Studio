@@ -1049,13 +1049,15 @@ export const ENTRY_MAX_S = 0.3;
 export const entryFrames = (transitionFrames: number, fps: number) =>
   Math.max(1, Math.min(Math.round(num(transitionFrames, 1)), Math.round(ENTRY_MAX_S * fps)));
 
-/** O que lava o quadro na entrada (flash branco, fade preto, luz, queima, chuvisco, desfoque) some em até WASH_MAX_S:
- *  um quadro amostrado no começo da cena nunca fica branco, preto ou borrado a ponto de esconder a imagem. */
-export const WASH_MAX_S = 0.2;
+/** O que lava o quadro na entrada (flash branco, fade preto, luz, queima, chuvisco, desfoque) some em até WASH_MAX_S
+ *  (3 quadros a 30 q/s): um quadro amostrado no começo da cena nunca fica branco, preto ou borrado a ponto de esconder
+ *  a imagem. Com 0,2 s, a amostra de 1 em 3 s do QA ainda pegava o 1º e o 2º quadro lavados (r4 do prj_gq4krrs11w:
+ *  arte-chave borrada em 5:00, esmaecida em 6:42). */
+export const WASH_MAX_S = 0.1;
 /** Opacidade no corte de cada camada que lava o quadro: nunca tela cheia branca ou preta (fade longo). */
-export const WASH_PEAK: Record<string, number> = { flash: 0.5, fade_black: 0.7, light_leak: 0.6, film_burn: 0.6, static_burst: 0.45 };
-/** Desfoque (px a 1080) no corte do `zoom_blur`; some junto com a lavagem. */
-export const ZOOM_BLUR_PX = 4;
+export const WASH_PEAK: Record<string, number> = { flash: 0.4, fade_black: 0.6, light_leak: 0.5, film_burn: 0.5, static_burst: 0.35 };
+/** Desfoque (px a 1080) no corte do `zoom_blur`; some junto com a lavagem (no 2º quadro, menos da metade). */
+export const ZOOM_BLUR_PX = 3;
 /** Ampliação extra no corte do `zoom_blur` (volta a 1 até o fim da entrada). */
 export const ZOOM_BLUR_SCALE = 0.08;
 
@@ -1070,6 +1072,77 @@ export const washAt = (frame: number, entry: number, fps: number) => {
   if (!(frame >= 0) || frame >= n) return 0;
   const k = 1 - frame / n;
   return k * k;
+};
+
+// --- entrada de cartão e texto ----------------------------------------------------------------------------------------
+
+/**
+ * Quadros que a mola da entrada de cartão/texto já correu no 1º quadro em que ele aparece: entra perto do tamanho
+ * final (um "pop" curto), nunca minúsculo.
+ */
+export const ENTRY_POP_LEAD = 3;
+
+/**
+ * Opacidade de cartão, número, faixa, carimbo e texto que entram (`frame` relativo ao começo da entrada): 0 antes e
+ * cheia desde o 1º quadro. A entrada é só movimento (escala, subida); fade nenhum. Com fade em mola, o quadro amostrado
+ * logo depois do corte pegava o texto pela metade, fantasma ("5 SINAIS DE GOLPE" e "200 MB" do QA r4).
+ */
+export const entryOpacity = (frame: number) => (frame >= 0 ? 1 : 0);
+
+// --- tela final ------------------------------------------------------------------------------------------------------
+
+/**
+ * Lugares da tela final (end screen do YouTube), em fração da tela [x, y, w, h]: os dois vídeos sugeridos (16:9) e o
+ * botão de inscrever (círculo), mais a linha do chamado em cima. O YouTube põe os elementos dele por cima destes
+ * lugares; o avatar (`avoid`, a caixa dele) fica fora deles, do lado. No vertical, os vídeos ficam um embaixo do outro.
+ */
+export type EndScreenLayout = { title: Rect; videos: [Rect, Rect]; subscribe: Rect };
+
+/** Largura de cada vídeo sugerido (fração da largura, no horizontal) e o vão entre eles. */
+export const END_VIDEO_W = 0.31;
+export const END_GAP = 0.035;
+
+export const endScreenLayout = (width: number, height: number, avoid?: Rect | null): EndScreenLayout => {
+  const aspect = width / Math.max(1, height);
+  // Faixa livre na horizontal: sem o avatar (e um respiro) do lado dele.
+  let left = 0.04;
+  let right = 0.96;
+  if (avoid) {
+    if (avoid[0] + avoid[2] / 2 < 0.5) left = Math.max(left, avoid[0] + avoid[2] + 0.02);
+    else right = Math.min(right, avoid[0] - 0.02);
+  }
+  const room = Math.max(0.3, right - left);
+  if (aspect >= 1) {
+    const vw = Math.min(END_VIDEO_W, (room - END_GAP) / 2);
+    const vh = (vw * aspect * 9) / 16;
+    const total = vw * 2 + END_GAP;
+    const x0 = left + (room - total) / 2;
+    const y0 = 0.3;
+    const sub = 0.14; // diâmetro (fração da altura)
+    const subW = sub / aspect;
+    return {
+      title: [x0, 0.1, total, 0.14],
+      videos: [
+        [x0, y0, vw, vh],
+        [x0 + vw + END_GAP, y0, vw, vh],
+      ],
+      subscribe: [x0 + total / 2 - subW / 2, Math.min(0.97 - sub, y0 + vh + 0.06), subW, sub],
+    };
+  }
+  const vw = Math.min(0.84, room);
+  const vh = (vw * aspect * 9) / 16;
+  const x0 = left + (room - vw) / 2;
+  const y0 = 0.22;
+  const sub = 0.14 * aspect; // diâmetro em fração da altura (mesma largura do horizontal)
+  const subW = sub / aspect;
+  return {
+    title: [x0, 0.1, vw, 0.09],
+    videos: [
+      [x0, y0, vw, vh],
+      [x0, y0 + vh + END_GAP * aspect, vw, vh],
+    ],
+    subscribe: [x0 + vw / 2 - subW / 2, Math.min(0.9 - sub, y0 + 2 * vh + END_GAP * aspect + 0.04), subW, sub],
+  };
 };
 
 // --- câmera ----------------------------------------------------------------------------------------------------------

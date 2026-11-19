@@ -430,10 +430,18 @@ out.flow = m.flowRows([300, 200, 900, 100, 100], 40, 1000);
 out.entry = [9, 12, 30, 60, 0].map((f) => m.entryFrames(f, 30));
 out.entryMax = m.ENTRY_MAX_S;
 // Lavagem da entrada (flash, fade, desfoque): no corte, na metade, no fim e depois, com a entrada de 9 quadros a 30 q/s.
-out.wash = [0, 3, 6, 9, -1].map((f) => m.washAt(f, 9, 30));
+out.wash = [0, 1, 2, 3, -1].map((f) => m.washAt(f, 9, 30));
 out.washFrames = [m.washFrames(9, 30), m.washFrames(3, 30), m.washFrames(9, 60)];
 out.washPeak = m.WASH_PEAK;
 out.zoomBlur = [m.ZOOM_BLUR_PX, m.ZOOM_BLUR_SCALE];
+// Entrada de cartão/texto: opaca desde o 1º quadro (antes dele, nada); a mola começa adiantada.
+out.entryOpacity = [-2, -1, 0, 1, 8].map((f) => m.entryOpacity(f));
+out.popLead = m.ENTRY_POP_LEAD;
+// Tela final 16:9 sem avatar, com avatar à direita (caixa do PresenterLayer), à esquerda e vertical.
+out.endFree = m.endScreenLayout(1920, 1080, null);
+out.endAvatar = m.endScreenLayout(1920, 1080, [0.84, 0.49, 0.16, 0.51]);
+out.endAvatarLeft = m.endScreenLayout(1920, 1080, [0, 0.49, 0.16, 0.51]);
+out.endVertical = m.endScreenLayout(1080, 1920, null);
 console.log(JSON.stringify(out));
 """
 
@@ -898,15 +906,19 @@ def test_entry_transition_is_capped(fx_math: dict) -> None:
 
 
 def test_entry_wash_fades_fast_and_never_fills_the_screen(fx_math: dict) -> None:
-    """QA r3 do prj_gq4krrs11w: o quadro do começo da cena saía quase branco (flash), preto ou borrado (zoom_blur) a
-    ponto de a legenda e a imagem sumirem. A lavagem some em até 0,2 s, em curva que cai rápido (na metade só 1/4
-    sobra), e começa abaixo da tela cheia."""
-    at0, mid, end, after, before = fx_math["wash"]
-    assert at0 == pytest.approx(1) and mid == pytest.approx(0.25) and end == 0 and after == 0 and before == 0
-    assert fx_math["washFrames"] == [6, 3, 9]  # até 0,2 s; entrada mais curta encurta junto
+    """QA r3 e r4 do prj_gq4krrs11w: o quadro do começo da cena saía quase branco (flash), preto ou borrado (zoom_blur)
+    a ponto de a legenda e a imagem sumirem; com a lavagem de 0,2 s, a amostra de 1 em 3 s ainda pegava a arte-chave
+    borrada (5:00) e esmaecida (6:42). A lavagem some em 3 quadros (0,1 s), em curva que cai rápido (no 2º quadro
+    menos da metade, no 3º quase nada), e começa bem abaixo da tela cheia."""
+    at0, f1, f2, end, before = fx_math["wash"]
+    assert at0 == pytest.approx(1) and f1 == pytest.approx(4 / 9) and f2 == pytest.approx(1 / 9)
+    assert end == 0 and before == 0
+    assert fx_math["washFrames"] == [3, 3, 6]  # até 0,1 s; a 60 q/s, 6 quadros
     peaks = fx_math["washPeak"]
     assert set(peaks) == {"flash", "fade_black", "light_leak", "film_burn", "static_burst"}
-    assert all(0 < v <= 0.7 for v in peaks.values()) and peaks["flash"] <= 0.5
+    assert all(0 < v <= 0.6 for v in peaks.values()) and peaks["flash"] <= 0.4
+    # No 2º quadro do corte (o que a amostra mais pega), o flash branco cobre menos de 20%.
+    assert peaks["flash"] * f1 < 0.2
     blur_px, scale = fx_math["zoomBlur"]
     assert blur_px <= 4 and scale <= 0.08
     trans = _read(COMP / "TransitionIn.tsx")
@@ -917,18 +929,100 @@ def test_entry_wash_fades_fast_and_never_fills_the_screen(fx_math: dict) -> None
 
 
 def test_card_never_enters_as_ghost_nor_waits_on_empty_screen() -> None:
-    """O cartão fica opaco logo na entrada (sem quadros semitransparentes, o "200 MB" fantasma do QA) e o cartão de
-    dado sem fundo para ler entra no corte com o número junto (a tela vazia até o número era quadro morto; o painel
-    com o rótulo e sem o número, QA r4 6:24, lia como cartão quebrado)."""
+    """O cartão fica opaco desde o 1º quadro (sem quadros semitransparentes: o "5 SINAIS DE GOLPE" e o "200 MB"
+    fantasmas do QA r4 eram a mola do fade no 2º quadro) e o cartão de dado sem fundo para ler entra no corte com o
+    número junto (a tela vazia até o número era quadro morto; o painel com o rótulo e sem o número, QA r4 6:24, lia
+    como cartão quebrado)."""
     text = _read(COMP / "TextCards.tsx")
-    assert "const opacity = Math.min(1, s / ENTRANCE_OPAQUE);" in text
+    assert "ENTRANCE_OPAQUE" not in text
     entrance = text[text.index("export const useEntrance"):text.index("const Typewriter")]
-    assert "opacity: s }" not in entrance
+    assert "const opacity = entryOpacity(frame);" in entrance
+    assert "frame: frame + ENTRY_POP_LEAD" in entrance
+    assert "opacity: s }" not in entrance and "frame > 18" not in entrance  # o flicker pisca só no começo
+    kinetic = text[text.index("export const KineticText"):text.index("export const DocumentCard")]
+    assert "opacity: entryOpacity(frame - start)," in kinetic and "opacity: pop," not in kinetic
+    count = text[text.index("export const CountCard"):text.index("export const QuoteCard")]
+    assert "opacity: entryOpacity(frame)" in count and "opacity: s }" not in count
     scene = _read(COMP / "SceneView.tsx")
     assert "const cardFrom = bare ? 0 : revealFrom;" in scene
     assert "valueFrom={" not in scene  # o número não espera sozinho: entra com o cartão
     data = _read(COMP / "DataCards.tsx")
-    assert "opacity: frame < vf ? 0 :" in data and "frame: frame - 2 - vf" in data
+    assert "opacity: entryOpacity(frame - vf)," in data and "frame: frame - vf + ENTRY_POP_LEAD" in data
+    # Faixa do topo, carimbo e fonte também: nada de `s * 1.5`, `s * 2` nem fade de 8 quadros.
+    assert "Math.min(1, s * 1.5)" not in data and "Math.min(1, s * 2)" not in data
+    assert "interpolate(frame, [8, 16]" not in data
+    assert "opacity: entryOpacity(frame - delay)," in data
+    assert "const opacity = entryOpacity(frame - SOURCE_IN);" in data
+    news = _read(COMP / "RealMedia.tsx")
+    assert "opacity: entryOpacity(frame)," in news and "Math.min(1, s * 1.5)" not in news
+
+
+def test_entry_opacity_is_full_from_the_first_frame(fx_math: dict) -> None:
+    """Nenhum quadro de entrada com o texto pela metade: 0 antes, 1 desde o quadro 0 (bem dentro do teto de ~8)."""
+    assert fx_math["entryOpacity"] == [0, 0, 1, 1, 1]
+    assert 0 < fx_math["popLead"] <= 4
+
+
+def _inside(r: list[float]) -> bool:
+    return r[0] >= -1e-9 and r[1] >= -1e-9 and r[0] + r[2] <= 1 + 1e-9 and r[1] + r[3] <= 1 + 1e-9
+
+
+def _hits(a: list[float], b: list[float]) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def test_end_screen_layout_has_two_videos_and_subscribe_clear_of_avatar(fx_math: dict) -> None:
+    """Tela final: dois lugares 16:9 de vídeo sugerido e o círculo do inscrever, dentro da tela, sem se sobrepor, sob o
+    chamado; com o avatar, nada passa por cima dele (os lugares vão para o outro lado)."""
+    for key in ("endFree", "endAvatar", "endAvatarLeft", "endVertical"):
+        lay = fx_math[key]
+        v1, v2 = lay["videos"]
+        sub, title = lay["subscribe"], lay["title"]
+        for r in (v1, v2, sub, title):
+            assert _inside(r), (key, r)
+        assert not _hits(v1, v2) and not _hits(v1, sub) and not _hits(v2, sub), key
+        assert title[1] + title[3] <= min(v1[1], v2[1]) + 1e-9, key
+    w, h = 1920, 1080
+    v1 = fx_math["endFree"]["videos"][0]
+    assert (v1[2] * w) / (v1[3] * h) == pytest.approx(16 / 9, rel=1e-3)
+    assert v1[2] >= 0.25  # grande o bastante para o elemento de vídeo do YouTube
+    sub = fx_math["endFree"]["subscribe"]
+    assert sub[2] * w == pytest.approx(sub[3] * h)  # círculo
+    # Sem avatar, centrado; com ele, longe dele.
+    free = fx_math["endFree"]["videos"]
+    assert free[0][0] == pytest.approx(1 - (free[1][0] + free[1][2]))
+    right = [0.84, 0.49, 0.16, 0.51]
+    for r in [*fx_math["endAvatar"]["videos"], fx_math["endAvatar"]["subscribe"]]:
+        assert not _hits(r, right)
+    left = [0, 0.49, 0.16, 0.51]
+    for r in [*fx_math["endAvatarLeft"]["videos"], fx_math["endAvatarLeft"]["subscribe"]]:
+        assert not _hits(r, left)
+    vert = fx_math["endVertical"]["videos"]
+    assert vert[1][1] > vert[0][1] + vert[0][3]  # um embaixo do outro
+
+
+def test_end_screen_scene_draws_card_over_sharp_material_without_captions() -> None:
+    """A tela final é um cartão (`endscreen`) sobre o material em movimento: película escura sem desfoque, sem legenda,
+    e o avatar evitado pelos lugares."""
+    scene = _read(COMP / "SceneView.tsx")
+    assert "endscreen: EndScreenCard," in scene
+    assert "'endscreen']);" in scene[scene.index("const NO_CAPTIONS"):]
+    blur = scene[scene.index("const BLUR:"):scene.index("const BLUR:") + 200]
+    assert "endscreen" not in blur
+    end = _read(COMP / "EndScreen.tsx")
+    assert "endScreenLayout(width, height, avoid)" in end
+    assert "blur(" not in end
+    assert "entryOpacity(" in end
+    types = _read(RD / "types.ts")
+    assert "| 'endscreen';" in types and "end?: TimelineEndScreen;" in types
+
+
+def test_empty_title_quote_and_count_show_the_sharp_image() -> None:
+    """Título, citação e contagem sem texto viram a imagem (sem cartão vazio sobre o fundo escurecido e desfocado)."""
+    scene = _read(COMP / "SceneView.tsx")
+    kind = scene[scene.index("const effectiveKind"):scene.index("const sourceSupport")]
+    assert "((scene.kind === 'title' || scene.kind === 'quote') && !filled(scene.text))" in kind
+    assert "(scene.kind === 'count' && scene.number == null && !filled(scene.text))" in kind
 
 
 def test_sceneview_places_stamp_scrim_and_transition_under_captions() -> None:

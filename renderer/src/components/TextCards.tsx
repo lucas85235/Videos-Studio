@@ -2,26 +2,29 @@ import React from 'react';
 import { AbsoluteFill, Img, interpolate, random, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { fontStack } from '../fonts';
 import type { TextCardStyle, TimelineScene } from '../types';
-import { KINETIC_CENTER_Y, kineticMarks, pageAt, type Rect, scenePages } from './fx/math';
+import { ENTRY_POP_LEAD, entryOpacity, KINETIC_CENTER_Y, kineticMarks, pageAt, type Rect, scenePages } from './fx/math';
 
-/** Entrada dos cartões conforme a animação do estilo (`delay` em quadros). */
-/** A entrada do cartão fica opaca nos primeiros quadros (`ENTRANCE_OPAQUE` da mola): o movimento continua, mas o
- *  cartão nunca passa quadros semitransparente, como um fantasma sobre o fundo. */
-const ENTRANCE_OPAQUE = 0.4;
+/** Quadros em que o "flicker" pisca na entrada (até ~8 quadros: depois, aceso). */
+const FLICKER_FRAMES = 6;
 
+/**
+ * Entrada dos cartões conforme a animação do estilo (`delay` em quadros). O cartão fica opaco desde o 1º quadro
+ * (`entryOpacity`) e a mola começa adiantada (`ENTRY_POP_LEAD`): a entrada é só o movimento, e nenhum quadro mostra o
+ * cartão semitransparente, como um fantasma sobre o fundo.
+ */
 export const useEntrance = (animation: TextCardStyle['animation'], seed: number, delay = 0) => {
   const frame = useCurrentFrame() - delay;
   const { fps } = useVideoConfig();
-  const s = spring({ frame, fps, config: { damping: 15, stiffness: 140, mass: 0.7 } });
-  const opacity = Math.min(1, s / ENTRANCE_OPAQUE);
+  const s = spring({ frame: frame + ENTRY_POP_LEAD, fps, config: { damping: 15, stiffness: 140, mass: 0.7 } });
+  const opacity = entryOpacity(frame);
   switch (animation) {
     case 'pop':
       return { transform: `scale(${interpolate(s, [0, 1], [0.6, 1])})`, opacity };
     case 'slide':
       return { transform: `translateX(${interpolate(s, [0, 1], [-120, 0])}px)`, opacity };
     case 'flicker': {
-      const on = frame > 18 || random(`${seed}-fl-${frame}`) > 0.45;
-      return { opacity: on ? 1 : 0.15 };
+      const on = frame >= FLICKER_FRAMES || random(`${seed}-fl-${frame}`) > 0.45;
+      return { opacity: frame < 0 ? 0 : on ? 1 : 0.15 };
     }
     case 'typewriter':
       return { opacity: 1 };
@@ -70,11 +73,11 @@ export const TitleCard: React.FC<CardProps> = ({ scene, style }) => {
 export const CountCard: React.FC<CardProps> = ({ scene, style }) => {
   const frame = useCurrentFrame();
   const { fps, width } = useVideoConfig();
-  const s = spring({ frame, fps, config: { damping: 11, stiffness: 120, mass: 0.8 } });
+  const s = spring({ frame: frame + ENTRY_POP_LEAD, fps, config: { damping: 11, stiffness: 120, mass: 0.8 } });
   const label = scene.text.replace(/^#?\d+\s*[-–:.]?\s*/, '');
   return (
     <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center' }}>
-      <div style={{ textAlign: 'center', transform: `scale(${interpolate(s, [0, 1], [1.6, 1])})`, opacity: s }}>
+      <div style={{ textAlign: 'center', transform: `scale(${interpolate(s, [0, 1], [1.6, 1])})`, opacity: entryOpacity(frame) }}>
         <div style={{ fontFamily: fontStack(style.font), fontSize: width * 0.26, color: style.accent, lineHeight: 0.9, textShadow: '0 10px 40px rgba(0,0,0,0.8)' }}>
           #{scene.number ?? ''}
         </div>
@@ -128,8 +131,9 @@ export const KineticText: React.FC<{
   const shown = pages[index] ?? [];
   const start = index > 0 && shown.length ? shown[0].from : 0;
   const marked = kineticMarks(shown);
-  // A 1ª página já vem entrando no corte (`FIRST_PAGE_LEAD` quadros adiantada): nem o 1º quadro fica vazio.
-  const lead = index === 0 ? FIRST_PAGE_LEAD : 0;
+  // A 1ª página já vem entrando no corte (`FIRST_PAGE_LEAD` quadros adiantada): nem o 1º quadro fica vazio. As outras
+  // entram com o "pop" curto de todo cartão (`ENTRY_POP_LEAD`), opacas desde o 1º quadro.
+  const lead = index === 0 ? FIRST_PAGE_LEAD : ENTRY_POP_LEAD;
   const pop = spring({ frame: frame - start + lead, fps, config: { damping: 14, stiffness: 220, mass: 0.6 } });
   // Com o avatar no cartão (`presenter.assign` põe o avatar no cartão tipográfico), a frase sai do lado dele.
   const area = Math.min(KINETIC_CENTER_Y * 2, band?.bottom ?? 1);
@@ -158,7 +162,7 @@ export const KineticText: React.FC<{
             alignItems: 'baseline',
             gap: `${width * 0.01}px ${width * 0.025}px`,
             maxWidth: '92%',
-            opacity: pop,
+            opacity: entryOpacity(frame - start),
             transform: `translateY(${interpolate(pop, [0, 1], [24, 0])}px) scale(${interpolate(pop, [0, 1], [0.92, 1])})`,
           }}
         >

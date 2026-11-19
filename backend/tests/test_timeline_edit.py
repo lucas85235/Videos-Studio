@@ -65,6 +65,11 @@ def _timeline(doc: ProjectDoc, style=STYLE, lang: str = "pt-BR", **kwargs):
     return build_timeline(doc, style, lang, _clips(doc, lang), images, **kwargs)
 
 
+def _doc_scenes(timeline: dict) -> list[dict]:
+    """As cenas do documento (sem a tela final que o vídeo longo ganha no fim)."""
+    return [s for s in timeline["scenes"] if s["kind"] != "endscreen"]
+
+
 def _word_frame(k: int) -> int:
     """Quadro (relativo à 1ª cena, que começa no 0) da k-ésima palavra do 1º segmento."""
     return int((lead_in(STYLE) + k * STEP) * FPS + 0.5)
@@ -226,7 +231,7 @@ def _tiers_doc() -> ProjectDoc:
 
 
 def test_clean_appears_by_tier():
-    scenes = _timeline(_tiers_doc())["scenes"]
+    scenes = _doc_scenes(_timeline(_tiers_doc()))
     assert [s["prov"] for s in scenes] == ["ai", "capture", "official", "own", "graphic"]
     assert [s.get("clean") for s in scenes] == [None, True, None, True, True]
 
@@ -261,7 +266,7 @@ def _source_doc(*, edited: bool = True) -> ProjectDoc:
 def test_card_source_only_over_the_material_of_that_source():
     pool = Pool(items=[PoolItem(id="p2", tier="stock", media="image", path="uploads/prj_tl/pool/p2.jpg",
                                 credit="Autor / Pexels")])
-    scenes = _timeline(_source_doc(), pool=pool)["scenes"]
+    scenes = _doc_scenes(_timeline(_source_doc(), pool=pool))
     sources = [(s.get("card") or {}).get("source") for s in scenes]
     # sobre IA, foto de banco, a captura de outro veículo e o subplano de banco, a fonte sai; fica sobre a captura e a
     # arte daquela fonte e no cartão de dado
@@ -312,7 +317,7 @@ VERDICT_POOL = Pool(items=[
 
 
 def test_negative_verdict_never_over_official_or_press_material():
-    scenes = _timeline(_verdict_doc(), pool=VERDICT_POOL)["scenes"]
+    scenes = _doc_scenes(_timeline(_verdict_doc(), pool=VERDICT_POOL))
     stamps = [(s.get("card") or {}).get("stamp") for s in scenes]
     # trailer, Dexerto, arte oficial e o cartão sobre o trailer desfocado perdem o carimbo; o site falso e a IA ficam
     # com ele; veredito positivo ("CONFIRMADO", "NÃO É GOLPE") fica; o subplano do trailer dentro da cena do site falso
@@ -359,7 +364,7 @@ def test_verdict_reads_pool_without_edit_layer(monkeypatch):
     doc = _verdict_doc()
     doc.scenes[7].shots = []  # sem subplano: sem camada de edição, o build não passa acervo nenhum
     assert not edit_resolve.edit_active(doc)
-    scenes = _timeline(doc)["scenes"]
+    scenes = _doc_scenes(_timeline(doc))
     stamps = [(s.get("card") or {}).get("stamp") for s in scenes]
     assert stamps == [None, None, None, "GOLPE", "GOLPE", None, "CONFIRMADO", "GOLPE", "FALSO", "NÃO É GOLPE"]
     assert calls == ["prj_tl"]  # uma leitura só

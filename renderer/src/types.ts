@@ -109,7 +109,23 @@ export type TimelineSfxEvent = {
  */
 export type TimelineMusicDrop = { at: number; dur: number };
 
-export type SceneKind = 'image' | 'text' | 'title' | 'count' | 'document' | 'quote' | 'video' | 'stat' | 'compare' | 'chart' | 'map';
+/** `endscreen`: a tela final do vídeo longo (montada pelo `core/timeline.py`, nunca do documento). */
+export type SceneKind =
+  | 'image'
+  | 'text'
+  | 'title'
+  | 'count'
+  | 'document'
+  | 'quote'
+  | 'video'
+  | 'stat'
+  | 'compare'
+  | 'chart'
+  | 'map'
+  | 'endscreen';
+
+/** Textos da tela final (na língua do vídeo): o chamado sobre os vídeos sugeridos e o rótulo do botão de inscrever. */
+export type TimelineEndScreen = { title: string; subscribe: string };
 
 /** Ponto de foco da câmera (origem do zoom). Ausente ou desconhecido vale 'center'. */
 export type FocusPoint = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
@@ -233,6 +249,8 @@ export type TimelineScene = {
   clean?: true;
   /** Subplanos da cena (vários planos por batida). Ausente: um plano só, como antes. */
   shots?: TimelineShot[];
+  /** Tela final (`kind` 'endscreen'): os textos dela. */
+  end?: TimelineEndScreen;
   /** Eventos presos a palavras (punch, texto que pula, meme, marca-texto...). Ausente: nenhum. */
   fx?: TimelineFx[];
   /**

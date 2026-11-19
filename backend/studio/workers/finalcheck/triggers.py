@@ -124,10 +124,14 @@ def _panel_from(scene: dict[str, Any], fps: float) -> int:
 
 def effective_kind(scene: dict[str, Any]) -> str:
     """Tipo que o renderer desenha (`effectiveKind` do SceneView): cartão de dado vazio vira imagem (ou tipografia
-    cinética, sem imagem), com o carimbo solto."""
+    cinética, sem imagem), com o carimbo solto; título e citação sem texto e contagem sem número nem texto também."""
     kind = scene.get("kind") or "image"
     card = scene.get("card") or {}
-    if kind == "stat":
+    if kind in ("title", "quote"):
+        empty = not _filled(scene.get("text"))
+    elif kind == "count":
+        empty = scene.get("number") is None and not _filled(scene.get("text"))
+    elif kind == "stat":
         empty = not (_filled(card.get("value")) or _filled(card.get("label")) or scene.get("number") is not None
                      or _filled(scene.get("text")))
     elif kind == "compare":

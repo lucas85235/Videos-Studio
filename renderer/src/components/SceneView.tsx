@@ -20,6 +20,7 @@ import {
   stampPreferred,
 } from './DataCards';
 import { EffectsLayer } from './EffectsLayer';
+import { EndScreenCard } from './EndScreen';
 import { counterRect, FxAnchored, FxLayer } from './fx/FxLayer';
 import {
   ANCHORED_FX,
@@ -91,6 +92,7 @@ const CARD_VIEWS: Partial<Record<SceneKind, React.FC<CardViewProps>>> = {
   compare: CompareCard,
   chart: ChartCard,
   map: MapCard,
+  endscreen: EndScreenCard,
 };
 
 /** Quanto o fundo escurece em cada tipo. */
@@ -115,7 +117,7 @@ const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text', 'title', 'quote', 'count
 const CARD_KINDS = new Set<SceneKind>(['title', 'count', 'stat', 'compare', 'chart', 'map']);
 /** O próprio cartão mostra as palavras, então não há legenda (no cartão tipográfico com frase própria, `scene.text`,
  * a fala continua na legenda). */
-const NO_CAPTIONS = new Set<SceneKind>(['text', 'quote']);
+const NO_CAPTIONS = new Set<SceneKind>(['text', 'quote', 'endscreen']);
 /** O painel do cartão já mostra a fonte e o carimbo; o cartão entra quando o número é dito (`reveal`). */
 const PANEL_KINDS = new Set<SceneKind>(['stat', 'compare', 'chart']);
 /** O cartão começa estes quadros antes do número dito: o painel já está entrando quando o impacto bate. */
@@ -131,7 +133,7 @@ const NEWS_DIM = 0.6;
 const NEWS_BLUR = 8;
 /** Cartões que mostram o texto da própria cena em destaque: a fonte solta apoia esse texto. */
 const TEXT_KINDS = new Set<SceneKind>(['title', 'count', 'quote', 'text', 'document']);
-/** Quadro em que o `SourceChip` começa a aparecer (ele entra nos quadros 8–16) e quando o carimbo entra por padrão. */
+/** Quadro em que o `SourceChip` aparece (inteiro, no quadro 8) e quando o carimbo entra por padrão. */
 const SOURCE_FADE_IN = 8;
 const STAMP_DELAY = 6;
 
@@ -155,7 +157,11 @@ const effectiveKind = (scene: TimelineScene, hasImage: boolean): SceneKind => {
   // Gráfico com menos de 2 números vira comparação (que tem a sua própria reserva); mapa sem região conhecida, imagem.
   if (scene.kind === 'chart' && chartRows(scene, 'en').length < 2) return effectiveKind({ ...scene, kind: 'compare' }, hasImage);
   if (scene.kind === 'map' && !mapItems(scene, 'en').length) return hasImage ? 'image' : 'text';
+  // Título, citação e contagem sem nada para mostrar desenhariam só o fundo escurecido e desfocado (quadro morto):
+  // a cena vira a imagem nítida.
   const empty =
+    ((scene.kind === 'title' || scene.kind === 'quote') && !filled(scene.text)) ||
+    (scene.kind === 'count' && scene.number == null && !filled(scene.text)) ||
     (scene.kind === 'stat' && !filled(card?.value) && !filled(card?.label) && scene.number == null && !filled(scene.text)) ||
     (scene.kind === 'compare' && (card?.items ?? []).filter((it) => filled(it.label) || filled(it.value)).length < 2);
   if (!empty) return scene.kind;
