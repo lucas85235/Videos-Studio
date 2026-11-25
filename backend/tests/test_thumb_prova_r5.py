@@ -48,7 +48,8 @@ def test_recorte_acha_as_palavras_de_cada_linha_e_escolhe_jogo_mais_perigo():
     lines = K.headline_lines(img, K.headline_text(meta["desc"]), rects)
     assert lines is not None and [ln.words for ln in lines] == [h.split() for h in HEADLINE]
     clip, info = K.headline_clip(img, meta)
-    assert info["text"] == "GTA 6 roubam" and info["marked"] == ["roubam"]
+    # "GTA 6 roubam" diria que o jogo rouba: quem rouba são os sites falsos (o jogo vem depois de "demos do")
+    assert info["text"] == "Sites falsos" and info["marked"] == ["falsos"]
     # o recorte é só a linha (com folga de papel), não a página: baixo e largo
     assert clip.width > 2.5 * clip.height
     # marca-texto amarelo atrás de "roubam" e a letra continua azul (não vira verde do amarelo multiplicado)
@@ -81,6 +82,44 @@ def test_recorte_nao_corta_nome_ao_meio_nem_comeca_em_palavra_vazia():
     lines = [K.Line(box=(0, 0, 10, 10), spans=[(0, 1)] * 10, bg=(255, 255, 255),
                     words="Cuidado! Falso GTA 6 para PC espalha vírus e pode".split())]
     assert K.pick(lines).words(lines) == ["Falso", "GTA", "6"]
+
+
+def _line(text: str) -> list[K.Line]:
+    words = text.split()
+    return [K.Line(box=(0, 0, 10, 10), spans=[(0, 1)] * len(words), bg=(255, 255, 255), words=words)]
+
+
+def _picked(text: str, **kw) -> str | None:
+    lines = _line(text)
+    choice = K.pick(lines, **kw)
+    return None if choice is None else " ".join(choice.words(lines))
+
+
+def test_recorte_nao_inverte_nem_troca_o_sujeito_da_manchete():
+    """O marca-texto nos pixels da matéria faz o recorte parecer o que ela diz: ele nunca pode dizer o contrário
+    (manchete que nega ou desmente) nem pôr o jogo como quem faz o que os sites falsos fazem."""
+    # quem rouba são os sites (o jogo vem depois de "demos do")
+    assert _picked("Sites falsos com demos do GTA 6 roubam informações") == "Sites falsos"
+    # manchete que desmente: nenhum trecho
+    assert _picked("Rockstar nega que GTA 6 tenha vírus no PC") is None
+    assert _picked("Mito: falso GTA 6 rouba senhas") is None
+    assert _picked("Rockstar denies GTA 6 PC malware") is None
+    # negação na oração: o trecho dela perde ("golpe: iPhone 17" diria o contrário)
+    got = _picked("Não é golpe: iPhone 17 chega ao Brasil")
+    assert got is None or "golpe" not in got.lower()
+    assert _picked("Download de GTA 6 para PC não é golpe") is None
+    # o trecho não começa no objeto de uma preposição ("golpe do PIX" depois de "alerta para")
+    assert _picked("Banco Central alerta para golpe do PIX") != "golpe do PIX"
+    # o "não" imperativo é o aviso, não nega; depois de artigo o trecho vale
+    assert _picked("Não baixe o falso GTA 6 para PC") == "falso GTA 6"
+
+
+def test_manchete_cortada_nao_recorta_a_ultima_palavra_conhecida():
+    """O acervo guarda 70 caracteres da manchete: o resto (que pode negar) não se vê."""
+    assert K.headline_truncated("x" * 70 + ' — "site"') and not K.headline_truncated('GTA 6 vem aí — "site"')
+    assert not K.faithful(["Falso", "GTA", "6"], 0, 2, truncated=True)
+    assert K.faithful(["Falso", "GTA", "6", "rouba"], 0, 2, truncated=True)
+    assert _picked("Cuidado com o falso GTA 6", truncated=True) != "falso GTA 6"
 
 
 def test_manchete_sem_perigo_nem_nome_nao_vira_recorte():
@@ -121,7 +160,7 @@ def test_prova_com_manchete_no_acervo_vira_recorte_grande_sem_x(tmp_path):
     img = C.render(_prova(), T.CANVAS, r)
     lay = img.info["layout"]
     card = next(f for f in lay["figures"] if f["kind"] == "card")
-    assert card["clip"] == "GTA 6 roubam" and card["marked"] == ["roubam"]
+    assert card["clip"] == "Sites falsos" and card["marked"] == ["falsos"]
     x0, y0, x1, y1 = card["bbox"]
     # grande: a linha recortada ocupa boa parte da coluna do texto, embaixo da palavra
     assert x1 - x0 > T.CANVAS[0] * 0.35 and y0 > lay["text_bbox"][3]
@@ -149,6 +188,20 @@ def test_prova_sem_logo_vi_no_kit_ou_sem_logo_nao_inventa_vi(tmp_path):
     r2 = _resolver(tmp_path / "b", meta=None)
     lay2 = C.render(_prova(logo="none"), T.CANVAS, r2).info["layout"]
     assert not any(a == "logo:vi" for a in lay2["assets"])
+
+
+def test_prova_sem_logo_vi_usa_o_logo_do_canal_no_canto(tmp_path):
+    """Kit de outro jogo (sem logo VI): a marca do jogo vem do logo do canal, no canto de cima."""
+    r = _resolver(tmp_path, meta=None, vi=False)
+    manifest = A.load_manifest(tmp_path / "kit")
+    Image.new("RGBA", (400, 160), (240, 200, 30, 255)).save(tmp_path / "kit" / "logos" / "lockup.png")
+    A.upsert_item(manifest, {"id": "lockup", "kind": "logo", "file": "logos/lockup.png", "tags": ["lockup"],
+                             "editorial": False})
+    A.save_manifest(tmp_path / "kit", manifest)
+    r = A.AssetResolver(tmp_path / "kit", media=r.media, allow_editorial=True)
+    lay = C.render(_prova(), T.CANVAS, r).info["layout"]
+    assert "logo:lockup" in lay["assets"] and any(f["kind"] == "logo" for f in lay["figures"]), lay["warnings"]
+    assert T.default_layers("prova", {}).logo == "corner"
 
 
 def test_recorte_para_antes_do_avatar(tmp_path):
@@ -213,6 +266,34 @@ def test_prova_troca_o_choque_generico_pela_pose_que_aponta_para_a_prova():
     assert authoring._proof_pose("mao-na-testa", POSES, set(), []) == "mao-na-testa"
     assert authoring._proof_pose("surpreso", POSES, {"apontando"}, []) == "surpreso"
     assert authoring._proof_pose("surpreso", [p for p in POSES if p["id"] != "apontando"], set(), []) == "surpreso"
+
+
+LUPA = {"id": "lupa", "emotions": ["detalhe escondido", "investigação"], "aliases": ["investigando"],
+        "facing": "center"}
+
+
+class _Recent:
+    def __init__(self, **seen: float) -> None:
+        self.seen = seen
+
+    def n(self, kind: str, pid: str) -> float:
+        return self.seen.get(pid, 0.0) if kind == "pose" else 0.0
+
+
+def test_prova_escolhe_a_emocao_que_o_texto_pede_e_varia_entre_provas():
+    """Não é sempre a mesma pose: o texto pede a emoção (erro → mão na testa, reconhecer o falso → lupa) e, sem
+    pedido, a pose da prova menos vista nas thumbs recentes do canal."""
+    poses = [*POSES, LUPA]
+    notes: list[str] = []
+    assert authoring._proof_pose("surpreso", poses, set(), notes,
+                                 text="Você vai reconhecer o falso GTA 6 de PC") == "lupa"
+    assert notes and "lupa" in notes[0]
+    assert authoring._proof_pose(None, poses, set(), [], text="Quem caiu no golpe do GTA 6 de PC") == "mao-na-testa"
+    assert authoring._proof_pose(None, poses, set(), [], text="GTA 6 de PC é golpe") == "apontando"
+    assert authoring._proof_pose(None, poses, set(), [], text="GTA 6 de PC é golpe",
+                                 recent=_Recent(apontando=3)) == "lupa"
+    # a emoção pedida já usada no pacote: a da prova
+    assert authoring._proof_pose(None, poses, {"lupa"}, [], text="como reconhecer o falso") == "apontando"
 
 
 def test_pacote_prova_aponta_para_a_prova_e_prefere_fundo_aereo():

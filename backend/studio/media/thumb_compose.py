@@ -1543,6 +1543,10 @@ def _logo(canvas: Image.Image, layers: ThumbLayers, resolver: AssetResolver | No
           pal: dict[str, tuple[int, int, int]], layout: Layout, tpl: dict[str, Any], logo_asset: str | None) -> None:
     conf = tpl.get("logo", {})
     anchor = conf.get("anchor", "top-right")
+    if anchor == "none" and conf.get("fallback") and not layout.big_vi:
+        # molde cuja marca do jogo é o VI grande (prova): num kit sem logo VI, o logo do canal vai no canto (a thumb
+        # nunca fica sem dizer de que jogo é)
+        anchor = conf["fallback"]
     if _mirrored(layers):
         anchor = {"top-right": "top-left", "top-left": "top-right"}.get(anchor, anchor)
         if anchor == "top-mid":

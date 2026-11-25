@@ -47,6 +47,28 @@ _STOP = frozenset({
 _DANGER_EN = ("steal", "stole", "stolen", "infostealer", "danger", "warning", "warn", "banned", "breach", "leak",
               "infected", "attack")
 
+# --- Sentido: o recorte não pode dizer o contrário da matéria nem trocar quem faz o quê ---------------------------
+DENIAL = re.compile(
+    r"\b(neg(a|am|ou|aram|ando)|desment\w*|mito|mitos|boatos?|mentira|fake news|hoax\w*|debunk\w*|den(y|ies|ied)"
+    r"|myths?|falso que|false that|nao e verdade|not true)\b")
+"""Manchete que desmente ("Rockstar nega que GTA 6 tenha vírus"): qualquer trecho dela recortado com marca-texto vira
+a afirmação que a matéria nega. Nenhum recorte (fica o cartão da página inteira, onde a manchete se lê completa)."""
+NEGATORS = frozenset({"nao", "nem", "nunca", "jamais", "sem", "ninguem", "nenhum", "nenhuma", "not", "never",
+                      "without", "nothing", "none", "nobody", "isnt", "arent", "wasnt", "werent", "doesnt", "dont",
+                      "didnt", "wont", "cant", "cannot", "aint"})
+"""Negação na mesma oração do trecho ("Não é golpe: …", "golpe não existe", "is not malware"): o trecho perde."""
+_WARN_VERBS = ("baix", "instal", "clic", "cliq", "abr", "cai", "compr", "acess", "entr", "pag", "download",
+               "click", "install", "open", "fall", "buy", "pay")
+"""O "não" imperativo ("não baixe", "não instale", "don't download") é o próprio aviso, não nega o trecho."""
+_DETACH = frozenset({"de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "num", "numa", "por", "pelo",
+                     "pela", "pelos", "pelas", "para", "pra", "com", "sem", "sobre", "contra", "entre", "ao", "aos",
+                     "que", "of", "for", "from", "in", "on", "with", "by", "to", "at", "about", "against", "that",
+                     "than", "como", "like"})
+"""Preposição que prende o começo do trecho ao que vem antes: "demos do GTA 6 roubam" recortado em "GTA 6 roubam" põe
+o jogo como quem rouba (quem rouba são os sites falsos). Trecho logo depois dela não vale (depois de artigo vale: "o
+falso GTA 6" → "falso GTA 6" diz o mesmo)."""
+_CLAUSE_END = re.compile(r"[.!?:;]$")
+
 
 def _fold(text: str) -> str:
     text = unicodedata.normalize("NFKD", (text or "").lower())
@@ -55,6 +77,16 @@ def _fold(text: str) -> str:
 
 def _bare(word: str) -> str:
     return re.sub(r"[^\w]", "", _fold(word))
+
+
+TITLE_CUT = 70
+"""O acervo guarda até 70 caracteres da manchete (`media_pool`): com isso ou mais, o fim dela não se conhece."""
+
+
+def headline_truncated(desc: str | None) -> bool:
+    """A manchete do `desc` foi cortada (o resto, que pode negar o trecho, não está no acervo)?"""
+    head = re.split(r"\s+[—–]\s+[\"“]", desc or "", maxsplit=1)[0]
+    return len(head.rstrip()) >= TITLE_CUT or head.rstrip().endswith("…")
 
 
 def headline_text(desc: str | None) -> str:
@@ -259,18 +291,55 @@ def _chained(words: Sequence[str], names: Sequence[bool], i: int) -> bool:
     return names[i] and names[i + 1] and not _ends_sentence(words[i])
 
 
-def pick(lines: Sequence[Line]) -> Pick | None:
+def _negator(word: str, nxt: str | None) -> bool:
+    w = _bare(word)
+    if w not in NEGATORS:
+        return False
+    # "não baixe", "não instale", "don't download": o aviso imperativo, não a negação do que vem depois
+    return not (w in ("nao", "dont", "never", "nunca") and nxt is not None and _bare(nxt).startswith(_WARN_VERBS))
+
+
+def faithful(flat: Sequence[str], start: int, end: int, *, truncated: bool = False) -> bool:
+    """O trecho `flat[start:end + 1]` diz o que a manchete diz? Não quando há negação na mesma oração (antes, dentro
+    ou logo depois dele: "Não é golpe: iPhone 17", "golpe não existe"), quando ele começa logo depois de uma
+    preposição/artigo que o prende ao que vem antes ("demos do | GTA 6 roubam": o jogo não é quem rouba) ou quando
+    acaba na última palavra conhecida de uma manchete cortada (o resto dela, que pode negar, não se vê)."""
+    if start > 0 and not _CLAUSE_END.search(flat[start - 1]) and _bare(flat[start - 1]) in _DETACH:
+        return False
+    if truncated and end >= len(flat) - 1:
+        return False
+    # a oração do trecho: para trás até a pontuação que fecha a anterior; para a frente até a que fecha esta, no
+    # máximo duas palavras depois ("golpe não existe", "is not")
+    lo = start
+    while lo > 0 and not _CLAUSE_END.search(flat[lo - 1]):
+        lo -= 1
+    hi = end
+    while hi < min(len(flat) - 1, end + 2) and not _CLAUSE_END.search(flat[hi]):
+        hi += 1
+    return not any(_negator(flat[i], flat[i + 1] if i + 1 < len(flat) else None) for i in range(lo, hi + 1))
+
+
+def pick(lines: Sequence[Line], *, truncated: bool = False) -> Pick | None:
     """O melhor trecho de 1 a `MAX_WORDS` palavras seguidas numa linha: palavra de perigo (roubam, falso, golpe) e
     nome do tema (GTA 6, PC) juntos valem mais; trecho que começa ou acaba em palavra vazia ("de", "com") perde; um
-    nome não é cortado ao meio (`_names`). None sem trecho que valha (`MIN_SCORE`)."""
+    nome não é cortado ao meio (`_names`); o trecho diz o que a manchete diz (`faithful`: sem negação na oração, sem
+    trocar quem faz o quê) e manchete que desmente (`DENIAL`) não tem trecho. None sem trecho que valha
+    (`MIN_SCORE`)."""
+    flat = [w for ln in lines for w in ln.words]
+    if DENIAL.search(" ".join(_bare(w) for w in flat)):
+        return None
     best: Pick | None = None
     names = _names(lines)
+    offset = 0
     for li, ln in enumerate(lines):
         n = len(ln.words)
         nm = names[li]
+        base, offset = offset, offset + n
         for a in range(n):
             for b in range(a, min(n, a + MAX_WORDS)):
                 if (a > 0 and _chained(ln.words, nm, a - 1)) or (b + 1 < n and _chained(ln.words, nm, b)):
+                    continue
+                if not faithful(flat, base + a, base + b, truncated=truncated):
                     continue
                 words = ln.words[a:b + 1]
                 score, marked = _score(words)
@@ -367,7 +436,7 @@ def headline_clip(img: Image.Image, meta: dict[str, Any] | None) -> tuple[Image.
         return None
     if not lines:
         return None
-    choice = pick(lines)
+    choice = pick(lines, truncated=headline_truncated(meta.get("desc")))
     if choice is None:
         return None
     return render_clip(img, lines, choice)

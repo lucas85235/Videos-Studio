@@ -122,7 +122,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                  "sub": 0.62},  # não espelha: a palavra à direita cairia em cima do avatar
         "presenter": {"side": "right", "crop": "busto", "h": 1.4, "head_x": 0.79,
                       "legacy": {"side": "left", "crop": "meio", "h_max": 0.64}},
-        "logo": {"anchor": "none", "w": 0.12},
+        # a marca do jogo é o VI atrás do avatar; sem logo VI no kit, o logo do canal no canto de cima, sobre o avatar
+        "logo": {"anchor": "none", "w": 0.12, "fallback": "top-right"},
         "figure_min_face": 0.0,
     },
     # Objeto: o item-chave em close (recorte de objeto da biblioteca, ou um trecho ampliado da mídia do projeto num
@@ -266,7 +267,8 @@ def default_layers(template: str, hints: dict[str, Any] | None = None) -> ThumbL
 
     logo = hints.get("logo")
     if logo not in ("corner", "none"):
-        logo = "none" if tpl.get("logo", {}).get("anchor") == "none" else "corner"
+        conf = tpl.get("logo", {})
+        logo = "none" if conf.get("anchor") == "none" and not conf.get("fallback") else "corner"
     mark = hints.get("mark", tpl.get("mark"))
     return ThumbLayers(
         template=tpl_name, background=background, big_vi=bool(hints.get("big_vi", tpl_name == "lugar-mapa")),

@@ -2499,10 +2499,12 @@ THUMB_RULES = """Regras de thumb (vêm dos vídeos que estouram no nicho: metade
 - Cada candidato é uma variante real: template, fundo, pose ou palavra diferentes. Nunca dois iguais.
 - Fuja das thumbs recentes do canal (a lista vem no pedido): outro fundo, outra figura, outra pose, outro template.
 - Vídeo com prova no acervo (captura de matéria, site falso, print): pelo menos 1 candidato usa o template prova com
-  o id da captura em background_hint (o avatar grande apontando para a prova, a palavra grande e, embaixo dela, 2-3
-  palavras da própria manchete recortadas em corpo grande com marca-texto vendem a denúncia melhor que um quadro; o
-  print inteiro vira ruído branco na miniatura). Escolha a captura cuja manchete tem o nome do jogo e a palavra do
-  perigo ("GTA 6 roubam", "Falso GTA 6"); a palavra da thumb completa essa frase sem repeti-la.
+  o id da captura em background_hint (o avatar grande com a emoção do tema, apontando para a prova, examinando com
+  a lupa ou com a mão na testa do erro, nunca o susto genérico; a palavra grande e, embaixo dela, 2-3 palavras da
+  própria manchete recortadas em corpo grande com marca-texto vendem a denúncia melhor que um quadro; o print
+  inteiro vira ruído branco na miniatura). Escolha a captura cuja manchete afirma o perigo com o sujeito certo
+  ("Falso GTA 6", "Sites falsos"; nunca uma manchete que desmente ou nega); a palavra da thumb completa essa frase
+  sem repeti-la nem mudar o sentido dela.
 - Personagens oficiais (de jogo, filme ou série) nunca são desenhados por IA: só aparecem em quadros oficiais da lista."""
 
 TITLE_RULES = f"""Regras de título (medidas no nicho: os vídeos que estouram têm títulos de ~38 caracteres; os medianos, ~54):
@@ -2529,7 +2531,7 @@ tem de ser cumprível com o tema.
 Templates de thumb: heroi-palavra (quadro com personagem/rosto grande + 1 palavra), avatar-reage (avatar do
 apresentador grande reagindo + objeto do tema, 0 a 2 palavras), lugar-mapa (quadro aéreo de um lugar + 1-2 palavras),
 numero-lista (número gigante + 1 palavra, sem cartões), versus (dois lados comparados), livre (Short vertical: 2-3
-palavras no centro), prova (avatar grande apontando para a prova + 1 palavra grande + 2-3 palavras recortadas da
+palavras no centro), prova (avatar grande com a emoção do tema mostrando a prova + 1 palavra grande + 2-3 palavras recortadas da
 manchete da captura do próprio vídeo, com marca-texto, e o logo do jogo atrás do avatar; background_hint = id do
 acervo), objeto (o item-chave em close + 1 palavra).
 Use só os templates e ativos (ids) que o pedido lista; para o que não existir, use null.
@@ -2876,34 +2878,76 @@ def _pick_pose(hint: object, poses: list[dict[str, Any]], used: set[str], recent
     return pick if free else repeat(pick, "")
 
 
-PROOF_POSE_EMOTIONS = ("mostrar a prova", "apontando", "apontar")
-"""Emoções/nomes da pose que aponta para a prova: no template prova, ela olha para o recorte da manchete."""
+PROOF_POSE_EMOTIONS = ("mostrar a prova", "apontando", "apontar", "investigação", "investigando",
+                       "detalhe escondido")
+"""Emoções/nomes das poses da prova sem emoção pedida pelo texto: a que aponta para o recorte da manchete e a da lupa
+(examinando a prova). Entre elas, a menos vista nas thumbs recentes do canal (as provas não saem todas iguais)."""
+PROOF_TEXT_EMOTIONS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"\b(err[aoe]\w*|vergonh\w*|caiu|cairam|caem|cair|vitimas?|bugs?|bugad\w*|mico)\b"),
+     ("erro", "vergonha alheia", "vergonha")),
+    (re.compile(r"\b(investig\w*|descobr\w*|escondid\w*|reconhec\w*|identific\w*|verdade|detalhes?|pistas?"
+                r"|analis\w*|verific\w*|confer\w*)\b"),
+     ("investigação", "investigando", "detalhe escondido")),
+    (re.compile(r"\b(segred\w*|rumor\w*|vaz(ou|ad\w*|ament\w*)|spoilers?)\b"), ("segredo", "rumor", "spoiler")),
+    (re.compile(r"\b(abus\w*|absurd\w*|raiva|revolt\w*|atrasad\w*|atraso\w*|adiad\w*)\b"),
+     ("raiva", "abuso", "atraso")),
+)
+"""O texto do candidato (título, palavra, promessa, conceito) → a emoção específica que a prova pede: quem caiu no
+golpe (mão na testa), como reconhecer o falso (lupa), o vazamento (segredo), o abuso (bravo). A 1ª que tiver pose
+livre vale; sem nenhuma, as da prova (`PROOF_POSE_EMOTIONS`)."""
 GENERIC_SHOCK = ("choque", "surpresa", "surpreso", "espantado", "chocado")
 """A cara de choque genérica (as duas mãos no rosto): na prova ela só repete o susto da palavra, sem dizer nada."""
 
 
-def _proof_pose(hint: object, poses: list[dict[str, Any]], used: set[str], notes: list[str]) -> object:
-    """A pose do avatar na prova: a que aponta para o recorte da manchete (`PROOF_POSE_EMOTIONS`) quando o
-    candidato não citou pose ou citou só a cara de choque genérica (`GENERIC_SHOCK`); uma emoção específica citada
-    (mão na testa do erro, bravo do golpe, lupa da investigação) fica. Sem pose que aponte (ou ela já usada no
-    pacote), fica o que veio."""
+def _fold_text(text: str) -> str:
+    import unicodedata
+
+    raw = unicodedata.normalize("NFKD", (text or "").lower())
+    return " ".join(re.split(r"[^a-z0-9]+", "".join(ch for ch in raw if not unicodedata.combining(ch)))).strip()
+
+
+def _proof_pose(hint: object, poses: list[dict[str, Any]], used: set[str], notes: list[str], *, text: str = "",
+                recent: Any = None) -> object:
+    """A pose do avatar na prova quando o candidato não citou pose ou citou só a cara de choque genérica
+    (`GENERIC_SHOCK`): a da emoção que o texto pede (`PROOF_TEXT_EMOTIONS`: erro → mão na testa, reconhecer o
+    falso → lupa, vazamento → segredo); sem ela, a que mostra a prova (`PROOF_POSE_EMOTIONS`: apontando ou lupa, a
+    menos vista nas thumbs recentes, `recent`). Uma emoção específica citada (mão na testa, bravo, lupa) fica. Sem
+    pose livre que sirva, fica o que veio."""
     def names(p: dict[str, Any]) -> set[str]:
         vals = [p.get("id"), *(p.get("aliases") or []), *(p.get("emotions") or [])]
         return {normalize_token(str(v)) for v in vals if v} | {" ".join(str(v).lower().split()) for v in vals if v}
 
+    def keys(words: tuple[str, ...]) -> set[str]:
+        return {normalize_token(w) for w in words} | set(words)
+
+    def seen(p: dict[str, Any]) -> float:
+        return recent.n("pose", str(p["id"])) if recent is not None else 0.0
+
     cited = normalize_token(str(hint or ""))
-    shock = {normalize_token(w) for w in GENERIC_SHOCK}
+    shock = keys(GENERIC_SHOCK)
     cited_pose = next((p for p in poses if cited and cited in names(p)), None)
     if cited and not (cited in shock or (cited_pose is not None and names(cited_pose) & shock)):
         return hint
-    wanted = {normalize_token(w) for w in PROOF_POSE_EMOTIONS} | set(PROOF_POSE_EMOTIONS)
-    pointing = next((p for p in poses if names(p) & wanted and p["id"] not in used), None)
-    if pointing is None:
+    free = [p for p in poses if p["id"] not in used and not names(p) & shock]
+    folded = _fold_text(text)
+    pick, why = None, ""
+    for pattern, emotions in PROOF_TEXT_EMOTIONS:
+        if pattern.search(folded):
+            pick = next((p for p in free if names(p) & keys(emotions)), None)
+            if pick is not None:
+                why = f"faz a emoção que o texto pede ({emotions[0]})"
+                break
+    if pick is None:
+        wanted = keys(PROOF_POSE_EMOTIONS)
+        proof = [p for p in free if names(p) & wanted]
+        if proof:
+            pick = min(proof, key=lambda p: (seen(p), proof.index(p)))
+            why = "mostra a prova"
+    if pick is None:
         return hint
     if cited:
-        notes.append(f"CORRIGIDO: na prova o avatar aponta para o recorte da manchete ({pointing['id']}) em vez da "
-                     f"cara de choque genérica ({hint})")
-    return pointing["id"]
+        notes.append(f"CORRIGIDO: na prova o avatar {why}: {pick['id']} em vez da cara de choque genérica ({hint})")
+    return pick["id"]
 
 
 def _frame_layer(frame: dict[str, Any] | None, template: str) -> dict[str, Any]:
@@ -3336,7 +3380,8 @@ def _normalize_candidates(raw: object, *, assets: PackageAssets, templates: list
         if is_long and assets.poses and wants_pose and template != "objeto":
             hint_pose = item.get("presenter_pose")
             if template == "prova":
-                hint_pose = _proof_pose(hint_pose, assets.poses, used_poses, notes)
+                hint_pose = _proof_pose(hint_pose, assets.poses, used_poses, notes, recent=recent, text=" ".join([
+                    title, thumb_text, str(item.get("promise") or ""), str(item.get("concept") or "")]))
             pose_id = _pick_pose(hint_pose, assets.poses, used_poses, recent,
                                  concept=str(item.get("concept") or ""),
                                  text=" ".join([title, thumb_text, str(item.get("promise") or "")]), notes=notes)
