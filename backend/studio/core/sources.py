@@ -554,6 +554,23 @@ def outlet_for_url(url: str, sources: Iterable[Source]) -> str | None:
     return KNOWN_OUTLETS.get(site)
 
 
+def outlet_names(sources: Iterable[Source]) -> list[str]:
+    """Os nomes de veículo do roteiro: o nome curto de cada fonte (`source_label`) só quando ele é o do site dela
+    ("Windows Central" de windowscentral.com, "WeLiveSecurity (ESET)" de welivesecurity.com; um título sem o nome do
+    veículo, "GTA 6 release date", não vale), o nome do site no endereço e os veículos conhecidos (`KNOWN_OUTLETS`)."""
+    out: list[str] = []
+    for source in sources:
+        site = _domain_name(source.url or "")
+        if len(site) >= 3:
+            out.append(site)
+        label = source_label(source)
+        key = _compact_name(label)
+        if site and len(key) >= 3 and len(site) >= 3 and (site in key or key in site):
+            out.append(label)
+    out += list(KNOWN_OUTLETS.values())
+    return list(dict.fromkeys(out))
+
+
 def scene_sentence(doc: ProjectDoc, scene: Scene) -> str:
     """As frases da narração que a cena cobre, inteiras (idioma principal): a fala da cena estendida até o começo e o
     fim das frases dela ("Em agosto, a Malwarebytes encontrou sites | com nomes tipo GTA 6 demo" vale nas duas)."""

@@ -147,6 +147,17 @@ def test_old_project_keeps_typographic_credit():
         ("SITE FALSO · DEMO PC", _capture(SOURCES[1].url, "dexerto.com"), "SITE FALSO · DEMO PC"),
         # ilustração de IA não é veículo nenhum: fica
         ("ROCKSTAR · 10/11/2026", None, "ROCKSTAR · 10/11/2026"),
+        # o assunto do vídeo e palavras de tema que estão no título das matérias não são veículo: ficam
+        ("GTA 6 · 10/11/2026", _capture(SOURCES[1].url, "dexerto.com"), "GTA 6 · 10/11/2026"),
+        ("GTA VI · PC", _capture(SOURCES[2].url, "gamesbeat.com"), "GTA VI · PC"),
+        ("XBOX · SERIES S", _capture(SOURCES[1].url, "dexerto.com"), "XBOX · SERIES S"),
+        ("GOLPE · DOWNLOAD", _capture(SOURCES[3].url, "malwarebytes.com"), "GOLPE · DOWNLOAD"),
+        ("DOWNLOAD FALSO · 1,1 MB", _capture(SOURCES[4].url, "welivesecurity.com"), "DOWNLOAD FALSO · 1,1 MB"),
+        # primeiro nome de veículo que é assunto ("Windows" de "Windows Central"): fica
+        ("WINDOWS · 11", _capture(SOURCES[1].url, "dexerto.com"), "WINDOWS · 11"),
+        # veículo com o dono entre parênteses: o nome curto, sem parêntese
+        ("DEXERTO · 13/11", _capture(SOURCES[4].url, "welivesecurity.com"), "ESET · 13/11"),
+        ("CANALTECH · 13/11", _capture(SOURCES[6].url, "windowscentral.com"), "WINDOWS CENTRAL · 13/11"),
     ],
 )
 def test_headline_names_the_outlet_of_the_media_on_screen(headline, media, expected):

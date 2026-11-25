@@ -39,6 +39,7 @@ from studio.core.sources import (
     ai_weight,
     cites_source,
     outlet_for_url,
+    outlet_names,
     prov_of_item,
     prov_of_media,
     prov_of_scene,
@@ -1155,17 +1156,49 @@ def _same_outlet(a: set[str], b: set[str]) -> bool:
     return bool(a & b) or any(min(len(x), len(y)) >= 5 and (x in y or y in x) for x in a for y in b)
 
 
+# Fim do nome que diz o tipo da empresa, não quem ela é: o primeiro nome sozinho já é a empresa ("ROCKSTAR" de
+# "Rockstar Games"). Sem ele, o primeiro nome pode ser assunto ("WINDOWS" de "Windows Central" não é o veículo).
+_ORG_SUFFIXES = frozenset({
+    "games", "game", "studios", "studio", "entertainment", "interactive", "software", "labs", "inc", "corp", "group",
+    "media", "news", "noticias", "brasil", "brazil", "online", "digital", "company", "co", "ltd", "llc", "sa",
+})  # fmt: skip
+_PAREN_RE = re.compile(r"\(([^()]*)\)")
+# Partes da faixa com mais de um nome ("ESET + HUNTRESS", "ESET E HUNTRESS").
+_CHIP_NAMES_RE = re.compile(r"\s*[+&/,]\s*|\s+(?:e|and|y|et)\s+", re.IGNORECASE)
+
+
+def _outlet_aliases(outlet: str) -> set[str]:
+    """Os jeitos de escrever o veículo na faixa, inteiros: o nome ("windowscentral"), o nome sem o parêntese
+    ("welivesecurity") e o de dentro dele ("eset"), e o primeiro nome quando o resto só diz o tipo da empresa
+    ("rockstar" de "Rockstar Games")."""
+    names = [_PAREN_RE.sub(" ", outlet).strip(), *_PAREN_RE.findall(outlet)]
+    out = {_compact(outlet)}
+    for name in names:
+        out.add(_compact(name))
+        words = name.split()
+        if len(words) >= 2 and all(_compact(w) in _ORG_SUFFIXES for w in words[1:]) and len(_compact(words[0])) >= 4:
+            out.add(_compact(words[0]))
+    return {a for a in out if len(a) >= 3}
+
+
 def _names_known_outlet(doc: ProjectDoc, name: str) -> bool:
-    """O pedaço da faixa nomeia um veículo ou uma empresa do roteiro ("ROCKSTAR", "GAMESBEAT", "ESET + HUNTRESS"), e
-    não um assunto ("SITE FALSO", "LANÇAMENTO")."""
-    tokens = _name_tokens(name)
-    if not tokens:
-        return False
-    if any(cites_source(s, name) for s in doc.sources):
-        return True
-    known = [_name_tokens(s.title or "") | _name_tokens(site_label(s.url or "")) for s in doc.sources]
-    known += [_name_tokens(v) | {k} for k, v in KNOWN_OUTLETS.items()]
-    return any(all(_same_outlet({t}, names) for t in tokens) for names in known)
+    """O pedaço da faixa nomeia um veículo ou uma empresa do roteiro ("ROCKSTAR", "GAMESBEAT", "ESET"), e não um
+    assunto ("GTA 6", "XBOX", "GOLPE", "SITE FALSO"). Só nome inteiro de veículo vale (`outlet_names`: o nome da fonte
+    que bate com o site dela, o domínio, `KNOWN_OUTLETS`); pedaço do título da matéria nunca, porque toda matéria do
+    assunto tem o assunto no título ("GTA 6 · 10/11/2026" não é veículo por estar em "Dexerto – GTA 6 confirms...").
+    Com mais de um nome ("ESET + HUNTRESS"), todos precisam ser veículos."""
+    aliases: set[str] = set()
+    for outlet in outlet_names(doc.sources):
+        aliases |= _outlet_aliases(outlet)
+    parts = [_compact(p) for p in _CHIP_NAMES_RE.split(name)]
+    return bool(parts) and all(p and p in aliases for p in parts)
+
+
+def _chip_outlet(outlet: str) -> str:
+    """Nome curto do veículo para a faixa: "WeLiveSecurity (ESET)" vira "ESET" (o mais curto entre o nome e o de
+    dentro do parêntese), sem parêntese na faixa."""
+    names = [n.strip() for n in (_PAREN_RE.sub(" ", outlet), *_PAREN_RE.findall(outlet)) if n.strip()]
+    return " ".join(min(names, key=len).split()) if names else outlet.strip()
 
 
 def headline_outlet(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
@@ -1202,7 +1235,8 @@ def headline_outlet(doc: ProjectDoc, scene: Scene, resolved: dict[str, Any],
                 shown |= _name_tokens(owner_name)
     if _same_outlet(_name_tokens(name), shown):
         return
-    label = outlet.upper() if name == name.upper() else outlet
+    short = _chip_outlet(outlet)
+    label = short.upper() if name == name.upper() else short
     card["headline"] = f"{label} · {parts[1].strip()}"
 
 
