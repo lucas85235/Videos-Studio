@@ -1436,3 +1436,33 @@ export const pageAt = (pages: CaptionWord[][], frame: number) => {
   });
   return index;
 };
+
+/** Palavras sem caixa, acento nem pontuação (a mesma conta de `SceneView`). */
+const phraseTokens = (text: string) =>
+  text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+
+/**
+ * A legenda sem as palavras que a frase própria do cartão já mostra: a frase é um trecho seguido da fala ("Tamanho
+ * grande não prova nada." de "Tamanho grande não prova nada. Arquivo pesado pode ser só enchimento.", a ideia
+ * principal do `typographic`), e a legenda repetia a mesma frase embaixo dela. A legenda fica com o resto da fala.
+ * Sem o trecho na fala (frase reescrita), a legenda fica inteira.
+ */
+export const captionsWithoutTitle = (scene: Pick<TimelineScene, 'text' | 'captions'>): TimelineScene['captions'] => {
+  const title = phraseTokens(scene.text ?? '');
+  if (!title.length) return scene.captions;
+  const flat: { line: number; word: number; token: string }[] = [];
+  scene.captions.forEach((l, li) => l.words.forEach((w, wi) => phraseTokens(w.text).forEach((t) => flat.push({ line: li, word: wi, token: t }))));
+  for (let i = 0; i + title.length <= flat.length; i++) {
+    if (!title.every((t, k) => flat[i + k].token === t)) continue;
+    const drop = new Set(flat.slice(i, i + title.length).map((f) => `${f.line}:${f.word}`));
+    return scene.captions
+      .map((l, li) => ({ ...l, words: l.words.filter((_w, wi) => !drop.has(`${li}:${wi}`)) }))
+      .filter((l) => l.words.length > 0);
+  }
+  return scene.captions;
+};

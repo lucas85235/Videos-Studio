@@ -110,3 +110,16 @@ def test_changing_one_scene_changes_only_its_chunk():
     changed = [i for i, (x, y) in enumerate(zip(before, after, strict=True)) if x != y]
     assert len(before) == len(after) and changed
     assert all(any(s["id"] == "scn_2" for s in after[i].get("scenes", [])) for i in changed) or len(changed) == 1
+
+
+def test_presenter_stage_shows_the_avatar_big_for_the_whole_scene():
+    """O palco do avatar (cena de imagem sem imagem nenhuma, o cartão tipográfico que virou o apresentador
+    explicando): ele entra no corte, fica a cena inteira e grande."""
+    doc = _doc({0: ScenePresenter(pose="base", mode="explica"),
+                1: ScenePresenter(pose="base", mode="explica", at="chocante")})
+    doc.scenes[1].visual = Visual(type="none")
+    tl = _timeline(doc, _presenter())
+    plain, stage = tl["scenes"][0], tl["scenes"][1]
+    assert stage["presenter"]["from"] == 0
+    assert stage["presenter"]["dur"] == stage["durationInFrames"]
+    assert stage["presenter"]["height"] >= 0.8 > plain["presenter"]["height"]

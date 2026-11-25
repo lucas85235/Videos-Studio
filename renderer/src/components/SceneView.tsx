@@ -57,6 +57,7 @@ import {
   type TextLayer,
   textOnScreen,
   timeWeighted,
+  captionsWithoutTitle,
 } from './fx/math';
 import { MapCard, mapItems } from './MapCard';
 import { PresenterLayer, presenterRect } from './PresenterLayer';
@@ -411,7 +412,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       cards={cards}
       dim={cardDimmed}
       blur={blur}
-      solid={SOLID_WITHOUT_IMAGE.has(kind)}
+      solid={SOLID_WITHOUT_IMAGE.has(kind) || (kind === 'image' && !imageUrl && !clipUrl)}
       easing={easing}
       overlay={overlay}
     />
@@ -729,7 +730,7 @@ export const SceneView: React.FC<Props> = ({ scene, style, assetBaseUrl, staticB
       {scene.presenter ? (
         <PresenterLayer presenter={scene.presenter} words={scene.words} assetBaseUrl={assetBaseUrl} minTop={band.top} />
       ) : null}
-      {hideCaptions ? null : <Captions lines={scene.captions} style={style.captions} topOverride={captionAt} lang={lang} reserve={captionReserve} />}
+      {hideCaptions ? null : <Captions lines={(kind === 'text' || kind === 'title') && filled(scene.text) ? captionsWithoutTitle(scene) : scene.captions} style={style.captions} topOverride={captionAt} lang={lang} reserve={captionReserve} />}
     </AbsoluteFill>
   );
 };

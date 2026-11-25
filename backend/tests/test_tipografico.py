@@ -18,7 +18,7 @@ import pytest
 
 from studio.config import REPO_ROOT
 from studio.core import sources as tiers
-from studio.core.project.document import MediaRef, ProjectDoc, Scene, Segment, Visual
+from studio.core.project.document import MediaRef, ProjectDoc, Scene, ScenePresenter, Segment, Visual
 from studio.core.project.ops import scene_text
 from studio.core.project.pool import Pool, PoolItem
 from studio.core.styles.library import get_style, load_presets
@@ -561,6 +561,11 @@ def test_long_card_without_material_shows_one_idea_not_pages_in_a_row(isolated_s
      "Depois encerra todas as sessões abertas"),
     ("Segundo: a ISO vazada. Aqui é o contrário.", "Segundo: a ISO vazada."),
     ("Então, se alguém te oferece uma versão de PC do GTA 6 pra baixar", None),
+    # QA r5: a oração condicional ("E se pagou alguma coisa") e o complemento ("com cartão ou Pix") não são a ideia;
+    # a principal longa para antes do "e"
+    ("E se pagou alguma coisa, com cartão ou Pix, fala com o seu banco o quanto antes e guarda print e comprovante.",
+     "Fala com o seu banco o quanto antes"),
+    ("E se você já baixou? Calma, mas age rápido.", "E se você já baixou?"),  # a pergunta inteira é uma ideia
 ])
 def test_main_idea_is_the_first_whole_phrase_that_fits(said, idea):
     assert typographic._main_idea(said) == idea
@@ -580,6 +585,116 @@ def test_card_over_an_image_out_of_the_rules_shows_the_image(isolated_settings, 
     assert tiers.is_typographic(order[3], doc)
     assert near.kind == "image" and late.kind == "image"
     assert any("a menos de 20 s" in n for n in notes) and any("mais de 4 s de cartão" in n for n in notes)
+
+
+def test_far_borrowed_capture_of_another_subject_never_shows_sharp(isolated_settings, monkeypatch):
+    """A captura de outro assunto emprestada de longe (papel de parede: a matéria da Malwarebytes atrás de "como se
+    fosse você") passava desfocada atrás da frase; o cartão fora das regras não a mostra nítida. A da cena colada (a
+    continuação do mesmo plano) mostra."""
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(2) + [("image", FILL)] + _base(3) + [("text", LONG_TEXT), ("image", FILL), ("text", LONG_TEXT)]
+               + _base(6))
+    _stock(doc, 0, 1, 3, 4, 5, *range(9, 15))
+    order = doc.ordered_scenes()
+    capture = _capture(doc, 2)
+    _capture(doc, 7)
+    far, glued = order[6], order[8]
+    far.visual = Visual(reuse_of=capture.id)
+    glued.visual = Visual(reuse_of=order[7].id)
+    notes = _settle(doc, Pool(items=[MALWARE]))
+    assert far.kind == "text" and far.visual.reuse_of == capture.id  # não ficou nítida
+    assert any("a imagem atrás dele não pode aparecer" in n for n in notes)
+    assert glued.kind == "image" and glued.visual.reuse_of == order[7].id
+
+
+# --- sem material: o avatar explica no lugar do cartão (r5) -----------------------------------------------------------
+
+
+def test_long_card_without_material_becomes_the_avatar_explaining(isolated_settings, monkeypatch):
+    """re79vsvb/qzlem07g (6:45-7:06): cartões de 7-8 s sem material nenhum e sem frase onde dividir. Com avatar no
+    canal, a cena vira o palco do apresentador (ele explica, a fala na legenda), não mais um cartão."""
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", LONG_TEXT)] + _base(6))
+    _stock(doc, *range(4), *range(5, 11))
+    notes = _settle(doc, Pool(), avatar=True)
+    scene = doc.ordered_scenes()[4]
+    assert tiers.is_presenter_stage(scene, doc) and not tiers.is_text_card(scene, doc)
+    assert scene.kind == "image" and scene.visual.type == "none" and scene.overlay_text == {}
+    assert scene.presenter is not None and scene.presenter.mode == "explica"
+    assert any("o avatar do apresentador explica" in n for n in notes)
+    # sem avatar no canal: o cartão fica (o último recurso) e o aviso diz por quê
+    doc = _doc(_base(4) + [("text", LONG_TEXT)] + _base(6))
+    _stock(doc, *range(4), *range(5, 11))
+    notes = _settle(doc, Pool(), avatar=False)
+    assert tiers.is_typographic(doc.ordered_scenes()[4], doc)
+    assert any("o canal não tem avatar" in n for n in notes)
+
+
+def test_long_card_is_split_and_the_avatar_explains_the_rest(isolated_settings, monkeypatch):
+    """rbfwy57k (3:30): "Segundo: a ISO vazada." cabe no cartão; o resto, sem material dentro dos tetos, o avatar
+    explica."""
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(4) + [("text", ISO)] + _base(6))
+    _stock(doc, *range(4), *range(5, 11))
+    _settle(doc, Pool(), avatar=True)
+    card, rest = doc.scenes_of("seg04")
+    assert scene_text(doc, card) == "Segundo: a ISO vazada." and tiers.is_typographic(card, doc)
+    assert tiers.is_presenter_stage(rest, doc) and rest.presenter is not None
+    assert _pairs(doc) == []
+
+
+def test_cards_closer_than_twenty_seconds_become_the_avatar(isolated_settings, monkeypatch):
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    doc = _doc(_base(3) + [("text", SHORT), ("image", FILL), ("text", SHORT2)] + _base(8))
+    _stock(doc, *range(3), 4, *range(6, 14))
+    _settle(doc, Pool(), avatar=True)
+    order = doc.ordered_scenes()
+    style = get_style(LONG)
+    starts, t = {}, 0.0
+    for scene, _prov, sec in storyboard_check.screen_seconds(doc, style):
+        starts[scene.id] = (t, sec)
+        t += sec
+    cards = [s for s in order if tiers.is_text_card(s, doc)]
+    assert [s.id for s in cards] == [order[3].id]
+    assert tiers.is_presenter_stage(order[5], doc)
+    assert sum(starts[s.id][1] for s in cards) <= typographic.TYPO_MAX_SHARE * t + 1e-6
+
+
+@pytest.mark.parametrize("case", ["serious", "vertical"])
+def test_the_avatar_never_takes_a_serious_scene_nor_a_short(isolated_settings, monkeypatch, case):
+    """O avatar nunca entra em cena séria e o renderer não o mostra no vertical: ali o palco ficaria só o fundo."""
+    monkeypatch.setattr(typographic, "_ai_fits", lambda state, scene: False)
+    text = ("A vítima perdeu tudo e a família inteira ficou sem saber o que fazer com as contas abertas."
+            if case == "serious" else LONG_TEXT)
+    doc = _doc(_base(4) + [("text", text)] + _base(6))
+    _stock(doc, *range(4), *range(5, 11))
+    if case == "vertical":
+        monkeypatch.setattr("studio.core.project.presenter._is_vertical", lambda style: True)
+    _settle(doc, Pool(), avatar=True)
+    assert tiers.is_typographic(doc.ordered_scenes()[4], doc)
+
+
+def test_the_presenter_stage_always_gets_the_avatar_explaining(isolated_settings):
+    """O palco ganha o avatar antes de tudo, mesmo colado em outra aparição e fora da regra do tempo."""
+    rows = [("image", FILL)] * 3 + [("image", SHORT)] + [("image", FILL)] * 3
+    doc = _doc(rows)
+    for scene in doc.scenes:
+        scene.visual = Visual(prompt="x")
+    order = doc.ordered_scenes()
+    order[3].visual = Visual(type="none")  # o palco
+    # aparição colada, com a mesma pose que o palco pegaria: o palco troca de pose e continua explicando
+    order[2].presenter = ScenePresenter(pose="apontando", source="manual")
+    words = {}
+    t = 0.0
+    for scene in order:
+        toks = scene_text(doc, scene).split()
+        words[scene.id] = [Word(w, t + k * 0.4, t + k * 0.4 + 0.3) for k, w in enumerate(toks)]
+        t += 5.0
+    presenter_scenes.assign(doc, _presenter(), words)
+    stage = doc.ordered_scenes()[3]
+    assert tiers.is_presenter_stage(stage, doc)
+    assert stage.presenter is not None and stage.presenter.mode == "explica" and stage.presenter.at is None
+    assert stage.presenter.pose != "apontando"
 
 
 # --- avatar no cartão -------------------------------------------------------------------------------------------------
@@ -665,6 +780,14 @@ const out = {
   at: cases.map((ws) => { const pages = m.kineticPages(ws); return [m.pageAt(pages, 0), m.pageAt(pages, 100000)]; }),
   phrase: m.scenePages({ text: 'O cookie e o pior', words: cases[0], durationInFrames: 90 }).map((p) => p.length),
   min: m.PAGE_MIN, max: m.PAGE_MAX, center: m.KINETIC_CENTER_Y,
+  trim: [
+    m.captionsWithoutTitle({ text: 'Tamanho grande não prova nada.', captions: [
+      { from: 0, to: 40, words: [{ text: 'Tamanho', from: 0, to: 5 }, { text: 'grande', from: 5, to: 10 },
+        { text: 'não', from: 10, to: 15 }, { text: 'prova', from: 15, to: 20 }, { text: 'nada.', from: 20, to: 25 }] },
+      { from: 40, to: 80, words: [{ text: 'Arquivo', from: 40, to: 45 }, { text: 'pesado', from: 45, to: 50 }] }] }),
+    m.captionsWithoutTitle({ text: 'ACESSO ANTECIPADO NÃO EXISTE', captions: [
+      { from: 0, to: 40, words: [{ text: 'Acesso', from: 0, to: 5 }, { text: 'antecipado', from: 5, to: 10 }] }] }),
+  ].map((lines) => lines.map((l) => l.words.map((w) => w.text).join(' '))),
 };
 console.log(JSON.stringify(out));
 """
@@ -694,6 +817,8 @@ def test_renderer_pages_match_the_final_check_mirror(page_math):
     assert all(first == 0 for first, _last in page_math["at"])  # a 1ª página desde o corte: nunca quadro vazio
     assert page_math["phrase"] == [5]  # a frase do cartão inteira de uma vez
     assert 0.4 <= page_math["center"] < 0.5  # centro óptico, fixo
+    # a frase própria do cartão sai da legenda (a mesma frase duas vezes na tela); a frase reescrita deixa a legenda
+    assert page_math["trim"] == [["Arquivo pesado"], ["Acesso antecipado"]]
 
 
 # --- o fundo do cartão não é tela preta -------------------------------------------------------------------------------
@@ -743,6 +868,9 @@ def test_card_background_has_visible_texture_and_the_phrase_clears_the_captions(
     assert grid >= 0.08
     scene = (COMP / "SceneView.tsx").read_text(encoding="utf-8")
     assert "const SOLID_WITHOUT_IMAGE = new Set<SceneKind>(['text', 'title', 'quote', 'count']);" in scene
+    # o palco do avatar (cena de imagem sem imagem) também fica no fundo com textura, nunca no escurecido liso
+    assert "solid={SOLID_WITHOUT_IMAGE.has(kind) || (kind === 'image' && !imageUrl && !clipUrl)}" in scene
+    assert "captionsWithoutTitle(scene)" in scene
     assert "band={kind === 'text' ? textBand : band}" in scene
     text = (COMP / "TextCards.tsx").read_text(encoding="utf-8")
     assert "height: height * area," in text and "* fit," in text

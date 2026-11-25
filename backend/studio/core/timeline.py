@@ -39,6 +39,7 @@ from studio.core.sources import (
     ai_weight,
     cites_source,
     is_social_post,
+    is_presenter_stage,
     outlet_for_url,
     outlet_names,
     prov_of_item,
@@ -1339,6 +1340,8 @@ PRESENTER_REACAO_S = (1.5, 2.2, 2.5)
 """Reação: mínimo, padrão e máximo em segundos."""
 PRESENTER_EXPLICA_MAX_S = 8.0
 PRESENTER_MIN_FRAMES = 8
+PRESENTER_STAGE_HEIGHT = 0.8
+"""Altura do avatar no palco (`sources.is_presenter_stage`): a figura é o assunto da tela, não um canto."""
 """Menos que isto na cena (8 quadros: a própria saída) e o avatar não entra."""
 
 
@@ -1471,10 +1474,16 @@ def presenter_layer(
     # Gatilho perto do fim: recua para caber o mínimo (sem passar do começo da cena).
     if length - start < minimum:
         start = max(0, length - minimum)
+    height = presenter.video.height_explica if spec.mode == "explica" else presenter.video.height_reacao
+    if is_presenter_stage(scene):
+        # O palco do avatar (o cartão tipográfico que virou o apresentador explicando, `typographic`): ele é a cena,
+        # do começo ao fim, grande; sem ele, a tela fica só com o fundo.
+        start = 0
+        wanted = max(wanted, length)
+        height = max(height, PRESENTER_STAGE_HEIGHT)
     dur = min(wanted, length - start)
     if dur < PRESENTER_MIN_FRAMES:
         return None
-    height = presenter.video.height_explica if spec.mode == "explica" else presenter.video.height_reacao
     src = pose.render_file or pose.file
     out: dict[str, Any] = {
         "src": src,

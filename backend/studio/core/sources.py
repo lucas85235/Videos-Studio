@@ -258,6 +258,14 @@ def is_text_card(scene: Scene, doc: ProjectDoc | None = None) -> bool:
     return scene.kind == "text" or is_bare_card(scene, doc)
 
 
+def is_presenter_stage(scene: Scene, doc: ProjectDoc | None = None) -> bool:
+    """Cena de imagem sem imagem nenhuma (o fundo com textura do estilo): o palco do avatar do apresentador, que entra
+    nela explicando (`presenter.assign`, modo "explica") com a fala na legenda. É a saída do cartão tipográfico que não
+    cabe nas regras e não achou material (`workers.pipeline.typographic`): sem frase grande no meio, não se lê como
+    mais um cartão. Sem avatar no canal, é só o fundo (o `typographic` só a cria com avatar)."""
+    return scene.kind == "image" and visual_prov(scene, doc) == "graphic"
+
+
 def _bare_card(scene: Scene) -> bool:
     """Sem imagem nenhuma: visual `none`, ou cartão sem prompt, imagem fixada nem reaproveitamento."""
     visual = scene.visual

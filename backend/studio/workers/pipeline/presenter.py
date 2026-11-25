@@ -16,7 +16,10 @@
      thumb reconhece o apresentador nos primeiros segundos), por cima da regra "nem na primeira cena" e do tipo da
      cena; cena séria e o manual continuam valendo;
   10. o cartão tipográfico (a fala na tela sem imagem, `sources.is_typographic`) ganha o avatar, sem a regra do tempo
-     e nunca adjacente a outra aparição: é o último recurso da cena sem material (`typographic`).
+     e nunca adjacente a outra aparição: é o último recurso da cena sem material (`typographic`);
+  11. o palco do avatar (a cena de imagem sem imagem nenhuma, `sources.is_presenter_stage`, que o `typographic` cria
+     no lugar do cartão que não cabe nas regras) tem o avatar explicando, antes de todas as automáticas, sem a regra do
+     tempo nem a das cenas vizinhas.
 Os avisos saem no formato do `storyboard_check` (`Issue` com AVISO/CORRIGIDO).
 """
 
@@ -35,7 +38,7 @@ from studio.core.editing.serious import (  # noqa: F401 - os termos continuam im
 )
 from studio.core.project.document import Presenter, ProjectDoc, Scene, ScenePresenter
 from studio.core.project.presenter import fold, pose_exists, resolve_pose, trigger_index, word_key
-from studio.core.sources import is_typographic
+from studio.core.sources import is_presenter_stage, is_typographic
 from studio.workers.pipeline.storyboard_check import AVISO, CORRIGIDO, Issue, ai_face
 
 OPENING_POSE = "oculos"
@@ -260,6 +263,20 @@ def assign(
             chosen[first.index] = (ScenePresenter(pose=pose.id, mode="reacao"), "fixa")
             hints.pop(first.index, None)
 
+    # 11. o palco do avatar (cena de imagem sem imagem nenhuma, `sources.is_presenter_stage`: o cartão tipográfico que
+    # não cabia nas regras, `typographic`): o avatar explica nela, antes de tudo, sem a regra do tempo nem a de cenas
+    # vizinhas (sem ele, a cena fica só com o fundo).
+    for slot in slots:
+        if not is_presenter_stage(slot.scene, doc) or not free(slot):
+            continue
+        hint = hints.pop(slot.index, None)
+        pose_id = _cue(presenter, slot)[0] or (hint.pose if hint is not None and pose_exists(presenter, hint.pose)
+                                               else "")
+        if not pose_id:
+            pose_id = next((n for n in (*sorted(EXPLAIN_POSES), *ROTATION) if pose_exists(presenter, n)),
+                           presenter.poses[0].id)
+        # Desde o começo da cena (sem gatilho): o palco não fica vazio esperando a palavra.
+        chosen[slot.index] = (ScenePresenter(pose=pose_id, mode="explica"), "fixa")
     # 8. fixas: CTA (feliz), sem a regra do tempo, mas nunca adjacente a outra aparição.
     run_done = False  # uma aparição por trecho de CTA (cenas seguidas de CTA)
     for slot in slots:
@@ -377,7 +394,9 @@ def assign(
             continue
         old = target.pose
         target.pose = options[0]
-        target.mode = "explica" if options[0] in EXPLAIN_POSES else "reacao"
+        # O palco do avatar continua explicando com a outra pose (em "reação" ele sairia em 2 s, a cena vazia).
+        stage = is_presenter_stage(slots[target_index].scene, doc)
+        target.mode = "explica" if stage or options[0] in EXPLAIN_POSES else "reacao"
         issues.append(Issue("avatar_repetido", CORRIGIDO, f'Pose "{old}" repetida em seguida: virou "{options[0]}".',
                             scene_id=slots[target_index].scene.id))
 
